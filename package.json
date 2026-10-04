@@ -1,0 +1,21 @@
+{
+  "name": "mira",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.28.4",
+  "engines": {
+    "node": ">=24.19.0 <25"
+  },
+  "scripts": {
+    "check": "pnpm typecheck && pnpm boundaries && pnpm test && pnpm build",
+    "typecheck": "tsc --noEmit",
+    "boundaries": "node scripts/check-boundaries.mts",
+    "test": "node --test tests/foundation/*.test.mts",
+    "build": "tsc -p tsconfig.tools.json"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "typescript": "6.0.3"
+  }
+}

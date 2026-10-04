@@ -1,0 +1,9 @@
+packages:
+  - apps/*
+  - packages/*
+
+engineStrict: true
+saveExact: true
+
+# Dependencies may not execute installation scripts without an explicit update.
+allowBuilds: {}

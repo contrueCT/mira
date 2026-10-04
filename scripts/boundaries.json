@@ -1,0 +1,62 @@
+{
+  "@mira/server": {
+    "path": "apps/server",
+    "allow": [],
+    "external": []
+  },
+  "@mira/web": {
+    "path": "apps/web",
+    "allow": [],
+    "external": []
+  },
+  "@mira/cognition": {
+    "path": "packages/cognition",
+    "allow": [],
+    "external": []
+  },
+  "@mira/extension-host": {
+    "path": "packages/extension-host",
+    "allow": [],
+    "external": []
+  },
+  "@mira/external-sdk": {
+    "path": "packages/external-sdk",
+    "allow": [],
+    "external": []
+  },
+  "@mira/runtime-pi": {
+    "path": "packages/runtime-pi",
+    "allow": [],
+    "external": []
+  },
+  "@mira/extension-sdk": {
+    "path": "packages/extension-sdk",
+    "allow": [],
+    "external": []
+  },
+  "@mira/workspace": {
+    "path": "packages/workspace",
+    "allow": [],
+    "external": []
+  },
+  "@mira/life": {
+    "path": "packages/life",
+    "allow": [],
+    "external": []
+  },
+  "@mira/context": {
+    "path": "packages/context",
+    "allow": [],
+    "external": []
+  },
+  "@mira/authorization": {
+    "path": "packages/authorization",
+    "allow": [],
+    "external": []
+  },
+  "@mira/persistence": {
+    "path": "packages/persistence",
+    "allow": [],
+    "external": []
+  }
+}
