@@ -1,0 +1,26 @@
+# Dependencies and build products
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Secrets and local settings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.private-*/
+
+# Runtime data must be configured outside this source repository.
+data/
+.mira/
+memory/
+state/
+extensions/generated/
+*.log
+
+# Editor / OS files
+.DS_Store
+.idea/
+.vscode/
