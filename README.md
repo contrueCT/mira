@@ -11,6 +11,7 @@
 - [原始设计 v0.4](docs/design/original-v0.4.md)
 - [架构边界](docs/architecture.md)
 - [开发约束](docs/development/rules.md)
+- [工具链与验证命令](docs/development/toolchain.md)
 - [分阶段验收](docs/acceptance/foundation.md)
 - [待确认决策](docs/adr/README.md)
 
@@ -36,3 +37,12 @@
 | `docs` | 原始设计、决策、开发规则、验收 |
 
 用户记忆、状态、生成扩展、数据库、运行日志和凭据必须放在源码仓库之外。不要把源码仓库当作 Mira 的持久工作空间。
+
+## 基础验证
+
+```sh
+pnpm install --frozen-lockfile
+pnpm check
+```
+
+这些命令验证工具链与包边界；应用和 Runtime 仍未实现。
