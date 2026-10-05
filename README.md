@@ -6,9 +6,11 @@
 
 ## 当前状态
 
-当前增量包含 PostgreSQL 持久上下文、合并唤醒、单认知循环、Pi 执行/压缩、普通 Memory/State、Memory-only Git 快照、通用文件/Shell、只读历史查询、Cordis 手工/生成扩展生命周期与同轮工具更新，以及假 provider CLI 演示。没有 HTTP 服务、Web 页面、通用授权解析器或真实模型联通验收；未实现目录仍仅代表职责边界。
+当前增量包含 PostgreSQL 持久上下文、合并唤醒、单认知循环、Pi 执行/压缩、普通 Memory、Memory-only Git 快照、通用文件/Shell、只读历史查询、Cordis 手工/生成扩展生命周期与同轮工具更新，以及假 provider CLI 演示。没有 HTTP 服务、Web 页面、通用授权解析器或真实模型联通验收；未实现目录仍仅代表职责边界。
 
-- [原始设计 v0.4](docs/design/original-v0.4.md)
+- [最新设计 v0.5](docs/design/architecture-v0.5.md)
+- [System Prompt 设计 v0.1](docs/design/system-prompt-design-v0.1.md)与[实际模板 v0.2](packages/runtime-pi/prompts/mira-system-v0.2.md)
+- [原始设计 v0.4（历史存档）](docs/design/original-v0.4.md)
 - [架构边界](docs/architecture.md)
 - [开发约束](docs/development/rules.md)
 - [工具链与验证命令](docs/development/toolchain.md)
@@ -16,7 +18,7 @@
 - [决策记录](docs/adr/README.md)
 - [连续上下文与恢复验收](docs/acceptance/durable-context.md)
 - [合并唤醒设计](docs/adr/0002-coalesced-wake-loop.md)
-- [普通 Memory/State 与历史查询](docs/adr/0003-ordinary-memory-history.md)
+- [Memory-only 与实际 Prompt 集成](docs/adr/0006-memory-only-system-prompt.md)
 - [手工可信扩展与同轮更新](docs/adr/0004-manual-trusted-extensions.md)
 - [扩展验收与官方 HMR 限制](docs/acceptance/manual-extensions.md)
 - [生成扩展生命周期与执行边界](docs/adr/0005-generated-extension-lifecycle.md)
@@ -37,14 +39,14 @@
 | `packages/runtime-pi` | Pi 适配与压缩集成 |
 | `packages/authorization` | 授权证据与执行边界 |
 | `packages/persistence` | PostgreSQL、迁移、事务与历史检索 |
-| `packages/workspace` | 普通记忆/状态文件、Memory-only Git |
+| `packages/workspace` | 普通记忆文件、Memory-only Git |
 | `packages/extension-sdk` | 扩展的公开契约 |
 | `packages/extension-host` | Cordis 生命周期与注册 |
 | `packages/external-sdk` | 外部程序事件/Wake API |
 | `tests` | 集成、恢复、端到端验收 |
 | `docs` | 原始设计、决策、开发规则、验收 |
 
-用户记忆、状态、生成扩展、数据库、运行日志和凭据必须放在源码仓库之外。不要把源码仓库当作 Mira 的持久工作空间。
+用户记忆、生成扩展、数据库、运行日志和凭据必须放在源码仓库之外。不要把源码仓库当作 Mira 的持久工作空间。
 
 ## 基础验证
 

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { runDemo } from './index.ts';
 
 if (process.argv.includes('--help')) {
-  console.log('Mira synthetic PostgreSQL demo\nMIRA_DEMO_DATABASE_URL=<explicit localhost mira_demo or mira_test URL> MIRA_DEMO_SPOOL=<outside source/home directory> pnpm demo <stable-input-id> <message>\nOptional: MIRA_DEMO_SCHEMA (default mira_demo), MIRA_DEMO_MIRA_ID (default synthetic-mira), MIRA_DEMO_MAX_INLINE_BYTES, MIRA_DEMO_CWD (existing directory), MIRA_DEMO_MEMORY + MIRA_DEMO_STATE (optional paired roots), MIRA_DEMO_STATE_FILES (JSON array of relative paths), MIRA_DEMO_EXTENSIONS (trusted local JSON configuration file; source HMR needs node --expose-internals)\nRepeat the same input ID/message to verify idempotency. No real model or credentials are used.');
+  console.log('Mira synthetic PostgreSQL demo\nMIRA_DEMO_DATABASE_URL=<explicit localhost mira_demo or mira_test URL> MIRA_DEMO_SPOOL=<outside source/home directory> pnpm demo <stable-input-id> <message>\nOptional: MIRA_DEMO_SCHEMA (default mira_demo), MIRA_DEMO_MIRA_ID (default synthetic-mira), MIRA_DEMO_MAX_INLINE_BYTES, MIRA_DEMO_CWD (existing directory), MIRA_DEMO_MEMORY (optional Memory root), MIRA_DEMO_EXTENSIONS (trusted local JSON configuration file; source HMR needs node --expose-internals)\nRepeat the same input ID/message to verify idempotency. No real model or credentials are used.');
 } else {
   const connectionString = process.env['MIRA_DEMO_DATABASE_URL'];
   const spoolDirectory = process.env['MIRA_DEMO_SPOOL'];
@@ -17,18 +17,16 @@ if (process.argv.includes('--help')) {
   if (!/^mira_demo(?:_[a-z0-9_]+)?$/.test(schema)) throw Error('Demo schema must be mira_demo or mira_demo_<suffix>');
   const max = process.env['MIRA_DEMO_MAX_INLINE_BYTES'];
   const memoryRoot = process.env['MIRA_DEMO_MEMORY'];
-  const stateRoot = process.env['MIRA_DEMO_STATE'];
-  if (Boolean(memoryRoot) !== Boolean(stateRoot)) throw Error('Memory and State roots must be configured together');
-  const stateFiles: unknown = JSON.parse(process.env['MIRA_DEMO_STATE_FILES'] ?? '[]');
-  if (!Array.isArray(stateFiles) || stateFiles.some(file => typeof file !== 'string')) throw Error('MIRA_DEMO_STATE_FILES must be a JSON array of relative paths');
-  if (stateFiles.length && !memoryRoot) throw Error('State files require configured Memory and State roots');
+  if (process.env['MIRA_DEMO_STATE'] !== undefined || process.env['MIRA_DEMO_STATE_FILES'] !== undefined) {
+    console.warn('MIRA_DEMO_STATE and MIRA_DEMO_STATE_FILES are retired and ignored. Existing State files are left untouched; no State is read or promoted into Memory.');
+  }
   const extensionFile = process.env['MIRA_DEMO_EXTENSIONS'];
   const extensions: DemoOptions['extensions'] = extensionFile ? await readExtensionConfiguration(extensionFile) : undefined;
   if (extensions && (!Array.isArray(extensions.entries) || (extensions.hmr !== undefined && typeof extensions.hmr !== 'boolean'))) throw Error('Extension configuration requires entries[] and optional hmr boolean');
   const result = await runDemo({
     ...(extensions ? { extensions } : {}),
     connectionString, schema, miraId: process.env['MIRA_DEMO_MIRA_ID'] ?? 'synthetic-mira', spoolDirectory: path.resolve(spoolDirectory),
-    ...(memoryRoot && stateRoot ? { memory: { memoryRoot: path.resolve(memoryRoot), stateRoot: path.resolve(stateRoot), stateFiles } } : {}),
+    ...(memoryRoot ? { memory: { memoryRoot: path.resolve(memoryRoot) } } : {}),
     ...(process.env['MIRA_DEMO_CWD'] ? { workingDirectory: path.resolve(process.env['MIRA_DEMO_CWD']) } : {}),
     sourceDirectory: fileURLToPath(new URL('../../../', import.meta.url)),
     // Stable synthetic event time ensures exact retries have identical evidence.

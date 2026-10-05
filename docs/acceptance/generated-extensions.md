@@ -35,4 +35,4 @@
 
 配置保存、文件发布、runtime、PG、外部副作用非原子。新 desired 保存后 apply 失败或进程崩溃仍在重启加载该版本。rollback 是明确另一次 fresh activation，不能撤销外部效果，不保证原子恢复。测试后文件变化会被核对，但不证明安全或检测所有 mutate-and-restore 竞态。
 
-版本和 activation 目录默认保留，不提供不可逆删除或自动 GC。Memory/State 没有新增通知、Wake、重注入或额外版本服务。手工 HMR 的嵌套 CJS 局限仍按 ADR 0004，不冒称由生成版本复制机制修复官方 watcher。
+版本和 activation 目录默认保留，不提供不可逆删除或自动 GC。Memory 没有新增通知、Wake、重注入或额外版本服务。手工 HMR 的嵌套 CJS 局限仍按 ADR 0004，不冒称由生成版本复制机制修复官方 watcher。

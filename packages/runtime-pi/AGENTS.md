@@ -31,9 +31,12 @@ Shared rules: [root AGENTS.md](../../AGENTS.md). Read `README.md` before changes
   APIs. Pass the original model to the injected stream; never persist the alias,
   register a provider, or mutate process env to prevent ambient auth discovery
 - `initialContext` loads only an empty version-zero durable stream; never reinject after ordinary wake, restart, file change or compaction. No change-notice machinery
+- `miraPrompt` uses the full source template and `mira.system.v0.2` section at the actual request boundary; persist updates before requests under the same writer/CAS
+- `miraPromptState` v1 installs on existing streams without rereading Memory; narrowly versioned legacy projection migration retains all raw records/tool declarations
+- Renderer substitutions are allowlisted, escaped and single-pass; tool guidance uses the same declared registry, never a stale separate snapshot
 - `history-tools.ts` returns Mira-bound original history; generic persistence never parses Pi
 - All streams are injected; no credentials or live provider fallback. Runtime
-  compaction never modifies Memory/State
+  compaction never modifies Memory
 
 ## Checks
 

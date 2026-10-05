@@ -7,6 +7,9 @@ import type { DurableWriter, RecoverySnapshot, ToolExecution, WakeWriter } from 
 import type { CognitionRuntime, CognitionTurn } from '@mira/cognition';
 import { observationEntry, sameOperation, sanitizeEntries, validateObservation, withRecoveryAdvisory, type RecoveryOperation } from './observations.ts';
 import { compactSnapshot, type CompactionOptions } from './compactor.ts';
+import { MIRA_PROMPT_SECTION, renderMiraPrompt, promptState, legacyBootstrap, projectMiraPrompt, type MiraPromptOptions } from './system-prompt.ts';
+export { MIRA_PROMPT_SECTION, MIRA_PROMPT_SHA256, MIRA_SYSTEM_TEMPLATE, MIRA_PLACEHOLDERS, renderMiraPrompt } from './system-prompt.ts';
+export type { MiraPromptOptions, MiraPromptValues } from './system-prompt.ts';
 import { decodeRecords, encodeEntry, jsonValue, messageEntry, validateMessage } from './records.ts';
 export { decodeRecords, encodeEntry, jsonValue, messageEntry, PI_RUNTIME_VERSION } from './records.ts';
 export type { CompactionOptions } from './compactor.ts';
@@ -30,6 +33,7 @@ export interface PiRuntimeOptions {
   finishTools?: () => Promise<void>;
   /** Loaded only for a genuinely empty durable context, never ordinary recovery or compaction. */
   initialContext?: (signal: AbortSignal) => Promise<string>;
+  miraPrompt?: MiraPromptOptions;
 }
 export interface AuthorizationContext {
   priorOperations: RecoveryOperation[];
@@ -150,10 +154,10 @@ export class PiDurableRuntime implements CognitionRuntime {
         if (unresolved.length) throw new RecoveryBlockedError('Checkpoint intersects incomplete tool calls');
         const firstKept = entries.slice(0, position).find(e => e.id === entry.firstKeptEntryId);
         if (!firstKept || (firstKept.type !== 'message' && firstKept.type !== 'custom_message') || (firstKept.type === 'message' && firstKept.message.role === 'toolResult')) throw new RecoveryBlockedError('Checkpoint tail is missing or splits a tool pair');
-        const precedingSystem = getCurrentSystemMessage(buildSessionProjection(sanitizeEntries(entries.slice(0, position), operations)).messages);
+        const precedingSystem = getCurrentSystemMessage(buildSessionProjection(projectMiraPrompt(sanitizeEntries(entries.slice(0, position), operations))).messages);
         const expectedSystem = precedingSystem ? { ...precedingSystem, timestamp: Date.parse(entry.timestamp) } : undefined;
         if (!isDeepStrictEqual(entry.systemMessage, expectedSystem)) throw new RecoveryBlockedError('Checkpoint system state differs from preceding context');
-        validateProjection(buildSessionProjection(sanitizeEntries(entries.slice(0, position + 1), operations)).messages);
+        validateProjection(buildSessionProjection(projectMiraPrompt(sanitizeEntries(entries.slice(0, position + 1), operations))).messages);
         continue;
       }
       if (entry.type !== 'message') throw new RecoveryBlockedError('Unsupported entry');
@@ -208,7 +212,7 @@ export class PiDurableRuntime implements CognitionRuntime {
       operations.push(...incomplete);
       for (const operation of incomplete) this.deferredReasons.delete(operation.callId);
     }
-    const projectionEntries = sanitizeEntries(entries, operations);
+    const projectionEntries = projectMiraPrompt(sanitizeEntries(entries, operations));
     const projection = buildSessionProjection(projectionEntries);
     const observedAssistantIds = new Set(operations.map(operation => operation.assistantRecordId));
     // Pi's public converter preserves empty assistants, and injected streams need
@@ -223,6 +227,19 @@ export class PiDurableRuntime implements CognitionRuntime {
   }
 
   private async initializeEmpty(current: RecoveredContext): Promise<RecoveredContext> {
+    if (this.options.miraPrompt) {
+      if (promptState(current.entries)) return current;
+      const legacy = legacyBootstrap(current.entries);
+      const empty = current.snapshot.records.length === 0;
+      if (empty && current.snapshot.version !== 0) throw new RecoveryBlockedError('Empty context has a nonzero version');
+      const memory = legacy?.memory ?? (empty ? await this.options.miraPrompt.loadInitialMemory?.(this.controller.signal) ?? '' : '');
+      if (typeof memory !== 'string') throw new Error('Initial Memory must be text');
+      await this.verified();
+      const message = { role: 'system' as const, content: '', timestamp: Date.now(),
+        miraPromptState: { version: 1, memory, legacyRecordId: legacy?.recordId ?? null } };
+      await this.options.writer.append(current.snapshot.version, encodeEntry(messageEntry(message, current.entries.at(-1)?.id ?? null)), this.controller.signal);
+      return this.recoverInternal();
+    }
     if (current.snapshot.records.length || !this.options.initialContext) return current;
     if (current.snapshot.version !== 0) throw new RecoveryBlockedError('Empty context has a nonzero version');
     const text = await this.options.initialContext(this.controller.signal);
@@ -403,6 +420,28 @@ export class PiDurableRuntime implements CognitionRuntime {
             attemptGate();
             // Declaration events have already been durably appended. Refresh
             // their messages, but keep exactly the registry Pi just declared.
+            const config = this.options.miraPrompt;
+            if (config) {
+              const state = await this.recoverInternal();
+              if (state.snapshot.version !== version) throw new Error('Context changed during prompt preparation');
+              const saved = promptState(state.entries);
+              if (!saved) throw new Error('Mira prompt was not installed');
+              const text = renderMiraPrompt({
+                MEMORY_ROOT: config.memoryRoot ?? 'Not configured', MEMORY_STATE: saved.memory,
+                CURRENT_TIME: (config.now?.() ?? new Date()).toISOString(),
+                EXTENSIONS_ROOT: config.extensionsRoot ?? 'Not configured',
+                OTHER_ENVIRONMENT_CONTEXT: config.environmentContext,
+                DYNAMIC_TOOL_AND_EXTENSION_GUIDANCE: (context.tools ?? []).map(tool => `${tool.name}: ${tool.description}`).join('\n\n') || 'No tools are available',
+                CURRENT_AUTHORIZATION_CONTEXT: config.authorizationContext,
+              });
+              if (getCurrentSystemMessage(state.messages)?.sections?.[MIRA_PROMPT_SECTION] !== text) {
+                await this.verified();
+                const entry = messageEntry({ role: 'system', content: '', sections: { [MIRA_PROMPT_SECTION]: text }, timestamp: Date.now() }, parentId);
+                version = await this.options.writer.append(version, encodeEntry(entry), this.controller.signal);
+                attemptGate();
+                parentId = entry.id;
+              }
+            }
             return { context: { messages: await refreshMessages(), tools: context.tools ?? [] } };
           } catch (error) { throw fail(error); }
         },

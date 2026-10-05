@@ -61,7 +61,7 @@ The integration command requires an explicit local `mira_test` database and Post
 
 `acquire` 的 `MemoryCheckpointWriter` 扩展提供 `prepareMemoryCheckpoint`、`loadMemoryCheckpoint` 和 `finishMemoryCheckpoint`。不可变 checkpoint 包含 run、最终回复 ID、`preparedAt` 与适配器恢复输入 `payload`；只允许在最终回复已保存、run 尚未完成时首次准备。`preparedAt` 是准备意图时间，不声称 Git 已捕获文件。Memory 内容仍属于普通文件，不复制进这份 payload。
 
-组装层先持久化 checkpoint，在事务外执行以 Mira/run 为键的可恢复 Memory Git 快照，再关联 `{ runId, commit }` receipt，最后完成 Wake。`commit` 支持完整 SHA-1/SHA-256 ID；`null` 明确记录没有 Memory 变化，与尚无 receipt 不同。State 不参与 Git。Git 自身须保存同一 run 的不可变结果，确保 Git 成功而数据库未关联时能重取该结果，不重复提交或带入之后的文件修改。PostgreSQL 与 Git 没有跨系统原子保证。
+组装层先持久化 checkpoint，在事务外执行以 Mira/run 为键的可恢复 Memory Git 快照，再关联 `{ runId, commit }` receipt，最后完成 Wake。`commit` 支持完整 SHA-1/SHA-256 ID；`null` 明确记录没有 Memory 变化，与尚无 receipt 不同。Git 自身须保存同一 run 的不可变结果，确保 Git 成功而数据库未关联时能重取该结果，不重复提交或带入之后的文件修改。PostgreSQL 与 Git 没有跨系统原子保证。
 
 checkpoint 与 receipt 由只追加表保护；相同输入可重试，替换恢复输入、重新关联不同 commit 或更改无变化结论均拒绝。存在待处理 checkpoint 时，`completeWakeRun` 与 SQL 触发器都禁止完成；`load`/Wake 恢复核对 final 关联和完成状态。所有方法沿用专用连接、实际锁与 epoch 检查。快照 lineage 只说明该 Wake 结束时观察到工作空间版本，不能据此声称全部变更由 agent 创作。
 

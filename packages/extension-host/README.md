@@ -63,7 +63,7 @@ and the desired configuration supply durable evidence. Pending calls are not rep
   apply. It is not cache invalidation; source changes use official HMR
 - Changes to the host/framework dependency graph can make upstream `loader.exit()`
   exit the process. No vendored HMR fork or process-exit suppression is installed
-- Watching covers trusted extension directories, never default Memory/State change
+- Watching covers trusted extension directories, never default Memory change
   notifications. Extensions can explicitly emit events or request Wakes
 
 Generated extensions follow ADR 0005 below. No npm marketplace, auto dependency

@@ -28,6 +28,8 @@ test('CLI help works without database/model credentials', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /synthetic PostgreSQL demo/);
   assert.match(result.stdout, /No real model or credentials/);
+  assert.match(result.stdout, /MIRA_DEMO_MEMORY \(optional Memory root\)/);
+  assert.doesNotMatch(result.stdout, /paired roots|MIRA_DEMO_STATE/);
 });
 
 

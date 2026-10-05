@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { assertJson, assertRecord, type Json, type RuntimeRecord } from '@mira/context';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import { validatePromptState } from './system-prompt.ts';
 import { validateObservation } from './observations.ts';
 import type { SessionEntry, SessionMessageEntry } from '@earendil-works/pi-coding-agent';
 
@@ -96,6 +97,7 @@ export function validateMessage(value: unknown): asserts value is AgentMessage {
     }
   }
   if (role === 'system') {
+    if (value['miraPromptState'] !== undefined) validatePromptState(value['miraPromptState']);
     if (value['sections'] !== undefined && (!object(value['sections']) || !Object.values(value['sections']).every(section => section === null || typeof section === 'string'))) throw new Error('Invalid system sections');
     if (value['toolsAdded'] !== undefined && (!Array.isArray(value['toolsAdded']) || !value['toolsAdded'].every(tool => object(tool) && nonempty(tool['name']) && typeof tool['description'] === 'string' && object(tool['parameters'])))) throw new Error('Invalid system tools');
     if (value['toolsRemoved'] !== undefined && (!Array.isArray(value['toolsRemoved']) || !value['toolsRemoved'].every(tool => object(tool) && nonempty(tool['name'])))) throw new Error('Invalid removed tools');

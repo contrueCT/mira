@@ -6,19 +6,16 @@ import path from 'node:path';
 
 export interface MemoryWorkspaceOptions {
   memoryRoot: string;
-  stateRoot: string;
-  /** The actual source checkout root; neither data root may overlap it. */
+  /** The actual source checkout root; the Memory root may not overlap it. */
   sourceDirectory: string;
   signal?: AbortSignal;
 }
-export interface MemoryWorkspace { memoryRoot: string; stateRoot: string; repositoryId: string }
-export interface MemoryBootstrapOptions extends Pick<MemoryWorkspace, 'memoryRoot' | 'stateRoot'> {
-  /** Explicit relative paths, including nested files, inside stateRoot. */
-  stateFiles?: readonly string[];
+export interface MemoryWorkspace { memoryRoot: string; repositoryId: string }
+export interface MemoryBootstrapOptions extends Pick<MemoryWorkspace, 'memoryRoot'> {
   signal?: AbortSignal;
 }
 export interface BootstrapFile { path: string; content: string }
-export interface MemoryBootstrap { memory: BootstrapFile; state: BootstrapFile[] }
+export interface MemoryBootstrap { memory: BootstrapFile }
 export interface MemorySnapshotOptions {
   memoryRoot: string;
   /** Persist this setup identity with the pending DB checkpoint and replay it. */
@@ -51,7 +48,7 @@ function within(parent: string, child: string): boolean {
 }
 function absolute(location: string): string {
   if (typeof location !== 'string' || !path.isAbsolute(location) || location.includes('\0')) {
-    throw new Error('Memory/State configuration requires absolute paths');
+    throw new Error('Memory configuration requires absolute paths');
   }
   return path.resolve(location);
 }
@@ -75,7 +72,7 @@ async function assertNoGitAncestor(root: string, allowRootGit: boolean): Promise
       // Some hosts expose non-repository .git placeholders at mount roots.
       // Ask Git rather than mistaking any directory named .git for history.
       const detected = await git(current, ['rev-parse', '--show-toplevel'], undefined, undefined, [128]);
-      if (detected.code === 0) throw new Error('Memory must have an independent Git repository; State must stay outside all Git repositories');
+      if (detected.code === 0) throw new Error('Memory must have an independent Git repository');
       if (!detected.stderr.includes('not a git repository')) throw new Error(detected.stderr.trim());
     }
     if (path.dirname(current) === current) break;
@@ -139,25 +136,20 @@ async function registeredRoot(location: string, signal?: AbortSignal): Promise<P
   return { memoryRoot: root, repositoryId: registration.repositoryId };
 }
 
-/** Create only MEMORY.md and ordinary empty State, preserving all existing files.
+/** Create only MEMORY.md and its independent Git repository, preserving existing files.
  * This configures data storage, not a restriction on the agent's shell/workdir.
  */
 export async function setupMemoryWorkspace(options: MemoryWorkspaceOptions): Promise<MemoryWorkspace> {
   options.signal?.throwIfAborted();
   const source = await realpath(absolute(options.sourceDirectory));
   const memoryRoot = await canonical(absolute(options.memoryRoot));
-  const stateRoot = await canonical(absolute(options.stateRoot));
-  if ([memoryRoot, stateRoot].some((root) => within(source, root) || within(root, source)) ||
-      within(memoryRoot, stateRoot) || within(stateRoot, memoryRoot)) {
-    throw new Error('Memory, State and source directories must be separate and non-overlapping');
+  if (within(source, memoryRoot) || within(memoryRoot, source)) {
+    throw new Error('Memory and source directories must be separate and non-overlapping');
   }
   await assertNoGitAncestor(memoryRoot, true);
-  await assertNoGitAncestor(stateRoot, false);
   await mkdir(memoryRoot, { recursive: true, mode: 0o700 });
-  await mkdir(stateRoot, { recursive: true, mode: 0o700 });
-  if (await realpath(memoryRoot) !== memoryRoot || await realpath(stateRoot) !== stateRoot) throw new Error('Memory/State roots changed during setup');
+  if (await realpath(memoryRoot) !== memoryRoot) throw new Error('Memory root changed during setup');
   await assertNoGitAncestor(memoryRoot, true);
-  await assertNoGitAncestor(stateRoot, false);
   if (!await exists(path.join(memoryRoot, '.git'))) await git(memoryRoot, ['init', '--quiet', '--initial-branch=main'], options.signal);
   await repository(memoryRoot, options.signal);
   const memory = path.join(memoryRoot, 'MEMORY.md');
@@ -183,7 +175,7 @@ export async function setupMemoryWorkspace(options: MemoryWorkspaceOptions): Pro
     } finally { await rm(pending, { recursive: true, force: true }); }
   }
   const registration = await registeredRoot(memoryRoot, options.signal);
-  return { ...registration, stateRoot };
+  return registration;
 }
 
 /** Called by the runtime only for genuine first-context initialization.
@@ -191,20 +183,8 @@ export async function setupMemoryWorkspace(options: MemoryWorkspaceOptions): Pro
  */
 export async function loadMemoryBootstrap(options: MemoryBootstrapOptions): Promise<MemoryBootstrap> {
   const { memoryRoot } = await registeredRoot(options.memoryRoot, options.signal);
-  const stateRoot = await realpath(absolute(options.stateRoot));
-  if (within(memoryRoot, stateRoot) || within(stateRoot, memoryRoot)) throw new Error('Memory and State roots must be separate');
-  await assertNoGitAncestor(stateRoot, false);
   const memoryPath = path.join(memoryRoot, 'MEMORY.md');
-  const memory = { path: memoryPath, content: await regularText(memoryPath, options.signal) };
-  const state: BootstrapFile[] = [];
-  for (const relative of options.stateFiles ?? []) {
-    if (typeof relative !== 'string' || !relative || path.isAbsolute(relative) || relative.includes('\0')) throw new Error('Configured State files must be relative paths within stateRoot');
-    const file = await realpath(path.resolve(stateRoot, relative));
-    if (!within(stateRoot, file)) throw new Error('Configured State files must stay within stateRoot');
-    await assertNoGitAncestor(path.dirname(file), false);
-    if (!state.some((entry) => entry.path === file)) state.push({ path: file, content: await regularText(file, options.signal) });
-  }
-  return { memory, state };
+  return { memory: { path: memoryPath, content: await regularText(memoryPath, options.signal) } };
 }
 
 function identifier(value: string, label: string): void {

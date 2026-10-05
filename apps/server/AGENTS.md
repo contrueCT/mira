@@ -5,7 +5,7 @@
 ## 入口与状态
 
 - `README.md` 描述职责；`package.json` 是包名和公开 exports 的事实来源
-- `src/index.ts` 组装假 provider、持久化、WakeLoop、Pi 通用文件/search/bash、Mira 固定范围历史查询、可选 Memory/State 与手工/生成扩展生命周期；`pnpm demo --help` 为 CLI 入口。尚无 HTTP 服务。
+- `src/index.ts` 组装假 provider、持久化、WakeLoop、Pi 通用文件/search/bash、Mira 固定范围历史查询、可选 Memory 与手工/生成扩展生命周期；`pnpm demo --help` 为 CLI 入口。尚无 HTTP 服务。
 - `src/extensions.ts` 绑定事件来源、把 SDK 工具映射到普通 Pi 授权/intent/outcome，并提供 stage 与批次边界生命周期管理工具
 - 本目录负责API、认证、启动和依赖组装；服务框架尚未选定。
 
@@ -14,7 +14,7 @@
 - 在这里连接核心契约与具体适配器；不要让 life/context 反向导入 server
 - API 必须区分 emit event 与 request wake，并在边界验证不可信输入
 - cwd 只是默认位置，无应用目录限制或产品隔离环境；现有自然语言意图判断不变
-- Memory 初始加载与 wake-end checkpoint 不得变成每 Wake 重注入或文件变更通知
+- 完整 Mira Prompt 必须到达实际请求，包括无 Memory 和已有流；Memory 初始快照与 wake-end checkpoint 不得变成每 Wake 重读/重注入或文件变更通知
 - 启动恢复、停机和错误处理不能生成第二个活跃认知写者
 
 ## 验证

@@ -4,6 +4,7 @@
 
 ## 入口
 
+- `foundation/design-sources.test.mts` 锁定三份新原文和 v0.4 存档的字节数/SHA-256，核对来源 manifest
 - `foundation/boundaries.test.mts` 是当前实际测试入口
 - `foundation/toolchain.test.mts` 通过当前 pnpm 验证配置和不支持的 Node 版本被拒绝；用 `pnpm test` 运行以传入准确包管理器入口
 - `unit/` 为核心/离线运行时测试；`integration/` 与 `recovery/` 为真实数据库/进程测试；`e2e/` 仍是占位
@@ -11,7 +12,9 @@
 
 ## 运行与隔离
 
-从仓库根运行 `pnpm test` 或 `pnpm check`。离线测试不需要服务或模型；`pnpm test:integration` 必须配置本地独立 `mira_test` PostgreSQL。CI 通过 `pnpm check:all` 跑真实数据库。使用独立临时目录，`finally` 清理，不使用用户 Memory/State 或生产数据库。
+从仓库根运行 `pnpm test` 或 `pnpm check`。离线测试不需要服务或模型；`pnpm test:integration` 必须配置本地独立 `mira_test` PostgreSQL。CI 通过 `pnpm check:all` 跑真实数据库。使用独立临时目录，`finally` 清理，不使用用户 Memory 或旧 State 数据 或生产数据库。
+
+Prompt 测试检查原始模板 hash、单次转义、实际请求上下文、已有流追加迁移与恢复/压缩、能力更新同代一致、静默 Wake，以及 Memory 快照不重读和旧 State 不触碰。
 
 边界规则必须有允许和拒绝反例。恢复测试覆盖中断、重启、重复事件、并发写入、过期版本和远端结果不明。不要用 mock 宣称模型、数据库或工具副作用真实可用。
 

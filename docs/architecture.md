@@ -1,6 +1,6 @@
 # 架构边界
 
-状态：边界已确认；连续上下文与持久化接口已形成，见 [ADR 0001](adr/0001-durable-context.md)。原始设计见 [v0.4](design/original-v0.4.md)，本文件是实现约束，不覆盖原文。
+状态：边界已确认；连续上下文与持久化接口已形成，见 [ADR 0001](adr/0001-durable-context.md)。最新设计见 [v0.5](design/architecture-v0.5.md)，[Prompt 设计](design/system-prompt-design-v0.1.md)和 [ADR 0006](adr/0006-memory-only-system-prompt.md)说明本次集成；原始 v0.4 仅作历史存档。原文保留原始字节，已确认补充约束在本文与 ADR 中明确记录。
 
 ## 依赖方向
 
@@ -35,7 +35,7 @@
 - 时间戳是事实；经过多久、跨日等提示在渲染时推导
 - Runtime Compaction 保留继续认知所需信息及合法工具边界，不自动写长期 Memory
 - Dreaming 是维护语义记忆的特殊 Wake，不替代压缩
-- 记忆和语义状态使用普通文件；Memory Git 仓库与源码 Git 仓库独立
+- 长期 Memory 使用普通文件；Memory Git 仓库与源码 Git 仓库独立。不存在独立 SemanticState，近期心理状态由 Working Context 及必要的普通压缩摘要承载
 
 ## 一致性与副作用
 
@@ -57,4 +57,13 @@ Cordis 处理依赖、生命周期与资源清理，不是安全边界。用户�
 
 ## 普通记忆与历史阶段
 
-最新已确认约束见 [ADR 0003](adr/0003-ordinary-memory-history.md)。State 在 Memory Git 外；无默认文件变更通知、自动 Wake 或重注入。Pi 原生通用文件和 shell 工具由组装层注册，历史查询固定 Mira 范围。Memory checkpoint、Git ref、PG receipt、Wake completion 分别可恢复，不宣称跨系统原子性。
+最新已确认约束见 [ADR 0006](adr/0006-memory-only-system-prompt.md)。移除 stateRoot/stateFiles 和自动 State 引导，不删除既有文件或历史；没有默认文件变更通知、自动 Wake 或重注入。Pi 原生通用文件和 shell 工具由组装层注册，历史查询固定 Mira 范围。Memory checkpoint、Git ref、PG receipt、Wake completion 分别可恢复，不宣称跨系统原子性。
+
+
+## Mira Prompt 与动态请求边界
+
+实际完整 v0.2 模板作为一个具名 Pi system section 进入真实请求上下文；未配置 Memory 也使用同一 Mira 身份。具名 section 更新会在 fenced writer/CAS 下先持久化，已有流也能幂等安装，不按 Wake 叠加完整 Prompt。渲染只单次替换白名单占位符，转义动态文本边界，不递归解释 Memory/工具文字。
+
+当前时间和可用能力在实际请求边界更新，工具说明来自该请求已准备的同一注册表；停用/更新不保留过时说明，不为说明刷新另起 Wake 或模型调用。Memory 部分始终使用该持续上下文保存的 bootstrap 快照，普通重启、Wake、压缩或文件编辑不重新读取 MEMORY.md。授权语境只是证据，不能由 Prompt 文本替代真实 authorize hook。模型、采样、思考与 token 配置仍属于 Runtime/provider。
+
+v0.5 §40 不引入额外产品隔离。用户再次确认普通工具和生成代码均按宿主 OS 身份运行；既有授权、凭据保护、OS 权限及数据完整性边界继续有效，无批准 UI 或固定风险硬门禁。

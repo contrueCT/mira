@@ -1,5 +1,7 @@
 # 合并唤醒与单认知循环验收
 
+> 本文保留合并唤醒阶段的验收事实与当时范围；后续 Memory-only/Prompt 范围见 [ADR 0006](../adr/0006-memory-only-system-prompt.md)。
+
 日期：2026-10-05。设计和批准范围见 [ADR 0002](../adr/0002-coalesced-wake-loop.md)。
 
 ## 本地已验证
