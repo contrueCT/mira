@@ -72,6 +72,22 @@ cut selection and projection. No private compaction code is copied. The compacto
 has no tools, external resources, credential discovery, or model-network fallback.
 It cannot modify Memory or State. A stale context version rejects publication.
 
+The disposable SDK model has an unregistered per-compaction provider alias. Public
+`ModelRuntime.getProvider` verifies its absence; Pi's public unknown-provider auth
+path returns before credential, environment or auth-file resolution. The injected
+stream wrapper always receives the caller's original complete model descriptor.
+An unexpected SDK provider/auth result or alias in a candidate checkpoint aborts
+publication. The alias is never registered or persisted, and the adapter does not
+change process environment, monkeypatch the SDK, or copy private auth logic.
+
+This isolation is deliberate: the SDK cannot supply built-in provider credentials,
+provider-specific settings, catalog routing or a transport fallback for compaction.
+The application-owned injected stream is responsible for explicitly configured
+transport and authorization. The adapter's numeric token budgets, original model
+API/limits, raw history, signatures and retained tail remain unchanged. Extending
+this contract to SDK-managed auth or virtual/provider routing requires a separate
+review and decision.
+
 Cancellation before publication and before PostgreSQL dispatches COMMIT rolls
 back the checkpoint. Once COMMIT has been dispatched it cannot be revoked;
 a simultaneous cancellation or connection loss may have an uncertain response.

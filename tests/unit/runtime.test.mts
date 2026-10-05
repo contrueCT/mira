@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { execFile } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { setImmediate } from 'node:timers/promises';
 import { Type, createAssistantMessageEventStream, getCurrentTools, toToolDeclaration, type TranscriptContext } from '@earendil-works/pi-ai';
 import { decodeRecords, encodeEntry, jsonValue, messageEntry, PiDurableRuntime } from '@mira/runtime-pi';
@@ -380,4 +385,24 @@ test('assistant stopReason discriminators must be literal strings when encoding 
   await assert.rejects(runtime(writer).recover(), /Invalid completed assistant metadata/);
   await assert.rejects(runtime(writer, () => { requests++; return streamOf(assistant()); }).run(input()), /Invalid completed assistant metadata/);
   assert.equal(requests, 0);
+});
+
+
+test('compaction never resolves ambient credentials for recognized providers or probes auth files', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'mira-auth-isolation-'));
+  try {
+    const worker = new URL('../recovery/ambient-auth-worker.mts', import.meta.url).pathname;
+    const guard = new URL('../deny-model-network.mts', import.meta.url).pathname;
+    const child = await promisify(execFile)(process.execPath, ['--import', guard, worker], {
+      timeout: 30_000,
+      env: { PATH: process.env['PATH'], HOME: home, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home,
+        OPENAI_API_KEY: 'synthetic-ambient-key-openai', ANTHROPIC_API_KEY: 'synthetic-ambient-key-anthropic',
+        AWS_PROFILE: 'synthetic-test-profile', AWS_CONFIG_FILE: join(home, 'aws-config'), AWS_SHARED_CREDENTIALS_FILE: join(home, 'aws-credentials'),
+        GOOGLE_CLOUD_PROJECT: 'synthetic-project', GOOGLE_APPLICATION_CREDENTIALS: join(home, 'synthetic-google-adc.json'),
+      },
+    });
+    const result = JSON.parse(child.stdout) as { checks: Array<{ provider: string; requests: number }>; fileAttempts: string[] };
+    assert.deepEqual(result.checks, ['openai', 'anthropic', 'amazon-bedrock', 'google-vertex'].map(provider => ({ provider, requests: 2 })));
+    assert.deepEqual(result.fileAttempts, []);
+  } finally { await rm(home, { recursive: true, force: true }); }
 });

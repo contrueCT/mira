@@ -23,6 +23,9 @@ Shared rules: [root AGENTS.md](../../AGENTS.md). Read `README.md` before changes
   including timestamps. Duplicate call IDs are errors
 - Compaction snapshots are disposable. CAS and cancellation fence publication;
   COMMIT-dispatch ambiguity requires authoritative recovery
+- Compactor uses an unregistered disposable provider alias verified through public
+  APIs. Pass the original model to the injected stream; never persist the alias,
+  register a provider, or mutate process env to prevent ambient auth discovery
 - All streams are injected; no credentials or live provider fallback. Runtime
   compaction never modifies Memory/State
 

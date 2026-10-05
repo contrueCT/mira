@@ -39,6 +39,12 @@ injects assistant/intent/outcome/result append failures and exercises Pi's swall
 hook-error behavior, invalid checkpoints and provider-facing structure, model
 failure latching, argument coercion, and authorization denial.
 
+`ambient-auth-worker.mts` is an offline subprocess fixture discovered through
+`tests/unit/runtime.test.mts`. It supplies only synthetic environment credentials
+for recognized providers and rejects auth-file probes beneath its isolated HOME.
+It checks exact original model delivery, no automatically resolved auth options,
+unchanged original records/tail, and no disposable provider alias in checkpoints.
+
 All model responses and counter effects are synthetic. HTTP/fetch are intercepted
 by `tests/deny-model-network.mts`; the runner supplies a clean HOME and strips
 credential/proxy environment variables. This is an accidental-call tripwire, not a

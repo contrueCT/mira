@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Agent, type StreamFn } from '@earendil-works/pi-agent-core';
 import { InMemoryCredentialStore, type Api, type Model } from '@earendil-works/pi-ai';
 import {
@@ -42,8 +43,19 @@ export async function compactSnapshot(
     ...structuredClone(entries),
   ]);
   if (manager.getSessionFile() !== undefined) throw new Error('Compactor must remain in memory');
+  const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false, allowModelNetwork: false });
+  // ModelRuntime has no public authContext injection. AgentSession still asks it
+  // for auth even with an injected stream. A disposable unregistered provider
+  // selects the public unknown-provider path, which returns before any credential,
+  // environment or file resolver. Never register it (registration refreshes auth).
+  const isolatedProvider = `mira-injected-compaction-${randomUUID()}`;
+  if (modelRuntime.getProvider(isolatedProvider)) throw new Error('Compaction provider isolation collision');
+  const isolatedModel = { ...model, provider: isolatedProvider };
   const checkedSummaryStream: StreamFn = async (selected, context, requestOptions) => {
-    const stream = await streamFn(selected, context, requestOptions);
+    if (selected.provider !== isolatedProvider) throw new Error('Compaction escaped its isolated provider');
+    if (requestOptions?.apiKey !== undefined || requestOptions?.headers !== undefined || requestOptions?.env !== undefined) throw new Error('Compaction unexpectedly resolved request auth');
+    // The caller sees the original model in full, never the SDK-only identity.
+    const stream = await streamFn(model, context, requestOptions);
     // The public stream result is a cached promise. Checking it does not consume
     // events or copy SDK preparation. Guard each split-turn response separately;
     // otherwise SDK boilerplate can conceal an empty summary and discard history.
@@ -54,8 +66,7 @@ export async function compactSnapshot(
     if (!response.content.some(block => block.type === 'text' && block.text.trim().length > 0)) throw new Error('Compaction summary contains no nonempty text');
     return stream;
   };
-  const agent = new Agent({ streamFn: checkedSummaryStream, convertToLlm, initialState: { model, tools: [], messages: manager.buildSessionContext().messages } });
-  const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false, allowModelNetwork: false });
+  const agent = new Agent({ streamFn: checkedSummaryStream, convertToLlm, initialState: { model: isolatedModel, tools: [], messages: manager.buildSessionContext().messages } });
   const session = new AgentSession({
     agent, sessionManager: manager, modelRuntime, cwd,
     settingsManager: SettingsManager.inMemory({ compaction: { enabled: true, reserveTokens: options.reserveTokens ?? 512, keepRecentTokens: options.keepRecentTokens ?? 1024 }, retry: { enabled: false } }),
@@ -69,6 +80,7 @@ export async function compactSnapshot(
     options.signal?.throwIfAborted();
     const candidate = manager.getEntries().at(-1);
     if (!candidate || candidate.type !== 'compaction' || manager.getEntries().length !== entries.length + 1) throw new Error('SDK did not produce one checkpoint');
+    if (JSON.stringify(candidate).includes(isolatedProvider)) throw new Error('Compaction checkpoint contains disposable provider identity');
     return structuredClone(candidate);
   } finally {
     options.signal?.removeEventListener('abort', abort);

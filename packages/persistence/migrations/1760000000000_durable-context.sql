@@ -71,7 +71,7 @@
     $$;
     CREATE TRIGGER tool_outcome_once BEFORE UPDATE OR DELETE ON tool_executions
       FOR EACH ROW EXECUTE FUNCTION mira_guard_tool_outcome();
-  
+
 -- Down Migration
 
     DROP TABLE tool_executions;
@@ -81,4 +81,3 @@
     DROP TABLE context_records;
     DROP FUNCTION mira_reject_history_change();
     DROP TABLE mira_owners;
-  

@@ -36,3 +36,26 @@ Pi `beforeToolCall` / `afterToolCall` 会把异常变成工具结果，`prompt()
 ## 声明兼容补充
 
 用户于 2026-10-05 确认：只在 Pi 消费项目跳过声明文件内部检查，Mira 源代码保持严格检查。具体原因、配置范围与 `.d.ts` 局限见[工具链](../development/toolchain.md#pi-声明文件兼容例外)。
+
+
+## 压缩凭据隔离补充
+
+用户于 2026-10-05 确认采用临时 provider 别名隔离。Pi 1.0.2 的
+`AgentSession.compact` 即使使用注入的 stream 和空内存凭据库，仍会调用
+`ModelRuntime.getAuth`；已知 provider 可能继续读取环境密钥或探测认证文件。
+`ModelRuntime.create` 没有公开的 `authContext` 注入选项，因此空凭据库本身不构成隔离。
+
+一次性压缩实例使用随机、未注册的内部 provider 标识，并通过公开
+`ModelRuntime.getProvider` 确认它不存在。Pi 对未知 provider 的公开认证路径在读取凭据、
+环境或认证文件前返回。摘要 stream 包装器把完整的原始模型描述交给应用注入的调用入口；
+内部别名不传给应用、不注册、不写入权威历史或 checkpoint。发现意外 provider、认证结果或
+候选中出现内部别名时拒绝发布。实现不修改进程环境，不修改上游代码，不复制私有认证逻辑。
+
+代价是临时 SDK 实例不再承担内置 provider 认证、provider 专属设置、catalog/virtual routing
+或模型网络回退。应用注入的 stream 负责明确配置的模型传输和授权。当前压缩预算使用直接传入的
+数值；原始模型 API、限制、消息、签名和 recent tail 保留。以后扩展这些能力需要重新审查边界。
+
+回归在独立子进程中使用合成的 OpenAI/Anthropic 环境密钥、AWS profile/config 路径和 Google ADC
+路径。四个已知 provider 分别执行两次注入的摘要响应，验证调用入口收到完整原始模型，options
+没有自动解析的认证内容，没有认证文件探测，原始记录与 tail 保持一致，checkpoint 没有内部别名。
+HTTP/fetch tripwire 同时启用。测试不使用真实密钥、不调用真实模型；tripwire 不作为通用安全沙箱。
