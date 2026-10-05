@@ -1,5 +1,5 @@
-# packages/context
+# @mira/context
 
-Working Context、时间渲染和上下文版本。不得依赖 Pi、Cordis、数据库或 Web 框架。
+`src/index.ts` 定义版本化 JSON envelope、快照与纯 JSON 校验；不解释 Pi payload。
 
-状态：尚未实现。目录仅标明已确认职责。
+接口见 `src/index.ts`，一致性约束见 [ADR 0001](../../docs/adr/0001-durable-context.md)。

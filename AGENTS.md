@@ -8,14 +8,14 @@
 
 ## 当前状态与关系
 
-这是基础结构，尚无可运行的 Mira。所有应用/领域包只有职责与 manifest，公开 exports 为空；不要把目录或测试工具宣称为产品功能。
+当前实现范围是连续上下文与恢复适配器，见 [ADR 0001](docs/adr/0001-durable-context.md)；尚无服务端/UI 或完整 Mira 产品。`context`、`life`、`persistence`、`runtime-pi` 有公开入口，其余包仍是职责占位。
 
 - `apps/server` 组装核心与适配器；`apps/web` 提供单条 Timeline
 - `life` / `context` 保持独立，不导入 Pi、Cordis、数据库或 Web 框架
 - 核心拥有契约，`runtime-pi`、`persistence`、`workspace` 等适配器实现契约
 - 扩展只使用 `extension-sdk`；Cordis 处理生命周期，不是安全沙箱
 - 用户数据、Memory/State 的 Git、日志、凭据均在源码仓库之外
-- 实际允许依赖和出口以 `scripts/boundaries.json` 与各包 `package.json` 为准；当前全部关闭，新增时最小开放
+- 实际允许依赖和出口以 `scripts/boundaries.json` 与各包 `package.json` 为准；新增时最小开放
 
 ## 按需指引
 
@@ -45,7 +45,7 @@ pnpm install --frozen-lockfile
 pnpm check
 ```
 
-`check` 包括类型、包边界、基础回归测试和工具构建；测试数量以实际输出为准。单项命令和版本见 [toolchain.md](docs/development/toolchain.md)。目前不需要模型、数据库或第三方凭据；`build` 只构建检查工具。
+`check` 包括类型、包边界、基础/离线测试和工具构建；`test:integration` 要求显式隔离数据库，`check:all` 包含真实 PostgreSQL 验证。模型始终使用假 provider。测试数量以实际输出为准，命令和隔离要求见 [toolchain.md](docs/development/toolchain.md)。`build` 仍只构建检查工具。
 
 ## 共享约束
 

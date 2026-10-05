@@ -14,8 +14,27 @@
     "skipLibCheck": false,
     "allowImportingTsExtensions": true,
     "noEmit": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["scripts/**/*.mts", "tests/foundation/**/*.mts", "apps/**/*.ts", "apps/**/*.mts", "apps/**/*.tsx", "packages/**/*.ts", "packages/**/*.mts", "packages/**/*.tsx"],
-  "exclude": ["node_modules", "dist"]
+  "include": [
+    "scripts/**/*.mts",
+    "tests/*.mts",
+    "tests/foundation/**/*.mts",
+    "tests/integration/**/*.mts",
+    "tests/unit/**/*.mts",
+    "apps/**/*.ts",
+    "apps/**/*.mts",
+    "apps/**/*.tsx",
+    "packages/**/*.ts",
+    "packages/**/*.mts",
+    "packages/**/*.tsx"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "packages/runtime-pi",
+    "tests/unit/runtime.test.mts"
+  ]
 }

@@ -5,7 +5,7 @@
 ## 入口与状态
 
 - `README.md` 描述职责；`package.json` 是包名和公开 exports 的事实来源
-- 尚无 Working Context 类型或渲染器，接口需结合 Pi 恢复实验确定。
+- `src/index.ts` 定义版本化 JSON envelope、快照与纯 JSON 校验；不解释 Pi payload。
 - 本目录负责连续上下文、版本与时间提示渲染。
 
 ## 本地约束与跨包陷阱
@@ -17,4 +17,4 @@
 
 ## 验证
 
-从仓库根运行 `pnpm check`。依赖或 exports 改动必须同时检查 `scripts/boundaries.json`，并添加允许/拒绝反例。当前没有此包专属测试或启动命令；实现时同时补充真实命令与适用验收，不能填入未实现命令。
+从仓库根运行 `pnpm check`。依赖或 exports 改动必须同时检查 `scripts/boundaries.json`，并添加允许/拒绝反例。契约测试见 `tests/unit/`，真实写入与恢复验收见 `tests/integration/`、`tests/recovery/`。

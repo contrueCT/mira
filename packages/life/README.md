@@ -1,5 +1,5 @@
-# packages/life
+# @mira/life
 
-事件、Wake 队列与单主认知循环。不得依赖具体 Runtime、数据库或 Web 框架。
+`src/index.ts` 定义 Event/Wake receipt、工具 intent/outcome 与 DurableWriter 契约。调度/合并/队列尚未实现。
 
-状态：尚未实现。目录仅标明已确认职责。
+接口见 `src/index.ts`，一致性约束见 [ADR 0001](../../docs/adr/0001-durable-context.md)。

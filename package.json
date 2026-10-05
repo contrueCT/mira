@@ -9,13 +9,24 @@
   },
   "scripts": {
     "check": "pnpm typecheck && pnpm boundaries && pnpm test && pnpm build",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.pi.json",
     "boundaries": "node scripts/check-boundaries.mts",
-    "test": "node --test tests/foundation/*.test.mts",
-    "build": "tsc -p tsconfig.tools.json"
+    "test": "node scripts/run-tests.mts",
+    "build": "tsc -p tsconfig.tools.json",
+    "test:integration": "node scripts/run-tests.mts --integration",
+    "check:all": "pnpm check && pnpm test:integration"
   },
   "devDependencies": {
     "@types/node": "24.19.1",
-    "typescript": "6.0.3"
+    "typescript": "6.0.3",
+    "@mira/context": "workspace:*",
+    "@mira/life": "workspace:*",
+    "@mira/persistence": "workspace:*",
+    "@mira/runtime-pi": "workspace:*",
+    "pg": "8.23.1",
+    "@types/pg": "8.23.1",
+    "@earendil-works/pi-agent-core": "1.0.2",
+    "@earendil-works/pi-ai": "1.0.2",
+    "@earendil-works/pi-coding-agent": "1.0.2"
   }
 }

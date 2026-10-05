@@ -31,3 +31,18 @@ test('installation rejects an unsupported Node engine before doing work', async 
     assert.match(String(result.stdout) + String(result.stderr), /ERR_PNPM_UNSUPPORTED_ENGINE/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('Pi declaration exception is scoped and source strictness remains inherited', async () => {
+  const core = JSON.parse(await readFile('tsconfig.json', 'utf8'));
+  const pi = JSON.parse(await readFile('tsconfig.pi.json', 'utf8'));
+  const manifest = JSON.parse(await readFile('package.json', 'utf8'));
+  assert.equal(core.compilerOptions.skipLibCheck, false);
+  assert.equal(pi.extends, './tsconfig.json');
+  assert.deepEqual(pi.compilerOptions, { skipLibCheck: true });
+  for (const flag of ['strict', 'noUncheckedIndexedAccess', 'exactOptionalPropertyTypes']) assert.equal(core.compilerOptions[flag], true);
+  assert.ok(core.exclude.includes('packages/runtime-pi'));
+  assert.ok(pi.include.includes('packages/runtime-pi/**/*.ts'));
+  assert.ok(pi.include.includes('tests/unit/runtime.test.mts'));
+  assert.ok(pi.include.includes('tests/recovery/**/*.mts'));
+  assert.match(manifest.scripts.typecheck, /tsc --noEmit && tsc --noEmit -p tsconfig.pi.json/);
+});

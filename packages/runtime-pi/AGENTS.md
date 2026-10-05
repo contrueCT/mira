@@ -1,20 +1,35 @@
-# Pi 适配
+# Pi adapter
 
-共享规则见 [根 AGENTS.md](../../AGENTS.md)。本文路径相对于本目录；子目录规则只能补充，不取消根规则。
+Shared rules: [root AGENTS.md](../../AGENTS.md). Read `README.md` before changes.
 
-## 入口与状态
+## Entry and authority
 
-- `README.md` 描述职责；`package.json` 是包名和公开 exports 的事实来源
-- 尚无 Pi 依赖或 adapter；首次任务是离线可重复可行性实验。
-- 本目录负责Pi 消息转换、恢复、工具边界和 Runtime Compaction。
+- `src/index.ts` exports the durable agent-core adapter; `src/records.ts` owns
+  versioned Pi JSON validation; `src/compactor.ts` uses full public SDK compaction
+- Pi packages are pinned to 1.0.2; change versions only with explicit approval and
+  contract/recovery tests. Upstream provenance is in the approved Pi feasibility ADR
+- PostgreSQL is the sole authority. Never introduce persistent SessionManager
+  files, copied private compaction helpers or a file-backed runtime fallback
+- Unknown versions/types and unsafe tool/checkpoint structure fail closed
 
-## 本地约束与跨包陷阱
+## Hard boundaries
 
-- 固定实验使用的包版本并记录真实上游出处，不凭旧包名假设能力
-- 明确恢复的权威消息表示；回调存在不代表持久化会被 await
-- 压缩必须保留 recent tail 与合法工具结构，不自动写 Memory
-- 真实模型调用需要已有明确授权与凭据；缺少时标注未执行，不能用 mock 宣称联通
+- Authorization before durable intent and effect; persist original requested and
+  actual validated arguments independently. Never infer permission from tool text
+- Effects are sequential. Hook throws alone do not stop Pi. Keep explicit stopped
+  latch, outer error, wrapped model/effect gates and awaited subscribers
+- A thrown effect is unknown; never synthesize definitive failure or blindly replay
+- Preserve exact known outcomes across the outcome/transcript crash window,
+  including timestamps. Duplicate call IDs are errors
+- Compaction snapshots are disposable. CAS and cancellation fence publication;
+  COMMIT-dispatch ambiguity requires authoritative recovery
+- All streams are injected; no credentials or live provider fallback. Runtime
+  compaction never modifies Memory/State
 
-## 验证
+## Checks
 
-从仓库根运行 `pnpm check`。依赖或 exports 改动必须同时检查 `scripts/boundaries.json`，并添加允许/拒绝反例。当前没有此包专属测试或启动命令；实现时同时补充真实命令与适用验收，不能填入未实现命令。
+Root `pnpm test` covers offline runtime tests. `pnpm test:integration` includes
+real PostgreSQL recovery tests under `tests/recovery/`, needs the explicit isolated
+`MIRA_TEST_DATABASE_URL`, and fails rather than silently skipping absent service.
+`pnpm check:all` is the full gate. Tests and claims must distinguish offline,
+real database, and live model validation. See recovery README for exact setup.
