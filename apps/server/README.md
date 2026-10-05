@@ -20,3 +20,5 @@ pnpm demo first-message 'Hello Mira'
 `runDemo({memory:{memoryRoot,stateRoot,stateFiles?}, ...})` 可启用本批普通记忆功能。根目录必须在源码外且互不重叠；State 不得进入 Memory Git。初始上下文一次性读取 MEMORY.md 和显式 stateFiles。每轮最终回复后执行可恢复 Memory 快照，State 不版本化。`memoryCheckpointHook` 可被其它可信组装复用；传入同一 fenced writer。历史工具由同一 Mira 身份绑定。
 
 CLI 通过成对的 `MIRA_DEMO_MEMORY` 与 `MIRA_DEMO_STATE` 启用这些根目录，`MIRA_DEMO_STATE_FILES='["current.md"]'` 明确选择初始读取的 State 文件。单独设置一边会报错；未配置时保持原有无 Memory 演示。
+
+`workingDirectory`（CLI 为 `MIRA_DEMO_CWD`）选择已存在的普通默认目录，缺省为进程 cwd，与可能尚未建立的 overflow spool 分开；它不限制工具访问范围。Pi edit 仍使用原生执行与规范 `edits[]` schema，仅移除在授权之前运行的可选旧参数格式转换器；自定义 preparer 仍由 runtime 拒绝，实际执行前保留完整原始/验证参数证据。

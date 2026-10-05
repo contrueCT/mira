@@ -1,3 +1,4 @@
+import { realpath, stat } from 'node:fs/promises';
 import { createAssistantMessageEventStream, type AssistantMessage, type Api, type Model } from '@earendil-works/pi-ai';
 import type { AgentTool, StreamFn } from '@earendil-works/pi-agent-core';
 import { createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool, createBashTool } from '@earendil-works/pi-coding-agent';
@@ -9,7 +10,11 @@ import { writeWakeInput, setupMemoryWorkspace, loadMemoryBootstrap, snapshotMemo
 /** Native Pi tools. cwd is only a default directory, never a sandbox.
  * OS permissions and the runtime's natural-language execution decision apply. */
 export function createWorkspaceTools(directory: string): AgentTool[] {
-  return [createReadTool(directory), createWriteTool(directory), createEditTool(directory),
+  const edit = createEditTool(directory);
+  // Pi's optional preparer accepts legacy argument shapes before authorization.
+  // The published canonical edits[] schema needs no preparer; native execution stays unchanged.
+  delete edit.prepareArguments;
+  return [createReadTool(directory), createWriteTool(directory), edit,
     createGrepTool(directory), createFindTool(directory), createLsTool(directory), createBashTool(directory)];
 }
 /** Compatibility name, now using the unrestricted ordinary Pi file reader. */
@@ -30,6 +35,8 @@ export interface DemoOptions {
   miraId: string;
   sourceDirectory: string;
   spoolDirectory: string;
+  /** Existing ordinary cwd, default process.cwd(); never a path confinement. */
+  workingDirectory?: string;
   /** Ordinary persistent roots; State is outside the Memory Git repository. */
   memory?: { memoryRoot: string; stateRoot: string; stateFiles?: string[] };
   events: Array<{ event: LifeEvent; wake?: { id: string; reason: string } }>;
@@ -53,6 +60,8 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
     return result;
   };
   try {
+    const workingDirectory = await realpath(options.workingDirectory ?? process.cwd());
+    if (!(await stat(workingDirectory)).isDirectory()) throw new Error('Tool workingDirectory must be an existing directory');
     const roots = options.memory ? await setupMemoryWorkspace({ ...options.memory, sourceDirectory: options.sourceDirectory }) : undefined;
     const initialContext = roots ? async (signal: AbortSignal): Promise<string> => {
       const bootstrap = await loadMemoryBootstrap({ ...roots, ...(options.memory?.stateFiles === undefined ? {} : { stateFiles: options.memory.stateFiles }), signal });
@@ -67,9 +76,9 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
       writer,
       writeOverflowInput: (runId, content) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content }),
       ...(options.maxInlineBytes === undefined ? {} : { maxInlineBytes: options.maxInlineBytes }),
-      ...(roots ? { beforeComplete: memoryCheckpointHook(writer, roots.memoryRoot) } : {}),
+      ...(roots ? { beforeComplete: memoryCheckpointHook(writer, roots.memoryRoot, roots.repositoryId) } : {}),
       createRuntime: () => new PiDurableRuntime({ writer, model: demoModel, streamFn: stream,
-        tools: [...createWorkspaceTools(options.spoolDirectory), ...createHistoryTools(persistence.history(writer.miraId))],
+        tools: [...createWorkspaceTools(workingDirectory), ...createHistoryTools(persistence.history(writer.miraId))],
         ...(initialContext ? { initialContext } : {}),
         // Synthetic local demo only. A product composition supplies interpretation
         // of natural-language user intent; it must never infer authority from files.
@@ -84,23 +93,23 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
 
 /** Checkpoint intent, Git ref publication, receipt and completion are separate
  * recoverable steps. None claims atomicity or authorship of observed file edits. */
-export function memoryCheckpointHook(writer: MemoryCheckpointWriter, memoryRoot: string): (run: WakeRun, signal?: AbortSignal) => Promise<void> {
+export function memoryCheckpointHook(writer: MemoryCheckpointWriter, memoryRoot: string, repositoryId: string): (run: WakeRun, signal?: AbortSignal) => Promise<void> {
   return async (run, signal) => {
     signal?.throwIfAborted();
     await writer.verifyActive();
     let saved = await writer.loadMemoryCheckpoint(run.id);
     if (!saved) {
       if (!run.finalRecordId) throw new Error('Memory checkpoint requires a durable final response');
-      await writer.prepareMemoryCheckpoint({ runId: run.id, finalRecordId: run.finalRecordId, preparedAt: new Date().toISOString(), payload: { memoryRoot, miraId: writer.miraId } });
+      await writer.prepareMemoryCheckpoint({ runId: run.id, finalRecordId: run.finalRecordId, preparedAt: new Date().toISOString(), payload: { memoryRoot, repositoryId, miraId: writer.miraId } });
       saved = await writer.loadMemoryCheckpoint(run.id);
     }
     if (!saved || saved.checkpoint.finalRecordId !== run.finalRecordId) throw new Error('Memory checkpoint evidence mismatch');
     const payload = saved.checkpoint.payload;
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload) || payload['memoryRoot'] !== memoryRoot || payload['miraId'] !== writer.miraId) throw new Error('Restore the Memory repository configured for the pending checkpoint');
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload) || payload['memoryRoot'] !== memoryRoot || payload['repositoryId'] !== repositoryId || payload['miraId'] !== writer.miraId) throw new Error('Restore the Memory repository configured for the pending checkpoint');
     if (saved.receipt) return;
     const snapshotSignal = signal ? AbortSignal.any([writer.signal, signal]) : writer.signal;
     await writer.verifyActive();
-    const snapshot = await snapshotMemory({ memoryRoot, miraId: writer.miraId, runId: run.id, signal: snapshotSignal });
+    const snapshot = await snapshotMemory({ memoryRoot, miraId: writer.miraId, runId: run.id, expectedRepositoryId: repositoryId, signal: snapshotSignal });
     signal?.throwIfAborted();
     await writer.verifyActive();
     await writer.finishMemoryCheckpoint({ runId: run.id, commit: snapshot.commitId });

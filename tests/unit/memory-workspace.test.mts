@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
@@ -27,8 +27,10 @@ test('setup requires only MEMORY.md, creates no State files or taxonomy, and pre
   await withWorkspace(async (options) => {
     await mkdir(options.memoryRoot); await writeFile(path.join(options.memoryRoot, 'MEMORY.md'), 'A remembered fact.\n');
     await mkdir(options.stateRoot); await writeFile(path.join(options.stateRoot, 'anything.txt'), 'Unstructured current state.');
-    assert.deepEqual(await setupMemoryWorkspace(options), { memoryRoot: options.memoryRoot, stateRoot: options.stateRoot });
-    await setupMemoryWorkspace(options);
+    const workspace = await setupMemoryWorkspace(options);
+    assert.deepEqual(workspace, { memoryRoot: options.memoryRoot, stateRoot: options.stateRoot, repositoryId: workspace.repositoryId });
+    assert.match(workspace.repositoryId, /^[0-9a-f-]{36}$/);
+    assert.deepEqual(await setupMemoryWorkspace(options), workspace);
     assert.deepEqual((await readdir(options.memoryRoot)).sort(), ['.git', 'MEMORY.md']);
     assert.deepEqual(await readdir(options.stateRoot), ['anything.txt']);
     assert.equal(await readFile(path.join(options.memoryRoot, 'MEMORY.md'), 'utf8'), 'A remembered fact.\n');
@@ -262,5 +264,113 @@ test('concurrent same-run attempts converge after honest Git-lock/conflict error
     }
     assert.equal(await git(options.memoryRoot, 'rev-list', '--count', 'HEAD'), '1');
     assert.equal(await git(options.memoryRoot, 'rev-parse', refFor('same-run')), result.commitId);
+  });
+});
+
+test('a receipt published before HEAD repairs only its exact parent and prevents duplicate next-run commits', async () => {
+  await withWorkspace(async (options) => {
+    await setupMemoryWorkspace(options); const baseline = await snapshot(options.memoryRoot, 'baseline');
+    await writeFile(path.join(options.memoryRoot, 'MEMORY.md'), 'Changed once');
+    const changed = await snapshot(options.memoryRoot, 'receipt-first');
+    // Simulate the opposite partial publication: receipt durable, HEAD old.
+    await git(options.memoryRoot, 'update-ref', 'HEAD', baseline.commitId!, changed.commitId!);
+    assert.deepEqual(await snapshot(options.memoryRoot, 'receipt-first'), { ...changed, recovered: true });
+    assert.equal(await git(options.memoryRoot, 'rev-parse', 'HEAD'), changed.commitId);
+    const next = await snapshot(options.memoryRoot, 'next-unchanged');
+    assert.equal(next.changed, false); assert.equal(next.commitId, null);
+    assert.equal(await git(options.memoryRoot, 'rev-list', '--count', 'HEAD'), '2');
+  });
+});
+
+test('an initial snapshot receipt repairs an unborn HEAD without making another commit', async () => {
+  await withWorkspace(async (options) => {
+    await setupMemoryWorkspace(options); const first = await snapshot(options.memoryRoot, 'first');
+    await git(options.memoryRoot, 'update-ref', '-d', 'HEAD', first.commitId!);
+    assert.deepEqual(await snapshot(options.memoryRoot, 'first'), { ...first, recovered: true });
+    assert.equal(await git(options.memoryRoot, 'rev-parse', 'HEAD'), first.commitId);
+    assert.equal((await snapshot(options.memoryRoot, 'next-unchanged')).changed, false);
+    assert.equal(await git(options.memoryRoot, 'rev-list', '--count', 'HEAD'), '1');
+  });
+});
+
+test('receipt recovery keeps legitimate descendants without rewinding HEAD', async () => {
+  await withWorkspace(async (options) => {
+    await setupMemoryWorkspace(options); const original = await snapshot(options.memoryRoot, 'original');
+    await writeFile(path.join(options.memoryRoot, 'MEMORY.md'), 'Later change');
+    const later = await snapshot(options.memoryRoot, 'later');
+    assert.deepEqual(await snapshot(options.memoryRoot, 'original'), { ...original, recovered: true });
+    assert.equal(await git(options.memoryRoot, 'rev-parse', 'HEAD'), later.commitId);
+  });
+});
+
+test('receipt recovery rejects divergent HEAD evidence and preserves that branch unchanged', async () => {
+  await withWorkspace(async (options) => {
+    await setupMemoryWorkspace(options); const baseline = await snapshot(options.memoryRoot, 'baseline');
+    await writeFile(path.join(options.memoryRoot, 'MEMORY.md'), 'Snapshot content');
+    const captured = await snapshot(options.memoryRoot, 'captured');
+    await git(options.memoryRoot, 'update-ref', 'HEAD', baseline.commitId!, captured.commitId!);
+    await writeFile(path.join(options.memoryRoot, 'MEMORY.md'), 'Independent divergent edit');
+    await git(options.memoryRoot, 'add', '-A'); await git(options.memoryRoot, 'commit', '-qm', 'Independent branch');
+    const divergent = await git(options.memoryRoot, 'rev-parse', 'HEAD');
+    await assert.rejects(snapshot(options.memoryRoot, 'captured'), /divergent history.*refusing to replace HEAD/);
+    assert.equal(await git(options.memoryRoot, 'rev-parse', 'HEAD'), divergent);
+    assert.equal(await git(options.memoryRoot, 'rev-parse', refFor('captured')), captured.commitId);
+    assert.equal(await readFile(path.join(options.memoryRoot, 'MEMORY.md'), 'utf8'), 'Independent divergent edit');
+  });
+});
+
+test('a non-root receipt cannot repair a missing parent chain by replacing an unborn HEAD', async () => {
+  await withWorkspace(async (options) => {
+    await setupMemoryWorkspace(options); await snapshot(options.memoryRoot, 'baseline');
+    await writeFile(path.join(options.memoryRoot, 'MEMORY.md'), 'Another commit');
+    const captured = await snapshot(options.memoryRoot, 'captured');
+    await git(options.memoryRoot, 'update-ref', '-d', 'HEAD', captured.commitId!);
+    await assert.rejects(snapshot(options.memoryRoot, 'captured'), /divergent history/);
+    await assert.rejects(git(options.memoryRoot, 'rev-parse', '--verify', 'HEAD'));
+    assert.equal(await git(options.memoryRoot, 'rev-parse', refFor('captured')), captured.commitId);
+  });
+});
+
+test('a recreated .git gets a new repository identity and pending-run retries reject it before capturing later edits', async () => {
+  await withWorkspace(async (options) => {
+    const original = await setupMemoryWorkspace(options);
+    await snapshotMemory({ memoryRoot: original.memoryRoot, miraId: 'mira-test', runId: 'pending', expectedRepositoryId: original.repositoryId });
+    await rm(path.join(options.memoryRoot, '.git'), { recursive: true });
+    await writeFile(path.join(options.memoryRoot, 'MEMORY.md'), 'Later unassociated edits');
+    const replacement = await setupMemoryWorkspace(options);
+    assert.notEqual(replacement.repositoryId, original.repositoryId);
+    await assert.rejects(snapshotMemory({ memoryRoot: options.memoryRoot, miraId: 'mira-test', runId: 'pending', expectedRepositoryId: original.repositoryId }), /repository identity changed/);
+    await assert.rejects(git(options.memoryRoot, 'rev-parse', '--verify', 'HEAD'));
+    await assert.rejects(git(options.memoryRoot, 'rev-parse', '--verify', refFor('pending')));
+    assert.equal(await git(options.memoryRoot, 'diff', '--cached', '--name-only'), '');
+    assert.equal(await readFile(path.join(options.memoryRoot, 'MEMORY.md'), 'utf8'), 'Later unassociated edits');
+  });
+});
+
+test('a substituted .git repository cannot reuse a pending run bound to the previous repository identity', async () => {
+  await withWorkspace(async (options) => {
+    const original = await setupMemoryWorkspace(options);
+    await rename(path.join(options.memoryRoot, '.git'), path.join(options.base, 'original-git-backup'));
+    await git(options.memoryRoot, 'init', '--quiet', '--initial-branch=main');
+    await writeFile(path.join(options.memoryRoot, 'MEMORY.md'), 'Replacement repository contents');
+    await git(options.memoryRoot, 'add', '-A'); await git(options.memoryRoot, 'commit', '-qm', 'Replacement baseline');
+    const replacementHead = await git(options.memoryRoot, 'rev-parse', 'HEAD');
+    const replacement = await setupMemoryWorkspace(options);
+    assert.notEqual(replacement.repositoryId, original.repositoryId);
+    await assert.rejects(snapshotMemory({ memoryRoot: options.memoryRoot, miraId: 'mira-test', runId: 'pending', expectedRepositoryId: original.repositoryId }), /repository identity changed/);
+    assert.equal(await git(options.memoryRoot, 'rev-parse', 'HEAD'), replacementHead);
+    assert.equal(await git(options.memoryRoot, 'rev-list', '--count', 'HEAD'), '1');
+    await assert.rejects(git(options.memoryRoot, 'rev-parse', '--verify', refFor('pending')));
+  });
+});
+
+test('repository identity is stable and expected identity accepts a normal same-repository retry', async () => {
+  await withWorkspace(async (options) => {
+    const original = await setupMemoryWorkspace(options);
+    const request = { memoryRoot: options.memoryRoot, miraId: 'mira-test', runId: 'stable', expectedRepositoryId: original.repositoryId };
+    const first = await snapshotMemory(request);
+    assert.equal((await setupMemoryWorkspace(options)).repositoryId, original.repositoryId);
+    assert.deepEqual(await snapshotMemory(request), { ...first, recovered: true });
+    assert.equal((await loadMemoryBootstrap({ memoryRoot: options.memoryRoot, stateRoot: options.stateRoot })).memory.content, '');
   });
 });

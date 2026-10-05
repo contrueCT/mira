@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { link, lstat, mkdir, mkdtemp, open, realpath, rm } from 'node:fs/promises';
 import path from 'node:path';
@@ -11,8 +11,8 @@ export interface MemoryWorkspaceOptions {
   sourceDirectory: string;
   signal?: AbortSignal;
 }
-export interface MemoryWorkspace { memoryRoot: string; stateRoot: string }
-export interface MemoryBootstrapOptions extends MemoryWorkspace {
+export interface MemoryWorkspace { memoryRoot: string; stateRoot: string; repositoryId: string }
+export interface MemoryBootstrapOptions extends Pick<MemoryWorkspace, 'memoryRoot' | 'stateRoot'> {
   /** Explicit relative paths, including nested files, inside stateRoot. */
   stateFiles?: readonly string[];
   signal?: AbortSignal;
@@ -21,6 +21,8 @@ export interface BootstrapFile { path: string; content: string }
 export interface MemoryBootstrap { memory: BootstrapFile; state: BootstrapFile[] }
 export interface MemorySnapshotOptions {
   memoryRoot: string;
+  /** Persist this setup identity with the pending DB checkpoint and replay it. */
+  expectedRepositoryId?: string;
   miraId: string;
   runId: string;
   signal?: AbortSignal;
@@ -123,14 +125,18 @@ async function repository(root: string, signal?: AbortSignal): Promise<void> {
   if (await realpath(top) !== root || await realpath(common) !== dotGit) throw new Error('Memory Git repository must be independent at memoryRoot');
   // SHA-1 and SHA-256 repositories both work; callers derive zero OIDs below.
 }
-async function registeredRoot(location: string, signal?: AbortSignal): Promise<string> {
+async function registeredRoot(location: string, signal?: AbortSignal): Promise<Pick<MemoryWorkspace, 'memoryRoot' | 'repositoryId'>> {
   const root = await realpath(absolute(location));
   await assertNoGitAncestor(root, true);
   await repository(root, signal);
   const registration: unknown = JSON.parse(await regularText(path.join(root, '.git', REGISTRATION), signal));
   if (typeof registration !== 'object' || registration === null || !('version' in registration) || registration.version !== 1 ||
       !('memoryRoot' in registration) || registration.memoryRoot !== root) throw new Error('Memory repository registration does not match memoryRoot');
-  return root;
+  if (!('repositoryId' in registration) || typeof registration.repositoryId !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(registration.repositoryId)) {
+    throw new Error('Memory repository registration has no valid repository identity');
+  }
+  return { memoryRoot: root, repositoryId: registration.repositoryId };
 }
 
 /** Create only MEMORY.md and ordinary empty State, preserving all existing files.
@@ -167,7 +173,7 @@ export async function setupMemoryWorkspace(options: MemoryWorkspaceOptions): Pro
     const temporary = path.join(pending, 'registration');
     try {
       const handle = await open(temporary, 'wx', 0o600);
-      try { await handle.writeFile(JSON.stringify({ version: 1, memoryRoot })); await handle.sync(); } finally { await handle.close(); }
+      try { await handle.writeFile(JSON.stringify({ version: 1, memoryRoot, repositoryId: randomUUID() })); await handle.sync(); } finally { await handle.close(); }
       // Publish without ever exposing a partially-written registration or
       // overwriting a concurrent winner. A crash may leave harmless temp data.
       try { await link(temporary, registrationPath); }
@@ -176,15 +182,15 @@ export async function setupMemoryWorkspace(options: MemoryWorkspaceOptions): Pro
       try { await directory.sync(); } finally { await directory.close(); }
     } finally { await rm(pending, { recursive: true, force: true }); }
   }
-  await registeredRoot(memoryRoot, options.signal);
-  return { memoryRoot, stateRoot };
+  const registration = await registeredRoot(memoryRoot, options.signal);
+  return { ...registration, stateRoot };
 }
 
 /** Called by the runtime only for genuine first-context initialization.
  * No directory scanning, per-wake refresh, watcher or context injection occurs.
  */
 export async function loadMemoryBootstrap(options: MemoryBootstrapOptions): Promise<MemoryBootstrap> {
-  const memoryRoot = await registeredRoot(options.memoryRoot, options.signal);
+  const { memoryRoot } = await registeredRoot(options.memoryRoot, options.signal);
   const stateRoot = await realpath(absolute(options.stateRoot));
   if (within(memoryRoot, stateRoot) || within(stateRoot, memoryRoot)) throw new Error('Memory and State roots must be separate');
   await assertNoGitAncestor(stateRoot, false);
@@ -206,6 +212,33 @@ function identifier(value: string, label: string): void {
 }
 function runKey(options: MemorySnapshotOptions): string {
   return createHash('sha256').update(JSON.stringify([options.miraId, options.runId])).digest('hex');
+}
+/** A receipt can reach disk before HEAD during a host failure. Only finish
+ * that publication if HEAD still equals the commit's exact prior value. Old
+ * receipts already in HEAD ancestry remain valid, without rewinding history.
+ */
+async function reconcileSnapshotHead(root: string, oid: string, signal?: AbortSignal): Promise<void> {
+  const readHead = async (): Promise<string | null> => {
+    const result = await git(root, ['rev-parse', '--verify', '--quiet', 'HEAD'], signal, undefined, [1]);
+    return result.code === 0 ? result.stdout.trim() : null;
+  };
+  const includesSnapshot = async (head: string | null): Promise<boolean> => head !== null &&
+    (head === oid || (await git(root, ['merge-base', '--is-ancestor', oid, head], signal, undefined, [1])).code === 0);
+  const head = await readHead();
+  if (await includesSnapshot(head)) return;
+  const parents = (await git(root, ['show', '-s', '--format=%P', oid], signal)).stdout.trim().split(' ').filter(Boolean);
+  if (parents.length > 1 || head !== (parents[0] ?? null)) {
+    throw new Error('Memory snapshot receipt and HEAD have divergent history; refusing to replace HEAD');
+  }
+  try { await git(root, ['update-ref', 'HEAD', oid, head ?? '0'.repeat(oid.length)], signal); }
+  catch (error) {
+    if (signal?.aborted) throw error;
+    // Another retry may finish this same publication or advance from it.
+    // Any other movement is a real conflict, never permission to force-reset.
+    if (!await includesSnapshot(await readHead())) {
+      throw new Error('Memory snapshot HEAD repair failed or diverged; no forced update was made', { cause: error });
+    }
+  }
 }
 async function outcome(root: string, ref: string, options: MemorySnapshotOptions, recovered: boolean): Promise<MemorySnapshot | null> {
   const found = await git(root, ['rev-parse', '--verify', '--quiet', ref], options.signal, undefined, [1]);
@@ -229,6 +262,7 @@ async function outcome(root: string, ref: string, options: MemorySnapshotOptions
     for (const expected of [`Mira-Run-Key: ${runKey(options)}`, `Mira-Id-Base64: ${Buffer.from(options.miraId).toString('base64')}`, `Mira-Run-Id-Base64: ${Buffer.from(options.runId).toString('base64')}`]) {
       if (!message.includes(expected)) throw new Error('Memory snapshot commit does not match this Mira/run key');
     }
+    await reconcileSnapshotHead(root, oid, options.signal);
   }
   if (found.code === 1) {
     try { await git(root, ['update-ref', ref, oid, '0'.repeat(oid.length)], options.signal); }
@@ -252,7 +286,10 @@ async function outcome(root: string, ref: string, options: MemorySnapshotOptions
  */
 export async function snapshotMemory(options: MemorySnapshotOptions): Promise<MemorySnapshot> {
   identifier(options.miraId, 'miraId'); identifier(options.runId, 'runId');
-  const root = await registeredRoot(options.memoryRoot, options.signal);
+  const { memoryRoot: root, repositoryId } = await registeredRoot(options.memoryRoot, options.signal);
+  if (options.expectedRepositoryId !== undefined && options.expectedRepositoryId !== repositoryId) {
+    throw new Error('Memory repository identity changed; refusing to snapshot a pending run into a replacement repository');
+  }
   const key = runKey(options);
   const ref = `refs/mira/wake-snapshots/${key}`;
   const prior = await outcome(root, ref, options, true);

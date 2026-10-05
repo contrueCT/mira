@@ -18,7 +18,7 @@ MEMORY.md 和明确配置的 State 文件仅在真正空的持久认知上下文
 
 每轮存在持久最终回复后，先保存 PostgreSQL checkpoint intent，再观察 Memory 工作树；有变更才建立 Git commit。没有变更也保存技术性的每轮 Git receipt，以便崩溃后不误将后来的编辑归入旧轮。Git ref 发布与 PostgreSQL receipt 是独立步骤，最后才完成 Wake。恢复已保存最终回复的 Wake 不再次调用模型。
 
-Git 技术记录以 Mira ID 与 run ID 标识，lineage 不写入记忆正文。快照包含当时观察到的工作树变化，包括预先存在或外部编辑，不声称是该轮 agent 所创作。Git 故障保留文件和待完成 run，重试既有结果；不会宣称跨 PostgreSQL/Git 原子事务。State 不进入这套快照。
+Git 注册身份额外标识仓库实例；checkpoint 绑定该身份，丢失或替换 .git 时不能把后来的编辑重新归入待恢复的旧轮。Git 技术记录以 Mira ID 与 run ID 标识，lineage 不写入记忆正文。快照包含当时观察到的工作树变化，包括预先存在或外部编辑，不声称是该轮 agent 所创作。Git 故障保留文件和待完成 run，重试既有结果；不会宣称跨 PostgreSQL/Git 原子事务。State 不进入这套快照。
 
 ## 只读历史
 

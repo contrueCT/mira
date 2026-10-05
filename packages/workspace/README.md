@@ -4,7 +4,7 @@
 
 ## Memory / State 配置
 
-`setupMemoryWorkspace({ memoryRoot, stateRoot, sourceDirectory, signal? })` 验证并返回规范化的绝对路径。Memory、State 与源码目录必须互不包含；符号链接别名按真实路径检查。Memory 使用根目录自己的 `.git`，不能借用源码仓库或 linked worktree；State 必须位于 Git 仓库之外，不初始化 Git。
+`setupMemoryWorkspace({ memoryRoot, stateRoot, sourceDirectory, signal? })` 验证并返回规范化的绝对路径及稳定随机 `repositoryId`，后者只保存在 `.git` 注册文件。Memory、State 与源码目录必须互不包含；符号链接别名按真实路径检查。Memory 使用根目录自己的 `.git`，不能借用源码仓库或 linked worktree；State 必须位于 Git 仓库之外，不初始化 Git。
 
 只在缺失时创建空白 `memoryRoot/MEMORY.md`。其余文件和目录由 Mira 用普通文件工具自行组织，不创建 Memory README、预设 taxonomy 或 State 文件。已有正文原样保留。这些约束只保证数据存储分离，不限制通用 shell 的工作目录、读写范围或命令能力。
 
@@ -12,13 +12,14 @@
 
 ## Wake 末尾 Memory 快照
 
-`snapshotMemory({ memoryRoot, miraId, runId, signal? })` 返回 `{ miraId, runId, commitId, changed, recovered, changedPaths }`。需要先完成上述 setup。采用普通 `git add -A`、`write-tree`、`commit-tree`、`update-ref`，遵循 `.gitignore`，支持增加、修改与删除。它操作数据仓库的正常 index，因此会把已有暂存状态更新为当前工作树；运行由调用方单写者串行化。Git 命令通过 `execFile` 执行，不使用 shell 拼接，不运行 hooks，不访问远端，不使用全局 Git 配置。
+`snapshotMemory({ memoryRoot, miraId, runId, expectedRepositoryId?, signal? })` 返回 `{ miraId, runId, commitId, changed, recovered, changedPaths }`。需要先完成上述 setup。采用普通 `git add -A`、`write-tree`、`commit-tree`、`update-ref`，遵循 `.gitignore`，支持增加、修改与删除。它操作数据仓库的正常 index，因此会把已有暂存状态更新为当前工作树；运行由调用方单写者串行化。Git 命令通过 `execFile` 执行，不使用 shell 拼接，不运行 hooks，不访问远端，不使用全局 Git 配置。
 
 - 只有树内容变化才创建提交；State 改动不产生 Memory 提交
 - `changedPaths` 只是相对上一 Git 版本观察到的差异，包括 Wake 前已存在的人工作业，不声称变更由 agent 创作
 - 每个 Mira/run 键的技术回执位于 `.git` 的 `refs/mira/wake-snapshots/<SHA256>`；变更回执指向提交，无变更回执指向树，`commitId` 为 `null`
 - 重试先恢复同键回执，因此后来的编辑不会被误归给原运行；变更提交包含编码后的 Mira/run trailer，不在 Memory 或 State 正文插入来源字段
-- HEAD 与回执使用带旧值检查的 Git ref transaction 发布。Git 多 ref 文件不提供跨断电原子性；HEAD 已持久化而回执缺失时，校验完整身份 trailer 后恢复该提交的回执
+- HEAD 与回执使用带旧值检查的 Git ref transaction 发布。Git 多 ref 文件不提供跨断电原子性；HEAD 已持久化而回执缺失时，校验完整身份 trailer 后恢复该提交的回执；回执先持久化时，只在 HEAD 仍恰好为该提交的父提交（首提交对应 unborn HEAD）时以 CAS 补齐 HEAD。已有后续历史且包含此提交时保持不动，其余分叉证据报错，不强制覆盖 HEAD
+- 调用方把 setup 返回的 `repositoryId` 一起保存进待完成数据库 checkpoint，恢复时传回 `expectedRepositoryId`。如果 `.git` 丢失后重建或替换，注册身份改变，快照在读取运行回执或暂存新内容前拒绝继续，不能把后来的内容冒充旧运行的快照
 - PostgreSQL lineage 由调用方另行关联；Git 成功不等于数据库成功，不声称二者原子提交。同一键重试用于恢复 Git 完成、数据库关联未完成的情况
 - 普通文件逐个进入 Git index，不是整个文件系统的原子快照。并发外部修改、Git 锁、权限、损坏或取消等错误真实上抛，不假装成功，不自动移除他人的锁
 

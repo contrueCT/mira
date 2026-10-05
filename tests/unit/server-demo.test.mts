@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
 import { createReadFileTool, createWorkspaceTools } from '@mira/server';
+import { MemoryWriter, runtime, scripted, assistant, input } from '../recovery/fixtures.mts';
 
 test('ordinary read accepts absolute paths and symlinks outside its default cwd', async () => {
   const root = await mkdtemp('/tmp/mira-demo-file-');
@@ -46,4 +47,25 @@ test('native Pi tools write, edit, search and run harmless shell outside cwd wit
     const listing = await tools.get('ls')!.execute('ls', { path: outside });
     assert.match(JSON.stringify(listing.content), /synthetic.txt/);
   } finally { await rm(root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
+});
+
+
+test('the guarded runtime accepts native registry and authorizes canonical edit before executing it', async () => {
+  const root = await mkdtemp('/tmp/mira-native-registry-');
+  try {
+    const target = path.join(root, 'synthetic.txt'); await writeFile(target, 'before');
+    const writer = new MemoryWriter(); const tools = createWorkspaceTools(root);
+    assert.ok(tools.every(tool => !tool.prepareArguments));
+    const args = { path: target, edits: [{ oldText: 'before', newText: 'after' }] };
+    let decisions = 0;
+    const instance = runtime(writer, scripted([
+      { ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'native-edit', name: 'edit', arguments: args }] }, assistant(),
+    ]), { tools, authorize: async (_call, actual) => {
+      decisions++; assert.deepEqual(actual, args); assert.equal(await readFile(target, 'utf8'), 'before');
+      return { allowed: true, evidence: { source: 'synthetic direct intent' } };
+    } });
+    await instance.run(input());
+    assert.equal(decisions, 1); assert.equal(await readFile(target, 'utf8'), 'after');
+    assert.deepEqual(writer.state.executions[0]?.intent.arguments, args);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
