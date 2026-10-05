@@ -15,13 +15,13 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 - [ADR 0002：合并唤醒与持续判断](0002-coalesced-wake-loop.md)：原子批次、恢复证据、模型可见不确定性、自然语言意图、普通文本溢出
 
+- [0003 普通 Memory/State 与历史查询](0003-ordinary-memory-history.md)：Accepted，实现与验证见 [本批验收](../acceptance/memory-history.md)
+
 ## 待确认
 
 | 决策 | 当前建议 / 需要验证 | 开始依赖它的工作前确认 |
 | --- | --- | --- |
 | Web/API/Schema | React/Next、Fastify/Hono、Zod/TypeBox 等尚未选定 | 服务端与 UI 实现 |
-| 生成扩展隔离 | Cordis 不提供安全隔离；方案待单独确认 | 激活生成代码 |
+| 生成扩展生命周期 | Cordis 注册、激活、故障清理尚未实现；本批普通工具/Shell 不要求产品隔离 | 激活生成代码 |
 
 不提前引入部署、付费模型调用、第三方账户、新凭据或不必要的框架。阶段临近时给出具体方案、取舍和验证结果。
-
-- [0003 普通 Memory/State 与历史查询](0003-ordinary-memory-history.md)：Accepted，实现与验证见 [本批验收](../acceptance/memory-history.md)

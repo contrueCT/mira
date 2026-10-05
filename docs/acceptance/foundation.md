@@ -34,8 +34,8 @@
 
 ## F3 工作空间、授权与 Timeline
 
-- Memory 与 State 位于仓库外，Git 快照与变更通知可恢复
-- 文件修改不会静默脱离当前 Working Context
+- Memory 与 State 位于源码仓库外；只有 Memory 进入独立 Git，快照与 lineage 可恢复
+- 按 ADR 0003，普通文件修改不默认通知、不 Wake、不重注入；真正初始上下文才加载 MEMORY.md 和配置的 State
 - History 查询与原始记忆分开，Memory 文件不被强制塞入 provenance
 - 授权证据绑定具体工具/范围/有效条件，第三方内容无法授权
 - Timeline 不展示内部 Runtime Trace 为人生事件，没有 New Chat
@@ -43,4 +43,4 @@
 
 ## 后续阶段
 
-Cordis 手工扩展、生成扩展与外部程序分别验收。生命周期清理、失败回滚及安全隔离通过前，不开放自生成代码的自动激活。
+Cordis 手工扩展、生成扩展与外部程序分别验收。生命周期清理、失败回滚及激活流程仍需单独验收；本批不自动激活生成代码，也不引入产品隔离环境要求。

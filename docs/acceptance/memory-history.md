@@ -15,6 +15,8 @@
 
 ## 验证状态
 
-本地 `pnpm check` 已通过当前实现的类型、边界、离线测试及构建；最终测试数量、独立审查与确切 head CI 以 PR 验证结果更新。PostgreSQL 驱动/多进程场景必须由批准的 GitHub Actions PostgreSQL 18.6 服务实际执行。本地 Unix socket 禁止，未尝试 TCP 绕过；未执行的集成检查不算通过。
+2026-10-05，代码提交 `d1e92b1de36c5babfce390b4801bbcfa33475c1d` 的 `pnpm check:all` 已在 [GitHub Actions](https://github.com/contrueCT/mira/actions/runs/37326159094) 通过：142 项离线 + 79 项真实 PostgreSQL/恢复测试，共 221 项，零失败、零跳过。两份严格 TypeScript 检查、包边界及构建通过。本地独立重跑 `pnpm check` 亦为 142 项通过。最终文档提交的确切 CI 状态及独立审查结论见 [PR #4](https://github.com/contrueCT/mira/pull/4)。PostgreSQL 驱动/多进程场景由批准的 GitHub Actions PostgreSQL 18.6 服务实际执行。本地 Unix socket 禁止，未尝试 TCP 绕过；未执行的集成检查不算通过。
 
 现有原始历史保持权威。没有重建/清空认知接口、Dreaming 调度、自动 Compaction 策略或真实模型接入。Git 和 PostgreSQL 不具备跨系统原子性，OS 权限与自然语言执行判断也不是安全沙箱。
+
+本批审查和 CI 曾发现并修复：Git receipt/HEAD 部分落盘、同路径替换 Git 仓库丢失 lineage 身份、内联 Wake 默认工具目录不存在，以及 Pi edit 可选旧格式预处理与持久化边界不兼容。对应回归覆盖精确父 HEAD CAS 修复、仓库 UUID 校验、无 overflow 的原生 Shell、规范 edits[] 的授权先于执行，以及 Git 成功/PG receipt 失败后的模型零重跑。
