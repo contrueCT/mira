@@ -25,6 +25,12 @@ test('real PostgreSQL: one Wake continues through unknown effect and read-only v
     assert.equal(saved.executions.find(execution => execution.intent.callId === 'unknown-operation')!.outcome, null);
     assert.equal(saved.records.filter(record => (record.payload as { message?: { role: string } }).message?.role === 'user').length, 1);
     assert.equal(saved.records.at(-1)!.id, savedRun.finalRecordId);
+    await assert.rejects(writer.finishTool({ callId: 'unknown-operation', occurredAt: new Date(1000).toISOString(),
+      payload: { role: 'toolResult', toolCallId: 'unknown-operation', toolName: 'effect', content: [{ type: 'text', text: 'Late external receipt' }], isError: false, timestamp: 1000 } }),
+    error => error instanceof Error && 'code' in error && error.code === 'version');
+    assert.deepEqual(await writer.load(), saved);
+    const afterLateReceipt = await runtime(writer).recover();
+    assert.equal(afterLateReceipt.recovery.operations[0]?.status, 'outcome-unknown');
     await writer.close();
     const replacement = await db.acquire('one-mira');
     await runtime(replacement, () => { throw Error('Saved final must not rerun the model'); }).continueTurn({ ...turn, inputRecordId: 'stale-input', finalRecordId: 'stale-final' });
@@ -48,5 +54,28 @@ test('real PostgreSQL: natural-language deferral preserves a reason and finishes
     assert.equal(effects, 0); assert.equal(recovered.snapshot.executions.length, 0);
     assert.match(recovered.recovery.operations[0]!.reason!, /destination is ambiguous/);
     assert.ok((await writer.loadWakeRun(run.id)).finalRecordId);
+  } finally { await db.close(); }
+});
+
+test('real PostgreSQL: nested multi-key recovery arguments and canonical notice survive json roundtrip', async () => {
+  const db = await createTestDatabase();
+  try {
+    const writer = await db.acquire('argument-order');
+    const args = { z: 'first key', a: { y: 2, b: 1 } };
+    const call = { ...toolCalls('ordered-arguments'), content: [{ type: 'toolCall' as const, id: 'ordered-arguments', name: 'effect', arguments: args }] };
+    const first = await runtime(writer, scripted([call, assistant('Receipt unavailable')]), {
+      tools: [{ ...effectTool(async () => { throw Error('synthetic interrupted effect'); }),
+        parameters: Type.Object({ z: Type.String(), a: Type.Object({ y: Type.Number(), b: Type.Number() }) }) }],
+    }).run({ role: 'user', content: 'Synthetic request with ordered nested arguments', timestamp: 1000 });
+    const notice = first.entries.find(entry => entry.type === 'custom_message'); assert.ok(notice?.type === 'custom_message');
+    assert.match(String(notice.content), /"z":"first key","a":\{"y":2,"b":1\}/);
+    assert.deepEqual(first.recovery.operations[0]!.requestedArguments, args);
+    const snapshot = structuredClone(first.snapshot);
+    await writer.close();
+    const replacement = await db.acquire('argument-order');
+    const recovered = await runtime(replacement).recover();
+    assert.deepEqual(recovered.snapshot, snapshot);
+    assert.deepEqual(recovered.recovery, first.recovery);
+    assert.deepEqual(Object.keys(recovered.recovery.operations[0]!.requestedArguments as object), ['z', 'a']);
   } finally { await db.close(); }
 });

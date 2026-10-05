@@ -106,3 +106,18 @@ test('ownership loss stops the loop and cancellation never claims pending reques
   const g = fixture(); g.pending.push(event('b')); const controller = new AbortController(); controller.abort(Error('cancelled'));
   await assert.rejects(new WakeLoop(g.options).drain(controller.signal), /cancelled/); assert.equal(g.pending.length, 1);
 });
+
+
+test('distinct writer proxies sharing one ownership signal cannot start parallel cognition', async () => {
+  const f = fixture(); f.setActive({ ...run(), inputRecordId: 'already-persisted-input' });
+  let enter!: () => void; const entered = new Promise<void>(r => { enter = r; });
+  let release!: () => void; const held = new Promise<void>(r => { release = r; });
+  let modelCalls = 0;
+  const original = f.options.createRuntime;
+  const options = { ...f.options, createRuntime: () => ({ async continueTurn(turn: CognitionTurn) {
+    modelCalls++; enter(); await held; await original().continueTurn(turn);
+  } }) };
+  const first = new WakeLoop({ ...options, writer: new Proxy(f.writer, {}) }).drain(); await entered;
+  await assert.rejects(new WakeLoop({ ...options, writer: new Proxy(f.writer, {}) }).drain(), /already has an active/);
+  assert.equal(modelCalls, 1); release(); assert.equal(await first, 1);
+});

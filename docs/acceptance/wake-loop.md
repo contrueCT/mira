@@ -4,7 +4,7 @@
 
 ## 本地已验证
 
-固定 Node 24.19.0、pnpm 11.28.4、TypeScript 6.0.3、Pi 1.0.2。`pnpm check` 包括严格源码类型检查、依赖边界、92 项离线测试及检查工具构建，通过，0 失败、0 跳过。Pi 声明兼容例外仅覆盖 Pi 消费项目，核心仍检查声明文件。
+固定 Node 24.19.0、pnpm 11.28.4、TypeScript 6.0.3、Pi 1.0.2。`pnpm check` 包括严格源码类型检查、依赖边界、96 项离线测试及检查工具构建，通过，0 失败、0 跳过。Pi 声明兼容例外仅覆盖 Pi 消费项目，核心仍检查声明文件。
 
 - Event-only 不调用模型，多条 Wake 合并为一轮，运行中到达的请求下一批处理
 - 同一 writer 不允许并发 drain，所有权失效/取消停止后续步骤
@@ -23,7 +23,9 @@
 
 本地环境禁止 PostgreSQL Unix socket，未改开 TCP，也未执行本地驱动/多进程数据库测试。真实数据库验收使用仓库现有 GitHub Actions 官方 PostgreSQL 18.6 服务，`pnpm check:all` 必须通过后才能报告数据库通过。
 
-CI 及独立审查结果会在验证完成后补充；当前不能把新增测试或离线通过当作真实数据库通过。
+首轮提交 `a9b84a3` 的 [CI](https://github.com/contrueCT/mira/actions/runs/37289195031) 已通过完整 `pnpm check:all`：92 项离线测试与 57 项真实 PostgreSQL 测试，0 失败、0 跳过。
+
+首轮独立 `gpt-6.1-sol` / `max` 审查确认三项 P2 和一项文档问题：恢复投影的空 assistant、迟到 outcome 写入可导致不可恢复、writer 代理可绕过单循环 guard，以及旧工具链说明。修复后本地完整检查为 96 项离线测试，新增对应回归及真实数据库用例。最终代码另经新的独立审查与 CI，确切 head 的状态以[草稿 PR #3](https://github.com/contrueCT/mira/pull/3)检查为准；不能用首轮绿色替代最终提交验收。
 
 ## 保留限制
 

@@ -10,7 +10,7 @@ export interface WakeLoopOptions {
    * materialized in full. This is not a total provider context/token budget. */
   maxInlineBytes?: number;
 }
-const draining = new WeakSet<WakeWriter>();
+const draining = new WeakSet<AbortSignal>();
 const encoder = new TextEncoder();
 
 export function renderWakeBatch(run: WakeRun): string {
@@ -54,8 +54,8 @@ export class WakeLoop {
   }
   async drain(signal?: AbortSignal): Promise<number> {
     const { writer } = this.options;
-    if (draining.has(writer)) throw new Error('This Mira writer already has an active cognition loop');
-    draining.add(writer);
+    if (draining.has(writer.signal)) throw new Error('This Mira writer already has an active cognition loop');
+    draining.add(writer.signal);
     let completed = 0;
     try {
       while (true) {
@@ -75,6 +75,6 @@ export class WakeLoop {
         await writer.completeWakeRun(run.id);
         completed++;
       }
-    } finally { draining.delete(writer); }
+    } finally { draining.delete(writer.signal); }
   }
 }

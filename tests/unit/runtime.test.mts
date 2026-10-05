@@ -608,3 +608,51 @@ test('cognition rejects changed resumed input configuration and malformed final 
   await assert.rejects(runtime(writer, () => { requests++; return streamOf(assistant()); }).continueTurn({ ...turn(writer), input: '' }), /Wake final link/);
   assert.equal(requests, 0);
 });
+
+
+test('strict injected stream receives no empty assistant shell from recovered tool-only history', async () => {
+  const writer = new MemoryWriter(); let requests = 0, effects = 0;
+  const original = toolCalls('uncertain-only');
+  const recovered = await runtime(writer, (_model, context) => {
+    for (const message of context.messages) {
+      if (message.role === 'assistant' && message.content.length === 0) throw Error('Strict provider rejects empty assistant messages');
+    }
+    requests++;
+    if (requests === 2) assert.match(JSON.stringify(context), /uncertain-only/);
+    return streamOf(requests === 1 ? original : assistant('Continue checking the missing receipt'));
+  }, { tools: [effectTool(async () => { effects++; throw Error('Receipt lost'); })] }).run(input());
+  assert.equal(requests, 2); assert.equal(effects, 1);
+  const raw = recovered.entries.find(entry => entry.type === 'message' && entry.message.role === 'assistant' && entry.message.content.some(block => block.type === 'toolCall' && block.id === 'uncertain-only'));
+  assert.ok(raw?.type === 'message'); assert.deepEqual(raw.message, original);
+  const projectedSource = recovered.projectionEntries.find(entry => entry.id === raw.id);
+  assert.ok(projectedSource?.type === 'message' && projectedSource.message.role === 'assistant');
+  assert.deepEqual(projectedSource.message.content, []);
+  assert.equal(projectedSource.id, raw.id);
+  assert.equal(projectedSource.parentId, raw.parentId);
+  assert.equal(recovered.messages.some(message => message.role === 'assistant' && message.content.length === 0), false);
+});
+
+test('empty-assistant recovery filtering does not remove unrelated source history', async () => {
+  const writer = new MemoryWriter();
+  const unrelatedEmpty = { ...assistant(), content: [] };
+  await seed(writer, [input(), unrelatedEmpty]);
+  const recovered = await runtime(writer).recover();
+  assert.deepEqual(recovered.messages, [input(), unrelatedEmpty]);
+});
+
+
+test('late outcome cannot rewrite observed uncertainty or poison continued cognition', async () => {
+  const writer = new MemoryWriter();
+  await runtime(writer, scripted([toolCalls('late-outcome'), assistant('Continue checking the missing receipt')]), {
+    tools: [effectTool(async () => { throw Error('Interrupted after external operation'); })],
+  }).run(input());
+  const before = structuredClone(writer.state);
+  await assert.rejects(writer.finishTool({ callId: 'late-outcome', occurredAt: new Date(1000).toISOString(),
+    payload: { role: 'toolResult', toolCallId: 'late-outcome', toolName: 'effect', content: [{ type: 'text', text: 'A late receipt' }], isError: false, timestamp: 1000 } }), /Context version advanced/);
+  assert.deepEqual(writer.state, before); assert.equal(writer.signal.aborted, false);
+  const recovered = await runtime(writer).recover();
+  assert.equal(recovered.recovery.operations[0]?.status, 'outcome-unknown');
+  let requests = 0;
+  await runtime(writer, () => { requests++; return streamOf(assistant('Continue with new evidence')); }).run(input('A later query can verify the external status'));
+  assert.equal(requests, 1); assert.equal(writer.state.executions[0]!.outcome, null);
+});

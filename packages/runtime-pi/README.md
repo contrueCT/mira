@@ -62,7 +62,9 @@ intent exists. These are operation-specific facts visible to the model, not a
 whole-cognition blocker. A saved outcome missing its transcript append is restored
 exactly, including timestamps. Original tool calls and known results remain in
 PostgreSQL; only unresolved protocol tool-call blocks are omitted from the
-disposable projection. No success/failure `toolResult` is fabricated. Read-only
+disposable projection. If that removal empties an assistant message, only its
+provider-facing message is omitted; the source entry and provenance ID remain.
+No success/failure `toolResult` is fabricated. Read-only
 checks and deliberate new-ID operations may proceed under the normal decision
 callback. Reused call IDs remain structural errors, including after compaction.
 This does not claim exactly-once remote effects: an operation may finish after

@@ -205,7 +205,14 @@ export class PiDurableRuntime implements CognitionRuntime {
       for (const operation of incomplete) this.deferredReasons.delete(operation.callId);
     }
     const projectionEntries = sanitizeEntries(entries, operations);
-    const messages = withRecoveryAdvisory(buildSessionProjection(projectionEntries).messages, operations, Date.parse(entries.at(-1)?.timestamp ?? new Date(0).toISOString()));
+    const projection = buildSessionProjection(projectionEntries);
+    const observedAssistantIds = new Set(operations.map(operation => operation.assistantRecordId));
+    // Pi's public converter preserves empty assistants, and injected streams need
+    // not use a provider translator that drops them. Omit only shells emptied by
+    // recovery from provider messages; retain every source entry and provenance ID.
+    const providerMessages = projection.entries.flatMap(projected => projected.messages.filter(message =>
+      !(message.role === 'assistant' && message.content.length === 0 && observedAssistantIds.has(projected.sourceEntry.id))));
+    const messages = withRecoveryAdvisory(providerMessages, operations, Date.parse(entries.at(-1)?.timestamp ?? new Date(0).toISOString()));
     validateProjection(messages);
     return { snapshot, entries, projectionEntries, messages,
       recovery: { status: operations.length ? 'observed-incomplete' : 'complete', operations } };

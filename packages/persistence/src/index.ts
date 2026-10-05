@@ -402,9 +402,16 @@ class PostgresWriter implements WakeWriter {
   }
   finishTool(input: ToolOutcome): Promise<void> {
     const outcome = copy(input); validateOutcome(outcome);
-    return this.#transaction(async () => {
-      const changed = await this.#client.query('UPDATE tool_executions SET outcome = $1::json WHERE mira_id = $2 AND call_id = $3 AND outcome IS NULL',
-        [JSON.stringify(outcome), this.miraId, outcome.callId]);
+    return this.#transaction(async owner => {
+      const execution = (await this.#client.query<{ context_version: string; outcome: ToolOutcome | null }>(
+        'SELECT context_version, outcome FROM tool_executions WHERE mira_id = $1 AND call_id = $2', [this.miraId, outcome.callId])).rows[0];
+      if (!execution || execution.outcome !== null) fail('duplicate', 'Tool call is missing or already has an outcome; never overwrite or replay');
+      // The outcome precedes its transcript publication. Once context advances,
+      // recovery may have durably observed this execution as unknown; accepting
+      // a late canonical outcome would contradict that immutable history.
+      if (execution.context_version !== owner.context_version) fail('version', 'Tool outcome arrived after context advanced; preserve the original execution evidence');
+      const changed = await this.#client.query('UPDATE tool_executions SET outcome = $1::json WHERE mira_id = $2 AND call_id = $3 AND outcome IS NULL AND context_version = $4',
+        [JSON.stringify(outcome), this.miraId, outcome.callId, owner.context_version]);
       if (changed.rowCount !== 1) fail('duplicate', 'Tool call is missing or already has an outcome; never overwrite or replay');
     });
   }
