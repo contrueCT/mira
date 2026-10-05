@@ -92,16 +92,15 @@ test('a local symlinked TypeScript SDK resolves privately outside node_modules a
   });
 });
 
-test('standalone external TypeScript file links retain their resolved filename and syntax support', async () => {
+test('workspace-internal TypeScript file links retain their resolved filename and syntax support', async () => {
   await withWorkspace(async (source, store, root) => {
-    const target = path.join(root, 'typed-constants.ts');
+    const target = path.join(source, 'typed-constants.ts');
     await writeFile(target, 'export const value: number = 42;');
     await symlink(target, path.join(source, 'linked.ts'));
     await writeFile(path.join(source, 'entry.mjs'), 'export { value } from "./linked.ts";');
     assert.equal((await import(pathToFileURL(path.join(source, 'entry.mjs')).href) as { value: number }).value, 42);
     const artifact = await store.stage(source, 'entry.mjs');
     await rm(source, { recursive: true });
-    await rm(target);
     const fresh = await store.prepareFreshActivation(artifact);
     assert.equal(path.basename(await realpath(path.join(fresh.directory, 'linked.ts'))), 'typed-constants.ts');
     assert.equal((await import(pathToFileURL(fresh.entry).href) as { value: number }).value, 42);
@@ -119,8 +118,8 @@ test('workspace package symlinks keep their sibling imports in the original snap
     await writeFile(path.join(source, 'entry.mjs'), 'export { value } from "local";');
     assert.equal((await import(pathToFileURL(path.join(source, 'entry.mjs')).href) as { value: number }).value, 42);
     const artifact = await store.stage(source, 'entry.mjs');
-    assert.equal(await realpath(path.join(artifact.directory, 'node_modules', 'local')), path.join(artifact.directory, 'packages', 'local'));
-    assert.deepEqual(await readdir(path.join(path.dirname(artifact.directory), 'dependencies')), []);
+    assert.equal(await realpath(path.join(artifact.directory, 'node_modules', 'local')), await realpath(path.join(artifact.directory, 'packages', 'local')));
+    assert.deepEqual(await readdir(path.join(path.dirname(artifact.directory), 'dependencies', 'tree')), [path.basename(source)]);
     await rm(source, { recursive: true });
     const fresh = await store.prepareFreshActivation(artifact);
     assert.equal((await import(pathToFileURL(fresh.entry).href) as { value: number }).value, 42);
@@ -171,8 +170,8 @@ test('child-first overlapping external aliases share one complete tree and modul
     const artifact = await store.stage(source, 'entry.mjs');
     assert.equal(await realpath(path.join(artifact.directory, 'node_modules', 'a-local')), await realpath(path.join(artifact.directory, 'node_modules', 'z-bundle', 'packages', 'local')));
     assert.equal((await readdir(path.join(path.dirname(artifact.directory), 'dependencies'))).length, 1);
-    const relocatedSource = path.join(root, 'relocated', 'workspace');
-    const relocatedBundle = path.join(root, 'relocated', 'bundle');
+    const relocatedSource = path.join(root, 'relocated', 'external-workspace');
+    const relocatedBundle = path.join(root, 'relocated', 'external-bundle');
     await create(relocatedSource, relocatedBundle);
     assert.equal((await store.stage(relocatedSource, 'entry.mjs')).digest, artifact.digest);
     await rm(source, { recursive: true });
@@ -219,6 +218,122 @@ test('store root and ancestor directory aliases preserve private linked artifact
     await rename(release, `${release}-moved`);
     await symlink(`${path.basename(release)}-moved`, release);
     await assert.rejects(store.verify(artifact), /release cannot be a symlink/);
+  });
+});
+
+test('separately supplied sibling roots retain relative imports and shared module identity', async () => {
+  await withWorkspace(async (source, store, root) => {
+    const local = path.join(root, 'local'), shared = path.join(root, 'shared');
+    await mkdir(local); await mkdir(shared); await mkdir(path.join(source, 'node_modules'));
+    await writeFile(path.join(local, 'package.json'), JSON.stringify({ type: 'module', exports: './index.mjs' }));
+    await writeFile(path.join(shared, 'package.json'), JSON.stringify({ type: 'module', exports: './index.mjs' }));
+    await writeFile(path.join(shared, 'index.mjs'), 'export const value = { number: 42 };');
+    await writeFile(path.join(local, 'index.mjs'), 'export { value } from "../shared/index.mjs";');
+    await symlink(local, path.join(source, 'node_modules', 'local'));
+    await symlink(shared, path.join(source, 'node_modules', 'shared'));
+    await writeFile(path.join(source, 'entry.mjs'), 'import { value as local } from "local"; import { value as shared } from "shared"; export const result = [local === shared, local.number];');
+    assert.deepEqual((await import(pathToFileURL(path.join(source, 'entry.mjs')).href) as { result: unknown }).result, [true, 42]);
+    const artifact = await store.stage(source, 'entry.mjs');
+    await rm(source, { recursive: true }); await rm(local, { recursive: true }); await rm(shared, { recursive: true });
+    const fresh = await store.prepareFreshActivation(artifact);
+    assert.deepEqual((await import(pathToFileURL(fresh.entry).href) as { result: unknown }).result, [true, 42]);
+  });
+});
+
+async function hoistedFixture(source: string, root: string, supplyExact: boolean): Promise<{ local: string; exact: string }> {
+  const local = path.join(root, 'bundle', 'packages', 'local');
+  const exact = path.join(root, 'versions', 'helper-42'), other = path.join(root, 'versions', 'helper-99');
+  await mkdir(local, { recursive: true }); await mkdir(exact, { recursive: true }); await mkdir(other);
+  await mkdir(path.join(root, 'bundle', 'node_modules')); await mkdir(path.join(source, 'node_modules'));
+  for (const [directory, value] of [[exact, 42], [other, 99]] as const) {
+    await writeFile(path.join(directory, 'package.json'), JSON.stringify({ name: 'helper', type: 'module', exports: './index.mjs' }));
+    await writeFile(path.join(directory, 'index.mjs'), `export const state = { value: ${value}, count: 0 }; export const next = () => ++state.count;`);
+  }
+  await writeFile(path.join(local, 'package.json'), JSON.stringify({ name: 'local', type: 'module', exports: './index.mjs', dependencies: { helper: '*' }, optionalDependencies: { 'absent-optional': '*' }, peerDependencies: { 'absent-peer': '*' }, devDependencies: { 'unused-build-tool': '*' } }));
+  await writeFile(path.join(local, 'index.mjs'), 'export { state, next } from "helper";');
+  await mkdir(path.join(root, 'bundle', 'node_modules', 'unused-build-tool'));
+  await writeFile(path.join(root, 'bundle', 'node_modules', 'unused-build-tool', 'package.json'), '{}');
+  await symlink(exact, path.join(root, 'bundle', 'node_modules', 'helper'));
+  await symlink(local, path.join(source, 'node_modules', 'local'));
+  await symlink(other, path.join(source, 'node_modules', 'helper'));
+  if (supplyExact) await symlink(exact, path.join(source, 'node_modules', 'exact-helper'));
+  await writeFile(path.join(source, 'entry.mjs'), 'import * as local from "local"; import * as exact from "exact-helper"; import * as workspace from "helper"; export const result = [local.state === exact.state, local.state.value, workspace.state.value, local.next(), exact.next()];');
+  return { local, exact };
+}
+
+test('declared hoisted dependencies retain the exact original version and module identity', async () => {
+  await withWorkspace(async (source, store, root) => {
+    const fixture = await hoistedFixture(source, root, true);
+    assert.deepEqual((await import(pathToFileURL(path.join(source, 'entry.mjs')).href) as { result: unknown }).result, [true, 42, 99, 1, 2]);
+    const artifact = await store.stage(source, 'entry.mjs');
+    // A package-local dependency must keep precedence over the ancestor alias.
+    await mkdir(path.join(fixture.local, 'node_modules'));
+    const shadow = path.join(fixture.local, 'node_modules', 'helper');
+    await mkdir(shadow);
+    await writeFile(path.join(shadow, 'package.json'), JSON.stringify({ type: 'module', exports: './index.mjs' }));
+    await writeFile(path.join(shadow, 'index.mjs'), 'export const state = { value: 7 }; export const next = () => 7;');
+    const shadowed = await store.stage(source, 'entry.mjs');
+    await rm(source, { recursive: true }); await rm(path.join(root, 'bundle'), { recursive: true }); await rm(path.join(root, 'versions'), { recursive: true });
+    const fresh = await store.prepareFreshActivation(artifact);
+    assert.deepEqual((await import(pathToFileURL(fresh.entry).href) as { result: unknown }).result, [true, 42, 99, 1, 2]);
+    const latest = await store.prepareFreshActivation(shadowed);
+    assert.deepEqual((await import(pathToFileURL(latest.entry).href) as { result: unknown }).result, [false, 7, 99, 7, 1]);
+    const tested = await store.test(artifact, { command: process.execPath, args: ['--input-type=module', '-e', 'import { result } from "./entry.mjs"; if (JSON.stringify(result) !== "[true,42,99,1,2]") throw Error("wrong dependency closure");'] });
+    assert.equal(tested.passed, true);
+  });
+});
+
+test('an originally resolved runtime dependency outside the explicit closure cannot bind another workspace version', async () => {
+  await withWorkspace(async (source, store, root) => {
+    await hoistedFixture(source, root, false);
+    await assert.rejects(store.stage(source, 'entry.mjs'), /Missing dependency closure for helper/);
+    assert.deepEqual(await store.list(), []);
+  });
+});
+
+test('standalone external files and inherited package scopes require the containing package directory', async () => {
+  await withWorkspace(async (source, store, root) => {
+    const external = path.join(root, 'external-package');
+    await mkdir(path.join(external, 'lib'), { recursive: true });
+    await writeFile(path.join(external, 'package.json'), JSON.stringify({ type: 'module' }));
+    await writeFile(path.join(external, 'lib', 'probe.js'), 'if (typeof module !== "undefined") throw Error("package scope changed");');
+    await symlink(path.join(external, 'lib', 'probe.js'), path.join(source, 'probe.js'));
+    await writeFile(path.join(source, 'entry.mjs'), 'import "./probe.js"; export const value = 42;');
+    assert.equal((await import(pathToFileURL(path.join(source, 'entry.mjs')).href) as { value: number }).value, 42);
+    await assert.rejects(store.stage(source, 'entry.mjs'), /External file link.*containing package directory/);
+    await symlink(path.join(external, 'lib'), path.join(source, 'linked-lib'));
+    await assert.rejects(store.stage(source, 'entry.mjs'), /Inherited package scope.*containing package directory/);
+    await symlink(external, path.join(source, 'complete-package'));
+    const artifact = await store.stage(source, 'entry.mjs');
+    await rm(source, { recursive: true }); await rm(external, { recursive: true });
+    const fresh = await store.prepareFreshActivation(artifact);
+    assert.equal((await import(pathToFileURL(fresh.entry).href) as { value: number }).value, 42);
+  });
+});
+
+test('the release scope barrier prevents the artifact store ancestors from changing module type', async () => {
+  await withWorkspace(async (source, _store, root) => {
+    await writeFile(path.join(source, 'probe.js'), 'module.exports = 42;');
+    await writeFile(path.join(source, 'entry.mjs'), 'export { default as value } from "./probe.js";');
+    const parent = path.join(root, 'store-parent'); await mkdir(parent);
+    await writeFile(path.join(parent, 'package.json'), JSON.stringify({ type: 'module' }));
+    const store = new ArtifactStore(path.join(parent, 'store'));
+    const artifact = await store.stage(source, 'entry.mjs');
+    assert.equal(await readFile(path.join(path.dirname(artifact.directory), 'package.json'), 'utf8'), '{}\n');
+    const fresh = await store.prepareFreshActivation(artifact);
+    assert.equal((await import(pathToFileURL(fresh.entry).href) as { value: number }).value, 42);
+  });
+});
+
+test('the mirror preserves an original node_modules TypeScript restriction', async () => {
+  await withWorkspace(async (_source, store, root) => {
+    const source = path.join(root, 'node_modules', 'generated'); await mkdir(source, { recursive: true });
+    await writeFile(path.join(source, 'typed.ts'), 'export const value: number = 42;');
+    await writeFile(path.join(source, 'entry.mjs'), 'export { value } from "./typed.ts";');
+    await assert.rejects(import(pathToFileURL(path.join(source, 'entry.mjs')).href), { code: 'ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING' });
+    const artifact = await store.stage(source, 'entry.mjs');
+    const fresh = await store.prepareFreshActivation(artifact);
+    await assert.rejects(import(pathToFileURL(fresh.entry).href), { code: 'ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING' });
   });
 });
 

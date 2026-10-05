@@ -17,7 +17,7 @@
 ## 自动断言覆盖
 
 - `extension-template.test.mts`：真正外部目录、测试专用 Node 网络 API 禁用探针（非 OS 沙箱）、实际 Pi 文件/Shell 工具、严格 NodeNext、私有 SDK bare import、本地声明依赖闭包、3 个真实 Node 示例测试、实际类型错误失败、拒绝覆盖；删除源工作区后完整 staged 副本仍能 typecheck/test
-- `extension-artifacts.test.mts`：stage 无 import/脚本；文件权限、入口、普通文件及依赖字节改变 digest；循环/逃出链接拒绝；fresh ESM/嵌套 CJS；测试/激活前后改动拒绝继承测试成功；启动/信号失败；CLI smoke
+- `extension-artifacts.test.mts`：stage 无 import/脚本；文件权限、入口、普通文件及依赖字节改变 digest；循环/逃出链接拒绝；重叠根、别名、hoisted 依赖及跨根相对路径；不完整依赖/包作用域明确拒绝；fresh ESM/嵌套 CJS；测试/激活前后改动拒绝继承测试成功；启动/信号失败；CLI smoke
 - `generated-extensions.test.mts`：disabled install 无 import；activate/update/rollback 真实不同代码、配置、模块状态、schema 与 activation；重启 disabled；source/release 保留；import/apply/文件保存冲突分别真实报告；在途工具 lease、服务消费者清理顺序、依赖等待/恢复
 - `generated-runtime.test.mts`：确定性模型同一 Wake 中的 stage/install/activate、后续新工具调用、update/rollback schema 与 dispatcher 同代，授权/持久声明和结果延续
 - `generated-extensions.test.mts`（recovery）：真实 PostgreSQL 的 accepted 管理调用结果丢失/未知恢复、desired code/config/disabled 重启；不盲重放未知操作

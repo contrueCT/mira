@@ -88,7 +88,7 @@ absolute `artifactsDirectory` alongside `entries` in the ordinary JSON document.
 The host does not infer a source-workspace location or limit general filesystem tools.
 
 - `stage(sourceRoot, entryRelative, expectedDigest?)` copies all workspace files and
-  explicitly present local symlink dependencies without importing or executing code
+  explicitly present local dependency directories without importing or executing code
 - `ArtifactStore` (also exported at `@mira/extension-host/artifacts`) offers stage,
   read/list/verify, fresh activation copies, explicit native command tests and receipts
 - `install` takes a digest plus optional config under a new ID, initially disabled
@@ -131,3 +131,15 @@ Snapshots cover the workspace and explicit local dependency tree, not arbitrary
 absolute/dynamic imports, host files, environment, network or malicious mutate-and-
 restore behavior. Native tests/imports execute as the host OS identity without
 isolation. This is an ordinary-file consistency mechanism, not a security sandbox.
+
+
+Snapshot layout preserves the relative topology of selected roots in a private
+sparse tree; `workspace` points into that tree. Only those roots are copied, not
+unrelated common-ancestor contents. Existing declared dependency aliases are
+retained only for explicitly supplied targets; a resolvable runtime dependency
+outside the snapshot is a stage error, not an implicit install or version guess.
+External standalone-file links and inherited package scopes outside the selected
+roots require linking the containing package directory instead. Internal file
+links remain supported. A container scope barrier prevents the release location
+from silently changing ESM/CJS defaults. Content identity includes represented
+relative topology as well as bytes and permissions.

@@ -207,6 +207,7 @@ async function snapshot(source: string, destination: string, store: string): Pro
   // regardless of discovery order, so parent imports and module identity survive.
   const targets = new Map<string, string>();
   const visited = new Set<string>();
+  const packages = new Set<string>();
   const discover = async (input: string, logical: string, ancestors: Set<string>): Promise<void> => {
     const info = await lstat(input);
     if (info.isSymbolicLink()) {
@@ -222,23 +223,40 @@ async function snapshot(source: string, destination: string, store: string): Pro
       if (visited.has(actual)) return;
       visited.add(actual);
       const next = new Set(ancestors).add(actual);
-      for (const name of (await readdir(input)).sort()) await discover(path.join(input, name), `${logical}/${name}`, next);
+      const names = (await readdir(input)).sort();
+      if (names.includes('package.json')) packages.add(actual);
+      for (const name of names) await discover(path.join(input, name), `${logical}/${name}`, next);
     } else if (!info.isFile()) { throw new Error(`Artifact workspace contains a non-ordinary file: ${input}`); }
   };
   await discover(source, 'workspace', new Set());
 
-  const materialized = new Map<string, string>([[source, path.join(destination, 'workspace')]]);
-  for (const [target, logical] of targets) {
+  const roots = new Set<string>([source]);
+  for (const target of targets.keys()) {
     if ([...targets.keys()].some(other => other !== target && inside(other, target))) continue;
-    // Stable logical link names make identity independent of checkout location.
-    // Real TypeScript package paths stay outside node_modules for Node stripping.
-    const key = createHash('sha256').update(logical).digest('hex');
-    const privateRoot = path.join(destination, 'dependencies', key);
-    // Standalone file links need their suffix too: Node chooses ESM/CJS and
-    // TypeScript stripping from the resolved target filename, not the link.
-    materialized.set(target, (await lstat(target)).isDirectory() ? privateRoot : path.join(privateRoot, path.basename(target)));
+    if (!(await lstat(target)).isDirectory()) throw new Error(`External file link needs package scope; link the containing package directory instead: ${target}`);
+    roots.add(target);
   }
-  await mkdir(path.join(destination, 'dependencies'));
+  for (const original of roots) {
+    const scope = await packageScope(original);
+    if (scope && !inside(original, scope)) throw new Error(`Inherited package scope is outside the snapshot; link the containing package directory instead: ${scope}`);
+  }
+  const closure = await declaredDependencies(source, roots, packages);
+  const coordinates = [...roots, ...closure.links.map(link => link.candidate)];
+  let base = path.dirname(source);
+  while (coordinates.some(file => !inside(base, file))) base = path.dirname(base);
+  // Node treats real paths beneath node_modules specially. Do not strip such
+  // an ancestor merely because every selected root happens to be beneath it.
+  for (let ancestor = base; ; ancestor = path.dirname(ancestor)) {
+    if (path.basename(ancestor) === 'node_modules') base = path.dirname(ancestor);
+    if (ancestor === path.dirname(ancestor)) break;
+  }
+  const tree = path.join(destination, 'dependencies', 'tree');
+  const mirrored = (file: string): string => path.join(tree, path.relative(base, file));
+  const materialized = new Map([...roots].map(original => [original, mirrored(original)]));
+  // Only selected roots are copied. Empty sparse ancestors preserve their
+  // relative topology without capturing unrelated files from the common parent.
+  await writeFile(path.join(destination, 'package.json'), '{}\n', { flag: 'wx' });
+  await mkdir(tree, { recursive: true });
   const copy = async (input: string, output: string, ancestors: Set<string>): Promise<void> => {
     const info = await lstat(input);
     if (info.isSymbolicLink()) {
@@ -266,6 +284,78 @@ async function snapshot(source: string, destination: string, store: string): Pro
     await mkdir(path.dirname(output), { recursive: true });
     await copy(original, output, new Set());
   }
+  for (const manifest of closure.manifests) {
+    if (await readFile(path.join(mirrored(manifest.directory), 'package.json'), 'utf8') !== manifest.text) throw new Error('Package manifest changed while staging');
+  }
+  for (const link of closure.links) {
+    if ([...roots].some(root => inside(root, link.candidate))) continue; // Already authored and copied.
+    const destinationLink = mirrored(link.candidate), target = mirrored(link.target);
+    const existing = await optionalRealpath(destinationLink);
+    if (existing) {
+      if (existing !== await realpath(target)) throw new Error(`Conflicting captured dependency: ${link.candidate}`);
+      continue;
+    }
+    await mkdir(path.dirname(destinationLink), { recursive: true });
+    await symlink(path.relative(path.dirname(destinationLink), target), destinationLink);
+  }
+  await symlink(path.relative(destination, mirrored(source)), path.join(destination, 'workspace'));
+}
+
+async function optionalRealpath(file: string): Promise<string | undefined> {
+  try { return await realpath(file); }
+  catch (error) { if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return undefined; throw error; }
+}
+async function packageScope(directory: string): Promise<string | undefined> {
+  for (let current = directory; ; current = path.dirname(current)) {
+    if (path.basename(current) === 'node_modules') return undefined;
+    const manifest = path.join(current, 'package.json');
+    if (await optionalRealpath(manifest)) return manifest;
+    if (current === path.dirname(current)) return undefined;
+  }
+}
+async function resolvePackage(directory: string, name: string): Promise<{ candidate: string; target: string } | undefined> {
+  if (!/^(@[a-zA-Z0-9._-]+\/)?[a-zA-Z0-9._-]+$/.test(name) || name.split('/').some(part => part === '.' || part === '..')) throw new Error(`Invalid declared package name: ${name}`);
+  for (let current = directory; ; current = path.dirname(current)) {
+    if (path.basename(current) !== 'node_modules') {
+      const candidate = path.join(current, 'node_modules', name);
+      const target = await optionalRealpath(candidate);
+      if (target) return { candidate, target };
+    }
+    if (current === path.dirname(current)) return undefined;
+  }
+}
+async function declaredDependencies(source: string, roots: Set<string>, packages: Set<string>): Promise<{
+  links: Array<{ candidate: string; target: string }>;
+  manifests: Array<{ directory: string; text: string }>;
+}> {
+  const links: Array<{ candidate: string; target: string }> = [];
+  const manifests: Array<{ directory: string; text: string }> = [];
+  for (const directory of packages) {
+    const text = await readFile(path.join(directory, 'package.json'), 'utf8');
+    manifests.push({ directory, text });
+    const manifest: unknown = JSON.parse(text);
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) throw new Error(`Invalid package manifest: ${directory}`);
+    const names = new Map<string, boolean>();
+    for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies', 'devDependencies']) {
+      const value: unknown = (manifest as Record<string, unknown>)[field];
+      if (value === undefined) continue;
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid ${field}: ${directory}`);
+      // Published packages' dev toolchains are not required runtime closure.
+      // Workspace-root dev dependencies are intentional authoring dependencies.
+      const required = field !== 'devDependencies' || directory === source;
+      for (const name of Object.keys(value)) names.set(name, (names.get(name) ?? false) || required);
+    }
+    for (const [name, required] of names) {
+      const resolved = await resolvePackage(directory, name);
+      if (!resolved) continue; // Originally absent, including optional/peer deps.
+      if (![...roots].some(root => inside(root, resolved.target))) {
+        if (required) throw new Error(`Missing dependency closure for ${name} in ${directory}; explicitly link its containing package directory into the workspace`);
+        continue;
+      }
+      links.push(resolved);
+    }
+  }
+  return { links, manifests };
 }
 
 async function copyPrivateTree(source: string, destination: string): Promise<void> {
