@@ -23,14 +23,14 @@ test('computed dynamic imports and require are rejected', () => {
 async function fixture(run: (root: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mira-boundaries-'));
   try {
-    for (const dir of ['apps', 'packages', 'scripts']) await cp(path.join(process.cwd(), dir), path.join(root, dir), { recursive: true });
+    for (const dir of ['apps', 'packages', 'scripts']) await cp(path.join(process.cwd(), dir), path.join(root, dir), { recursive: true, filter: (source) => !['node_modules', 'dist', '.git'].includes(path.basename(source)) });
     await run(root);
   } finally { await rm(root, { recursive: true, force: true }); }
 }
 
 test('rejects framework, internal subpath, relative escape, and undeclared imports', async () => {
   await fixture(async (root) => {
-    await mkdir(path.join(root, 'packages/life/src'));
+    await mkdir(path.join(root, 'packages/life/src'), { recursive: true });
     await writeFile(path.join(root, 'packages/life/src/bad.ts'), `import 'fastify'; export * from '@mira/context/private'; import '../../runtime-pi/private.js'; import 'node:fs';`);
     const errors = await checkBoundaries(root);
     for (const expected of ['external import not allowed fastify', 'non-public import @mira/context/private', 'cross-package relative import', 'platform-independent package']) assert.ok(errors.some((error) => error.includes(expected)), expected);
@@ -70,7 +70,7 @@ test('accepts only an explicitly declared public workspace import', async () => 
     const context = JSON.parse(await readFile(contextPath, 'utf8'));
     context.exports = { '.': './src/index.ts' };
     await writeFile(contextPath, JSON.stringify(context));
-    await mkdir(path.join(root, 'packages/context/src'));
+    await mkdir(path.join(root, 'packages/context/src'), { recursive: true });
     await writeFile(path.join(root, 'packages/context/src/index.ts'), 'export const example = 1;');
     await writeFile(path.join(root, 'packages/life/example.ts'), "import { example } from '@mira/context';");
     assert.deepEqual(await checkBoundaries(root), []);
@@ -133,6 +133,10 @@ test('strict configuration includes workspace mts and tsx files', async () => {
 
 test('external-module augmentations obey dependency and private-path boundaries', async () => {
   await fixture(async (root) => {
+    const manifestPath = path.join(root, 'packages/life/package.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    delete manifest.dependencies['@mira/context'];
+    await writeFile(manifestPath, JSON.stringify(manifest));
     await writeFile(path.join(root, 'packages/life/example.ts'), `export {}; declare module '../context/private.js' { interface Target { forbidden: string } } declare module '@mira/context/private' { interface Hidden {} }`);
     const errors = await checkBoundaries(root);
     assert.ok(errors.some((error) => error.includes('cross-package relative import')));

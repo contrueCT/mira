@@ -6,14 +6,15 @@
 
 ## 当前状态
 
-项目处于基础结构阶段。这里还没有可运行的 Mira、模型调用、服务端或 Web 页面。目录代表已确认的职责边界，不代表功能已经实现。
+当前增量已实现连续上下文与恢复适配器，包含 PostgreSQL 持久化和 Pi 执行/压缩。这里还没有用户可用的服务端或 Web 页面；真实模型联通未验收。其余目录仍仅代表职责边界。
 
 - [原始设计 v0.4](docs/design/original-v0.4.md)
 - [架构边界](docs/architecture.md)
 - [开发约束](docs/development/rules.md)
 - [工具链与验证命令](docs/development/toolchain.md)
 - [分阶段验收](docs/acceptance/foundation.md)
-- [待确认决策](docs/adr/README.md)
+- [决策记录](docs/adr/README.md)
+- [连续上下文与恢复验收](docs/acceptance/durable-context.md)
 
 基础设施优先保证连续性、真实历史、授权和故障恢复。模型负责理解和行为；不建立数值情绪系统、不把每次 Wake 变成新会话。
 
@@ -41,8 +42,8 @@
 ## 基础验证
 
 ```sh
-pnpm install --frozen-lockfile
+pnpm install --frozen-lockfile --ignore-scripts
 pnpm check
 ```
 
-这些命令验证工具链与包边界；应用和 Runtime 仍未实现。
+这些命令验证工具链、包边界与离线模型测试。真实 PostgreSQL 测试另运行 `pnpm test:integration`，要求显式 `MIRA_TEST_DATABASE_URL`；CI 执行 `pnpm check:all`。具体隔离要求见验收文档。

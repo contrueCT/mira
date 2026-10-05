@@ -5,7 +5,7 @@
 ## 入口与状态
 
 - `README.md` 描述职责；`package.json` 是包名和公开 exports 的事实来源
-- 尚未定义或导出核心接口。Pi 可行性门槛通过前不实现主循环。
+- `src/index.ts` 定义 Event/Wake receipt、工具 intent/outcome 与 DurableWriter 契约。调度/合并/队列尚未实现。
 - 本目录负责事件、Wake 队列与唯一主认知循环。
 
 ## 本地约束与跨包陷阱
@@ -17,4 +17,4 @@
 
 ## 验证
 
-从仓库根运行 `pnpm check`。依赖或 exports 改动必须同时检查 `scripts/boundaries.json`，并添加允许/拒绝反例。当前没有此包专属测试或启动命令；实现时同时补充真实命令与适用验收，不能填入未实现命令。
+从仓库根运行 `pnpm check`。依赖或 exports 改动必须同时检查 `scripts/boundaries.json`，并添加允许/拒绝反例。契约测试见 `tests/unit/`，真实写入与恢复验收见 `tests/integration/`、`tests/recovery/`。

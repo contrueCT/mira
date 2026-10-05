@@ -1,20 +1,24 @@
 # Persistence 适配
 
-共享规则见 [根 AGENTS.md](../../AGENTS.md)。本文路径相对于本目录；子目录规则只能补充，不取消根规则。
+共享规则见 [根 AGENTS.md](../../AGENTS.md)。本文路径相对于本目录；子目录规则不能放宽授权、安全或架构限制。
 
 ## 入口与状态
 
-- `README.md` 描述职责；`package.json` 是包名和公开 exports 的事实来源
-- 尚未选定驱动/迁移工具，尚无迁移或数据库测试命令。
-- 本目录负责PostgreSQL、迁移、事务与 Life History 查询。
+- `src/index.ts` 实现核心 `DurableWriter`；`src/migrate.ts` 提供显式 up/down
+- `pg` 8.23.1、`node-pg-migrate` 9.0.0，无 ORM；`migrations/*.sql` 为迁移事实来源
+- 语义、限制和示例见 `README.md`；公开出口以 `package.json` 为准
 
 ## 本地约束与跨包陷阱
 
-- 只实现核心拥有的契约，不让数据库类型泄漏到核心
-- 事件、Wake、上下文版本与 outbox 的原子性必须有故障测试
-- 数据库事务不能证明远端副作用仅执行一次；对结果不明保留核对状态
-- 真实数据库测试需独立测试库，禁止默认连接用户数据或生产库
+- 只实现核心拥有的契约，不向核心泄漏 PostgreSQL/Pi 类型，不解释 Runtime payload
+- 每个 Mira 的 writer 使用独占连接、session advisory lock 和 epoch；所有写事务必须在同一连接验证实际锁与 epoch
+- registry 初始登记使用独立全局 session lock；lock key 由表唯一生成，禁止哈希碰撞或重复使用
+- 连接丢失必须永久停止该 writer 并中止 signal；禁止在旧 writer 内透明重连
+- append-only 历史、parent 链、版本 CAS 与工具首次 outcome 不可放宽
+- 事务内不执行模型或外部工具；外部结果不明必须保留核对状态，不自动重试
+- 事件与可选 Wake 原子落库；无 Wake 的事件不得启动推理；重复 ID 必须核对全部记录
+- SQL 迁移必须同时支持 up/down；down 有数据丢失风险，不得自动用于用户库
 
 ## 验证
 
-从仓库根运行 `pnpm check`。依赖或 exports 改动必须同时检查 `scripts/boundaries.json`，并添加允许/拒绝反例。当前没有此包专属测试或启动命令；实现时同时补充真实命令与适用验收，不能填入未实现命令。
+从根目录运行 `pnpm check`。真实集成运行 `MIRA_TEST_DATABASE_URL=postgres://mira_test:synthetic-ci-only@127.0.0.1:5432/mira_test pnpm test:integration`。测试仅接受显式 localhost `mira_test`，按唯一 schema 隔离与清理，禁止默认连接用户数据或生产库。CI PostgreSQL 18.6；未连通、跳过和实际通过必须区分。依赖或 exports 改动同步根边界规则和反例。

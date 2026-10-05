@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "skipLibCheck": true
+  },
+  "include": [
+    "packages/runtime-pi/**/*.ts",
+    "packages/runtime-pi/**/*.mts",
+    "tests/unit/runtime.test.mts",
+    "tests/recovery/**/*.mts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
+}

@@ -3,5 +3,16 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": {}
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@mira/context": "workspace:*",
+    "@mira/life": "workspace:*",
+    "pg": "8.23.1",
+    "node-pg-migrate": "9.0.0"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1"
+  }
 }
