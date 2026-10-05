@@ -154,3 +154,6 @@ export async function writeWakeInput(options: WakeInputFileOptions): Promise<Wak
   await ensureRoot(root, source, identity);
   return { path: filePath, bytes: bytes.byteLength };
 }
+
+export { setupMemoryWorkspace, loadMemoryBootstrap, snapshotMemory } from './memory.ts';
+export type { MemoryWorkspaceOptions, MemoryWorkspace, MemoryBootstrapOptions, BootstrapFile, MemoryBootstrap, MemorySnapshotOptions, MemorySnapshot } from './memory.ts';

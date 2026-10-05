@@ -23,3 +23,5 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 | 生成扩展隔离 | Cordis 不提供安全隔离；方案待单独确认 | 激活生成代码 |
 
 不提前引入部署、付费模型调用、第三方账户、新凭据或不必要的框架。阶段临近时给出具体方案、取舍和验证结果。
+
+- [0003 普通 Memory/State 与历史查询](0003-ordinary-memory-history.md)：Accepted，实现与验证见 [本批验收](../acceptance/memory-history.md)

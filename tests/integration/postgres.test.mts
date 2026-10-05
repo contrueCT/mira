@@ -25,10 +25,13 @@ test('migration up/down/up uses node-pg-migrate and preserves no stale tables', 
   const db = await createTestDatabase();
   try {
     const before = await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema = $1", [db.schema]);
-    assert.equal(before.rows[0].n, 8);
+    assert.equal(before.rows[0].n, 10);
+    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
+    assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM pg_indexes WHERE schemaname = $1 AND indexname LIKE '%_history_fts'", [db.schema])).rows[0].n, 0, 'first down removes only history indexes');
+    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     const previous = await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema = $1", [db.schema]);
-    assert.equal(previous.rows[0].n, 6, 'down rolls back only the wake queue migration');
+    assert.equal(previous.rows[0].n, 6, 'third down rolls back only the wake queue migration');
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     const after = await db.admin.query("SELECT table_name FROM information_schema.tables WHERE table_schema = $1", [db.schema]);
     assert.deepEqual(after.rows.map((row) => row.table_name), ['mira_migrations']);

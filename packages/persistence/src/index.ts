@@ -1,9 +1,11 @@
 import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
+import { PostgresHistoryReader } from './history.ts';
+import type { HistoryReader } from '@mira/life';
 import { assertJson, assertRecord } from '@mira/context';
 import type { RuntimeRecord } from '@mira/context';
-import type { LifeEvent, RecoverySnapshot, ToolIntent, ToolOutcome, WakeReceipt, WakeRun, WakeWriter } from '@mira/life';
+import type { LifeEvent, MemoryCheckpoint, MemoryCheckpointState, MemoryCheckpointWriter, MemorySnapshotReceipt, RecoverySnapshot, ToolIntent, ToolOutcome, WakeReceipt, WakeRun } from '@mira/life';
 export { migrate } from './migrate.ts';
 export type { MigrationOptions } from './migrate.ts';
 
@@ -35,6 +37,14 @@ interface WakeRunRow {
   completed: boolean;
 }
 interface WakeRequestRow { event_id: string; event: LifeEvent; requested_wake: WakeReceipt | null; wake_id: string; wake: WakeReceipt }
+interface MemoryCheckpointRow {
+  run_id: string;
+  final_record_id: string;
+  prepared_at: string;
+  payload: MemoryCheckpoint['payload'];
+  receipt_run_id: string | null;
+  commit_id: string | null;
+}
 function fail(code: PersistenceError['code'], message: string): never { throw new PersistenceError(code, message); }
 function text(value: unknown, label: string): asserts value is string {
   if (typeof value !== 'string' || value.length === 0) fail('invalid', `Invalid ${label}`);
@@ -62,6 +72,13 @@ function validateEvent(event: LifeEvent): void {
   if (!['user', 'mira', 'system', 'extension', 'external'].includes(event.source)) fail('invalid', 'Invalid event source');
 }
 function validateWake(wake: WakeReceipt): void { text(wake.id, 'wake ID'); text(wake.reason, 'wake reason'); }
+function validateMemoryCheckpoint(checkpoint: MemoryCheckpoint): void {
+  text(checkpoint.runId, 'run ID'); text(checkpoint.finalRecordId, 'final record ID'); date(checkpoint.preparedAt); assertJson(checkpoint.payload);
+}
+function validateMemoryReceipt(receipt: MemorySnapshotReceipt): void {
+  text(receipt.runId, 'run ID');
+  if (receipt.commit !== null && (typeof receipt.commit !== 'string' || !/^([0-9a-f]{40}|[0-9a-f]{64})$/.test(receipt.commit))) fail('invalid', 'Invalid Memory Git commit ID');
+}
 
 export class PostgresPersistence {
   readonly #options: PostgresOptions;
@@ -71,7 +88,10 @@ export class PostgresPersistence {
     this.#options = { ...options };
   }
 
-  async acquire(miraId: string): Promise<WakeWriter> {
+  /** Scoped read-only access does not acquire or displace the durable writer. */
+  history(miraId: string): HistoryReader { return new PostgresHistoryReader(this.#options, miraId); }
+
+  async acquire(miraId: string): Promise<MemoryCheckpointWriter> {
     text(miraId, 'Mira ID');
     const client = new Client({
       connectionString: this.#options.connectionString,
@@ -130,7 +150,7 @@ const heldExpression = `EXISTS (
 )`;
 const lockQuery = `SELECT ${heldExpression} AS held`;
 
-class PostgresWriter implements WakeWriter {
+class PostgresWriter implements MemoryCheckpointWriter {
   readonly miraId: string;
   readonly epoch: string;
   readonly signal: AbortSignal;
@@ -240,6 +260,7 @@ class PostgresWriter implements WakeWriter {
     if ((row.input_record_id !== null && (!input || BigInt(input.version) <= BigInt(row.claimed_version))) ||
       (row.final_record_id !== null && (!input || !final || BigInt(final.version) <= BigInt(input.version))) ||
       (!row.completed && final && final.version !== owner.context_version)) fail('corrupt', 'Wake context links are out of order');
+    await this.#readMemoryCheckpoint(row);
     return {
       id: row.run_id, claimedAt: row.claimed_at, status: row.completed ? 'completed' : 'running',
       requests: requests.rows.map(({ event, wake }) => ({ event, wake })),
@@ -355,8 +376,66 @@ class PostgresWriter implements WakeWriter {
       await this.#readWakeRun(run, owner);
       if (run.completed) return;
       if (run.input_record_id === null || run.final_record_id === null) fail('invalid', 'Wake cannot complete without persisted input and final reply');
+      const memory = await this.#readMemoryCheckpoint(run);
+      if (memory && !memory.receipt) fail('invalid', 'Pending Memory checkpoint must finish before Wake completion');
       const changed = await this.#client.query('UPDATE wake_runs SET completed = true WHERE mira_id = $1 AND run_id = $2 AND NOT completed', [this.miraId, runId]);
       if (changed.rowCount !== 1) fail('corrupt', 'Wake completion was not persisted');
+    });
+  }
+  async #readMemoryCheckpoint(run: WakeRunRow): Promise<MemoryCheckpointState | null> {
+    const result = await this.#client.query<MemoryCheckpointRow>(
+      `SELECT c.run_id, c.final_record_id, c.prepared_at, c.payload, r.run_id AS receipt_run_id, r.commit_id
+       FROM wake_memory_checkpoints AS c LEFT JOIN wake_memory_receipts AS r
+       ON r.mira_id = c.mira_id AND r.run_id = c.run_id
+       WHERE c.mira_id = $1 AND c.run_id = $2`, [this.miraId, run.run_id]);
+    const row = result.rows[0];
+    if (!row) return null;
+    const checkpoint: MemoryCheckpoint = { runId: row.run_id, finalRecordId: row.final_record_id, preparedAt: row.prepared_at, payload: row.payload };
+    const receipt: MemorySnapshotReceipt | null = row.receipt_run_id === null ? null : { runId: row.receipt_run_id, commit: row.commit_id };
+    try {
+      validateMemoryCheckpoint(checkpoint);
+      if (receipt) validateMemoryReceipt(receipt);
+    } catch { fail('corrupt', 'Invalid persisted Memory checkpoint'); }
+    if (checkpoint.runId !== run.run_id || checkpoint.finalRecordId !== run.final_record_id ||
+      (receipt && receipt.runId !== run.run_id) || (run.completed && !receipt)) fail('corrupt', 'Memory checkpoint does not match Wake progress');
+    return { checkpoint, receipt };
+  }
+  loadMemoryCheckpoint(runId: string): Promise<MemoryCheckpointState | null> {
+    text(runId, 'run ID');
+    return this.#transaction(async owner => {
+      const run = await this.#wakeRun(runId);
+      await this.#readWakeRun(run, owner);
+      return this.#readMemoryCheckpoint(run);
+    });
+  }
+  prepareMemoryCheckpoint(input: MemoryCheckpoint): Promise<void> {
+    const checkpoint = copy(input); validateMemoryCheckpoint(checkpoint);
+    return this.#transaction(async owner => {
+      const run = await this.#wakeRun(checkpoint.runId);
+      await this.#readWakeRun(run, owner);
+      const old = await this.#readMemoryCheckpoint(run);
+      if (old) {
+        if (!isDeepStrictEqual(old.checkpoint, checkpoint)) fail('duplicate', 'Memory checkpoint already exists with different recovery inputs');
+        return;
+      }
+      if (run.completed || run.final_record_id === null || run.final_record_id !== checkpoint.finalRecordId) fail('invalid', 'Memory checkpoint requires the active Wake final reply');
+      await this.#client.query(
+        'INSERT INTO wake_memory_checkpoints(mira_id, run_id, final_record_id, prepared_at, payload) VALUES ($1, $2, $3, $4, $5::json)',
+        [this.miraId, checkpoint.runId, checkpoint.finalRecordId, checkpoint.preparedAt, JSON.stringify(checkpoint.payload)]);
+    });
+  }
+  finishMemoryCheckpoint(input: MemorySnapshotReceipt): Promise<void> {
+    const receipt = copy(input); validateMemoryReceipt(receipt);
+    return this.#transaction(async owner => {
+      const run = await this.#wakeRun(receipt.runId);
+      await this.#readWakeRun(run, owner);
+      const old = await this.#readMemoryCheckpoint(run);
+      if (!old) fail('invalid', 'Prepare the Memory checkpoint before recording its Git outcome');
+      if (old.receipt) {
+        if (!isDeepStrictEqual(old.receipt, receipt)) fail('duplicate', 'Memory snapshot receipt already has a different Git outcome');
+        return;
+      }
+      await this.#client.query('INSERT INTO wake_memory_receipts(mira_id, run_id, commit_id) VALUES ($1, $2, $3)', [this.miraId, receipt.runId, receipt.commit]);
     });
   }
   receive(input: LifeEvent, optionalWake?: WakeReceipt): Promise<'inserted' | 'duplicate'> {

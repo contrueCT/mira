@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, mkdir, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import path from 'node:path';
 import { test } from 'node:test';
 import { runDemo } from '@mira/server';
 import { createTestDatabase } from '../integration/database.mts';
@@ -53,4 +55,43 @@ test('overflow is one run and the model can read the ordinary file through the o
     for (const id of ['a', 'b', 'c']) { assert.match(content, new RegExp(`Synthetic message ${id}`)); assert.match(observedToolText, new RegExp(`Synthetic message ${id}`)); }
     assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_runs')).rows[0].n, 1);
   } finally { await db.close(); await rm(spool, { recursive: true, force: true }); }
+});
+
+
+test('Memory bootstrap survives process-style restart, State is unversioned and changes stay silent', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase(); const data = await mkdtemp('/tmp/mira-memory-demo-');
+  try {
+    const memoryRoot = path.join(data, 'memory'), stateRoot = path.join(data, 'state');
+    await mkdir(memoryRoot); await mkdir(stateRoot);
+    await writeFile(path.join(memoryRoot, 'MEMORY.md'), 'Original remembered preference');
+    await writeFile(path.join(stateRoot, 'current.md'), 'Original semantic state');
+    const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'memory-mira', sourceDirectory: process.cwd(), spoolDirectory: path.join(data, 'spool'), memory: { memoryRoot, stateRoot, stateFiles: ['current.md'] } };
+    const wake = (id: string) => [{ event: event(id), wake: { id: `wake-${id}`, reason: 'synthetic' } }];
+    const first = await runDemo({ ...options, events: wake('one'), streamFn: (_model, context) => {
+      assert.match(JSON.stringify(context), /Original remembered preference/);
+      assert.match(JSON.stringify(context), /Original semantic state/);
+      return streamOf(assistant());
+    } });
+    assert.equal(first.completedRuns, 1);
+    const head = execFileSync('git', ['-C', memoryRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    await writeFile(path.join(stateRoot, 'current.md'), 'New state that is not injected');
+    const second = await runDemo({ ...options, events: wake('two'), streamFn: (_model, context) => {
+      assert.match(JSON.stringify(context), /Original semantic state/);
+      assert.doesNotMatch(JSON.stringify(context), /New state that is not injected/);
+      return streamOf(assistant());
+    } });
+    assert.equal(second.modelCalls, 1);
+    assert.equal(execFileSync('git', ['-C', memoryRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), head);
+    await writeFile(path.join(memoryRoot, 'MEMORY.md'), 'External memory edit stays silent');
+    const noWake = await runDemo({ ...options, events: [] });
+    assert.equal(noWake.modelCalls, 0); assert.equal(noWake.version, second.version);
+    await runDemo({ ...options, events: wake('three'), streamFn: (_model, context) => {
+      assert.doesNotMatch(JSON.stringify(context), /External memory edit stays silent/);
+      return streamOf(assistant());
+    } });
+    assert.notEqual(execFileSync('git', ['-C', memoryRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), head);
+    assert.equal(execFileSync('git', ['-C', memoryRoot, 'ls-files'], { encoding: 'utf8' }).trim(), 'MEMORY.md');
+    const receipts = await db.admin.query('SELECT commit_id FROM wake_memory_receipts WHERE mira_id = $1', [options.miraId]);
+    assert.equal(receipts.rows.length, 3); assert.equal(receipts.rows.filter(row => row.commit_id === null).length, 1);
+  } finally { await db.close(); await rm(data, { recursive: true, force: true }); }
 });

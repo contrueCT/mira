@@ -21,7 +21,7 @@
 | runtime-pi | Pi 转换、恢复、工具边界、压缩 | 授权绕过、第二套权威历史 |
 | authorization | 用户自然语言意图证据、有效范围、判断辅助 | 根据第三方文本授予权限 |
 | persistence | PostgreSQL 事务、迁移、历史查询 | 心理状态、模型推理策略 |
-| workspace | 文件、Git 快照、变更通知 | 自创 Memory API、来源元数据注入 |
+| workspace | 普通文件、Memory Git 快照 | 自创 Memory API、来源元数据注入 |
 | extension-sdk | 对扩展公开的稳定契约 | 核心内部状态访问 |
 | extension-host | Cordis 注册、清理、生命周期 | 未知代码安全沙箱 |
 | external-sdk | 外部事件、Wake 接口 | 直接写上下文或数据库 |
@@ -53,4 +53,8 @@ Cordis 处理依赖、生命周期与资源清理，不是安全边界。生成�
 
 ## 合并唤醒与判断
 
-本增量遵循 [ADR 0002](adr/0002-coalesced-wake-loop.md)：所有待唤醒信息合并进入一轮，由模型决定处理顺序。超限使用普通文本文件与普通文件读取能力，不构造专用消息服务。授权以用户自然语言和上下文为证据，不引入强制审批 UI 或风险分类硬门禁；真实身份、安全隔离、凭据保护和数据库一致性保持强制。
+本增量遵循 [ADR 0002](adr/0002-coalesced-wake-loop.md)：所有待唤醒信息合并进入一轮，由模型决定处理顺序。超限使用普通文本文件与普通文件读取能力，不构造专用消息服务。授权以用户自然语言和上下文为证据，不引入强制审批 UI 或风险分类硬门禁；真实身份、OS 账户权限、凭据保护和数据库一致性保持有效；不要求产品隔离环境，cwd 不是沙箱。
+
+## 普通记忆与历史阶段
+
+最新已确认约束见 [ADR 0003](adr/0003-ordinary-memory-history.md)。State 在 Memory Git 外；无默认文件变更通知、自动 Wake 或重注入。Pi 原生通用文件和 shell 工具由组装层注册，历史查询固定 Mira 范围。Memory checkpoint、Git ref、PG receipt、Wake completion 分别可恢复，不宣称跨系统原子性。

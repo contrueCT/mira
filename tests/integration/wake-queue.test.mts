@@ -342,6 +342,9 @@ test('wake migration down/up preserves legacy receipts and context for a fresh c
     await first.receive(event('legacy'), wake('legacy'));
     await first.append(0, record('legacy-record'));
     await first.close();
+    // Roll back the newer search and Memory migrations before the Wake slice.
+    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
+    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     assert.equal((await db.admin.query('SELECT count(*)::integer AS n FROM wake_requests')).rows[0].n, 1);
     assert.equal((await db.admin.query('SELECT count(*)::integer AS n FROM context_records')).rows[0].n, 1);

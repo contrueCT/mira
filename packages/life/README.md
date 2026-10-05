@@ -4,6 +4,14 @@
 
 `createRuntime` 每轮提供新的适配器，权威始终在持久存储中。共享同一所有权 signal 的 writer（包括代理包装）的并发 drain 被拒绝，跨进程通过持久化适配器的专用连接锁保护。错误后批次仍可从数据库恢复。
 
+可选 `beforeComplete(run, signal)` 在 Runtime 验证已保存的最终回复后、完成标记之前执行，收到重新加载的完整 run。回调失败保留活动 run；恢复再次验证最终回复并重试回调，不再调用模型或追加同一输入。回调前后均核对 writer 所有权和调用方取消。
+
+`MemoryCheckpointWriter` 是独立的可选 `WakeWriter` 扩展，契约在 `src/memory-lifecycle.ts`。组装层按 `prepareMemoryCheckpoint` → Memory Git 幂等快照 → `finishMemoryCheckpoint` → Wake 完成执行。待处理 checkpoint 与最终 `commit | null` receipt 各自不可变；`null` 表示已确认无变化，缺少 receipt 才表示仍待恢复。恢复 payload 只保存适配器输入，不把 Memory 内容再存成第二份数据库权威。`preparedAt` 是意图时间，不是文件捕获时间。State 不参与 Git；观察到的快照变更不等于全部由该 Wake 或 agent 创作，不能虚构逐文件来源。
+
+PostgreSQL 与 Git 不能原子提交。Git 适配器须按 Mira/run 保存可恢复的确定结果，receipt 写入失败后才能重取同一结果，而不捕获后来文件变化或产生第二个提交；已有待处理 checkpoint 时持久化适配器禁止先完成 Wake。
+
+`src/history.ts` 的 `HistoryReader` 契约提供固定 Mira 范围的只读历史搜索与精确读取；原始 Event、Runtime envelope、工具 intent/outcome 和 Wake 关联保持分离。检索不启动认知，不修改 Memory，原始 Runtime payload 仍由对应 Runtime 解读。
+
 超过 `maxInlineBytes`（默认 65,536）的完整输入通过 `writeOverflowInput` 写成普通文本，模型获得路径和概要，按需用普通文件工具读取。文件不自动删除。没有消息优先级、专用分页服务或心理状态机。
 
 接口见 `src/index.ts` 和 `src/loop.ts`，语义见 [ADR 0002](../../docs/adr/0002-coalesced-wake-loop.md)。验证为根目录 `pnpm check` 及 `pnpm check:all`。
