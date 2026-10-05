@@ -400,6 +400,16 @@ export class ExtensionHost {
         }
         receipt.status = 'applied';
       } catch (error) { if (receipt.persistence === 'pending') receipt.persistence = 'not-attempted'; receipt.status = 'failed'; receipt.error = error instanceof Error ? error.message : String(error); }
+      // An earlier failure can bypass createGenerated (for example cleanup
+      // mutates a candidate and then throws). Do not retain stale preflight
+      // evidence merely because activation was never reached.
+      if (receipt.status === 'failed' && receipt.artifact === 'verified' && receipt.digest) {
+        try { await this.artifacts!.read(receipt.digest); }
+        catch (error) {
+          receipt.artifact = 'failed'; receipt.test = 'invalidated';
+          receipt.error = `${receipt.error ?? 'Change failed'}; ${error instanceof Error ? error.message : String(error)}`;
+        }
+      }
       const failures = this.cleanupFailures.get(receipt.extensionId);
       if (failures?.length) {
         receipt.cleanup = 'failed'; receipt.status = 'failed';

@@ -224,12 +224,12 @@ test('generated desired revisions are detached from caller objects and reject co
   finally { await stale.close(); }
 }));
 
-test('activation-time mutation invalidates prior artifact/test evidence while retaining truthful saved configuration', async () => fixture(async (root, source, store, config) => {
+for (const cleanupThrows of [false, true]) test(`activation-time mutation invalidates evidence even when cleanup throws=${cleanupThrows}`,  async () => fixture(async (root, source, store, config) => {
   await sourceVersion(source, root, 'one');
   const entry = path.join(source, 'entry.mjs');
   await writeFile(entry, "import { writeFile } from 'node:fs/promises';\n" + (await readFile(entry,'utf8')).replace(
     "ctx.onCleanup(() => { events.push('clean:' + version); live = false; });",
-    "ctx.onCleanup(async () => { events.push('clean:' + version); live = false; if (config.mutatePath) await writeFile(config.mutatePath, '// deliberate synthetic cleanup mutation'); });",
+    `ctx.onCleanup(async () => { events.push('clean:' + version); live = false; if (config.mutatePath) await writeFile(config.mutatePath, '// deliberate synthetic cleanup mutation'); ${cleanupThrows ? "throw Error('synthetic cleanup also failed');" : ''} });`,
   ));
   const first = await store.stage(source, 'entry.mjs');
   await sourceVersion(source, root, 'two'); const second = await store.stage(source, 'entry.mjs');

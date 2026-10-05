@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -92,6 +92,22 @@ test('a local symlinked TypeScript SDK resolves privately outside node_modules a
   });
 });
 
+test('standalone external TypeScript file links retain their resolved filename and syntax support', async () => {
+  await withWorkspace(async (source, store, root) => {
+    const target = path.join(root, 'typed-constants.ts');
+    await writeFile(target, 'export const value: number = 42;');
+    await symlink(target, path.join(source, 'linked.ts'));
+    await writeFile(path.join(source, 'entry.mjs'), 'export { value } from "./linked.ts";');
+    assert.equal((await import(pathToFileURL(path.join(source, 'entry.mjs')).href) as { value: number }).value, 42);
+    const artifact = await store.stage(source, 'entry.mjs');
+    await rm(source, { recursive: true });
+    await rm(target);
+    const fresh = await store.prepareFreshActivation(artifact);
+    assert.equal(path.basename(await realpath(path.join(fresh.directory, 'linked.ts'))), 'typed-constants.ts');
+    assert.equal((await import(pathToFileURL(fresh.entry).href) as { value: number }).value, 42);
+  });
+});
+
 test('workspace package symlinks keep their sibling imports in the original snapshot layout', async () => {
   await withWorkspace(async (source, store) => {
     await mkdir(path.join(source, 'packages', 'local'), { recursive: true });
@@ -131,6 +147,78 @@ test('links into a materialized external dependency retain its parent and siblin
     await rm(dependency, { recursive: true });
     const fresh = await store.prepareFreshActivation(artifact);
     assert.equal((await import(pathToFileURL(fresh.entry).href) as { value: number }).value, 42);
+  });
+});
+
+test('child-first overlapping external aliases share one complete tree and module instance', async () => {
+  await withWorkspace(async (source, store, root) => {
+    const bundle = path.join(root, 'external-bundle');
+    const create = async (workspace: string, dependency: string): Promise<void> => {
+      await mkdir(path.join(dependency, 'packages', 'local'), { recursive: true });
+      await writeFile(path.join(dependency, 'shared.mjs'), 'export const value = 42;');
+      await writeFile(path.join(dependency, 'package.json'), JSON.stringify({ name: 'z-bundle', type: 'module', exports: { './local': './packages/local/index.mjs' } }));
+      await writeFile(path.join(dependency, 'packages', 'local', 'package.json'), JSON.stringify({ name: 'a-local', type: 'module', exports: './index.mjs' }));
+      await writeFile(path.join(dependency, 'packages', 'local', 'index.mjs'), 'import { value } from "../../shared.mjs"; let count = 0; export const read = () => [value, ++count];');
+      await mkdir(path.join(workspace, 'node_modules'), { recursive: true });
+      await symlink(path.join(dependency, 'packages', 'local'), path.join(workspace, 'node_modules', 'a-local'));
+      await symlink(dependency, path.join(workspace, 'node_modules', 'z-bundle'));
+      await writeFile(path.join(workspace, 'entry.mjs'), 'import * as child from "a-local"; import * as parent from "z-bundle/local"; export const same = child === parent; export const values = [child.read(), parent.read()];');
+    };
+    await create(source, bundle);
+    const original = await import(pathToFileURL(path.join(source, 'entry.mjs')).href) as { same: boolean; values: number[][] };
+    assert.equal(original.same, true);
+    assert.deepEqual(original.values, [[42, 1], [42, 2]]);
+    const artifact = await store.stage(source, 'entry.mjs');
+    assert.equal(await realpath(path.join(artifact.directory, 'node_modules', 'a-local')), await realpath(path.join(artifact.directory, 'node_modules', 'z-bundle', 'packages', 'local')));
+    assert.equal((await readdir(path.join(path.dirname(artifact.directory), 'dependencies'))).length, 1);
+    const relocatedSource = path.join(root, 'relocated', 'workspace');
+    const relocatedBundle = path.join(root, 'relocated', 'bundle');
+    await create(relocatedSource, relocatedBundle);
+    assert.equal((await store.stage(relocatedSource, 'entry.mjs')).digest, artifact.digest);
+    await rm(source, { recursive: true });
+    await rm(bundle, { recursive: true });
+    await rm(path.join(root, 'relocated'), { recursive: true });
+    const fresh = await store.prepareFreshActivation(artifact);
+    const restored = await import(pathToFileURL(fresh.entry).href) as { same: boolean; values: number[][] };
+    assert.equal(restored.same, true);
+    assert.deepEqual(restored.values, [[42, 1], [42, 2]]);
+  });
+});
+
+test('store root and ancestor directory aliases preserve private linked artifact verification', async () => {
+  await withWorkspace(async (source, store, root) => {
+    await mkdir(path.join(source, 'packages', 'local'), { recursive: true });
+    await mkdir(path.join(source, 'node_modules'));
+    await writeFile(path.join(source, 'packages', 'local', 'package.json'), JSON.stringify({ name: 'local', type: 'module', exports: './index.mjs' }));
+    await writeFile(path.join(source, 'packages', 'local', 'index.mjs'), 'export const value = 42;');
+    await symlink('../packages/local', path.join(source, 'node_modules', 'local'));
+    await writeFile(path.join(source, 'entry.mjs'), 'export { value } from "local";');
+    await mkdir(store.root);
+    const rootAlias = path.join(root, 'alias-store');
+    const parentAlias = path.join(root, 'alias-parent');
+    await symlink(store.root, rootAlias);
+    await symlink(root, parentAlias);
+    let digest: string | undefined;
+    for (const directory of [rootAlias, path.join(parentAlias, 'artifacts')]) {
+      const aliased = new ArtifactStore(directory);
+      const artifact = await aliased.stage(source, 'entry.mjs', digest);
+      digest = artifact.digest;
+      await aliased.verify(artifact);
+      assert.deepEqual(await aliased.read(artifact.digest), artifact);
+      const result = await aliased.test(artifact, { command: process.execPath, args: ['--input-type=module', '-e', 'import { value } from "./entry.mjs"; if (value !== 42) throw Error("wrong linked artifact");'] });
+      assert.equal(result.passed, true);
+      assert.equal(result.unchanged, true);
+      assert.equal((await aliased.testResult(artifact))!.passed, true);
+      const fresh = await aliased.prepareFreshActivation(artifact);
+      assert.equal((await import(pathToFileURL(fresh.entry).href) as { value: number }).value, 42);
+    }
+    assert.ok(digest);
+    const artifact = await store.read(digest);
+    await store.verify(artifact);
+    const release = path.dirname(artifact.directory);
+    await rename(release, `${release}-moved`);
+    await symlink(`${path.basename(release)}-moved`, release);
+    await assert.rejects(store.verify(artifact), /release cannot be a symlink/);
   });
 });
 

@@ -202,8 +202,42 @@ async function atomicJson(file: string, value: unknown): Promise<void> {
 }
 
 async function snapshot(source: string, destination: string, store: string): Promise<void> {
-  const workspace = path.join(destination, 'workspace');
-  const materialized = new Map<string, string>([[source, workspace]]);
+  // Discover before assigning destinations: a link to a subpackage may sort
+  // before a link to its enclosing bundle. Both must use the same final tree,
+  // regardless of discovery order, so parent imports and module identity survive.
+  const targets = new Map<string, string>();
+  const visited = new Set<string>();
+  const discover = async (input: string, logical: string, ancestors: Set<string>): Promise<void> => {
+    const info = await lstat(input);
+    if (info.isSymbolicLink()) {
+      const target = await realpath(input);
+      if (inside(store, target)) throw new Error('Artifact source links into its release store');
+      if (ancestors.has(target)) throw new Error(`Cyclic artifact symlink: ${input}`);
+      if (!inside(source, target) && !targets.has(target)) targets.set(target, logical);
+      await discover(target, logical, ancestors);
+    } else if (info.isDirectory()) {
+      const actual = await realpath(input);
+      if (inside(store, actual)) throw new Error('Artifact source includes its release store');
+      if (ancestors.has(actual)) throw new Error(`Cyclic artifact directory: ${input}`);
+      if (visited.has(actual)) return;
+      visited.add(actual);
+      const next = new Set(ancestors).add(actual);
+      for (const name of (await readdir(input)).sort()) await discover(path.join(input, name), `${logical}/${name}`, next);
+    } else if (!info.isFile()) { throw new Error(`Artifact workspace contains a non-ordinary file: ${input}`); }
+  };
+  await discover(source, 'workspace', new Set());
+
+  const materialized = new Map<string, string>([[source, path.join(destination, 'workspace')]]);
+  for (const [target, logical] of targets) {
+    if ([...targets.keys()].some(other => other !== target && inside(other, target))) continue;
+    // Stable logical link names make identity independent of checkout location.
+    // Real TypeScript package paths stay outside node_modules for Node stripping.
+    const key = createHash('sha256').update(logical).digest('hex');
+    const privateRoot = path.join(destination, 'dependencies', key);
+    // Standalone file links need their suffix too: Node chooses ESM/CJS and
+    // TypeScript stripping from the resolved target filename, not the link.
+    materialized.set(target, (await lstat(target)).isDirectory() ? privateRoot : path.join(privateRoot, path.basename(target)));
+  }
   await mkdir(path.join(destination, 'dependencies'));
   const copy = async (input: string, output: string, ancestors: Set<string>): Promise<void> => {
     const info = await lstat(input);
@@ -211,26 +245,11 @@ async function snapshot(source: string, destination: string, store: string): Pro
       const target = await realpath(input);
       if (inside(store, target)) throw new Error('Artifact source links into its release store');
       if (ancestors.has(target)) throw new Error(`Cyclic artifact symlink: ${input}`);
-      // A link into an existing tree must keep that tree's relative layout.
-      // Copying only its target into a new bucket breaks sibling/parent imports
-      // even though those files are already present in the workspace snapshot.
-      const containing = [...materialized.entries()]
-        .filter(([original]) => inside(original, target))
-        .sort(([left], [right]) => right.length - left.length)[0];
-      let privateTarget = containing ? path.join(containing[1], path.relative(containing[0], target)) : undefined;
-      if (!privateTarget) {
-        // Stable logical link names make content identity independent of original
-        // checkout location. Dependencies live outside node_modules because Node
-        // intentionally does not strip TypeScript beneath node_modules.
-        const key = createHash('sha256').update(path.relative(destination, output).split(path.sep).join('/')).digest('hex');
-        privateTarget = path.join(destination, 'dependencies', key);
-        materialized.set(target, privateTarget);
-        await copy(target, privateTarget, ancestors);
-      }
+      const containing = [...materialized.entries()].find(([original]) => inside(original, target));
+      if (!containing) throw new Error(`Artifact symlink target changed while staging: ${input}`);
+      const privateTarget = path.join(containing[1], path.relative(containing[0], target));
       await symlink(path.relative(path.dirname(output), privateTarget), output);
-      return;
-    }
-    if (info.isDirectory()) {
+    } else if (info.isDirectory()) {
       const actual = await realpath(input);
       if (inside(store, actual)) throw new Error('Artifact source includes its release store');
       if (ancestors.has(actual)) throw new Error(`Cyclic artifact directory: ${input}`);
@@ -243,7 +262,10 @@ async function snapshot(source: string, destination: string, store: string): Pro
       await chmod(output, info.mode & 0o777);
     } else { throw new Error(`Artifact workspace contains a non-ordinary file: ${input}`); }
   };
-  await copy(source, workspace, new Set());
+  for (const [original, output] of materialized) {
+    await mkdir(path.dirname(output), { recursive: true });
+    await copy(original, output, new Set());
+  }
 }
 
 async function copyPrivateTree(source: string, destination: string): Promise<void> {
@@ -275,8 +297,11 @@ async function contentDigest(container: string, entryRelative: string): Promise<
       hash.update(`${JSON.stringify([relative, 'file', mode, data.length])}\n`).update(data);
     } else { throw new Error(`Artifact contains a non-ordinary file: ${relative}`); }
   };
-  await visit(container, '');
-  const entry = path.join(container, 'workspace', entryRelative);
+  // The store root (or any ancestor) may be an ordinary directory alias. Use
+  // canonical paths throughout traversal while still rejecting a release that
+  // is itself a symlink above. Mixing lexical paths with base falsely escapes.
+  await visit(base, '');
+  const entry = path.join(base, 'workspace', entryRelative);
   if (!inside(base, await realpath(entry)) || !(await lstat(await realpath(entry))).isFile()) throw new Error('Artifact entry is not a private regular file');
   return hash.digest('hex');
 }

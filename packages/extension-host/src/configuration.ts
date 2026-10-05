@@ -47,7 +47,12 @@ export class ConfigurationWriter {
       if (index < 0) throw new Error('Configured extension disappeared');
       next.entries.splice(index, 1);
     } else if (index < 0) next.entries.push(structuredClone(entry));
-    else next.entries[index] = { ...next.entries[index], ...structuredClone(entry) };
+    else {
+      const authored = next.entries[index]!;
+      // Manual runtime paths are canonicalized at startup. Ordinary settings
+      // changes must preserve an authored symlink (e.g. current -> version).
+      next.entries[index] = { ...authored, ...structuredClone(entry), ...(!entry.generated ? { path: authored.path } : {}) };
+    }
     const text = `${JSON.stringify(next, null, 2)}\n`;
     const temporary = path.join(path.dirname(this.file), `.${path.basename(this.file)}.${randomUUID()}.tmp`);
     try {
