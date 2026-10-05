@@ -121,13 +121,14 @@ export class ExtensionHost {
   /** Collect the native effect so Cordis cannot run it as a concurrent sibling.
    * Calling the same official disposer twice is harmless: it is idempotent.
    * The tracked first call gives dependents a completion barrier even on error. */
-  private deferNative(ctx: Context, dispose: Disposable): Promise<void> {
+  private deferNative(ctx: Context, dispose: Disposable, before?: () => Promise<void>): Promise<void> {
     const host = this;
     const done = Promise.withResolvers<void>();
     ctx.effect(function* () {
       yield dispose;
       yield async () => {
         await host.waitBatch();
+        await before?.();
         try { await dispose(); } finally { done.resolve(); }
       };
     }, 'Mira batch-safe Cordis resource');
@@ -148,12 +149,15 @@ export class ExtensionHost {
       consumers.add(finished.promise);
     }
     const serviceDrains: Promise<void>[] = [];
+    const resourceDrains: Promise<void>[] = [];
     const cleanupDrains: Promise<void>[] = [];
     const provided = new Set<string>();
     const services = new Map<string, unknown>();
     const drainConsumers = async (): Promise<void> => {
       await Promise.all([...provided].flatMap(key => [...this.consumers.get(key) ?? []]).filter(task => task !== finished.promise));
     };
+    const drainDependencies = async (): Promise<void> => { await Promise.all(serviceDrains); await drainConsumers(); };
+    const releaseResource = (cleanup: Cleanup): Promise<void> => this.defer(ctx, async () => { await drainDependencies(); await cleanup(); });
     const alive = (): void => { if (this.closed) throw new Error('Extension host is closed'); if (retired) throw new Error('Extension activation has retired'); };
     const context: ExtensionContext = {
       id,
@@ -163,7 +167,7 @@ export class ExtensionHost {
         if (this.reserved.has(tool.name) || this.tools.has(tool.name)) throw new Error(`Duplicate registered tool: ${tool.name}`);
         const registered = { extensionId: id, activation, tool: { ...tool, parameters: structuredClone(tool.parameters) } };
         this.tools.set(tool.name, registered);
-        cleanupDrains.push(this.defer(ctx, () => { if (this.tools.get(tool.name) === registered) this.tools.delete(tool.name); }));
+        resourceDrains.push(releaseResource(() => { if (this.tools.get(tool.name) === registered) this.tools.delete(tool.name); }));
       },
       emitEvent: async event => { alive(); return this.options.receive(id, validatedEvent(event)); },
       requestWake: async request => {
@@ -182,25 +186,25 @@ export class ExtensionHost {
         }
         return services.get(key) as T;
       },
-      onCleanup: cleanup => { alive(); cleanupDrains.push(this.defer(ctx, async () => { await Promise.all(serviceDrains); await drainConsumers(); await cleanup(); })); },
+      onCleanup: cleanup => { alive(); cleanupDrains.push(this.defer(ctx, async () => { await drainDependencies(); await Promise.all(resourceDrains); await cleanup(); })); },
       onEvent: (name, listener) => {
         alive();
         let listeners = this.listeners.get(name);
         if (!listeners) this.listeners.set(name, listeners = new Set());
         listeners.add(listener);
-        cleanupDrains.push(this.defer(ctx, () => { listeners.delete(listener); if (!listeners.size) this.listeners.delete(name); }));
+        resourceDrains.push(releaseResource(() => { listeners.delete(listener); if (!listeners.size) this.listeners.delete(name); }));
       },
       publish: (name, payload) => { alive(); for (const listener of this.listeners.get(name) ?? []) listener(structuredClone(payload)); },
       interval: (callback, milliseconds) => {
         alive();
         if (!Number.isFinite(milliseconds) || milliseconds <= 0) throw new Error('Interval must be positive');
-        cleanupDrains.push(this.deferNative(ctx, ctx.interval(callback, milliseconds)));
+        resourceDrains.push(this.deferNative(ctx, ctx.interval(callback, milliseconds), drainDependencies));
       },
     };
     const instance = { id, activation, context, fiber: ctx.fiber };
     this.instances.set(ctx.fiber, instance); this.latest.set(id, instance);
     this.defer(ctx, async () => {
-      await Promise.all([...serviceDrains, ...cleanupDrains]);
+      await Promise.all([...serviceDrains, ...resourceDrains, ...cleanupDrains]);
       await drainConsumers();
       retired = true;
       if (this.instances.get(ctx.fiber) === instance) this.instances.delete(ctx.fiber);

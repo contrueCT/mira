@@ -635,3 +635,35 @@ test('actual HMR and concurrent close await consumers before releasing provider 
   assert.equal(child.status, 0, `${child.stdout}\n${child.stderr}`);
   assert.match(child.stdout, /DEPENDENT_HMR_CLEANUP_COMPLETE/);
 });
+
+for (const action of ['disable', 'reload', 'close'] as const) test(`provider timer and listener remain usable during dependent cleanup on ${action}`, async () => {
+  await withDirectory(async directory => {
+    const provider = await fixture<{ ticks: number; trace: string[] }>(directory, 'tick-provider', `
+      export const state = { ticks: 0, trace: [] };
+      export default defineExtension({ name: 'tick-provider', apply(ctx) {
+        const pending = [];
+        ctx.onEvent('provider-final-tick', () => { for (const resolve of pending.splice(0)) resolve(); });
+        ctx.interval(() => { state.ticks++; ctx.publish('provider-final-tick', null); }, 5);
+        ctx.provideService('tick-service', { nextTick() { return new Promise(resolve => pending.push(resolve)); } });
+        ctx.onCleanup(() => { state.trace.push('provider-close'); });
+      } });
+    `);
+    const consumer = await fixture<{ done: number }>(directory, 'tick-consumer', `
+      export const state = { done: 0 };
+      export default defineExtension({ name: 'tick-consumer', requires: ['tick-service'], apply(ctx) {
+        const service = ctx.service('tick-service');
+        ctx.onCleanup(async () => { await service.nextTick(); state.done++; });
+      } });
+    `);
+    const host = new ExtensionHost({ entries: [{ id: 'provider', path: provider.path }, { id: 'consumer', path: consumer.path }], receive: received });
+    try {
+      await host.start(); await host.prepare();
+      if (action === 'close') await host.close();
+      else { host.requestChange('provider', { action }); await host.finish(); }
+      assert.equal(consumer.state.done, 1);
+      assert.deepEqual(provider.state.trace, ['provider-close']);
+    } finally { await host.close(); }
+    assert.equal(consumer.state.done, action === 'reload' ? 2 : 1);
+    const ticks = provider.state.ticks; await delay(20); assert.equal(provider.state.ticks, ticks);
+  });
+});

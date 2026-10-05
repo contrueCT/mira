@@ -22,7 +22,8 @@ Native service/timer disposers are collected into ordered Cordis effects, with t
 batch wait disposed first. Registering an independent async cleanup is insufficient:
 Cordis otherwise disposes sibling resources concurrently. SDK tools/listeners and
 async callbacks wait for the same batch. Provided services are withdrawn and their
-dependent generations fully drained before provider resource cleanup; shutdown also
+dependent generations fully drained before provider timers/listeners are stopped;
+only then do user cleanup callbacks release provider resources. Shutdown also
 tracks dependencies after Cordis removes its registry entries. Code is not unloaded while its published
 batch is executing. Detached, unregistered extension work has no such guarantee.
 
