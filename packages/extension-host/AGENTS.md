@@ -5,15 +5,17 @@
 ## 入口与状态
 
 - `README.md` 描述职责；`package.json` 是包名和公开 exports 的事实来源
-- `src/index.ts` 为手工配置可信本地扩展宿主，使用官方 Cordis RC / Loader / HMR / Timer。
+- `src/index.ts` 为手工与生成本地扩展宿主，使用官方 Cordis RC / Loader / HMR / Timer。
 - 本目录负责Cordis 的注册、依赖、生命周期和清理。
 
 ## 本地约束与跨包陷阱
 
-- Cordis 不是安全沙箱，不在宿主直接加载未知生成代码
+- Cordis 不是安全沙箱；按 ADR 0005，已授权生成代码直接使用宿主 OS 身份测试/import/apply
 - 验证卸载、重载失败、旧 timer/listener/socket 清理和注册撤销
 - 扩展只使用 SDK 公共契约，不直接接触数据库或核心内部
-- 隔离方案确认并验证前不开放自生成扩展激活
+- `artifacts.ts` 的 stage 只复制/哈希，不 import；测试/激活版本必须真实绑定完整快照与本地依赖
+- 每次生成版本激活使用私有新路径，复用 batch lease/cleanup；保留 release，不宣称回退外部效果
+- configuration、artifact、PG 与 runtime 非原子；receipt 必须分别报告未保存/已保存/实际失败
 
 ## 验证
 

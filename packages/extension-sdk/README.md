@@ -25,3 +25,11 @@ generated-code activation, or authorization override.
 
 Run `pnpm check` at the repository root. Offline host and runtime suites exercise
 these public contracts with real pinned Cordis/Pi packages and synthetic models.
+
+
+External coding workspaces use the ordinary [extension template](../../templates/extension/README.md).
+`node scripts/create-extension-workspace.mts /absolute/workspace` (from the repository)
+links this private SDK and existing local TypeScript/Node types; it does not fetch a
+registry package or run install scripts. Node resolves the SDK's real path outside
+node_modules, where TypeScript stripping is supported. Staging materializes the
+local dependency tree into private sibling directories and preserves that property.

@@ -19,11 +19,12 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 - [0004 手工可信扩展与同轮更新](0004-manual-trusted-extensions.md)：Accepted，范围与限制见 [验收](../acceptance/manual-extensions.md)
 
+- [0005 生成扩展生命周期](0005-generated-extension-lifecycle.md)：Accepted，宿主执行边界与普通文件版本，见 [验收](../acceptance/generated-extensions.md)
+
 ## 待确认
 
 | 决策 | 当前建议 / 需要验证 | 开始依赖它的工作前确认 |
 | --- | --- | --- |
 | Web/API/Schema | React/Next、Fastify/Hono、Zod/TypeBox 等尚未选定 | 服务端与 UI 实现 |
-| 生成扩展生命周期 | 手工可信 Cordis 生命周期已实现；生成代码激活、自动依赖安装与未知代码隔离尚未开放 | 激活生成代码 |
 
 不提前引入部署、付费模型调用、第三方账户、新凭据或不必要的框架。阶段临近时给出具体方案、取舍和验证结果。

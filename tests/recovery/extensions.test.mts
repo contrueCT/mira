@@ -14,7 +14,7 @@ import { createExtensionFixture, fixtureParameters } from './extension-fixtures.
 const event = (id: string): LifeEvent => ({ id, type: 'synthetic.user-message', source: 'user', occurredAt: '2026-10-05T08:00:00.000Z', payload: { text: `Synthetic extension request ${id}` } });
 const request = (id: string, name: string, args: AgentToolCall['arguments']) => ({ type: 'toolCall' as const, id, name, arguments: args });
 const calls = (...content: AssistantMessage['content']): AssistantMessage => ({ ...assistant(), stopReason: 'toolUse', content });
-const builtinNames = ['read', 'write', 'edit', 'grep', 'find', 'ls', 'bash', 'history.search', 'history.read', 'extension.inspect', 'extension.manage'];
+const builtinNames = ['read', 'write', 'edit', 'grep', 'find', 'ls', 'bash', 'history.search', 'history.read', 'extension.inspect', 'extension.stage', 'extension.manage'];
 
 function messages(snapshot: RecoverySnapshot) {
   return decodeRecords(snapshot.records).flatMap(entry => entry.type === 'message' ? [entry.message] : []);

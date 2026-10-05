@@ -15,7 +15,8 @@
     "tests/unit/wake-runtime.test.mts",
     "tests/unit/server-demo.test.mts",
     "tests/unit/live-tools.test.mts",
-    "tests/unit/extension-runtime.test.mts"
+    "tests/unit/extension-runtime.test.mts",
+    "tests/unit/generated-runtime.test.mts"
   ],
   "exclude": [
     "node_modules",
