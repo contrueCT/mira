@@ -121,3 +121,41 @@ test('distinct writer proxies sharing one ownership signal cannot start parallel
   await assert.rejects(new WakeLoop({ ...options, writer: new Proxy(f.writer, {}) }).drain(), /already has an active/);
   assert.equal(modelCalls, 1); release(); assert.equal(await first, 1);
 });
+
+test('completion callback observes the saved final and retries after failure without another model turn', async () => {
+  const f = fixture(); f.pending.push(event('a'));
+  let callbacks = 0;
+  const options = { ...f.options, beforeComplete: async (saved: WakeRun) => {
+    assert.equal(saved.id, 'run-1');
+    assert.equal(saved.inputRecordId, 'input-run-1');
+    assert.equal(saved.finalRecordId, 'final-run-1');
+    callbacks++;
+    if (callbacks === 1) throw Error('snapshot receipt unavailable');
+  } };
+  await assert.rejects(new WakeLoop(options).drain(), /snapshot receipt unavailable/);
+  assert.equal(f.completed.length, 0); assert.equal(f.inputs.length, 1);
+  assert.equal(await new WakeLoop(options).drain(), 1);
+  assert.equal(callbacks, 2); assert.equal(f.inputs.length, 1); assert.equal(f.completed.length, 1);
+});
+
+test('a completion callback is not invoked without durable final evidence', async () => {
+  const f = fixture(); f.pending.push(event('a'));
+  let callbacks = 0;
+  await assert.rejects(new WakeLoop({ ...f.options,
+    createRuntime: () => ({ async continueTurn() {} }),
+    beforeComplete: async () => { callbacks++; },
+  }).drain(), /final must be persisted/);
+  assert.equal(callbacks, 0); assert.equal(f.completed.length, 0);
+});
+
+test('ownership loss or caller cancellation during snapshot never completes the Wake', async () => {
+  for (const cause of ['ownership', 'caller'] as const) {
+    const f = fixture(); f.pending.push(event('a'));
+    const caller = new AbortController();
+    await assert.rejects(new WakeLoop({ ...f.options, beforeComplete: async (_run, signal) => {
+      assert.equal(signal, caller.signal);
+      (cause === 'ownership' ? f.controller : caller).abort(Error(`lost ${cause}`));
+    } }).drain(caller.signal), new RegExp(`lost ${cause}`));
+    assert.equal(f.completed.length, 0); assert.equal(f.inputs.length, 1);
+  }
+});

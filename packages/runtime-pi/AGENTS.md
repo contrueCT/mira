@@ -30,6 +30,8 @@ Shared rules: [root AGENTS.md](../../AGENTS.md). Read `README.md` before changes
 - Compactor uses an unregistered disposable provider alias verified through public
   APIs. Pass the original model to the injected stream; never persist the alias,
   register a provider, or mutate process env to prevent ambient auth discovery
+- `initialContext` loads only an empty version-zero durable stream; never reinject after ordinary wake, restart, file change or compaction. No change-notice machinery
+- `history-tools.ts` returns Mira-bound original history; generic persistence never parses Pi
 - All streams are injected; no credentials or live provider fallback. Runtime
   compaction never modifies Memory/State
 

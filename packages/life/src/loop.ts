@@ -9,6 +9,11 @@ export interface WakeLoopOptions {
   /** UTF-8 bytes for inline batch input; larger batches remain one turn and are
    * materialized in full. This is not a total provider context/token budget. */
   maxInlineBytes?: number;
+  /** Runs after the persisted final is validated, before Wake completion. A
+   * failure leaves the run active; recovery retries this callback without a new
+   * model turn. The callback must persist its own intent and idempotent receipt
+   * around any external snapshot, and must never assume DB/Git atomicity. */
+  beforeComplete?: (run: WakeRun, signal?: AbortSignal) => Promise<void>;
 }
 const draining = new WeakSet<AbortSignal>();
 const encoder = new TextEncoder();
@@ -70,6 +75,16 @@ export class WakeLoop {
         // Even an already-saved final is validated by the runtime before the
         // database marks completion. Generic storage cannot interpret Pi JSON.
         await this.options.createRuntime().continueTurn(turn, signal);
+        if (this.options.beforeComplete) {
+          signal?.throwIfAborted();
+          await writer.verifyActive();
+          // The original claim predates the runtime's input/final appends.
+          const finalized = await writer.loadWakeRun(run.id);
+          if (!finalized.inputRecordId || !finalized.finalRecordId) throw new Error('Wake final must be persisted before its completion callback');
+          await this.options.beforeComplete(finalized, signal);
+          signal?.throwIfAborted();
+          await writer.verifyActive();
+        }
         // The database enforces terminal evidence. A crash here resumes this
         // exact run and completes it without re-appending input or calling LLM.
         await writer.completeWakeRun(run.id);

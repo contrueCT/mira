@@ -141,3 +141,9 @@ PostgreSQL service and covers fresh-process recovery and crashes around a
 synthetic local counter effect. The suite injects every model response and makes
 no live model calls. Detailed limits and test setup are in
 [`tests/recovery/README.md`](../../tests/recovery/README.md).
+
+## Ordinary Memory bootstrap and history tools
+
+`initialContext(signal)` is an optional loader invoked only when the authoritative record stream is empty with version zero. It persists one system message before the first input/model call. Recovery, new runtime instances, ordinary wakes, file changes and compaction do not reload it. No automatic memory-change notices or new Wakes exist. An explicit destructive rebuild API is not implemented.
+
+`createHistoryTools(reader)` registers `history.search` and `history.read` against an assembly-bound Mira reader. It returns original record provenance without interpreting Pi inside persistence. Full-text prefix/Chinese limitations and exact-read byte budgets are included in tool descriptions. Expected bounded-query errors become explicit tool results; database faults remain faults. Ordinary Pi file/bash tools are composed by the server without cwd confinement. The existing intent/effect boundary still applies.

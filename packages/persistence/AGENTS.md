@@ -5,6 +5,7 @@
 ## 入口与状态
 
 - `src/index.ts` 实现核心 `DurableWriter` / `WakeWriter`，含合并 claim、原子输入/终止记录关联和完成；`src/migrate.ts` 提供显式 up/down
+- `MemoryCheckpointWriter` 以分开的不可变 pending checkpoint 和 Git `commit | null` receipt 支持恢复；存在 pending 时必须先关联 receipt 再完成 Wake，不能把 Git 放进数据库事务
 - `pg` 8.23.1、`node-pg-migrate` 9.0.0，无 ORM；`migrations/*.sql` 为迁移事实来源
 - 语义、限制和示例见 `README.md`；公开出口以 `package.json` 为准
 

@@ -21,6 +21,8 @@ export interface PiRuntimeOptions {
   /** Required even for a synthetic tool; authorization precedes intent and execution. */
   authorize: (call: AgentToolCall, args: Json, signal: AbortSignal, context: AuthorizationContext) => Promise<AuthorizationDecision>;
   tools?: AgentTool[];
+  /** Loaded only for a genuinely empty durable context, never ordinary recovery or compaction. */
+  initialContext?: (signal: AbortSignal) => Promise<string>;
 }
 export interface AuthorizationContext {
   priorOperations: RecoveryOperation[];
@@ -218,12 +220,23 @@ export class PiDurableRuntime implements CognitionRuntime {
       recovery: { status: operations.length ? 'observed-incomplete' : 'complete', operations } };
   }
 
+  private async initializeEmpty(current: RecoveredContext): Promise<RecoveredContext> {
+    if (current.snapshot.records.length || !this.options.initialContext) return current;
+    if (current.snapshot.version !== 0) throw new RecoveryBlockedError('Empty context has a nonzero version');
+    const text = await this.options.initialContext(this.controller.signal);
+    await this.verified();
+    if (typeof text !== 'string' || !text.trim()) throw new Error('Initial context must be nonempty text');
+    const entry = messageEntry({ role: 'system', content: [{ type: 'text', text }], timestamp: Date.now() }, null);
+    await this.options.writer.append(0, encodeEntry(entry), this.controller.signal);
+    return this.recoverInternal();
+  }
+
   /** External input is limited to system/user messages. Assistant/tool history
    * can only be emitted by the guarded Pi execution path. */
   appendMessage(message: AgentMessage): Promise<RecoveredContext> {
     return this.exclusive(async () => {
       if (message.role !== 'user' && message.role !== 'system') throw new Error('Only user/system input may be appended');
-      const current = await this.recoverInternal();
+      const current = await this.initializeEmpty(await this.recoverInternal());
       const entry = messageEntry(message, current.entries.at(-1)?.id ?? null);
       await this.options.writer.append(current.snapshot.version, encodeEntry(entry));
       return this.recoverInternal();
@@ -240,7 +253,7 @@ export class PiDurableRuntime implements CognitionRuntime {
     return this.exclusive(async () => {
       const writer = this.wakeWriter();
       const run = await writer.loadWakeRun(turn.id);
-      let current = await this.recoverInternal();
+      let current = await this.initializeEmpty(await this.recoverInternal());
       const linkedInput = run.inputRecordId ? current.entries.find(entry => entry.id === run.inputRecordId) : undefined;
       if (run.inputRecordId && (linkedInput?.type !== 'message' || linkedInput.message.role !== 'user')) throw new RecoveryBlockedError('Wake input link is not a persisted user message');
       if (Date.parse(turn.occurredAt) !== Date.parse(run.claimedAt)) throw new RecoveryBlockedError('Wake input timestamp differs from its durable batch');
@@ -282,7 +295,7 @@ export class PiDurableRuntime implements CognitionRuntime {
 
   private async runAttempt(input?: AgentMessage, turn?: CognitionTurn): Promise<RecoveredContext> {
       if (input && input.role !== 'user' && input.role !== 'system') throw new Error('Only user/system input may be prompted');
-      const current = await this.recoverInternal();
+      const current = await this.initializeEmpty(await this.recoverInternal());
       let version = current.snapshot.version;
       let parentId = current.entries.at(-1)?.id ?? null;
       const executions = new Map(current.snapshot.executions.map(e => [e.intent.callId, e]));
@@ -500,3 +513,5 @@ function validateProjection(messages: AgentMessage[]): void {
   }
   if (pending.length) throw new RecoveryBlockedError('Projection has incomplete tool calls');
 }
+
+export { createHistoryTools } from './history-tools.ts';

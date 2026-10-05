@@ -8,13 +8,15 @@
 
 ## 当前状态与关系
 
-当前实现范围包含连续上下文、持久合并唤醒与单认知循环，见 [ADR 0002](docs/adr/0002-coalesced-wake-loop.md)。Server 仅有假 provider CLI 组装，没有 HTTP/UI 或完整产品。
+当前实现包含连续上下文、合并 Wake、普通 Memory/State、通用 Pi 工具、Memory Git 与只读历史查询，见 [ADR 0003](docs/adr/0003-ordinary-memory-history.md)。Server 仅有假 provider CLI 组装，没有 HTTP/UI 或完整产品。
 
 - `apps/server` 组装核心与适配器；`apps/web` 提供单条 Timeline
 - `life` / `context` 保持独立，不导入 Pi、Cordis、数据库或 Web 框架
 - 核心拥有契约，`runtime-pi`、`persistence`、`workspace` 等适配器实现契约
 - 扩展只使用 `extension-sdk`；Cordis 处理生命周期，不是安全沙箱
-- 用户数据、Memory/State 的 Git、日志、凭据均在源码仓库之外
+- 用户数据、Memory 的独立 Git、State 普通文件、日志、凭据均在源码仓库之外；State 不做 Git 版本化
+- 普通文件变化不通知上下文、不 Wake、不重注入；仅真正初始上下文加载 MEMORY.md 和配置的 State
+- Pi 通用文件/search/bash 工具无应用工作目录限制，无产品隔离环境要求；cwd 不是沙箱，OS 权限与自然语言意图判断仍有效
 - 实际允许依赖和出口以 `scripts/boundaries.json` 与各包 `package.json` 为准；新增时最小开放
 
 ## 按需指引
@@ -53,7 +55,7 @@ pnpm check
 - 一个持续 Mira；Wake 继续上下文，Event 不等于 Wake；不加入 New Chat 或会话领域
 - Compaction 与 Dreaming 分开；先验证 Pi 恢复/工具/压缩，再实现主循环
 - 跨进程单写者、版本检查、增量工具记录；未知结果真实呈现给模型，不自动重放、不全局阻断认知
-- 授权依据用户自然语言及上下文，系统辅助判断；不添加批准按钮、硬风险门禁或固定重试阻拦。真实身份、安全隔离和数据完整性仍是硬边界
+- 授权依据用户自然语言及上下文，系统辅助判断；不添加批准按钮、硬风险门禁或固定重试阻拦。真实身份、真实 OS 账户权限和数据完整性仍是硬边界
 - 超限唤醒保存普通文本文件并告知路径；复用普通文件工具，不构建专用消息读取/分页服务
 - 重要技术选择与范围变化先向用户确认，状态记录在 `docs/adr/`；不能把建议当批准
 - 每轮实现及修复都使用全新、独立 `gpt-6.1-sol` / `max` 审查，不继承实现对话

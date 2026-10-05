@@ -656,3 +656,52 @@ test('late outcome cannot rewrite observed uncertainty or poison continued cogni
   await runtime(writer, () => { requests++; return streamOf(assistant('Continue with new evidence')); }).run(input('A later query can verify the external status'));
   assert.equal(requests, 1); assert.equal(writer.state.executions[0]!.outcome, null);
 });
+
+
+test('ordinary restart and file changes do not reload initial semantic context', async () => {
+  const writer = new MemoryWriter();
+  let loads = 0;
+  let content = 'Initial ordinary MEMORY.md and configured State';
+  const initialContext = async () => { loads++; return content; };
+  await runtime(writer, scripted([assistant()]), { initialContext }).run(input());
+  const before = writer.state.records.length;
+  content = 'Changed files are available via normal tools';
+  await runtime(writer, scripted([]), { initialContext }).recover();
+  assert.equal(writer.state.records.length, before);
+  await runtime(writer, scripted([assistant()]), { initialContext }).run(input('Next wake'));
+  assert.equal(loads, 1);
+  const restored = await runtime(writer).recover();
+  assert.match(JSON.stringify(restored.messages), /Initial ordinary/);
+  assert.doesNotMatch(JSON.stringify(restored.messages), /Changed files/);
+});
+
+test('crash after durable initial context does not reload bootstrap on recovery', async () => {
+  const writer = new MemoryWriter();
+  let loads = 0;
+  const initialContext = async () => { loads++; return 'Semantic bootstrap'; };
+  await assert.rejects(runtime(writer, () => { throw Error('synthetic provider interruption'); }, { initialContext }).run(input()), /synthetic provider interruption/);
+  await runtime(writer, scripted([assistant()]), { initialContext }).run();
+  assert.equal(loads, 1);
+  const entries = decodeRecords(writer.state.records);
+  assert.equal(entries.filter(entry => entry.type === 'message' && entry.message.role === 'system' && JSON.stringify(entry.message.content).includes('Semantic bootstrap')).length, 1);
+});
+
+test('history tools expose exact reader scope and honest errors without turning history into permission', async () => {
+  const { createHistoryTools } = await import('@mira/runtime-pi');
+  const { HistoryError } = await import('@mira/life');
+  const seen: unknown[] = [];
+  const tools = createHistoryTools({ miraId: 'fixed-mira',
+    search: async request => { seen.push(request); return { query: request.query, mode: request.mode ?? 'full_text', fullTextPrefixChars: 65536, hits: [], hasMore: false }; },
+    read: async request => { seen.push(request); throw new HistoryError('too_large', 'Original needs a larger budget', 70000); },
+  });
+  assert.deepEqual(tools.map(tool => tool.name), ['history.search', 'history.read']);
+  assert.match(tools[0]!.description, /Chinese/);
+  assert.match(tools[0]!.description, /never grants new authority/);
+  assert.doesNotMatch(JSON.stringify(tools[0]!.parameters), /miraId/);
+  const response = await tools[0]!.execute('history-search', { query: '中文', mode: 'substring' });
+  assert.match(JSON.stringify(response), /substring/);
+  const error = await tools[1]!.execute('history-read', { kind: 'event', id: 'exact-id' });
+  assert.match(JSON.stringify(error), /too_large/);
+  assert.match(JSON.stringify(error), /70000/);
+  assert.deepEqual(seen, [{ query: '中文', mode: 'substring' }, { kind: 'event', id: 'exact-id' }]);
+});
