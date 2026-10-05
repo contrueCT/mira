@@ -38,7 +38,11 @@ test('Pi declaration exception is scoped and source strictness remains inherited
   const manifest = JSON.parse(await readFile('package.json', 'utf8'));
   assert.equal(core.compilerOptions.skipLibCheck, false);
   assert.equal(pi.extends, './tsconfig.json');
-  assert.deepEqual(pi.compilerOptions, { skipLibCheck: true });
+  assert.deepEqual(pi.compilerOptions, { skipLibCheck: true, module: 'ESNext', moduleResolution: 'Bundler' });
+  const extensions = JSON.parse(await readFile('tsconfig.extensions.json', 'utf8'));
+  assert.deepEqual(extensions.compilerOptions, { module: 'ESNext', moduleResolution: 'Bundler' });
+  assert.equal(core.compilerOptions.moduleResolution, 'NodeNext');
+  assert.equal(core.compilerOptions.module, 'NodeNext');
   for (const flag of ['strict', 'noUncheckedIndexedAccess', 'exactOptionalPropertyTypes']) assert.equal(core.compilerOptions[flag], true);
   assert.ok(core.exclude.includes('packages/runtime-pi'));
   assert.ok(pi.include.includes('packages/runtime-pi/**/*.ts'));

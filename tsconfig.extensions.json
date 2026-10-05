@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler"
+  },
+  "include": [
+    "packages/extension-host/**/*.ts",
+    "tests/unit/extension-host.test.mts",
+    "tests/unit/extension-configuration.test.mts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
+}

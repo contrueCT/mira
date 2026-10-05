@@ -9,7 +9,7 @@
   },
   "scripts": {
     "check": "pnpm typecheck && pnpm boundaries && pnpm test && pnpm build",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.pi.json",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.pi.json && tsc --noEmit -p tsconfig.extensions.json",
     "boundaries": "node scripts/check-boundaries.mts",
     "test": "node scripts/run-tests.mts",
     "build": "tsc -p tsconfig.tools.json",
@@ -31,6 +31,8 @@
     "@earendil-works/pi-coding-agent": "1.0.2",
     "@mira/cognition": "workspace:*",
     "@mira/workspace": "workspace:*",
-    "@mira/server": "workspace:*"
+    "@mira/server": "workspace:*",
+    "@mira/extension-sdk": "workspace:*",
+    "@mira/extension-host": "workspace:*"
   }
 }

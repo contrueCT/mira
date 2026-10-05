@@ -1,7 +1,9 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler"
   },
   "include": [
     "packages/runtime-pi/**/*.ts",
@@ -11,7 +13,9 @@
     "apps/server/**/*.ts",
     "apps/server/**/*.mts",
     "tests/unit/wake-runtime.test.mts",
-    "tests/unit/server-demo.test.mts"
+    "tests/unit/server-demo.test.mts",
+    "tests/unit/live-tools.test.mts",
+    "tests/unit/extension-runtime.test.mts"
   ],
   "exclude": [
     "node_modules",

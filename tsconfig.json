@@ -29,7 +29,8 @@
     "apps/**/*.tsx",
     "packages/**/*.ts",
     "packages/**/*.mts",
-    "packages/**/*.tsx"
+    "packages/**/*.tsx",
+    "examples/**/*.ts"
   ],
   "exclude": [
     "node_modules",
@@ -38,6 +39,11 @@
     "tests/unit/runtime.test.mts",
     "apps/server",
     "tests/unit/wake-runtime.test.mts",
-    "tests/unit/server-demo.test.mts"
+    "tests/unit/server-demo.test.mts",
+    "tests/unit/live-tools.test.mts",
+    "packages/extension-host",
+    "tests/unit/extension-host.test.mts",
+    "tests/unit/extension-configuration.test.mts",
+    "tests/unit/extension-runtime.test.mts"
   ]
 }

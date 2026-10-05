@@ -1,9 +1,11 @@
+import { readExtensionConfiguration } from '@mira/extension-host';
+import type { DemoOptions } from './index.ts';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runDemo } from './index.ts';
 
 if (process.argv.includes('--help')) {
-  console.log('Mira synthetic PostgreSQL demo\nMIRA_DEMO_DATABASE_URL=<explicit localhost mira_demo or mira_test URL> MIRA_DEMO_SPOOL=<outside source/home directory> pnpm demo <stable-input-id> <message>\nOptional: MIRA_DEMO_SCHEMA (default mira_demo), MIRA_DEMO_MIRA_ID (default synthetic-mira), MIRA_DEMO_MAX_INLINE_BYTES, MIRA_DEMO_CWD (existing directory), MIRA_DEMO_MEMORY + MIRA_DEMO_STATE (optional paired roots), MIRA_DEMO_STATE_FILES (JSON array of relative paths)\nRepeat the same input ID/message to verify idempotency. No real model or credentials are used.');
+  console.log('Mira synthetic PostgreSQL demo\nMIRA_DEMO_DATABASE_URL=<explicit localhost mira_demo or mira_test URL> MIRA_DEMO_SPOOL=<outside source/home directory> pnpm demo <stable-input-id> <message>\nOptional: MIRA_DEMO_SCHEMA (default mira_demo), MIRA_DEMO_MIRA_ID (default synthetic-mira), MIRA_DEMO_MAX_INLINE_BYTES, MIRA_DEMO_CWD (existing directory), MIRA_DEMO_MEMORY + MIRA_DEMO_STATE (optional paired roots), MIRA_DEMO_STATE_FILES (JSON array of relative paths), MIRA_DEMO_EXTENSIONS (trusted local JSON configuration file; source HMR needs node --expose-internals)\nRepeat the same input ID/message to verify idempotency. No real model or credentials are used.');
 } else {
   const connectionString = process.env['MIRA_DEMO_DATABASE_URL'];
   const spoolDirectory = process.env['MIRA_DEMO_SPOOL'];
@@ -20,7 +22,11 @@ if (process.argv.includes('--help')) {
   const stateFiles: unknown = JSON.parse(process.env['MIRA_DEMO_STATE_FILES'] ?? '[]');
   if (!Array.isArray(stateFiles) || stateFiles.some(file => typeof file !== 'string')) throw Error('MIRA_DEMO_STATE_FILES must be a JSON array of relative paths');
   if (stateFiles.length && !memoryRoot) throw Error('State files require configured Memory and State roots');
+  const extensionFile = process.env['MIRA_DEMO_EXTENSIONS'];
+  const extensions: DemoOptions['extensions'] = extensionFile ? await readExtensionConfiguration(extensionFile) : undefined;
+  if (extensions && (!Array.isArray(extensions.entries) || (extensions.hmr !== undefined && typeof extensions.hmr !== 'boolean'))) throw Error('Extension configuration requires entries[] and optional hmr boolean');
   const result = await runDemo({
+    ...(extensions ? { extensions } : {}),
     connectionString, schema, miraId: process.env['MIRA_DEMO_MIRA_ID'] ?? 'synthetic-mira', spoolDirectory: path.resolve(spoolDirectory),
     ...(memoryRoot && stateRoot ? { memory: { memoryRoot: path.resolve(memoryRoot), stateRoot: path.resolve(stateRoot), stateFiles } } : {}),
     ...(process.env['MIRA_DEMO_CWD'] ? { workingDirectory: path.resolve(process.env['MIRA_DEMO_CWD']) } : {}),

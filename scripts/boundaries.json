@@ -7,7 +7,8 @@
       "@mira/life",
       "@mira/persistence",
       "@mira/runtime-pi",
-      "@mira/workspace"
+      "@mira/workspace",
+      "@mira/extension-host"
     ],
     "external": [
       "@earendil-works/pi-agent-core",
@@ -27,8 +28,15 @@
   },
   "@mira/extension-host": {
     "path": "packages/extension-host",
-    "allow": [],
-    "external": []
+    "allow": [
+      "@mira/extension-sdk"
+    ],
+    "external": [
+      "cordis",
+      "@cordisjs/plugin-loader",
+      "@cordisjs/plugin-hmr",
+      "@cordisjs/plugin-timer"
+    ]
   },
   "@mira/external-sdk": {
     "path": "packages/external-sdk",

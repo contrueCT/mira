@@ -41,6 +41,48 @@ callbacks are not supported. Pi's standard schema normalization/coercion is
 preserved: durable intent records both the original requested arguments and the
 validated arguments the callback approved and the tool receives.
 
+## Live tool registries
+
+`tools` remains a static registry for each runtime attempt. The optional
+`prepareTools(signal): Promise<AgentTool[]>` instead returns the **complete** live
+registry, including any built-ins. When provided, it replaces the static registry.
+It may await pending extension activation or reload before returning its snapshot.
+Duplicate names and `prepareArguments` are rejected for every prepared snapshot.
+All dynamic tools use the same schema validation, natural-language authorization,
+durable intent/outcome, sequential execution, and recovery path as static tools.
+
+Pi 1.0.2 does not call its next-turn hook for the first request. The adapter first
+constructs an Agent with an empty registry, prepares the initial snapshot, then
+attaches it through public `agent.state.tools` before entering the loop. Pi's
+normal declaration events are therefore persisted, including first startup with
+no system message. For subsequent natural tool continuations, the public
+`prepareNextTurnWithContext(context, signal)` hook runs **after the complete prior
+tool batch and its awaited durable result appends**, before Pi computes its next
+tool-state deltas. It returns one context containing the freshly recovered full
+messages and the newly wrapped registry. `prepareRequest` refreshes authoritative
+messages after those declaration events, retaining exactly the registry already
+declared for that request. It never swaps tools after declaration generation.
+
+The adapter deep-copies declaration/validation schemas and constrained-sampling metadata for each published generation. A source must keep its
+executable resources alive, through the full provider request and tool batch.
+Replacement/removal is safe at the next preparation boundary; changing a registry
+while the first sibling executes must not invalidate later siblings. The optional
+`finishTools(): Promise<void>` releases the final snapshot on every attempt exit,
+including cancellation, failed initial preparation, and interrupted attempts that
+will recover. It is awaited exactly once per attempt that begins preparation and
+must tolerate a preparation that failed before acquiring resources. The source
+may drain pending lifecycle work there, but cleanup never requests another model
+turn. A terminal assistant reply remains terminal.
+
+Additions, schema/description changes, and removals use existing durable Pi
+`toolsAdded`/`toolsRemoved` declarations. A code-only generation update with an
+identical declaration cannot be inferred from serialized tool state: the host
+must include a stable generation revision in the tool description when that
+change should be visible to the model/history. No new history format, replay of
+old operations, or automatic Wake is introduced. Recovering history only restores
+declarations and operation evidence; executable functions still come from the
+current caller-owned registry.
+
 ## Failure and recovery semantics
 
 Tools execute sequentially. Awaited agent-core subscribers persist assistant
@@ -135,8 +177,10 @@ MIRA_TEST_DATABASE_URL=postgresql://mira:mira@127.0.0.1:5432/mira_test pnpm test
 pnpm check:all
 ```
 
-`tests/unit/runtime.test.mts` is offline fault-injection coverage, not database
-proof. `tests/recovery/postgres-recovery.test.mts` requires an isolated real
+`tests/unit/runtime.test.mts` and `tests/unit/live-tools.test.mts` are offline
+fault-injection coverage, not database proof. The live-tool suite verifies
+same-run activation and use, full-batch lifetime barriers, declared/executable
+schema agreement, replacement/removal, authorization, cleanup, and recovery. `tests/recovery/postgres-recovery.test.mts` requires an isolated real
 PostgreSQL service and covers fresh-process recovery and crashes around a
 synthetic local counter effect. The suite injects every model response and makes
 no live model calls. Detailed limits and test setup are in

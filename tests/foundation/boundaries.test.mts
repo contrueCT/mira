@@ -203,3 +203,12 @@ test('rejects absolute/URL/alias imports and package symlink escapes', async () 
     await assert.rejects(checkBoundaries(root), /symlinks are not allowed/);
   });
 });
+
+test('extension SDK stays platform-independent while host and server use only approved public edges', async () => {
+  await fixture(async root => {
+    await mkdir(path.join(root, 'packages/extension-sdk/src'), { recursive: true });
+    await writeFile(path.join(root, 'packages/extension-sdk/src/bad.ts'), `import 'node:fs'; import 'cordis'; import '@earendil-works/pi-agent-core'; import '@mira/persistence';`);
+    const errors = await checkBoundaries(root);
+    for (const expected of ['platform-independent package', 'external import not allowed cordis', 'external import not allowed @earendil-works/pi-agent-core', 'forbidden import @mira/persistence']) assert.ok(errors.some(error => error.includes(expected)), expected);
+  });
+});

@@ -21,6 +21,13 @@ export interface PiRuntimeOptions {
   /** Required even for a synthetic tool; authorization precedes intent and execution. */
   authorize: (call: AgentToolCall, args: Json, signal: AbortSignal, context: AuthorizationContext) => Promise<AuthorizationDecision>;
   tools?: AgentTool[];
+  /** Complete registry, prepared before the first request and after each settled
+   * tool batch that naturally continues. Replaces tools when provided. The source
+   * must retain current tool resources until this next preparation boundary. */
+  prepareTools?: (signal: AbortSignal) => Promise<AgentTool[]>;
+  /** Release the final prepared registry on every exit, including cancellation
+   * or failed preparation. Cleanup never schedules an extra model request. */
+  finishTools?: () => Promise<void>;
   /** Loaded only for a genuinely empty durable context, never ordinary recovery or compaction. */
   initialContext?: (signal: AbortSignal) => Promise<string>;
 }
@@ -52,12 +59,7 @@ export class PiDurableRuntime implements CognitionRuntime {
 
   constructor(options: PiRuntimeOptions) {
     if (typeof options.authorize !== 'function' || typeof options.streamFn !== 'function') throw new Error('Authorization and injected streamFn are required');
-    const names = new Set<string>();
-    for (const tool of options.tools ?? []) {
-      if (names.has(tool.name)) throw new Error(`Duplicate registered tool: ${tool.name}`);
-      if (tool.prepareArguments) throw new Error('Tool prepareArguments is not supported before the authorization boundary');
-      names.add(tool.name);
-    }
+    validateTools(options.tools ?? []);
     this.options = options;
     if (options.writer.signal.aborted) this.stop(options.writer.signal.reason ?? new Error('Writer lost'));
   }
@@ -315,36 +317,62 @@ export class PiDurableRuntime implements CognitionRuntime {
           content: 'Continue the current persisted Wake. Its preceding assistant response did not complete this Wake.', timestamp: Date.parse(turn.occurredAt) });
         return messages;
       };
-      const tools = (this.options.tools ?? []).map(tool => ({
-        ...tool,
-        replay: 'never' as const, executionMode: 'sequential' as const,
-        execute: async (id: string, args: unknown, toolSignal?: AbortSignal, update?: Parameters<AgentTool['execute']>[3]) => {
-          try {
-            attemptGate();
-            await this.verified();
-            attemptGate();
-            const execution = executions.get(id);
-            if (!execution || execution.outcome || outcomes.has(id)) throw new Error(`Tool has no fresh authorized intent: ${id}`);
-            if (!isDeepStrictEqual(jsonValue(args), execution.intent.arguments)) throw new Error('Tool execution arguments differ from authorized intent');
-            toolSignal?.throwIfAborted();
-            // A throw may happen after a remote effect. Never manufacture a
-            // definitive failure from it: leave durable intent unresolved.
-            let result: Awaited<ReturnType<AgentTool['execute']>>;
-            try { result = await tool.execute(id, args as never, toolSignal, update); }
-            catch (error) {
-              // Writer loss/cancellation remains fatal. A tool throw alone proves
-              // neither failure nor success, so stop this attempt without asking
-              // Pi to publish its synthetic error result.
-              this.gate();
-              interruption = new ToolInterruptionError(error instanceof Error ? error.message : String(error));
-              this.agent?.abort();
-              throw interruption;
-            }
-            attemptGate();
-            return result;
-          } catch (error) { throw fail(error); }
-        },
-      } satisfies AgentTool));
+      const wrapTools = (registry: AgentTool[]): AgentTool[] => {
+        validateTools(registry);
+        // Pin each executable definition for the whole request and its tool batch.
+        // Later snapshots may replace/remove a name, but never alter its dispatch.
+        return registry.map(source => {
+          const tool = { ...source,
+            parameters: structuredClone(source.parameters),
+            ...(source.outputSchema === undefined ? {} : { outputSchema: structuredClone(source.outputSchema) }),
+            ...(source.constrainedSampling === undefined ? {} : { constrainedSampling: structuredClone(source.constrainedSampling) }),
+          };
+          return {
+            ...tool,
+            replay: 'never' as const, executionMode: 'sequential' as const,
+            execute: async (id: string, args: unknown, toolSignal?: AbortSignal, update?: Parameters<AgentTool['execute']>[3]) => {
+              try {
+                attemptGate();
+                await this.verified();
+                attemptGate();
+                const execution = executions.get(id);
+                if (!execution || execution.outcome || outcomes.has(id)) throw new Error(`Tool has no fresh authorized intent: ${id}`);
+                if (!isDeepStrictEqual(jsonValue(args), execution.intent.arguments)) throw new Error('Tool execution arguments differ from authorized intent');
+                toolSignal?.throwIfAborted();
+                // A throw may happen after a remote effect. Never manufacture a
+                // definitive failure from it: leave durable intent unresolved.
+                let result: Awaited<ReturnType<AgentTool['execute']>>;
+                try { result = await tool.execute(id, args as never, toolSignal, update); }
+                catch (error) {
+                  // Writer loss/cancellation remains fatal. A tool throw alone proves
+                  // neither failure nor success, so stop this attempt without asking
+                  // Pi to publish its synthetic error result.
+                  this.gate();
+                  interruption = new ToolInterruptionError(error instanceof Error ? error.message : String(error));
+                  this.agent?.abort();
+                  throw interruption;
+                }
+                attemptGate();
+                return result;
+              } catch (error) { throw fail(error); }
+            },
+          } satisfies AgentTool;
+        });
+      };
+      const staticTools = this.options.prepareTools ? undefined : wrapTools(this.options.tools ?? []);
+      const prepareTools = async (): Promise<AgentTool[]> => {
+        attemptGate();
+        if (!this.options.prepareTools) return staticTools!;
+        const registry = await this.options.prepareTools(this.controller.signal);
+        await this.verified();
+        attemptGate();
+        return wrapTools(registry);
+      };
+      const refreshMessages = async (): Promise<AgentMessage[]> => {
+        const state = await this.recoverInternal();
+        if (state.snapshot.version !== version) throw new Error('Context changed during run');
+        return continuedMessages(state);
+      };
       const agent = new Agent({
         toolExecution: 'sequential', convertToLlm,
         initialState: { model: this.options.model, tools: [], messages: continuedMessages(current) },
@@ -356,12 +384,24 @@ export class PiDurableRuntime implements CognitionRuntime {
             return await this.options.streamFn(model, context, options);
           } catch (error) { throw fail(error); }
         },
-        prepareRequest: async () => {
+        prepareNextTurnWithContext: async (_context, signal) => {
           try {
             attemptGate();
-            const state = await this.recoverInternal();
-            if (state.snapshot.version !== version) throw new Error('Context changed during run');
-            return { context: { messages: continuedMessages(state), tools } };
+            signal?.throwIfAborted();
+            // Pi calls this only after the entire prior batch and its awaited
+            // subscribers settle, before the next tool-state declaration delta.
+            const tools = await prepareTools();
+            const messages = await refreshMessages();
+            signal?.throwIfAborted();
+            return { context: { messages, tools } };
+          } catch (error) { throw fail(error); }
+        },
+        prepareRequest: async ({ context }) => {
+          try {
+            attemptGate();
+            // Declaration events have already been durably appended. Refresh
+            // their messages, but keep exactly the registry Pi just declared.
+            return { context: { messages: await refreshMessages(), tools: context.tools ?? [] } };
           } catch (error) { throw fail(error); }
         },
         beforeToolCall: async context => {
@@ -413,7 +453,6 @@ export class PiDurableRuntime implements CognitionRuntime {
       // in memory, without message_end. Attach the registry through public state
       // after construction so Pi's normal loop emits its declaration/change
       // events, and our awaited subscriber durably saves them before projection.
-      agent.state.tools = tools;
       this.agent = agent;
       const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
         try {
@@ -460,12 +499,18 @@ export class PiDurableRuntime implements CognitionRuntime {
         } catch (error) { throw fail(error); }
       });
       try {
+        // prepareNextTurnWithContext does not run for the first request in Pi
+        // 1.0.2. Prepare its snapshot once before entering the public loop.
+        agent.state.tools = await prepareTools();
         if (input) await agent.prompt(structuredClone(input));
         else await agent.continue();
         attemptGate();
         if (agent.state.errorMessage) throw new Error(agent.state.errorMessage);
         return await this.recoverInternal();
-      } finally { unsubscribe(); this.agent = undefined; }
+      } finally {
+        unsubscribe(); this.agent = undefined;
+        await this.options.finishTools?.();
+      }
   }
 
   compact(options: CompactionOptions = {}): Promise<RecoveredContext> {
@@ -481,6 +526,15 @@ export class PiDurableRuntime implements CognitionRuntime {
       await this.options.writer.append(before.snapshot.version, encodeEntry(checkpoint), this.controller.signal);
       return this.recoverInternal();
     }, options.signal);
+  }
+}
+
+function validateTools(tools: AgentTool[]): void {
+  const names = new Set<string>();
+  for (const tool of tools) {
+    if (names.has(tool.name)) throw new Error(`Duplicate registered tool: ${tool.name}`);
+    if (tool.prepareArguments) throw new Error('Tool prepareArguments is not supported before the authorization boundary');
+    names.add(tool.name);
   }
 }
 
