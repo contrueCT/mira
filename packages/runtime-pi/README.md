@@ -3,7 +3,7 @@
 This adapter uses the pinned public `@earendil-works/pi-agent-core`, `pi-ai`, and
 `pi-coding-agent` APIs at `1.0.2`. PostgreSQL through `@mira/life`'s `DurableWriter`
 is the sole authority. No session JSONL file is written. This is the recovery and
-compaction foundation, not a complete Mira server or Wake scheduler.
+compaction adapter, including the cognition contract used by the Wake scheduler.
 
 ## Public boundary
 
@@ -20,15 +20,23 @@ opaque JSON Pi entry in a versioned envelope.
 - `appendMessage(message)` accepts only user/system input
 - `run(message?, signal?)` appends input or continues an already-persisted user or
   tool result, using the agent-core model/tool loop
+- `continueTurn(turn, signal?)` implements the core cognition contract using a
+  `WakeWriter`; input and terminal response associations are atomic, and persisted
+  final responses are never regenerated
 - `compact(options?)` snapshots the authority, runs full public SDK compaction in
   a disposable in-memory session, and conditionally publishes its exact checkpoint
 - `encodeEntry`, `decodeRecords`, `messageEntry`, and `jsonValue` implement the
   adapter's structured JSON boundary
 
 Authorization is mandatory before intent and execution. The callback must return
-explicit allowance plus JSON evidence or denial. This is an integration boundary,
-not a natural-language consent resolver, security sandbox, or proof that the
-caller-provided authorization policy is correct. Side-effecting `prepareArguments`
+an agent/application execution decision plus JSON evidence, or a reason to defer
+the operation. The callback receives prior incomplete-operation evidence and the
+current assistant narrative. Evidence can express natural-language user intent;
+no approval button, approval-token format, tool risk class, or matching-arguments
+veto is required. Deferral records why execution did not start and returns control
+to cognition, which can ask the user or choose another action. Tool/web content is
+not user authorization. This integration boundary is not a security sandbox or
+proof that the caller-provided decision policy is correct. Side-effecting `prepareArguments`
 callbacks are not supported. Pi's standard schema normalization/coercion is
 preserved: durable intent records both the original requested arguments and the
 validated arguments the callback approved and the tool receives.
@@ -43,22 +51,41 @@ message is canonicalized to that saved JSON before append.
 
 Pi catches hook errors and may resolve `prompt()` after failure. Explicit runtime
 latches, subscription gates, wrapped effect/model functions, writer checks, and
-abort signals therefore enforce stopping independently. Every failed runtime
-instance must be discarded; create a new instance and recover the database.
+abort signals therefore enforce stopping independently. A database, provider,
+integrity, or cancellation failure invalidates that runtime instance. A tool throw
+or application deferral stops the current Pi attempt, suppresses its synthesized
+results, and starts a fresh Agent only after durable recovery observations exist.
 
-A thrown effect or absent outcome is conservatively unknown. Recovery refuses
-model and tool execution until reconciliation, with no automatic retry. A saved
-outcome with a missing transcript append can be materialized exactly without
-repeating the effect. An incomplete multi-call batch whose later calls lack
-outcomes also blocks recovery. Reused call IDs are rejected even with Pi's
-`replay: "never"` metadata. This does not claim exactly-once remote side effects;
-an effect already started may ignore cancellation and finish after ownership loss.
+A thrown effect or absent durable outcome is conservatively unknown. Recovery
+records `outcome-unknown` for an intent without outcome, and `not-started` when no
+intent exists. These are operation-specific facts visible to the model, not a
+whole-cognition blocker. A saved outcome missing its transcript append is restored
+exactly, including timestamps. Original tool calls and known results remain in
+PostgreSQL; only unresolved protocol tool-call blocks are omitted from the
+disposable projection. If that removal empties an assistant message, only its
+provider-facing message is omitted; the source entry and provenance ID remain.
+No success/failure `toolResult` is fabricated. Read-only
+checks and deliberate new-ID operations may proceed under the normal decision
+callback. Reused call IDs remain structural errors, including after compaction.
+This does not claim exactly-once remote effects: an operation may finish after
+ownership loss if it ignores cancellation.
+
+The existing envelope v1 / Pi 1.0.2 stream has one narrow additive extension:
+public Pi `custom_message`, with `customType: "mira.recovery-observation.v1"`,
+`display: true`, canonical explanatory content, and details `{version: 1,
+operations: [...]}`. Each operation contains its call ID, original assistant
+record ID, tool name, requested arguments, status, and authorized arguments when
+an intent exists. A not-started operation may carry an application defer reason.
+The decoder rejects other custom types/versions and malformed observations;
+recovery verifies every reference, status, argument, and batch position against
+the authority. Existing valid v1 history remains readable, and prior readers fail
+closed on the new custom entry rather than silently misinterpreting it.
 
 Unknown envelope/runtime versions, malformed required message fields, unsupported
 entry/message types, pending/deferred assistant states, mismatched execution
 references, broken tool pairs, or invalid checkpoint boundaries fail closed and
 need explicit migration/reconciliation. This version publishes only a linear
-message/checkpoint stream; importing unproven tool history is unsupported.
+message/checkpoint/recovery-observation stream; importing unproven tool history is unsupported.
 Unknown *defined JSON fields* are retained rather than whitelisted. Pi's optional
 undefined object properties have no JSON representation and are omitted;
 nonfinite numbers, functions, class instances, sparse arrays and cycles are rejected.
@@ -71,6 +98,10 @@ guarantee. The SDK owns preparation, repeated summary handling, system-state pre
 cut selection and projection. No private compaction code is copied. The compactor
 has no tools, external resources, credential discovery, or model-network fallback.
 It cannot modify Memory or State. A stale context version rejects publication.
+The SDK receives the sanitized snapshot with stable authoritative entry IDs. Exact
+outstanding-operation evidence also accompanies summary requests, and is
+rehydrated into later model projections if summary/tail selection omits its
+original notice. Summary wording cannot erase unresolved execution facts.
 
 The disposable SDK model has an unregistered per-compaction provider alias. Public
 `ModelRuntime.getProvider` verifies its absence; Pi's public unknown-provider auth

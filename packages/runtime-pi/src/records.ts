@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { assertJson, assertRecord, type Json, type RuntimeRecord } from '@mira/context';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import { validateObservation } from './observations.ts';
 import type { SessionEntry, SessionMessageEntry } from '@earendil-works/pi-coding-agent';
 
 export const PI_RUNTIME_VERSION = '1.0.2';
@@ -36,7 +37,8 @@ export function encodeEntry(entry: SessionEntry): RuntimeRecord {
   return record;
 }
 
-/** v1 supports only the linear message/checkpoint stream we publish. Unknown
+/** v1 supports the original linear message/checkpoint stream and the explicitly
+ * versioned mira.recovery-observation.v1 custom-message extension. Unknown
  * entry kinds or runtime/envelope versions require an explicit migration. */
 export function decodeRecords(records: readonly RuntimeRecord[], initialParent: string | null = null): SessionEntry[] {
   const entries: SessionEntry[] = [];
@@ -47,11 +49,13 @@ export function decodeRecords(records: readonly RuntimeRecord[], initialParent: 
     if (record.runtime !== 'pi' || record.runtimeVersion !== PI_RUNTIME_VERSION) throw new Error('Unsupported Pi runtime version: migration required');
     assertJson(record.payload);
     const entry = structuredClone(record.payload) as unknown as SessionEntry;
-    if (!entry || typeof entry !== 'object' || !['message', 'compaction'].includes(entry.type)) throw new Error('Unsupported Pi entry');
+    if (!entry || typeof entry !== 'object' || !['message', 'compaction', 'custom_message'].includes(entry.type)) throw new Error('Unsupported Pi entry');
     if (seen.has(record.id) || record.parentId !== parentId || entry.id !== record.id || entry.parentId !== record.parentId || entry.timestamp !== record.occurredAt) throw new Error('Broken Pi record chain');
     if ((entry.type === 'compaction' ? 'checkpoint' : 'message') !== record.kind) throw new Error('Pi record kind mismatch');
     if (entry.type === 'message') {
       validateMessage(entry.message);
+    } else if (entry.type === 'custom_message') {
+      validateObservation(entry);
     } else if (entry.type === 'compaction') {
       if (typeof entry.summary !== 'string' || entry.summary.trim().length === 0 || typeof entry.firstKeptEntryId !== 'string' || !Number.isFinite(entry.tokensBefore)) throw new Error('Invalid Pi checkpoint');
       if (entry.systemMessage !== undefined) { validateMessage(entry.systemMessage); if (entry.systemMessage.role !== 'system') throw new Error('Invalid checkpoint system message'); }

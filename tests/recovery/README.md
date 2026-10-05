@@ -22,9 +22,12 @@ skipped/pass result. Check the current CI evidence before claiming a real-DB pas
 - Independent Node processes continue one Mira and preserve original record IDs,
   original structured message prefix and provider fields
 - Processes terminate after durable intent but before/after a synthetic external
-  filesystem counter effect; recovery blocks with unknown outcome and no retry
+  filesystem counter effect; recovery reports unknown outcome, continues cognition,
+  and never automatically replays the effect
 - A process terminates after outcome commit but before tool-result append; recovery
   materializes exact saved JSON and continues without repeating the counter effect
+- Same-Wake uncertainty continues into a read-only check and atomic final reply;
+  an application deferral becomes a natural-language question with no tool intent
 - Duplicate call IDs do not repeat effects across runtime instances
 - Terminating the actual owning PostgreSQL connection during model response,
   authorization or an effect stops the old runtime's later model/tool paths

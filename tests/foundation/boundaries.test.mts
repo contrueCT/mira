@@ -60,11 +60,11 @@ test('accepts only an explicitly declared public workspace import', async () => 
   await fixture(async (root) => {
     const policyPath = path.join(root, 'scripts/boundaries.json');
     const policy = JSON.parse(await readFile(policyPath, 'utf8'));
-    policy['@mira/life'].allow = ['@mira/context'];
+    policy['@mira/life'].allow = ['@mira/context', '@mira/cognition'];
     await writeFile(policyPath, JSON.stringify(policy));
     const lifePath = path.join(root, 'packages/life/package.json');
     const life = JSON.parse(await readFile(lifePath, 'utf8'));
-    life.dependencies = { '@mira/context': 'workspace:*' };
+    life.dependencies = { '@mira/context': 'workspace:*', '@mira/cognition': 'workspace:*' };
     await writeFile(lifePath, JSON.stringify(life));
     const contextPath = path.join(root, 'packages/context/package.json');
     const context = JSON.parse(await readFile(contextPath, 'utf8'));
@@ -153,7 +153,7 @@ test('type-reference directives use declared type packages instead of runtime na
     await writeFile(manifestPath, JSON.stringify(manifest));
     const policyPath = path.join(root, 'scripts/boundaries.json');
     const policy = JSON.parse(await readFile(policyPath, 'utf8'));
-    policy['@mira/server'].external = ['@types/node', '@types/example__scoped', 'bundled-types'];
+    policy['@mira/server'].external.push('@types/node', '@types/example__scoped', 'bundled-types');
     await writeFile(policyPath, JSON.stringify(policy));
     await writeFile(path.join(root, 'apps/server/example.ts'), '/// <reference types="node" />\n/// <reference types="node/child_process" />\n/// <reference types="@example/scoped" />\n/// <reference types="@example/scoped/subpath" />\n/// <reference types="bundled-types/subpath" />');
     assert.deepEqual(await checkBoundaries(root), []);

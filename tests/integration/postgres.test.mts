@@ -25,7 +25,10 @@ test('migration up/down/up uses node-pg-migrate and preserves no stale tables', 
   const db = await createTestDatabase();
   try {
     const before = await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema = $1", [db.schema]);
-    assert.equal(before.rows[0].n, 6);
+    assert.equal(before.rows[0].n, 8);
+    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
+    const previous = await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema = $1", [db.schema]);
+    assert.equal(previous.rows[0].n, 6, 'down rolls back only the wake queue migration');
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     const after = await db.admin.query("SELECT table_name FROM information_schema.tables WHERE table_schema = $1", [db.schema]);
     assert.deepEqual(after.rows.map((row) => row.table_name), ['mira_migrations']);
@@ -108,6 +111,52 @@ test('tool intentions and first outcomes survive restart without replay or overw
     assert.deepEqual((await recovered.load()).executions, [{ intent: intent(), outcome }, { intent: intent('tool-2'), outcome: null }]);
     await assert.rejects(db.admin.query("UPDATE tool_executions SET outcome = '{}' WHERE call_id = 'tool-1'"), /first tool outcome/);
     await assert.rejects(db.admin.query("DELETE FROM tool_executions WHERE call_id = 'tool-2'"), /append-only/);
+  } finally { await db.close(); }
+});
+
+test('late tool outcomes cannot rewrite execution evidence after an unknown observation advances context', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase();
+  try {
+    const writer = await db.acquire();
+    await writer.append(0, record());
+    await writer.beginTool(1, intent());
+    const observation: RuntimeRecord = { ...record('unknown-observation', 'r1'), payload: { syntheticObservation: { callId: 'tool-1', state: 'unknown', explanation: 'No outcome was durably received' } } };
+    await writer.append(1, observation);
+    await writer.append(2, record('continued', observation.id));
+    const before = await writer.load();
+    const late = { callId: 'tool-1', occurredAt: now, payload: { result: 'late synthetic receipt' } };
+    await assert.rejects(writer.finishTool(late), code('version'));
+    assert.equal(writer.signal.aborted, false);
+    assert.deepEqual(await writer.load(), before);
+    assert.equal(before.executions[0]?.outcome, null);
+    await writer.verifyActive();
+    await writer.close();
+    const recovered = await db.acquire();
+    await assert.rejects(recovered.finishTool(late), code('version'));
+    assert.equal(recovered.signal.aborted, false);
+    assert.deepEqual(await recovered.load(), before);
+    await recovered.append(3, record('further-context', 'continued'));
+    assert.equal((await recovered.load()).version, 4);
+  } finally { await db.close(); }
+});
+
+test('sequential sibling tool outcomes use their own begin versions before result publication', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase();
+  try {
+    const writer = await db.acquire();
+    await writer.append(0, record());
+    await writer.beginTool(1, intent('first'));
+    const first = { callId: 'first', occurredAt: now, payload: { synthetic: 'first outcome' } };
+    await writer.finishTool(first);
+    await writer.append(1, record('first-result', 'r1'));
+    await writer.beginTool(2, intent('second'));
+    const second = { callId: 'second', occurredAt: now, payload: { synthetic: 'second outcome' } };
+    await writer.finishTool(second);
+    await writer.append(2, record('second-result', 'first-result'));
+    await assert.rejects(writer.finishTool(second), code('duplicate'));
+    await assert.rejects(writer.finishTool({ ...second, callId: 'missing' }), code('duplicate'));
+    assert.equal(writer.signal.aborted, false);
+    assert.deepEqual((await writer.load()).executions, [{ intent: intent('first'), outcome: first }, { intent: intent('second'), outcome: second }]);
   } finally { await db.close(); }
 });
 

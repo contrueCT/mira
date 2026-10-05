@@ -29,6 +29,7 @@ export class MemoryWriter implements DurableWriter {
   beforeAppend?: (record: RuntimeRecord) => Promise<void>;
   beforeIntent?: (intent: ToolIntent) => Promise<void>;
   beforeOutcome?: (outcome: ToolOutcome) => Promise<void>;
+  private readonly intentVersions = new Map<string, number>();
   assertActive() { this.signal.throwIfAborted(); }
   async verifyActive() { this.assertActive(); }
   async load() { this.assertActive(); return structuredClone(this.state); }
@@ -46,11 +47,13 @@ export class MemoryWriter implements DurableWriter {
     if (expected !== this.state.version) throw Error('Context version conflict');
     if (this.state.executions.some(e => e.intent.callId === intent.callId)) throw Error('Duplicate call ID');
     this.state.executions.push({ intent: structuredClone(intent), outcome: null });
+    this.intentVersions.set(intent.callId, expected);
   }
   async finishTool(outcome: ToolOutcome) {
     this.assertActive(); await this.beforeOutcome?.(outcome); this.assertActive();
     const execution = this.state.executions.find(e => e.intent.callId === outcome.callId);
     if (!execution || execution.outcome) throw Error('Invalid outcome');
+    if (this.intentVersions.get(outcome.callId) !== this.state.version) throw Error('Context version advanced beyond tool intent; late outcome rejected');
     execution.outcome = structuredClone(outcome);
   }
   async close() { this.controller.abort(Error('Writer closed')); }
@@ -63,15 +66,24 @@ export function runtime(writer: DurableWriter, streamFn: StreamFn = scripted([as
 }
 export async function seed(writer: DurableWriter, messages: AgentMessage[]) {
   let state = await writer.load();
+  const pending = new Map<string, ToolIntent>();
   for (const message of messages) {
     const entry = messageEntry(message, state.records.at(-1)?.id ?? null);
     const record = encodeEntry(entry);
+    if (message.role === 'toolResult') {
+      const intent = pending.get(message.toolCallId);
+      if (!intent || intent.toolName !== message.toolName) throw Error('Seed result has no matching assistant request');
+      // Match the production sequence for every sibling: begin at the current
+      // version, commit exact outcome, then append its transcript result.
+      await writer.beginTool(state.version, intent);
+      await writer.finishTool({ callId: message.toolCallId, occurredAt: new Date(message.timestamp).toISOString(), payload: jsonValue(message) });
+      pending.delete(message.toolCallId);
+    }
     state.version = await writer.append(state.version, record);
     state.records.push(record);
     if (message.role === 'assistant') for (const block of message.content) if (block.type === 'toolCall') {
-      await writer.beginTool(state.version, { callId: block.id, assistantRecordId: entry.id, toolName: block.name, requestedArguments: jsonValue(block.arguments), arguments: jsonValue(block.arguments), authorization: { synthetic: true }, occurredAt: entry.timestamp });
+      pending.set(block.id, { callId: block.id, assistantRecordId: entry.id, toolName: block.name, requestedArguments: jsonValue(block.arguments), arguments: jsonValue(block.arguments), authorization: { synthetic: true }, occurredAt: entry.timestamp });
     }
-    if (message.role === 'toolResult') await writer.finishTool({ callId: message.toolCallId, occurredAt: new Date(message.timestamp).toISOString(), payload: jsonValue(message) });
   }
 }
 export function compactionMessages(prefix = 'first'): AgentMessage[] {

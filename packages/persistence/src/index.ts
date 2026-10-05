@@ -1,8 +1,9 @@
 import { isDeepStrictEqual } from 'node:util';
+import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 import { assertJson, assertRecord } from '@mira/context';
 import type { RuntimeRecord } from '@mira/context';
-import type { DurableWriter, LifeEvent, RecoverySnapshot, ToolIntent, ToolOutcome, WakeReceipt } from '@mira/life';
+import type { LifeEvent, RecoverySnapshot, ToolIntent, ToolOutcome, WakeReceipt, WakeRun, WakeWriter } from '@mira/life';
 export { migrate } from './migrate.ts';
 export type { MigrationOptions } from './migrate.ts';
 
@@ -25,6 +26,15 @@ export interface PostgresOptions {
   applicationName?: string;
 }
 interface OwnerRow { epoch: string; context_version: string; head_record_id: string | null; held: boolean }
+interface WakeRunRow {
+  run_id: string;
+  claimed_at: string;
+  claimed_version: string;
+  input_record_id: string | null;
+  final_record_id: string | null;
+  completed: boolean;
+}
+interface WakeRequestRow { event_id: string; event: LifeEvent; requested_wake: WakeReceipt | null; wake_id: string; wake: WakeReceipt }
 function fail(code: PersistenceError['code'], message: string): never { throw new PersistenceError(code, message); }
 function text(value: unknown, label: string): asserts value is string {
   if (typeof value !== 'string' || value.length === 0) fail('invalid', `Invalid ${label}`);
@@ -47,6 +57,11 @@ function validateIntent(intent: ToolIntent): void {
 function validateOutcome(outcome: ToolOutcome): void {
   text(outcome.callId, 'tool call ID'); date(outcome.occurredAt); assertJson(outcome.payload);
 }
+function validateEvent(event: LifeEvent): void {
+  text(event.id, 'event ID'); text(event.type, 'event type'); date(event.occurredAt); assertJson(event.payload);
+  if (!['user', 'mira', 'system', 'extension', 'external'].includes(event.source)) fail('invalid', 'Invalid event source');
+}
+function validateWake(wake: WakeReceipt): void { text(wake.id, 'wake ID'); text(wake.reason, 'wake reason'); }
 
 export class PostgresPersistence {
   readonly #options: PostgresOptions;
@@ -56,7 +71,7 @@ export class PostgresPersistence {
     this.#options = { ...options };
   }
 
-  async acquire(miraId: string): Promise<DurableWriter> {
+  async acquire(miraId: string): Promise<WakeWriter> {
     text(miraId, 'Mira ID');
     const client = new Client({
       connectionString: this.#options.connectionString,
@@ -115,7 +130,7 @@ const heldExpression = `EXISTS (
 )`;
 const lockQuery = `SELECT ${heldExpression} AS held`;
 
-class PostgresWriter implements DurableWriter {
+class PostgresWriter implements WakeWriter {
   readonly miraId: string;
   readonly epoch: string;
   readonly signal: AbortSignal;
@@ -184,6 +199,75 @@ class PostgresWriter implements DurableWriter {
   }
   verifyActive(): Promise<void> { return this.#transaction(async () => {}); }
 
+  async #activeWakeRun(): Promise<WakeRunRow | undefined> {
+    const result = await this.#client.query<WakeRunRow>('SELECT * FROM wake_runs WHERE mira_id = $1 AND NOT completed', [this.miraId]);
+    if (result.rows.length > 1) fail('corrupt', 'Multiple active wake runs');
+    return result.rows[0];
+  }
+  async #wakeRun(runId: string): Promise<WakeRunRow> {
+    const result = await this.#client.query<WakeRunRow>('SELECT * FROM wake_runs WHERE mira_id = $1 AND run_id = $2', [this.miraId, runId]);
+    if (!result.rows[0]) fail('invalid', 'Wake run does not exist');
+    return result.rows[0];
+  }
+  async #readWakeRun(row: WakeRunRow, owner: OwnerRow): Promise<WakeRun> {
+    try {
+      text(row.run_id, 'run ID'); date(row.claimed_at);
+      if (row.input_record_id !== null) text(row.input_record_id, 'input record ID');
+      if (row.final_record_id !== null) text(row.final_record_id, 'final record ID');
+    } catch { fail('corrupt', 'Invalid persisted wake run metadata'); }
+    if (BigInt(row.claimed_version) > BigInt(owner.context_version) ||
+      (row.final_record_id !== null && row.input_record_id === null) || (row.completed && row.final_record_id === null)) fail('corrupt', 'Invalid wake run progress');
+    const requests = await this.#client.query<WakeRequestRow>(
+      `SELECT w.event_id, e.event, e.requested_wake, w.wake_id, w.wake FROM wake_run_requests AS r
+       JOIN wake_requests AS w ON w.mira_id = r.mira_id AND w.wake_id = r.wake_id
+       JOIN life_events AS e ON e.mira_id = w.mira_id AND e.event_id = w.event_id
+       WHERE r.mira_id = $1 AND r.run_id = $2 ORDER BY w.receipt_order`, [this.miraId, row.run_id]);
+    if (!requests.rows.length) fail('corrupt', 'Wake run has no claimed requests');
+    for (const request of requests.rows) {
+      try { validateEvent(request.event); validateWake(request.wake); } catch { fail('corrupt', 'Invalid persisted wake request'); }
+      if (request.event.id !== request.event_id || request.wake.id !== request.wake_id ||
+        !isDeepStrictEqual(request.requested_wake, request.wake)) fail('corrupt', 'Wake request does not match its event receipt');
+    }
+    const links = await this.#client.query<{ record_id: string; version: string; envelope: RuntimeRecord }>(
+      'SELECT record_id, version, envelope FROM context_records WHERE mira_id = $1 AND record_id = ANY($2::text[])',
+      [this.miraId, [row.input_record_id, row.final_record_id].filter(id => id !== null)]);
+    const input = links.rows.find(record => record.record_id === row.input_record_id);
+    const final = links.rows.find(record => record.record_id === row.final_record_id);
+    for (const record of links.rows) {
+      try { assertRecord(record.envelope); } catch { fail('corrupt', 'Invalid wake context record'); }
+      if (record.envelope.id !== record.record_id || record.envelope.kind !== 'message' || BigInt(record.version) > BigInt(owner.context_version)) fail('corrupt', 'Wake link must reference its exact message record');
+    }
+    if ((row.input_record_id !== null && (!input || BigInt(input.version) <= BigInt(row.claimed_version))) ||
+      (row.final_record_id !== null && (!input || !final || BigInt(final.version) <= BigInt(input.version))) ||
+      (!row.completed && final && final.version !== owner.context_version)) fail('corrupt', 'Wake context links are out of order');
+    return {
+      id: row.run_id, claimedAt: row.claimed_at, status: row.completed ? 'completed' : 'running',
+      requests: requests.rows.map(({ event, wake }) => ({ event, wake })),
+      inputRecordId: row.input_record_id, finalRecordId: row.final_record_id,
+    };
+  }
+  loadWakeRun(runId: string): Promise<WakeRun> {
+    text(runId, 'run ID');
+    return this.#transaction(async owner => this.#readWakeRun(await this.#wakeRun(runId), owner));
+  }
+  claimWakeBatch(): Promise<WakeRun | null> {
+    return this.#transaction(async owner => {
+      const active = await this.#activeWakeRun();
+      if (active) return this.#readWakeRun(active, owner);
+      const pending = await this.#client.query<{ wake_id: string }>(
+        `SELECT w.wake_id FROM wake_requests AS w WHERE w.mira_id = $1 AND NOT EXISTS
+         (SELECT 1 FROM wake_run_requests AS r WHERE r.mira_id = w.mira_id AND r.wake_id = w.wake_id)
+         ORDER BY w.receipt_order`, [this.miraId]);
+      if (!pending.rows.length) return null;
+      const id = randomUUID();
+      await this.#client.query('INSERT INTO wake_runs(mira_id, run_id, claimed_at, claimed_version) VALUES ($1, $2, $3, $4)',
+        [this.miraId, id, new Date().toISOString(), owner.context_version]);
+      await this.#client.query('INSERT INTO wake_run_requests(mira_id, run_id, wake_id) SELECT $1, $2, unnest($3::text[])',
+        [this.miraId, id, pending.rows.map(request => request.wake_id)]);
+      return this.#readWakeRun(await this.#wakeRun(id), owner);
+    });
+  }
+
   load(): Promise<RecoverySnapshot> {
     return this.#transaction(async (owner) => {
       const records = await this.#client.query<{ envelope: RuntimeRecord; record_id: string; parent_id: string | null; version: string }>(
@@ -206,40 +290,88 @@ class PostgresWriter implements DurableWriter {
           if (row.outcome.callId !== row.call_id) fail('corrupt', 'Tool outcome metadata mismatch');
         }
       }
+      const runs = await this.#client.query<WakeRunRow>('SELECT * FROM wake_runs WHERE mira_id = $1 ORDER BY claimed_version, run_id', [this.miraId]);
+      for (const run of runs.rows) await this.#readWakeRun(run, owner);
       return { miraId: this.miraId, version: count, records: records.rows.map((row) => row.envelope), executions: tools.rows.map(({ intent, outcome }) => ({ intent, outcome })) };
     });
   }
   append(expectedVersion: number, input: RuntimeRecord, signal?: AbortSignal): Promise<number> {
     const record = copy(input);
     assertRecord(record);
-    return this.#transaction(async (owner) => {
-      this.#checkVersion(owner, expectedVersion);
-      if (record.parentId !== owner.head_record_id) fail('invalid', 'Record parent must be the current history head');
-      if (expectedVersion === Number.MAX_SAFE_INTEGER) fail('invalid', 'Context version exhausted');
-      const duplicate = await this.#client.query('SELECT 1 FROM context_records WHERE mira_id = $1 AND record_id = $2', [this.miraId, record.id]);
-      if (duplicate.rowCount) fail('duplicate', 'Runtime record ID already exists');
-      const next = expectedVersion + 1;
-      signal?.throwIfAborted();
-      await this.#client.query('INSERT INTO context_records(mira_id, record_id, version, parent_id, envelope) VALUES ($1, $2, $3, $4, $5::json)',
-        [this.miraId, record.id, next, record.parentId, JSON.stringify(record)]);
-      signal?.throwIfAborted();
-      const updated = await this.#client.query('UPDATE mira_owners SET context_version = $1, head_record_id = $2 WHERE mira_id = $3 AND context_version = $4 AND epoch = $5',
-        [next, record.id, this.miraId, expectedVersion, this.epoch]);
-      if (updated.rowCount !== 1) fail('version', 'Context version changed');
+    return this.#transaction(owner => this.#appendRecord(owner, expectedVersion, record, signal), signal);
+  }
+  async #appendRecord(owner: OwnerRow, expectedVersion: number, record: RuntimeRecord, signal?: AbortSignal): Promise<number> {
+    this.#checkVersion(owner, expectedVersion);
+    if ((await this.#activeWakeRun())?.final_record_id) fail('invalid', 'Complete the finalized wake run before appending more context');
+    if (record.parentId !== owner.head_record_id) fail('invalid', 'Record parent must be the current history head');
+    if (expectedVersion === Number.MAX_SAFE_INTEGER) fail('invalid', 'Context version exhausted');
+    const duplicate = await this.#client.query('SELECT 1 FROM context_records WHERE mira_id = $1 AND record_id = $2', [this.miraId, record.id]);
+    if (duplicate.rowCount) fail('duplicate', 'Runtime record ID already exists');
+    const next = expectedVersion + 1;
+    signal?.throwIfAborted();
+    await this.#client.query('INSERT INTO context_records(mira_id, record_id, version, parent_id, envelope) VALUES ($1, $2, $3, $4, $5::json)',
+      [this.miraId, record.id, next, record.parentId, JSON.stringify(record)]);
+    signal?.throwIfAborted();
+    const updated = await this.#client.query('UPDATE mira_owners SET context_version = $1, head_record_id = $2 WHERE mira_id = $3 AND context_version = $4 AND epoch = $5',
+      [next, record.id, this.miraId, expectedVersion, this.epoch]);
+    if (updated.rowCount !== 1) fail('version', 'Context version changed');
+    return next;
+  }
+  appendWakeInput(runId: string, expectedVersion: number, input: RuntimeRecord, signal?: AbortSignal): Promise<number> {
+    return this.#appendWakeRecord('input_record_id', runId, expectedVersion, input, signal);
+  }
+  appendWakeFinal(runId: string, expectedVersion: number, input: RuntimeRecord, signal?: AbortSignal): Promise<number> {
+    return this.#appendWakeRecord('final_record_id', runId, expectedVersion, input, signal);
+  }
+  #appendWakeRecord(field: 'input_record_id' | 'final_record_id', runId: string, expectedVersion: number, input: RuntimeRecord, signal?: AbortSignal): Promise<number> {
+    text(runId, 'run ID'); version(expectedVersion);
+    if (expectedVersion === Number.MAX_SAFE_INTEGER) fail('invalid', 'Context version exhausted');
+    const record = copy(input); assertRecord(record);
+    if (record.kind !== 'message') fail('invalid', 'Wake evidence must be a message record');
+    return this.#transaction(async owner => {
+      const run = await this.#wakeRun(runId);
+      await this.#readWakeRun(run, owner);
+      const linked = run[field];
+      if (linked !== null) {
+        const saved = (await this.#client.query<{ envelope: RuntimeRecord; version: string }>(
+          'SELECT envelope, version FROM context_records WHERE mira_id = $1 AND record_id = $2', [this.miraId, linked])).rows[0];
+        if (linked !== record.id || !saved || !isDeepStrictEqual(saved.envelope, record)) fail('duplicate', 'Wake evidence is already associated with a different record');
+        if (saved.version !== String(expectedVersion + 1)) fail('version', 'Wake evidence retry has a different expected version');
+        return Number(saved.version);
+      }
+      if (run.completed || (await this.#activeWakeRun())?.run_id !== runId) fail('invalid', 'Wake run is not active');
+      if (field === 'final_record_id' && run.input_record_id === null) fail('invalid', 'Wake input must be persisted before its final reply');
+      const next = await this.#appendRecord(owner, expectedVersion, record, signal);
+      const changed = await this.#client.query(`UPDATE wake_runs SET ${field} = $1 WHERE mira_id = $2 AND run_id = $3 AND ${field} IS NULL AND NOT completed`,
+        [record.id, this.miraId, runId]);
+      if (changed.rowCount !== 1) fail('corrupt', 'Wake evidence association was not persisted');
       return next;
     }, signal);
   }
+  completeWakeRun(runId: string): Promise<void> {
+    text(runId, 'run ID');
+    return this.#transaction(async owner => {
+      const run = await this.#wakeRun(runId);
+      await this.#readWakeRun(run, owner);
+      if (run.completed) return;
+      if (run.input_record_id === null || run.final_record_id === null) fail('invalid', 'Wake cannot complete without persisted input and final reply');
+      const changed = await this.#client.query('UPDATE wake_runs SET completed = true WHERE mira_id = $1 AND run_id = $2 AND NOT completed', [this.miraId, runId]);
+      if (changed.rowCount !== 1) fail('corrupt', 'Wake completion was not persisted');
+    });
+  }
   receive(input: LifeEvent, optionalWake?: WakeReceipt): Promise<'inserted' | 'duplicate'> {
     const event = copy(input); const wake = optionalWake === undefined ? null : copy(optionalWake);
-    text(event.id, 'event ID'); text(event.type, 'event type'); date(event.occurredAt);
-    if (!['user', 'mira', 'system', 'extension', 'external'].includes(event.source)) fail('invalid', 'Invalid event source');
-    if (wake) { text(wake.id, 'wake ID'); text(wake.reason, 'wake reason'); }
+    validateEvent(event);
+    if (wake) validateWake(wake);
     return this.#transaction(async () => {
       const previous = await this.#client.query<{ event: LifeEvent; requested_wake: WakeReceipt | null }>(
         'SELECT event, requested_wake FROM life_events WHERE mira_id = $1 AND event_id = $2', [this.miraId, event.id]);
       const old = previous.rows[0];
       if (old) {
         if (!isDeepStrictEqual(old.event, event) || !isDeepStrictEqual(old.requested_wake, wake)) fail('duplicate', 'Event ID was reused with different data or wake');
+        const receipts = await this.#client.query<{ wake_id: string; wake: WakeReceipt }>(
+          'SELECT wake_id, wake FROM wake_requests WHERE mira_id = $1 AND event_id = $2', [this.miraId, event.id]);
+        if (wake === null ? receipts.rows.length !== 0 : receipts.rows.length !== 1 || receipts.rows[0]?.wake_id !== wake.id || !isDeepStrictEqual(receipts.rows[0]?.wake, wake)) fail('corrupt', 'Event and wake receipt disagree');
         return 'duplicate';
       }
       await this.#client.query('INSERT INTO life_events(mira_id, event_id, event, requested_wake) VALUES ($1, $2, $3::json, $4::json)',
@@ -257,6 +389,7 @@ class PostgresWriter implements DurableWriter {
     const intent = copy(input); validateIntent(intent);
     return this.#transaction(async (owner) => {
       this.#checkVersion(owner, expectedVersion);
+      if ((await this.#activeWakeRun())?.final_record_id) fail('invalid', 'Finalized wake run cannot start another tool');
       const duplicate = await this.#client.query('SELECT 1 FROM tool_executions WHERE mira_id = $1 AND call_id = $2', [this.miraId, intent.callId]);
       if (duplicate.rowCount) fail('duplicate', 'Tool call ID has already been prepared; reconcile its persisted execution');
       const reference = await this.#client.query<{ envelope: RuntimeRecord }>('SELECT envelope FROM context_records WHERE mira_id = $1 AND record_id = $2', [this.miraId, intent.assistantRecordId]);
@@ -269,9 +402,16 @@ class PostgresWriter implements DurableWriter {
   }
   finishTool(input: ToolOutcome): Promise<void> {
     const outcome = copy(input); validateOutcome(outcome);
-    return this.#transaction(async () => {
-      const changed = await this.#client.query('UPDATE tool_executions SET outcome = $1::json WHERE mira_id = $2 AND call_id = $3 AND outcome IS NULL',
-        [JSON.stringify(outcome), this.miraId, outcome.callId]);
+    return this.#transaction(async owner => {
+      const execution = (await this.#client.query<{ context_version: string; outcome: ToolOutcome | null }>(
+        'SELECT context_version, outcome FROM tool_executions WHERE mira_id = $1 AND call_id = $2', [this.miraId, outcome.callId])).rows[0];
+      if (!execution || execution.outcome !== null) fail('duplicate', 'Tool call is missing or already has an outcome; never overwrite or replay');
+      // The outcome precedes its transcript publication. Once context advances,
+      // recovery may have durably observed this execution as unknown; accepting
+      // a late canonical outcome would contradict that immutable history.
+      if (execution.context_version !== owner.context_version) fail('version', 'Tool outcome arrived after context advanced; preserve the original execution evidence');
+      const changed = await this.#client.query('UPDATE tool_executions SET outcome = $1::json WHERE mira_id = $2 AND call_id = $3 AND outcome IS NULL AND context_version = $4',
+        [JSON.stringify(outcome), this.miraId, outcome.callId, owner.context_version]);
       if (changed.rowCount !== 1) fail('duplicate', 'Tool call is missing or already has an outcome; never overwrite or replay');
     });
   }

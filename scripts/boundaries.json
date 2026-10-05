@@ -1,8 +1,19 @@
 {
   "@mira/server": {
     "path": "apps/server",
-    "allow": [],
-    "external": []
+    "allow": [
+      "@mira/cognition",
+      "@mira/context",
+      "@mira/life",
+      "@mira/persistence",
+      "@mira/runtime-pi",
+      "@mira/workspace"
+    ],
+    "external": [
+      "@earendil-works/pi-agent-core",
+      "@earendil-works/pi-ai",
+      "@earendil-works/pi-coding-agent"
+    ]
   },
   "@mira/web": {
     "path": "apps/web",
@@ -28,7 +39,8 @@
     "path": "packages/runtime-pi",
     "allow": [
       "@mira/context",
-      "@mira/life"
+      "@mira/life",
+      "@mira/cognition"
     ],
     "external": [
       "@earendil-works/pi-agent-core",
@@ -49,7 +61,8 @@
   "@mira/life": {
     "path": "packages/life",
     "allow": [
-      "@mira/context"
+      "@mira/context",
+      "@mira/cognition"
     ],
     "external": []
   },

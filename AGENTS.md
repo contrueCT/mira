@@ -8,7 +8,7 @@
 
 ## 当前状态与关系
 
-当前实现范围是连续上下文与恢复适配器，见 [ADR 0001](docs/adr/0001-durable-context.md)；尚无服务端/UI 或完整 Mira 产品。`context`、`life`、`persistence`、`runtime-pi` 有公开入口，其余包仍是职责占位。
+当前实现范围包含连续上下文、持久合并唤醒与单认知循环，见 [ADR 0002](docs/adr/0002-coalesced-wake-loop.md)。Server 仅有假 provider CLI 组装，没有 HTTP/UI 或完整产品。
 
 - `apps/server` 组装核心与适配器；`apps/web` 提供单条 Timeline
 - `life` / `context` 保持独立，不导入 Pi、Cordis、数据库或 Web 框架
@@ -52,7 +52,9 @@ pnpm check
 - 先读 [原始设计](docs/design/original-v0.4.md)、[架构](docs/architecture.md)和 [验收](docs/acceptance/foundation.md)
 - 一个持续 Mira；Wake 继续上下文，Event 不等于 Wake；不加入 New Chat 或会话领域
 - Compaction 与 Dreaming 分开；先验证 Pi 恢复/工具/压缩，再实现主循环
-- 跨进程单写者、版本检查、增量工具记录；外部结果不明不盲重试
+- 跨进程单写者、版本检查、增量工具记录；未知结果真实呈现给模型，不自动重放、不全局阻断认知
+- 授权依据用户自然语言及上下文，系统辅助判断；不添加批准按钮、硬风险门禁或固定重试阻拦。真实身份、安全隔离和数据完整性仍是硬边界
+- 超限唤醒保存普通文本文件并告知路径；复用普通文件工具，不构建专用消息读取/分页服务
 - 重要技术选择与范围变化先向用户确认，状态记录在 `docs/adr/`；不能把建议当批准
 - 每轮实现及修复都使用全新、独立 `gpt-6.1-sol` / `max` 审查，不继承实现对话
 - 提交前执行适用检查，区分通过、失败、阻塞、未执行；模拟通过不代表真实联通

@@ -42,8 +42,9 @@ for (const mode of ['before-effect', 'after-effect'] as const) test(`real Postgr
   try {
     await assert.rejects(child(db.schema, 'one-mira', mode, path), error => error instanceof Error && 'code' in error && error.code === (mode === 'before-effect' ? 70 : 71));
     const recovered = await child(db.schema, 'one-mira', 'recover', path);
-    assert.equal(recovered['blocked'], true); assert.equal(recovered['requests'], 0); assert.equal(recovered['effects'], 0);
-    assert.match(String(recovered['error']), /unknown|reconciliation/);
+    assert.equal(recovered['blocked'], false); assert.equal(recovered['requests'], 1); assert.equal(recovered['effects'], 0);
+    assert.match(JSON.stringify(recovered['contexts']), /may already have executed/);
+    assert.match(JSON.stringify(recovered['recovery']), /outcome-unknown/);
     const snapshot = recovered['snapshot'] as RecoverySnapshot;
     assert.equal(snapshot.executions.length, 1); assert.equal(snapshot.executions[0]!.outcome, null);
     if (mode === 'before-effect') await assert.rejects(readFile(path));
@@ -102,7 +103,8 @@ for (const boundary of ['authorization', 'model', 'effect'] as const) test(`real
     await assert.rejects(instance.run(input()), /terminated|connection|Writer|stopped|ownership/i);
     const replacement = await db.acquire('one-mira');
     if (boundary === 'effect') {
-      await assert.rejects(runtime(replacement).recover(), /unknown/);
+      const recovered = await runtime(replacement).recover();
+      assert.equal(recovered.recovery.operations[0]?.status, 'outcome-unknown');
       assert.equal((await replacement.load()).executions[0]?.outcome, null);
     }
   } finally { release.resolve(); await rejected.catch(() => {}); await writer.close(); await db.close(); }

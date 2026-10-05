@@ -175,6 +175,9 @@ importers:
       '@earendil-works/pi-coding-agent':
         specifier: 1.0.2
         version: 1.0.2(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
+      '@mira/cognition':
+        specifier: workspace:*
+        version: link:packages/cognition
       '@mira/context':
         specifier: workspace:*
         version: link:packages/context
@@ -187,6 +190,12 @@ importers:
       '@mira/runtime-pi':
         specifier: workspace:*
         version: link:packages/runtime-pi
+      '@mira/server':
+        specifier: workspace:*
+        version: link:apps/server
+      '@mira/workspace':
+        specifier: workspace:*
+        version: link:packages/workspace
       '@types/node':
         specifier: 24.19.1
         version: 24.19.1
@@ -200,7 +209,35 @@ importers:
         specifier: 6.0.3
         version: 6.0.3
 
-  apps/server: {}
+  apps/server:
+    dependencies:
+      '@earendil-works/pi-agent-core':
+        specifier: 1.0.2
+        version: 1.0.2(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.10.2)(ws@8.22.0)
+      '@earendil-works/pi-ai':
+        specifier: 1.0.2
+        version: 1.0.2(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.10.2)(ws@8.22.0)
+      '@earendil-works/pi-coding-agent':
+        specifier: 1.0.2
+        version: 1.0.2(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
+      '@mira/cognition':
+        specifier: workspace:*
+        version: link:../../packages/cognition
+      '@mira/context':
+        specifier: workspace:*
+        version: link:../../packages/context
+      '@mira/life':
+        specifier: workspace:*
+        version: link:../../packages/life
+      '@mira/persistence':
+        specifier: workspace:*
+        version: link:../../packages/persistence
+      '@mira/runtime-pi':
+        specifier: workspace:*
+        version: link:../../packages/runtime-pi
+      '@mira/workspace':
+        specifier: workspace:*
+        version: link:../../packages/workspace
 
   apps/web: {}
 
@@ -218,6 +255,9 @@ importers:
 
   packages/life:
     dependencies:
+      '@mira/cognition':
+        specifier: workspace:*
+        version: link:../cognition
       '@mira/context':
         specifier: workspace:*
         version: link:../context
@@ -252,6 +292,9 @@ importers:
       '@earendil-works/pi-coding-agent':
         specifier: 1.0.2
         version: 1.0.2(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
+      '@mira/cognition':
+        specifier: workspace:*
+        version: link:../cognition
       '@mira/context':
         specifier: workspace:*
         version: link:../context

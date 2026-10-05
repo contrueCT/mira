@@ -3,5 +3,18 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": {}
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@mira/cognition": "workspace:*",
+    "@mira/context": "workspace:*",
+    "@mira/life": "workspace:*",
+    "@mira/persistence": "workspace:*",
+    "@mira/runtime-pi": "workspace:*",
+    "@mira/workspace": "workspace:*",
+    "@earendil-works/pi-agent-core": "1.0.2",
+    "@earendil-works/pi-ai": "1.0.2",
+    "@earendil-works/pi-coding-agent": "1.0.2"
+  }
 }

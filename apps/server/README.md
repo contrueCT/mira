@@ -1,5 +1,18 @@
-# apps/server
+# @mira/server
 
-API、认证、启动和依赖组装。服务框架待确认。
+当前仅实现最小组装和 PostgreSQL + 假 provider 的 CLI 演示，没有 HTTP 服务、UI、真实模型认证或费用。
 
-状态：尚未实现。目录仅标明已确认职责。
+```sh
+pnpm demo --help
+MIRA_DEMO_DATABASE_URL='<explicit localhost mira_demo URL>' \
+MIRA_DEMO_SPOOL='/tmp/mira-demo-workspace' \
+pnpm demo first-message 'Hello Mira'
+```
+
+数据库需预先准备，URL 必须显式指定 localhost 的 `mira_demo` 或隔离测试库 `mira_test`。默认 schema 为 `mira_demo`；可通过 `MIRA_DEMO_SCHEMA=mira_demo_<suffix>` 使用隔离 schema。迁移仅显式执行 up，不自动 down。`MIRA_DEMO_MIRA_ID` 默认 `synthetic-mira`；下一次命令使用相同 Mira ID 和新的消息 ID，就延续原始上下文。相同 ID/消息再次提交是幂等重试；更改同一 ID 的内容会被拒绝。
+
+`MIRA_DEMO_MAX_INLINE_BYTES` 可降低内联大小以演示溢出文件。`MIRA_DEMO_SPOOL` 必须是源码仓库及用户 home 以外的受控目录。完整批次保存在普通文本文件中，模型收到路径；复用 Pi 的普通 `read` 工具及其已有输出限制，不添加专用读取服务。超长单行等限制遵循该通用工具；没有额外开放 shell。本演示假 provider 默认直接产生合成回复，不假称它已经阅读溢出文件。测试可以注入会调用文件工具的确定性模型。
+
+演示授权证据仅覆盖合成工作空间的文件读取，不能作为产品自然语言授权解析器。`runDemo` 供测试/本地组装使用；生产账户身份、网络、授权解释与服务入口均未实现。
+
+验证：`pnpm check`、`pnpm check:all`；真实数据库要求见 `tests/integration/README.md`。本地 socket 被禁止时不要用 TCP 绕过，使用现有批准 CI 验证。

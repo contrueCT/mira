@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import type { WakeWriter } from '@mira/life';
 import { execFile } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -36,18 +37,24 @@ test('unknown envelope/runtime versions and mismatched entry metadata fail close
   }
 });
 
-test('authorization is mandatory and denied tools never create intent or effect', async () => {
+test('agent authorization deferral records its reason and continues cognition without intent or effect', async () => {
   const writer = new MemoryWriter();
   assert.throws(() => new PiDurableRuntime({ writer, model, streamFn: scripted([]) } as never), /Authorization/);
   let effects = 0, requests = 0, authorizations = 0;
-  const instance = runtime(writer, () => { requests++; return streamOf(toolCalls('a', 'b')); }, {
+  const instance = runtime(writer, (_model, context) => {
+    requests++;
+    if (requests === 2) assert.match(JSON.stringify(context), /Please clarify which destination/);
+    return streamOf(requests === 1 ? toolCalls('a', 'b') : assistant('Which destination do you mean?'));
+  }, {
     tools: [effectTool(async () => { effects++; return result; })],
-    authorize: async () => { authorizations++; return { allowed: false, reason: 'synthetic denial' }; },
+    authorize: async () => { authorizations++; return { allowed: false, reason: 'Please clarify which destination' }; },
   });
-  await assert.rejects(instance.run(input()), /authorization denied/);
-  assert.equal(effects, 0); assert.equal(requests, 1); assert.equal(authorizations, 1);
+  const recovered = await instance.run(input());
+  assert.equal(effects, 0); assert.equal(requests, 2); assert.equal(authorizations, 1);
   assert.equal(writer.state.executions.length, 0);
-  await assert.rejects(instance.run(input()), /authorization denied/);
+  assert.equal(recovered.recovery.operations[0]?.reason, 'Please clarify which destination');
+  const reloaded = await runtime(writer).recover();
+  assert.deepEqual(reloaded.recovery, recovered.recovery);
 });
 
 test('awaited assistant append and first result append are real sequential execution barriers', async () => {
@@ -92,18 +99,27 @@ for (const phase of ['intent', 'outcome'] as const) test(`swallowed Pi ${phase =
   const instance = runtime(writer, () => { requests++; return streamOf(toolCalls('a', 'b')); }, { tools: [effectTool(async id => { effects.push(id); return result; })] });
   await assert.rejects(instance.run(input()), new RegExp(`${phase} failed`));
   assert.deepEqual(effects, phase === 'intent' ? [] : ['a']); assert.equal(requests, 1);
-  await assert.rejects(runtime(writer).run(input()), /reconciliation required/);
+  const resumed = await runtime(writer).run(input());
+  assert.deepEqual(resumed.recovery.operations.map(operation => operation.status), phase === 'intent' ? ['not-started', 'not-started'] : ['outcome-unknown', 'not-started']);
+  assert.deepEqual(effects, phase === 'intent' ? [] : ['a']);
 });
 
-test('thrown effect is conservatively unknown, never recorded as definitive failure or replayed', async () => {
+test('thrown effect becomes honest recovery evidence and cognition continues without replay or forged result', async () => {
   const writer = new MemoryWriter(); let effects = 0;
-  await assert.rejects(runtime(writer, scripted([toolCalls('a', 'b')]), {
+  const requests: TranscriptContext[] = [];
+  const restored = await runtime(writer, scripted([toolCalls('a', 'b'), assistant('I need to check what happened')], (_model, context) => { requests.push(structuredClone(context)); return streamOf(assistant()); }), {
     tools: [effectTool(async () => { effects++; throw Error('lost receipt after effect'); })],
-  }).run(input()), /lost receipt/);
+  }).run(input());
   assert.equal(effects, 1); assert.equal(writer.state.executions[0]?.outcome, null);
-  let requests = 0;
-  await assert.rejects(runtime(writer, () => { requests++; return streamOf(assistant()); }).run(input()), /unknown/);
-  assert.equal(requests, 0);
+  assert.equal(requests.length, 2);
+  assert.deepEqual(restored.recovery.operations.map(operation => [operation.callId, operation.status]), [['a', 'outcome-unknown'], ['b', 'not-started']]);
+  assert.match(JSON.stringify(requests[1]), /may already have executed/);
+  assert.match(JSON.stringify(requests[1]), /Execution did not start/);
+  assert.equal(requests[1]!.messages.some(message => message.role === 'toolResult'), false);
+  assert.equal(requests[1]!.messages.some(message => message.role === 'assistant' && message.content.some(block => block.type === 'toolCall')), false);
+  const original = decodeRecords(writer.state.records).find(entry => entry.type === 'message' && entry.message.role === 'assistant');
+  assert.ok(original?.type === 'message' && original.message.role === 'assistant');
+  assert.deepEqual(original.message.content, toolCalls('a', 'b').content);
 });
 
 test('known outcome is reconstructed byte-for-JSON-byte after toolResult append fails; effect is never repeated', async () => {
@@ -427,4 +443,216 @@ test('compaction model completions cannot masquerade as user, system or tool-res
     await assert.rejects(runtime(writer, () => streamOf(invalid as ReturnType<typeof assistant>)).compact({ keepRecentTokens: 1 }), /completion must have assistant role/);
     assert.deepEqual(writer.state, before);
   }
+});
+
+test('partial batch keeps exact resolved pairs and narrative while new read-only work continues', async () => {
+  const writer = new MemoryWriter(); const effects: string[] = []; const requests: TranscriptContext[] = [];
+  const batch = toolCalls('resolved', 'uncertain', 'unstarted');
+  batch.content.unshift({ type: 'text', text: 'I will first inspect the current state.', textSignature: 'keep-narrative' });
+  const query = { ...toolCalls('query-status'), content: [{ type: 'toolCall' as const, id: 'query-status', name: 'query', arguments: {} }] };
+  const restored = await runtime(writer, scripted([batch, query, assistant()], (_model, context) => { requests.push(structuredClone(context)); return streamOf(assistant()); }), {
+    tools: [effectTool(async id => { effects.push(id); if (id === 'uncertain') throw Error('lost response'); return result; }),
+      { name: 'query', label: 'query', description: 'Read-only synthetic status lookup', parameters: Type.Object({}), execute: async id => { effects.push(id); return result; } }],
+  }).run(input());
+  assert.deepEqual(effects, ['resolved', 'uncertain', 'query-status']);
+  const second = requests[1]!.messages;
+  const projectedBatch = second.find(message => message.role === 'assistant' && message.content.some(block => block.type === 'text' && block.text === 'I will first inspect the current state.'));
+  assert.ok(projectedBatch?.role === 'assistant');
+  assert.deepEqual(projectedBatch.content.filter(block => block.type === 'toolCall').map(block => block.id), ['resolved']);
+  assert.deepEqual(second.find(message => message.role === 'toolResult'), writer.state.executions[0]!.outcome!.payload);
+  const original = restored.entries.find(entry => entry.type === 'message' && entry.message.role === 'assistant');
+  assert.ok(original?.type === 'message'); assert.deepEqual(original.message, batch);
+});
+
+test('matching uncertain arguments are advisory and deliberate new-ID retry records natural-language rationale', async () => {
+  const writer = new MemoryWriter(); const effects: string[] = []; const contexts: Parameters<import('@mira/runtime-pi').PiRuntimeOptions['authorize']>[3][] = [];
+  const retry = toolCalls('deliberate-retry');
+  retry.content.unshift({ type: 'text', text: 'The user asked to try again despite the missing receipt.' });
+  await runtime(writer, scripted([toolCalls('first-attempt'), retry, assistant()]), {
+    tools: [effectTool(async id => { effects.push(id); if (id === 'first-attempt') throw Error('receipt lost'); return result; })],
+    authorize: async (_call, _args, _signal, context) => {
+      contexts.push(structuredClone(context));
+      return { allowed: true, evidence: { rationale: context.assistantNarrative || 'Initial requested operation' } };
+    },
+  }).run(input());
+  assert.deepEqual(effects, ['first-attempt', 'deliberate-retry']);
+  assert.equal(contexts[1]?.priorOperations[0]?.callId, 'first-attempt');
+  assert.equal(contexts[1]?.assistantNarrative, 'The user asked to try again despite the missing receipt.');
+  assert.deepEqual(writer.state.executions[1]!.intent.authorization, { rationale: contexts[1]!.assistantNarrative });
+  assert.equal(writer.state.executions[0]!.outcome, null);
+});
+
+test('recovery observations are idempotent, strictly validated, and cannot hide mismatched evidence', async () => {
+  const originalWriter = new MemoryWriter();
+  await runtime(originalWriter, scripted([toolCalls('missing', 'unstarted'), assistant()]), {
+    tools: [effectTool(async () => { throw Error('unknown'); })],
+  }).run(input());
+  const state = structuredClone(originalWriter.state);
+  const recovered = await runtime(originalWriter).recover();
+  assert.equal(recovered.snapshot.records.length, state.records.length);
+  const corruptions = [
+    (entry: Record<string, unknown>) => { entry['customType'] = 'mira.recovery-observation.v2'; },
+    (entry: Record<string, unknown>) => { entry['content'] = 'Pretend it succeeded'; },
+    (entry: Record<string, unknown>) => { (entry['details'] as { version: number }).version = 2; },
+    (entry: Record<string, unknown>) => { (entry['details'] as { operations: { callId: string }[] }).operations[0]!.callId = 'different'; },
+  ];
+  for (const corrupt of corruptions) {
+    const writer = new MemoryWriter(); writer.state = structuredClone(state);
+    const notice = writer.state.records.find(record => (record.payload as { type: string }).type === 'custom_message')!;
+    corrupt(notice.payload as Record<string, unknown>);
+    let requests = 0;
+    await assert.rejects(runtime(writer, () => { requests++; return streamOf(assistant()); }).run(input()));
+    assert.equal(requests, 0); assert.equal(writer.state.records.length, state.records.length);
+  }
+  const writer = new MemoryWriter(); writer.state = structuredClone(state);
+  writer.state.executions[0]!.intent.assistantRecordId = 'wrong-assistant';
+  await assert.rejects(runtime(writer).recover(), /Execution does not match/);
+});
+
+test('full SDK compaction uses sanitized operations and rehydrates uncertainty after summary omission', async () => {
+  const writer = new MemoryWriter();
+  await runtime(writer, scripted([toolCalls('still-unknown'), assistant('Earlier discussion '.repeat(100))]), {
+    tools: [effectTool(async () => { throw Error('lost receipt'); })],
+  }).run(input('Old request '.repeat(100)));
+  await runtime(writer, scripted([assistant('Recent response '.repeat(30))])).run(input('Latest request '.repeat(40)));
+  const raw = structuredClone(writer.state.records);
+  const requests: TranscriptContext[] = [];
+  const state = await runtime(writer, (_model, context) => { requests.push(structuredClone(context)); return streamOf(assistant('A summary that accidentally omits the unresolved operation')); }).compact({ keepRecentTokens: 1 });
+  assert.deepEqual(writer.state.records.slice(0, raw.length), raw);
+  assert.ok(requests.length > 0); assert.ok(requests.every(context => JSON.stringify(context).includes('still-unknown')));
+  assert.match(JSON.stringify(state.messages), /may already have executed/);
+  assert.equal(state.messages.some(message => message.role === 'assistant' && message.content.some(block => block.type === 'toolCall')), false);
+  await runtime(writer, scripted([assistant('More recent discussion '.repeat(30))])).run(input('More work '.repeat(40)));
+  const again = await runtime(writer, () => streamOf(assistant('Another summary omitting uncertainty'))).compact({ keepRecentTokens: 1 });
+  assert.match(JSON.stringify(again.messages), /still-unknown/);
+  let sawWarning = false;
+  await runtime(writer, (_model, context) => { sawWarning = JSON.stringify(context).includes('may already have executed'); return streamOf(assistant()); }).run(input('Continue checking'));
+  assert.equal(sawWarning, true);
+});
+
+/** Offline atomic-publication fault fixture. Real SQL atomicity is checked by
+ * tests/recovery/wake-runtime.test.mts, not inferred from this in-memory class. */
+class AtomicWakeWriter extends MemoryWriter implements WakeWriter {
+  wake: import('@mira/life').WakeRun = { id: 'wake-run', claimedAt: '2026-10-05T01:00:00.000Z', status: 'running', requests: [], inputRecordId: null, finalRecordId: null };
+  afterInput = false;
+  afterFinal = false;
+  async claimWakeBatch() { return this.wake.status === 'running' ? structuredClone(this.wake) : null; }
+  async loadWakeRun(id: string) { assert.equal(id, this.wake.id); return structuredClone(this.wake); }
+  async appendWakeInput(id: string, version: number, record: import('@mira/context').RuntimeRecord, signal?: AbortSignal) {
+    assert.equal(id, this.wake.id); assert.equal(this.wake.inputRecordId, null);
+    const next = await super.append(version, record, signal); this.wake.inputRecordId = record.id;
+    if (this.afterInput) { this.afterInput = false; throw Error('lost response after input commit'); }
+    return next;
+  }
+  async appendWakeFinal(id: string, version: number, record: import('@mira/context').RuntimeRecord, signal?: AbortSignal) {
+    assert.equal(id, this.wake.id); assert.ok(this.wake.inputRecordId); assert.equal(this.wake.finalRecordId, null);
+    const next = await super.append(version, record, signal); this.wake.finalRecordId = record.id;
+    if (this.afterFinal) { this.afterFinal = false; throw Error('lost response after final commit'); }
+    return next;
+  }
+  async completeWakeRun(id: string) { assert.equal(id, this.wake.id); assert.ok(this.wake.inputRecordId); assert.ok(this.wake.finalRecordId); this.wake.status = 'completed'; }
+}
+function turn(writer: AtomicWakeWriter): import('@mira/cognition').CognitionTurn {
+  return { id: writer.wake.id, input: 'One durable coalesced wake input', occurredAt: writer.wake.claimedAt, inputRecordId: null, finalRecordId: null };
+}
+
+test('cognition atomically links input before model and terminal reply in its awaited subscriber', async () => {
+  const writer = new AtomicWakeWriter(); let requests = 0;
+  await runtime(writer, () => { requests++; assert.ok(writer.wake.inputRecordId); return streamOf(assistant('Done with this wake')); }).continueTurn(turn(writer));
+  assert.equal(requests, 1); assert.ok(writer.wake.finalRecordId);
+  assert.equal(writer.state.records.filter(record => (record.payload as { message?: { role: string } }).message?.role === 'user').length, 1);
+  assert.equal(writer.state.records.at(-1)!.id, writer.wake.finalRecordId);
+});
+
+for (const boundary of ['input', 'final'] as const) test(`cognition recovers ${boundary} commit with lost response using authoritative links`, async () => {
+  const writer = new AtomicWakeWriter(); let requests = 0;
+  if (boundary === 'input') writer.afterInput = true; else writer.afterFinal = true;
+  const stream = () => { requests++; return streamOf(assistant()); };
+  await assert.rejects(runtime(writer, stream).continueTurn(turn(writer)), new RegExp(`after ${boundary} commit`));
+  const before = writer.state.records.length;
+  await runtime(writer, stream).continueTurn({ ...turn(writer), inputRecordId: 'untrusted-input', finalRecordId: 'untrusted-final' });
+  assert.equal(requests, 1); assert.ok(writer.wake.finalRecordId);
+  assert.equal(writer.state.records.length, before + (boundary === 'input' ? 1 : 0));
+  assert.equal(writer.state.records.filter(record => (record.payload as { message?: { role: string } }).message?.role === 'user').length, 1);
+});
+
+test('cognition resumes saved provider error without duplicate Wake input or false final association', async () => {
+  const writer = new AtomicWakeWriter();
+  await assert.rejects(runtime(writer, scripted([{ ...assistant(), stopReason: 'error', errorMessage: 'synthetic provider failure' }])).continueTurn(turn(writer)), /synthetic provider failure/);
+  assert.equal(writer.wake.finalRecordId, null); assert.ok(writer.wake.inputRecordId);
+  let requests = 0;
+  await runtime(writer, (_model, context) => { requests++; assert.match(JSON.stringify(context), /Continue the current persisted Wake/); return streamOf(assistant()); }).continueTurn(turn(writer));
+  assert.equal(requests, 1); assert.ok(writer.wake.finalRecordId);
+  assert.equal(writer.state.records.filter(record => (record.payload as { message?: { role: string } }).message?.role === 'user').length, 1);
+});
+
+test('cognition completes the same Wake after tool uncertainty and records no fabricated failure', async () => {
+  const writer = new AtomicWakeWriter(); let effects = 0;
+  await runtime(writer, scripted([toolCalls('uncertain-wake-op'), assistant('I can continue while checking the receipt')]), {
+    tools: [effectTool(async () => { effects++; throw Error('receipt unavailable'); })],
+  }).continueTurn(turn(writer));
+  assert.equal(effects, 1); assert.ok(writer.wake.finalRecordId);
+  assert.equal(writer.state.executions[0]!.outcome, null);
+  assert.equal(writer.state.records.some(record => (record.payload as { message?: { role: string } }).message?.role === 'toolResult'), false);
+  await runtime(writer, () => { throw Error('must not request model after saved final'); }).continueTurn(turn(writer));
+});
+
+
+test('cognition rejects changed resumed input configuration and malformed final links before inference', async () => {
+  const writer = new AtomicWakeWriter(); writer.afterInput = true;
+  await assert.rejects(runtime(writer).continueTurn(turn(writer)), /after input commit/);
+  let requests = 0;
+  await assert.rejects(runtime(writer, () => { requests++; return streamOf(assistant()); }).continueTurn({ ...turn(writer), input: 'Changed spool path or inline layout' }), /differs from its durable input/);
+  assert.equal(requests, 0); assert.equal(writer.wake.finalRecordId, null);
+  writer.wake.finalRecordId = writer.wake.inputRecordId;
+  await assert.rejects(runtime(writer, () => { requests++; return streamOf(assistant()); }).continueTurn({ ...turn(writer), input: '' }), /Wake final link/);
+  assert.equal(requests, 0);
+});
+
+
+test('strict injected stream receives no empty assistant shell from recovered tool-only history', async () => {
+  const writer = new MemoryWriter(); let requests = 0, effects = 0;
+  const original = toolCalls('uncertain-only');
+  const recovered = await runtime(writer, (_model, context) => {
+    for (const message of context.messages) {
+      if (message.role === 'assistant' && message.content.length === 0) throw Error('Strict provider rejects empty assistant messages');
+    }
+    requests++;
+    if (requests === 2) assert.match(JSON.stringify(context), /uncertain-only/);
+    return streamOf(requests === 1 ? original : assistant('Continue checking the missing receipt'));
+  }, { tools: [effectTool(async () => { effects++; throw Error('Receipt lost'); })] }).run(input());
+  assert.equal(requests, 2); assert.equal(effects, 1);
+  const raw = recovered.entries.find(entry => entry.type === 'message' && entry.message.role === 'assistant' && entry.message.content.some(block => block.type === 'toolCall' && block.id === 'uncertain-only'));
+  assert.ok(raw?.type === 'message'); assert.deepEqual(raw.message, original);
+  const projectedSource = recovered.projectionEntries.find(entry => entry.id === raw.id);
+  assert.ok(projectedSource?.type === 'message' && projectedSource.message.role === 'assistant');
+  assert.deepEqual(projectedSource.message.content, []);
+  assert.equal(projectedSource.id, raw.id);
+  assert.equal(projectedSource.parentId, raw.parentId);
+  assert.equal(recovered.messages.some(message => message.role === 'assistant' && message.content.length === 0), false);
+});
+
+test('empty-assistant recovery filtering does not remove unrelated source history', async () => {
+  const writer = new MemoryWriter();
+  const unrelatedEmpty = { ...assistant(), content: [] };
+  await seed(writer, [input(), unrelatedEmpty]);
+  const recovered = await runtime(writer).recover();
+  assert.deepEqual(recovered.messages, [input(), unrelatedEmpty]);
+});
+
+
+test('late outcome cannot rewrite observed uncertainty or poison continued cognition', async () => {
+  const writer = new MemoryWriter();
+  await runtime(writer, scripted([toolCalls('late-outcome'), assistant('Continue checking the missing receipt')]), {
+    tools: [effectTool(async () => { throw Error('Interrupted after external operation'); })],
+  }).run(input());
+  const before = structuredClone(writer.state);
+  await assert.rejects(writer.finishTool({ callId: 'late-outcome', occurredAt: new Date(1000).toISOString(),
+    payload: { role: 'toolResult', toolCallId: 'late-outcome', toolName: 'effect', content: [{ type: 'text', text: 'A late receipt' }], isError: false, timestamp: 1000 } }), /Context version advanced/);
+  assert.deepEqual(writer.state, before); assert.equal(writer.signal.aborted, false);
+  const recovered = await runtime(writer).recover();
+  assert.equal(recovered.recovery.operations[0]?.status, 'outcome-unknown');
+  let requests = 0;
+  await runtime(writer, () => { requests++; return streamOf(assistant('Continue with new evidence')); }).run(input('A later query can verify the external status'));
+  assert.equal(requests, 1); assert.equal(writer.state.executions[0]!.outcome, null);
 });

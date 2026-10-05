@@ -36,7 +36,7 @@ A connection string is mandatory; environment/default database discovery is not 
 - `load()` returns all exact JSON envelopes and incremental tool executions. It validates chain/version metadata and rejects unknown envelope versions instead of dropping/rebuilding history. Runtime-specific payload validation remains in the runtime adapter
 - `receive(event, optionalWake)` atomically records an event and optional wake. An event without a wake adds no wake and never invokes a model. A duplicate requires identical structured JSON, event metadata and wake choice; ID reuse with different data is rejected
 - `beginTool(expectedVersion, intent)` records authorization, raw requested arguments, normalized execution arguments and a persisted message reference before execution. The runtime is responsible for proving that message contains the assistant tool call. Duplicate call IDs always fail, including previously completed ones
-- `finishTool(outcome)` records only the first outcome. Missing outcomes remain unresolved and are not replayed automatically. This slice does not implement an external-delivery outbox or an automatic reconciliation executor
+- `finishTool(outcome)` records only the first outcome, while the context version still equals the version saved by that call's `beginTool`. Persist the outcome before appending its transcript result; sequential siblings each begin at their own current version. A late outcome after context has advanced is rejected without changing history or stopping a healthy writer, because recovery may already have observed the execution as unknown. This is an immutable-evidence boundary, not an authorization decision about a newly proposed call. Missing outcomes remain unresolved and are not replayed automatically. This slice does not implement an external-delivery outbox or an automatic reconciliation executor
 - JSON columns retain complete serialized envelopes/provider fields; the adapter does not replace messages with text. Returned objects are ordinary JSON copies, not references to mutable adapter state
 
 ## Verification
@@ -48,3 +48,13 @@ MIRA_TEST_DATABASE_URL=postgres://mira_test:synthetic-ci-only@127.0.0.1:5432/mir
 ```
 
 The integration command requires an explicit local `mira_test` database and PostgreSQL 18.6 (CI uses the official image). The test helper rejects missing URLs, remote hosts, other database names and URL query parameters; each fixture creates/drops a unique synthetic schema. It is never appropriate to provide a production URL. Tests include migration rollback, restart, duplicate IDs, transaction rollback, actual session-lock loss, backend termination, and ownership contention across OS processes. Missing PostgreSQL is a failure, never a silently skipped success.
+
+## 持久 Wake 队列
+
+`acquire` 返回 `WakeWriter`。`claimWakeBatch` 在持锁连接的事务中返回已有活动 run，或将所有未分配请求一次归入新 run。`wake_run_requests` 关联不可修改，一个 Mira 只允许一个未完成 run。新请求按数据库 receipt 序号呈现，运行中到达的请求不加入当前批次；迁移前记录没有真实接收顺序，新增序号不能还原它。
+
+`appendWakeInput` / `appendWakeFinal` 在同一事务追加上下文与关联；重复调用只接受相同记录和原始 expectedVersion，返回该记录本身的版本（不是后来上下文的版本）。`loadWakeRun` 核对批次与关联，`completeWakeRun` 要求输入/最终回复均已落库，可幂等重试。运行时仍须验证 Pi 输入与终止回复语义，持久化包不解释 Pi。
+
+允许在 claim 后、输入前追加必要的旧上下文恢复记录。最终回复已绑定之后，必须先完成 run 才能追加其它上下文或开始工具。所有事务保持原连接锁、epoch、CAS，不跨模型或外部副作用。
+
+新增迁移 `1760000000001_wake-queue.sql`。`migrate({direction:'down'})` 一次仅回滚一个迁移；两次 down 才回到第一批之前。down 有数据丢失风险，只能用于显式隔离测试，不能自动清理用户库。

@@ -4,7 +4,7 @@
 
 ## 入口与状态
 
-- `src/index.ts` 实现核心 `DurableWriter`；`src/migrate.ts` 提供显式 up/down
+- `src/index.ts` 实现核心 `DurableWriter` / `WakeWriter`，含合并 claim、原子输入/终止记录关联和完成；`src/migrate.ts` 提供显式 up/down
 - `pg` 8.23.1、`node-pg-migrate` 9.0.0，无 ORM；`migrations/*.sql` 为迁移事实来源
 - 语义、限制和示例见 `README.md`；公开出口以 `package.json` 为准
 
@@ -15,8 +15,11 @@
 - registry 初始登记使用独立全局 session lock；lock key 由表唯一生成，禁止哈希碰撞或重复使用
 - 连接丢失必须永久停止该 writer 并中止 signal；禁止在旧 writer 内透明重连
 - append-only 历史、parent 链、版本 CAS 与工具首次 outcome 不可放宽
+- finishTool 仅在当前 context version 等于该 intent 的 beginTool version 时写入；先保存 outcome 再追加工具结果。上下文推进后的迟到 outcome 拒绝且不修改证据，不把这个完整性边界用作新调用的风险或授权判定
 - 事务内不执行模型或外部工具；外部结果不明必须保留核对状态，不自动重试
 - 事件与可选 Wake 原子落库；无 Wake 的事件不得启动推理；重复 ID 必须核对全部记录
+- claim 全部积累请求为一批，运行中新到请求留下一批；关联不可变、每 Mira 仅一个活动 run
+- 输入/终止回复与 run 关联同事务，最终回复后先完成再追加；Pi 语义由 Runtime 核对
 - SQL 迁移必须同时支持 up/down；down 有数据丢失风险，不得自动用于用户库
 
 ## 验证
