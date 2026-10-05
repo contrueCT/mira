@@ -576,6 +576,26 @@ for (const boundary of ['input', 'final'] as const) test(`cognition recovers ${b
   assert.equal(writer.state.records.filter(record => (record.payload as { message?: { role: string } }).message?.role === 'user').length, 1);
 });
 
+test('finalized pre-prompt Wake awaiting completion does not install prompt or touch context', async () => {
+  const writer = new AtomicWakeWriter();
+  await runtime(writer).continueTurn(turn(writer));
+  assert.equal(writer.wake.status, 'running');
+  assert.ok(writer.wake.finalRecordId);
+  const before = structuredClone(writer.state);
+  let writes = 0, loads = 0, requests = 0;
+  writer.beforeAppend = async () => { writes++; throw Error('Finalized Wake cannot append'); };
+  await runtime(writer, () => { requests++; return streamOf(assistant()); }, {
+    initialContext: async () => { loads++; return 'must not load legacy bootstrap'; },
+    miraPrompt: {
+      environmentContext: 'Synthetic test', authorizationContext: 'Synthetic test only',
+      loadInitialMemory: async () => { loads++; return 'must not load Memory'; },
+    },
+  }).continueTurn(turn(writer));
+  assert.equal(writes, 0); assert.equal(loads, 0); assert.equal(requests, 0);
+  assert.deepEqual(writer.state, before);
+  assert.equal(writer.wake.status, 'running');
+});
+
 test('cognition resumes saved provider error without duplicate Wake input or false final association', async () => {
   const writer = new AtomicWakeWriter();
   await assert.rejects(runtime(writer, scripted([{ ...assistant(), stopReason: 'error', errorMessage: 'synthetic provider failure' }])).continueTurn(turn(writer)), /synthetic provider failure/);

@@ -272,7 +272,10 @@ export class PiDurableRuntime implements CognitionRuntime {
     return this.exclusive(async () => {
       const writer = this.wakeWriter();
       const run = await writer.loadWakeRun(turn.id);
-      let current = await this.initializeEmpty(await this.recoverInternal());
+      // A finalized Wake may be resumed only to finish its external Memory/Git
+      // checkpoint. Validate its saved links before attempting any new prompt
+      // installation; the durable writer forbids extending a finalized Wake.
+      let current = await this.recoverInternal();
       const linkedInput = run.inputRecordId ? current.entries.find(entry => entry.id === run.inputRecordId) : undefined;
       if (run.inputRecordId && (linkedInput?.type !== 'message' || linkedInput.message.role !== 'user')) throw new RecoveryBlockedError('Wake input link is not a persisted user message');
       if (Date.parse(turn.occurredAt) !== Date.parse(run.claimedAt)) throw new RecoveryBlockedError('Wake input timestamp differs from its durable batch');
@@ -283,6 +286,7 @@ export class PiDurableRuntime implements CognitionRuntime {
         return;
       }
       if (run.status !== 'running') throw new RecoveryBlockedError('Completed Wake has no final reply');
+      current = await this.initializeEmpty(current);
       if (!run.inputRecordId) {
         const message: AgentMessage = { role: 'user', content: turn.input, timestamp: Date.parse(turn.occurredAt) };
         const entry = messageEntry(message, current.entries.at(-1)?.id ?? null);

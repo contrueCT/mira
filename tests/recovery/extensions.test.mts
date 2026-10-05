@@ -105,7 +105,7 @@ test('real PostgreSQL server enables and invokes a manual extension in one Wake,
     assertExactOutcomes(after);
     assert.deepEqual((await fixture.effects()).map(effect => [effect.callId, effect.revision]), [['extension-effect', 1], ['current-effect', 2]]);
     const deltas = decodeRecords(after.records.slice(saved.records.length), saved.records.at(-1)!.id)
-      .flatMap(entry => entry.type === 'message' && entry.message.role === 'system' ? [entry.message] : []);
+      .flatMap(entry => entry.type === 'message' && entry.message.role === 'system' && (entry.message.toolsAdded || entry.message.toolsRemoved) ? [entry.message] : []);
     assert.equal(deltas.length, 1); assert.deepEqual(deltas[0]!.toolsRemoved, [{ name: 'fixture.echo' }]);
     assert.equal(deltas[0]!.toolsAdded?.length, 1); assert.match(deltas[0]!.toolsAdded![0]!.description, /revision 2/);
   } finally { await db.close(); await rm(fixture.root, { recursive: true, force: true }); }
