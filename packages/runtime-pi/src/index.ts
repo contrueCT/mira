@@ -185,6 +185,7 @@ export class PiDurableRuntime {
         for (const block of entry.message.content) if (block.type === 'toolCall') issued.set(block.id, { call: block, recordId: entry.id });
       }
       const outcomes = new Map<string, ToolResultMessage>();
+      let awaitingModelCompletion = false;
       const tools = (this.options.tools ?? []).map(tool => ({
         ...tool,
         replay: 'never' as const, executionMode: 'sequential' as const,
@@ -209,6 +210,7 @@ export class PiDurableRuntime {
         streamFn: async (model, context, options) => {
           try {
             await this.verified();
+            awaitingModelCompletion = true;
             return await this.options.streamFn(model, context, options);
           } catch (error) { throw this.stop(error); }
         },
@@ -265,6 +267,14 @@ export class PiDurableRuntime {
           if (event.type === 'tool_execution_end' && !outcomes.has(event.toolCallId)) throw new Error(`Tool did not produce a durable outcome: ${event.toolCallId}`);
           if (event.type !== 'message_end') return;
           const message = event.message;
+          // Input and tool-declaration message_end events precede streamFn. Once
+          // a model request starts, its completion must actually be assistant;
+          // generic transcript validation also accepts legitimate user/system
+          // messages and cannot enforce this model-boundary invariant alone.
+          if (awaitingModelCompletion) {
+            if (message.role !== 'assistant') throw new Error('Model completion must have assistant role');
+            awaitingModelCompletion = false;
+          }
           if (message.role === 'toolResult') {
             const saved = outcomes.get(message.toolCallId);
             if (!saved) throw new Error('Tool result without saved outcome');

@@ -406,3 +406,25 @@ test('compaction never resolves ambient credentials for recognized providers or 
     assert.deepEqual(result.fileAttempts, []);
   } finally { await rm(home, { recursive: true, force: true }); }
 });
+
+
+test('main model completions must be assistant messages before any response is persisted', async () => {
+  for (const role of ['user', 'system', 'toolResult']) {
+    const writer = new MemoryWriter(); let requests = 0;
+    const invalid = { ...assistant('Malformed model response'), role, toolCallId: 'foreign-call', toolName: 'effect', isError: false };
+    const instance = runtime(writer, () => { requests++; return streamOf(invalid as ReturnType<typeof assistant>); });
+    await assert.rejects(instance.run(input('Only legitimate user input')), /completion must have assistant role/);
+    assert.equal(requests, 1); assert.equal(writer.state.records.length, 1);
+    assert.deepEqual((writer.state.records[0]!.payload as { message: unknown }).message, input('Only legitimate user input'));
+    await assert.rejects(instance.run(input()), /completion must have assistant role/);
+  }
+});
+
+test('compaction model completions cannot masquerade as user, system or tool-result messages', async () => {
+  for (const role of ['user', 'system', 'toolResult']) {
+    const writer = new MemoryWriter(); await seed(writer, compactionMessages()); const before = structuredClone(writer.state);
+    const invalid = { ...assistant('Invalid role summary'), role, toolCallId: 'foreign-call', toolName: 'effect', isError: false };
+    await assert.rejects(runtime(writer, () => streamOf(invalid as ReturnType<typeof assistant>)).compact({ keepRecentTokens: 1 }), /completion must have assistant role/);
+    assert.deepEqual(writer.state, before);
+  }
+});

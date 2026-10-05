@@ -61,6 +61,7 @@ export async function compactSnapshot(
     // otherwise SDK boilerplate can conceal an empty summary and discard history.
     const response = await stream.result();
     options.signal?.throwIfAborted();
+    if (response.role !== 'assistant') throw new Error('Compaction completion must have assistant role');
     validateMessage(response);
     if (response.stopReason !== 'stop') throw new Error(`Compaction summary is incomplete: ${response.stopReason}`);
     if (!response.content.some(block => block.type === 'text' && block.text.trim().length > 0)) throw new Error('Compaction summary contains no nonempty text');
