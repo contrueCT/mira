@@ -337,6 +337,130 @@ test('the mirror preserves an original node_modules TypeScript restriction', asy
   });
 });
 
+async function absentDependencyFixture(source: string, root: string, field = 'optionalDependencies'): Promise<{ store: ArtifactStore; host: string; marker: string }> {
+  const host = path.join(root, 'store-parent');
+  await mkdir(host);
+  await writeFile(path.join(source, 'package.json'), JSON.stringify({ [field]: { 'synthetic-optional': '*' } }));
+  await writeFile(path.join(source, 'entry.cjs'), 'try { module.exports = require("synthetic-optional").count; } catch (error) { if (error.code !== "MODULE_NOT_FOUND") throw error; module.exports = "absent"; }');
+  return { store: new ArtifactStore(path.join(host, 'store')), host, marker: `__miraAmbient_${path.basename(root)}` };
+}
+async function ambientPackage(parent: string, marker: string): Promise<void> {
+  const directory = path.join(parent, 'node_modules', 'synthetic-optional');
+  await mkdir(directory, { recursive: true });
+  await writeFile(path.join(directory, 'package.json'), JSON.stringify({ name: 'synthetic-optional', main: './index.cjs' }));
+  await writeFile(path.join(directory, 'index.cjs'), `globalThis[${JSON.stringify(marker)}] = (globalThis[${JSON.stringify(marker)}] ?? 0) + 1; module.exports = { count: globalThis[${JSON.stringify(marker)}] };`);
+}
+const ambientValue = (marker: string): unknown => (globalThis as unknown as Record<string, unknown>)[marker];
+const escapedDependency = /Artifact declared dependency synthetic-optional resolves outside its private tree/;
+
+test('staging rejects ambient host packages for runtime, optional, peer, and workspace-dev declarations without importing them', async () => {
+  for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies', 'devDependencies']) {
+    await withWorkspace(async (source, _store, root) => {
+      const fixture = await absentDependencyFixture(source, root, field);
+      assert.equal((await import(pathToFileURL(path.join(source, 'entry.cjs')).href) as { default: unknown }).default, 'absent');
+      await ambientPackage(fixture.host, fixture.marker);
+      await assert.rejects(fixture.store.stage(source, 'entry.cjs'), escapedDependency);
+      assert.equal(ambientValue(fixture.marker), undefined);
+      assert.deepEqual(await fixture.store.list(), []);
+    });
+  }
+});
+
+test('read, verify, and activation reject a host optional package that appears after staging', async () => {
+  await withWorkspace(async (source, _store, root) => {
+    const fixture = await absentDependencyFixture(source, root);
+    const artifact = await fixture.store.stage(source, 'entry.cjs');
+    await ambientPackage(fixture.host, fixture.marker);
+    await assert.rejects(fixture.store.read(artifact.digest), escapedDependency);
+    await assert.rejects(fixture.store.verify(artifact), escapedDependency);
+    await assert.rejects(fixture.store.prepareFreshActivation(artifact), escapedDependency);
+    assert.equal(ambientValue(fixture.marker), undefined);
+    await rm(path.join(fixture.host, 'node_modules'), { recursive: true });
+    await fixture.store.verify(artifact);
+    const fresh = await fixture.store.prepareFreshActivation(artifact);
+    assert.equal((await import(pathToFileURL(fresh.entry).href) as { default: unknown }).default, 'absent');
+  });
+});
+
+test('a passed test cannot authorize an ambient peer package introduced afterward', async () => {
+  await withWorkspace(async (source, _store, root) => {
+    const fixture = await absentDependencyFixture(source, root, 'peerDependencies');
+    const artifact = await fixture.store.stage(source, 'entry.cjs');
+    const result = await fixture.store.test(artifact, { command: process.execPath, args: ['-e', 'if (require("./entry.cjs") !== "absent") throw Error("unexpected host dependency");'] });
+    assert.equal(result.passed, true);
+    await ambientPackage(fixture.host, fixture.marker);
+    await assert.rejects(fixture.store.testResult(artifact), escapedDependency);
+    await assert.rejects(fixture.store.prepareFreshActivation(artifact), escapedDependency);
+    assert.equal(ambientValue(fixture.marker), undefined);
+  });
+});
+
+test('fresh-copy verification rejects dependencies visible only from the activation parent', async () => {
+  await withWorkspace(async (source, _store, root) => {
+    const fixture = await absentDependencyFixture(source, root);
+    const artifact = await fixture.store.stage(source, 'entry.cjs');
+    const activationParent = path.join(fixture.store.root, 'activations');
+    await ambientPackage(activationParent, fixture.marker);
+    await fixture.store.verify(artifact); // The release has no such ancestor package.
+    await assert.rejects(fixture.store.prepareFreshActivation(artifact), escapedDependency);
+    assert.equal(ambientValue(fixture.marker), undefined);
+    assert.deepEqual(await readdir(activationParent), ['node_modules']);
+  });
+});
+
+const bareFileDependency = /Declared bare-file dependency synthetic-file-dep.*containing package directory.*explicit relative import/;
+
+test('original declared exact and CJS-suffixed bare files require an explicit supported layout', async () => {
+  for (const suffix of ['', '.js', '.json', '.node']) {
+    await withWorkspace(async (source, store, root) => {
+      await mkdir(path.join(root, 'node_modules'));
+      await writeFile(path.join(root, 'node_modules', `synthetic-file-dep${suffix}`), suffix === '.json' ? '{}' : 'Known fixture bytes; never imported');
+      await writeFile(path.join(source, 'package.json'), JSON.stringify({ dependencies: { 'synthetic-file-dep': '*' } }));
+      await entry(source);
+      await assert.rejects(store.stage(source, 'entry.mjs'), bareFileDependency);
+      assert.deepEqual(await store.list(), []);
+    });
+  }
+});
+
+test('late host exact and CJS-suffixed files are rejected after a clean stage and test', async () => {
+  for (const suffix of ['', '.js', '.json', '.node']) {
+    await withWorkspace(async (source, _store, root) => {
+      const host = path.join(root, 'store-parent'); await mkdir(host);
+      const store = new ArtifactStore(path.join(host, 'store'));
+      await writeFile(path.join(source, 'package.json'), JSON.stringify({ optionalDependencies: { 'synthetic-file-dep': '*' } }));
+      await writeFile(path.join(source, 'entry.cjs'), 'try { module.exports = require("synthetic-file-dep"); } catch (error) { if (error.code !== "MODULE_NOT_FOUND") throw error; module.exports = "absent"; }');
+      const artifact = await store.stage(source, 'entry.cjs');
+      const result = await store.test(artifact, { command: process.execPath, args: ['-e', 'if (require("./entry.cjs") !== "absent") throw Error("unexpected dependency");'] });
+      assert.equal(result.passed, true);
+      await mkdir(path.join(host, 'node_modules'));
+      await writeFile(path.join(host, 'node_modules', `synthetic-file-dep${suffix}`), suffix === '.json' ? '{}' : 'Known fixture bytes; never imported');
+      await assert.rejects(store.verify(artifact), bareFileDependency);
+      await assert.rejects(store.read(artifact.digest), bareFileDependency);
+      await assert.rejects(store.testResult(artifact), bareFileDependency);
+      await assert.rejects(store.prepareFreshActivation(artifact), bareFileDependency);
+    });
+  }
+});
+
+test('declared directories with same-name local or ancestor CJS suffix files are rejected as ambiguous', async () => {
+  await withWorkspace(async (source, store, root) => {
+    const directory = path.join(source, 'node_modules', 'synthetic-file-dep');
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, 'package.json'), JSON.stringify({ main: './index.cjs' }));
+    await writeFile(path.join(directory, 'index.cjs'), 'module.exports = 42;');
+    await writeFile(`${directory}.js`, 'module.exports = 99;');
+    await writeFile(path.join(source, 'package.json'), JSON.stringify({ dependencies: { 'synthetic-file-dep': '*' } }));
+    await entry(source);
+    await assert.rejects(store.stage(source, 'entry.mjs'), bareFileDependency);
+    await rm(`${directory}.js`);
+    await rm(path.join(directory, 'index.cjs'));
+    await mkdir(path.join(root, 'node_modules'));
+    await writeFile(path.join(root, 'node_modules', 'synthetic-file-dep.js'), 'module.exports = 99;');
+    await assert.rejects(store.stage(source, 'entry.mjs'), bareFileDependency);
+  });
+});
+
 test('fresh activation and rollback reload ESM and nested CJS dependency state', async () => {
   await withWorkspace(async (source, store) => {
     await writeFile(path.join(source, 'entry.mjs'), `import { value, increment } from './dependency.mjs'; import nested from './nested.cjs'; export const result = [value, increment(), nested];\n`);

@@ -313,16 +313,43 @@ async function packageScope(directory: string): Promise<string | undefined> {
     if (current === path.dirname(current)) return undefined;
   }
 }
-async function resolvePackage(directory: string, name: string): Promise<{ candidate: string; target: string } | undefined> {
+async function resolvePackage(directory: string, name: string, rejectBareFiles = true): Promise<{ candidate: string; target: string } | undefined> {
   if (!/^(@[a-zA-Z0-9._-]+\/)?[a-zA-Z0-9._-]+$/.test(name) || name.split('/').some(part => part === '.' || part === '..')) throw new Error(`Invalid declared package name: ${name}`);
+  let resolved: { candidate: string; target: string } | undefined;
   for (let current = directory; ; current = path.dirname(current)) {
     if (path.basename(current) !== 'node_modules') {
       const candidate = path.join(current, 'node_modules', name);
       const target = await optionalRealpath(candidate);
-      if (target) return { candidate, target };
+      // CJS can load exact files or append these suffixes before directory
+      // fallback. Reject that unsupported layout, including file/directory
+      // ambiguity, rather than silently treating it as an absent package.
+      for (const suffix of ['', '.js', '.json', '.node']) {
+        const file = suffix ? await optionalRealpath(`${candidate}${suffix}`) : target;
+        if (file && ((await lstat(file)).isFile() || (!suffix && !(await lstat(file)).isDirectory()))) {
+          if (!rejectBareFiles) return undefined;
+          throw new Error(`Declared bare-file dependency ${name} is unsupported: ${file}; use a containing package directory or an explicit relative import`);
+        }
+      }
+      if (target && !resolved) resolved = { candidate, target };
     }
-    if (current === path.dirname(current)) return undefined;
+    // An incomplete nearer directory can make CJS continue to an ancestor
+    // file. Keep scanning for unsupported file candidates before accepting it.
+    if (current === path.dirname(current)) return resolved;
   }
+}
+function dependencyNames(manifest: unknown, directory: string, workspaceRoot: boolean): Map<string, boolean> {
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) throw new Error(`Invalid package manifest: ${directory}`);
+  const names = new Map<string, boolean>();
+  for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies', 'devDependencies']) {
+    const value: unknown = (manifest as Record<string, unknown>)[field];
+    if (value === undefined) continue;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid ${field}: ${directory}`);
+    // Published packages' dev toolchains are not required runtime closure.
+    // Workspace-root dev dependencies are intentional authoring dependencies.
+    const required = field !== 'devDependencies' || workspaceRoot;
+    for (const name of Object.keys(value)) names.set(name, (names.get(name) ?? false) || required);
+  }
+  return names;
 }
 async function declaredDependencies(source: string, roots: Set<string>, packages: Set<string>): Promise<{
   links: Array<{ candidate: string; target: string }>;
@@ -334,19 +361,9 @@ async function declaredDependencies(source: string, roots: Set<string>, packages
     const text = await readFile(path.join(directory, 'package.json'), 'utf8');
     manifests.push({ directory, text });
     const manifest: unknown = JSON.parse(text);
-    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) throw new Error(`Invalid package manifest: ${directory}`);
-    const names = new Map<string, boolean>();
-    for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies', 'devDependencies']) {
-      const value: unknown = (manifest as Record<string, unknown>)[field];
-      if (value === undefined) continue;
-      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid ${field}: ${directory}`);
-      // Published packages' dev toolchains are not required runtime closure.
-      // Workspace-root dev dependencies are intentional authoring dependencies.
-      const required = field !== 'devDependencies' || directory === source;
-      for (const name of Object.keys(value)) names.set(name, (names.get(name) ?? false) || required);
-    }
+    const names = dependencyNames(manifest, directory, directory === source);
     for (const [name, required] of names) {
-      const resolved = await resolvePackage(directory, name);
+      const resolved = await resolvePackage(directory, name, required);
       if (!resolved) continue; // Originally absent, including optional/peer deps.
       if (![...roots].some(root => inside(root, resolved.target))) {
         if (required) throw new Error(`Missing dependency closure for ${name} in ${directory}; explicitly link its containing package directory into the workspace`);
@@ -373,6 +390,7 @@ async function contentDigest(container: string, entryRelative: string): Promise<
   const base = await realpath(container);
   if ((await lstat(container)).isSymbolicLink()) throw new Error('Artifact release cannot be a symlink');
   const hash = createHash('sha256').update(`mira-extension-artifact-v1\n${JSON.stringify(entryRelative)}\n`);
+  const packages = new Set<string>();
   const visit = async (file: string, relative: string): Promise<void> => {
     const info = await lstat(file), mode = info.mode & 0o777;
     if (info.isSymbolicLink()) {
@@ -381,7 +399,9 @@ async function contentDigest(container: string, entryRelative: string): Promise<
       hash.update(`${JSON.stringify([relative, 'link', target])}\n`);
     } else if (info.isDirectory()) {
       hash.update(`${JSON.stringify([relative, 'directory', mode])}\n`);
-      for (const name of (await readdir(file)).sort()) await visit(path.join(file, name), relative ? `${relative}/${name}` : name);
+      const names = (await readdir(file)).sort();
+      if (names.includes('package.json')) packages.add(file);
+      for (const name of names) await visit(path.join(file, name), relative ? `${relative}/${name}` : name);
     } else if (info.isFile()) {
       const data = await readFile(file);
       hash.update(`${JSON.stringify([relative, 'file', mode, data.length])}\n`).update(data);
@@ -393,5 +413,17 @@ async function contentDigest(container: string, entryRelative: string): Promise<
   await visit(base, '');
   const entry = path.join(base, 'workspace', entryRelative);
   if (!inside(base, await realpath(entry)) || !(await lstat(await realpath(entry))).isFile()) throw new Error('Artifact entry is not a private regular file');
+  const workspace = await realpath(path.join(base, 'workspace'));
+  // An optional/peer dependency absent when authored must not become ambient
+  // host code. Recheck at every identity boundary, including the fresh path:
+  // release and activation parents can expose different node_modules trees.
+  for (const directory of packages) {
+    const manifest: unknown = JSON.parse(await readFile(path.join(directory, 'package.json'), 'utf8'));
+    for (const [name, required] of dependencyNames(manifest, directory, directory === workspace)) {
+      if (!required) continue;
+      const resolved = await resolvePackage(directory, name, required);
+      if (resolved && !inside(base, resolved.target)) throw new Error(`Artifact declared dependency ${name} resolves outside its private tree: ${resolved.target}`);
+    }
+  }
   return hash.digest('hex');
 }

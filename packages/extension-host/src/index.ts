@@ -5,7 +5,7 @@ import { ConfigurationWriter } from './configuration.ts';
 export { readExtensionConfiguration } from './configuration.ts';
 export type { ExtensionConfiguration } from './configuration.ts';
 import { randomUUID } from 'node:crypto';
-import { realpath, stat } from 'node:fs/promises';
+import { mkdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
@@ -75,6 +75,7 @@ export class ExtensionHost {
   private configuration: ConfigurationWriter | undefined;
   private readonly reserved: Set<string>;
   private readonly artifacts: ArtifactStore | undefined;
+  private artifactWatchRoot: string | undefined;
   readonly hmrEnabled: boolean;
 
   private readonly options: ExtensionHostOptions;
@@ -116,6 +117,10 @@ export class ExtensionHost {
     this.ctx.accessor('mira', { get(this: Context) { return host.apiFor(this); } });
     await this.ctx.plugin(Loader);
     await this.ctx.plugin(Timer);
+    if (this.hmrEnabled && this.artifacts && [...this.entries.values()].some(entry => !entry.generated)) {
+      await mkdir(this.artifacts.root, { recursive: true });
+      this.artifactWatchRoot = await realpath(this.artifacts.root);
+    }
     for (const entry of this.entries.values()) {
       // The configured identity is stable even though Cordis code instances change.
       if (entry.generated) {
@@ -130,8 +135,19 @@ export class ExtensionHost {
     await this.ctx.loader.await();
     if (this.hmrEnabled && [...this.entries.values()].some(entry => !entry.generated)) {
       if (!this.ctx.loader.internal) throw new Error('Source HMR requires Node --expose-internals; native addons are not installed');
-      // Watch only explicitly trusted extension directories, never Memory/State.
-      await this.ctx.plugin(Hmr, { root: [...new Set([...this.entries.values()].filter(entry => !entry.generated).map(entry => path.dirname(entry.path)))], ignored: ['**/node_modules/**', '**/.git/**'], debounce: 30 });
+      // A manual directory can contain the artifact store. Exclude both its
+      // authored and canonical paths: generated versions never participate in
+      // source HMR, even when the manual watch roots recurse around them.
+      const ignored = ['**/node_modules/**', '**/.git/**'];
+      if (this.artifacts) {
+        await mkdir(this.artifacts.root, { recursive: true });
+        for (const root of new Set([this.artifacts.root, this.artifactWatchRoot!])) {
+          const relative = path.relative(process.cwd(), root).split(path.sep).join('/');
+          const literal = relative.replace(/[\\*?\[\]{}()!+@]/g, '\\$&');
+          ignored.push(literal || '**', literal ? `${literal}/**` : '**');
+        }
+      }
+      await this.ctx.plugin(Hmr, { root: [...new Set([...this.entries.values()].filter(entry => !entry.generated).map(entry => path.dirname(entry.path)))], ignored, debounce: 30 });
     }
   }
 
@@ -309,9 +325,15 @@ export class ExtensionHost {
     const failures = this.cleanupFailures.get(id);
     if (failures?.length) throw new Error(`Cleanup failed: ${failures.join('; ')}`);
   }
+  private async assertArtifactWatchRoot(): Promise<void> {
+    if (this.artifactWatchRoot && await realpath(this.artifacts!.root) !== this.artifactWatchRoot) {
+      throw new Error('Artifact store path changed after HMR exclusion was established; restart the host');
+    }
+  }
   private async createGenerated(entry: LocalExtensionEntry, receipt?: ChangeStatus): Promise<void> {
     let fresh: ArtifactManifest;
     try {
+      await this.assertArtifactWatchRoot();
       const artifact = await this.artifacts!.read(entry.generated!.digest);
       await this.artifacts!.verify(artifact);
       fresh = entry.enabled === false ? artifact : await this.artifacts!.prepareFreshActivation(artifact);
@@ -349,6 +371,7 @@ export class ExtensionHost {
     }
     if (desired.generated && change.action !== 'disable') {
       try {
+        await this.assertArtifactWatchRoot();
         const artifact = await this.artifacts!.read(desired.generated.digest);
         await this.artifacts!.verify(artifact);
         desired.path = artifact.entry;

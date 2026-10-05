@@ -143,3 +143,13 @@ roots require linking the containing package directory instead. Internal file
 links remain supported. A container scope barrier prevents the release location
 from silently changing ESM/CJS defaults. Content identity includes represented
 relative topology as well as bytes and permissions.
+
+
+Manual HMR excludes the canonical and configured artifact-store subtree even
+when it is nested below a manual watch root. Retargeting a configured store alias
+requires a host restart to establish the new exclusion; it cannot silently move
+generated versions into the watcher. Declared dependency closure is rechecked
+when reading, verifying and making fresh copies, so previously absent optional
+or peer dependencies cannot start resolving outside the container. Declared bare
+CommonJS file targets (including suffix lookup) require a package directory or
+an explicit within-snapshot relative import; they are rejected before execution.

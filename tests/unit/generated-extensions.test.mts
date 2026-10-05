@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -264,3 +265,10 @@ test('remove retains visible cleanup failure after dropping the configured ident
     await store.verify(first);
   } finally { await host.close(); }
 }));
+
+
+test('manual HMR excludes nested generated artifacts through canonical and alias store paths', () => {
+  const child = spawnSync(process.execPath, ['--expose-internals', 'tests/unit/fixtures/generated-hmr-exclusion-probe.mjs'], { encoding:'utf8', timeout:20_000 });
+  assert.equal(child.status,0,`${child.stdout}\n${child.stderr}`);
+  assert.match(child.stdout,/GENERATED_HMR_EXCLUSION_COMPLETE/);
+});

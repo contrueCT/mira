@@ -14,7 +14,7 @@
 
 `ArtifactStore` 和小 CLI 只管理普通版本文件及显式测试命令的内容证据。stage 完整复制 workspace 与已存在的符号链接依赖，不 import、不执行脚本。SHA-256 覆盖入口选择、所有文件字节/权限及私有链接图。workspace 与显式依赖目录被复制到私有稀疏目录树，保持所选根之间的相对路径；只复制选定根，不复制整个共同祖先。workspace 是指向镜像源根的私有链接。保留原有 node_modules 路径语义，原本在其外的 TS SDK 仍在其外；不是只给入口加 URL query。无效链接、循环和 release/source 嵌套拒绝。
 
-已存在的声明依赖只在目标属于显式快照范围时保留原有本地解析关系。原先可解析但未提供的运行依赖在 stage 报缺少闭包，不安装、不猜另一版本。继承自范围之外的 package.json 要求改为链接包含它的 package 目录；外部独立文件链接也采用这个明确限制，内部文件链接继续支持。容器的空 package.json 防止发布位置意外注入父目录的模块类型。内容标识包含所表示的目录拓扑；整体迁移而相对拓扑不变时稳定，分别改名/移动所选根可能改变身份。
+已存在的声明依赖只在目标属于显式快照范围时保留原有本地解析关系。原先可解析但未提供的运行依赖在 stage 报缺少闭包，不安装、不猜另一版本。读取/验证/fresh copy 也重新检查声明依赖不能从容器外解析，以免原先缺席的 optional/peer 依赖被发布位置注入。声明的裸 CommonJS 文件依赖（含 .js/.json/.node 查找）采用明确拒绝，要求 package 目录或快照内相对导入，不尝试另造完整 Node resolver。继承自范围之外的 package.json 要求改为链接包含它的 package 目录；外部独立文件链接也采用这个明确限制，内部文件链接继续支持。容器的空 package.json 防止发布位置意外注入父目录的模块类型。内容标识包含所表示的目录拓扑；整体迁移而相对拓扑不变时稳定，分别改名/移动所选根可能改变身份。
 
 显式 native test 在新副本中执行选定命令；结果记录 command、exit/signal、输出、before/after digest。成功表示命令退出成功且观测到的内容未变，不证明测试质量、安全性或真实模型生成能力。测试后改动不能继承旧 digest 的测试通过；未经测试版本仍可由授权意图选择激活，并如实显示 not-run。任意动态/绝对路径 import、网络、文件读取和可写 OS 身份的恶意修改不在内容证明范围内；此机制不宣称验证任意程序的完整运行环境。
 
@@ -22,7 +22,7 @@
 
 普通配置 JSON 可选 `artifactsDirectory` 开启生成生命周期；每个生成 entry 保存当前 digest、revision 和包含 code digest/config 的历史。install 添加新 ID 并保持 disabled；activate/enable 激活；update 切换版本且保留当前启停状态；configure 形成新配置 revision；rollback 显式选择已保存 revision，恢复真实旧代码和 JSON 配置，保留当前启停状态。每次生成代码激活使用全新目录，刷新入口和本地传递 ESM/CJS 模块缓存。旧 release 保留。
 
-所有运行变更复用 `requestChange` 和整批资源租约。工具调用返回 accepted；下一自然模型请求前等待 batch 结束、旧代及服务依赖消费者清理，再发布完整 registry/schema/dispatcher。声明同时包含 activation UUID 与生成版本 SHA，两者含义不同。生成 release 不进入 HMR watcher；手工扩展仍保留 ADR 0004 的官方 HMR 语义。
+所有运行变更复用 `requestChange` 和整批资源租约。工具调用返回 accepted；下一自然模型请求前等待 batch 结束、旧代及服务依赖消费者清理，再发布完整 registry/schema/dispatcher。声明同时包含 activation UUID 与生成版本 SHA，两者含义不同。生成 artifact store（包括嵌套于手工目录、配置路径别名及其规范路径）明确排除于 HMR watcher；运行中别名改指其它 store 时要求重启以重建排除规则；手工扩展仍保留 ADR 0004 的官方 HMR 语义。
 
 cleanup 异常保留在 receipt/宿主诊断；remove 即使已移除配置与身份也报告 cleanup failed，不把可能未释放的外部资源藏掉。
 
