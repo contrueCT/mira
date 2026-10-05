@@ -57,6 +57,16 @@ exports 仅支持明确子路径映射到普通相对路径/null，或一层 `ty
 
 2026-10-05 用户确认声明检查例外。Pi 1.0.2 发布的 `.d.ts` 中 JSON 导入缺少 NodeNext 所需 import attribute，Google 传递依赖的声明还引用未安装的可选 MCP SDK。未修改上游包，也未添加无用途的 MCP 依赖。
 
-根 `tsconfig.json` 保持 `skipLibCheck: false`，检查核心、持久化、workspace、非 Pi 应用、工具和相应测试。`tsconfig.pi.json` 承接 Pi 运行时、server 假 provider 组装及消费 Pi 的离线/恢复测试，设置 `skipLibCheck: true`。例外跳过该项目消费的所有声明文件检查，不仅是 Pi 包；若以后添加自己的 `.d.ts`，也会落入这个例外，必须另行评估。两套配置继承相同 `strict`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes` 等源代码检查，仍使用上游声明检查 Mira 的实际调用。`pnpm typecheck` 必须同时运行两套配置。
+根 `tsconfig.json` 保持 `skipLibCheck: false`，检查核心、持久化、workspace、非 Pi 应用、工具和相应测试。`tsconfig.pi.json` 承接 Pi 运行时、server 假 provider 组装及消费 Pi 的离线/恢复测试，设置 `skipLibCheck: true`。例外跳过该项目消费的所有声明文件检查，不仅是 Pi 包；若以后添加自己的 `.d.ts`，也会落入这个例外，必须另行评估。两套配置继承相同 `strict`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes` 等源代码检查，仍使用上游声明检查 Mira 的实际调用。本阶段新增下述 Cordis 项目；`pnpm typecheck` 必须运行全部三套配置。
 
 CI 和本地安装显式使用 `--ignore-scripts`。pnpm 11 对未批准的传递依赖构建会返回 `ERR_PNPM_IGNORED_BUILDS`；本批不需要 Google SDK、esbuild、protobufjs 的安装脚本，因此继续禁用脚本，不执行 `approve-builds` 或扩大构建权限。
+
+
+## Cordis consumer declaration resolution
+
+See ADR 0004. Official Cordis RC declaration exports omit ESM file extensions.
+`tsconfig.extensions.json` uses strict ESNext/Bundler resolution with library checks;
+`tsconfig.pi.json` uses the same resolution for Pi/server consumers and retains
+the previously approved skipLibCheck exception for all declarations consumed by that project. Root/core/SDK retain
+NodeNext. No bundler is installed: Node 24 executes explicit .ts ESM and actual HMR
+children use `--expose-internals`. All three projects run under `pnpm typecheck`.

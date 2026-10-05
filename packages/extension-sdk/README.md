@@ -1,5 +1,27 @@
-# packages/extension-sdk
+# Extension SDK
 
-扩展的唯一 Mira 公共契约入口。
+The public contract for manually installed, trusted local extensions. It imports no
+Cordis, Pi, database, Node, or core types. `defineExtension` produces a structural
+Cordis plugin; extension authors use only this package.
 
-状态：尚未实现。目录仅标明已确认职责。
+Capabilities: JSON-schema tools with text/JSON results, durable event emission,
+explicit Wake requests, named services/dependencies, an in-process event bus,
+cleanup callbacks, and lifecycle-owned intervals. `emitEvent` never requests a
+Wake. A Wake includes a stable event and receipt ID; the host binds source identity.
+In-process `publish`/`onEvent` are not durable Life History or Wake requests.
+
+Register resources during `apply`. Resource-creating APIs reject an unloading or
+retired activation; existing service reads, publication and event emission remain
+available to the leased generation until its cleanup finishes. Capture injected services there so tools retain
+their generation. Register every external listener/socket/resource disposer with
+`onCleanup`; cleanup may be asynchronous and is awaited. Cordis cannot clean up
+resources that an extension fails to register. Detached work must be canceled or
+joined by the extension's cleanup. This is trusted same-process code, not a sandbox.
+
+See `examples/extensions` for a tool, timer/service source, and dependent consumer.
+Tools use the ordinary runtime authorization and durable intent/outcome boundary.
+The SDK exposes no database, direct context mutation, package installation,
+generated-code activation, or authorization override.
+
+Run `pnpm check` at the repository root. Offline host and runtime suites exercise
+these public contracts with real pinned Cordis/Pi packages and synthetic models.

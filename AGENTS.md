@@ -8,7 +8,7 @@
 
 ## 当前状态与关系
 
-当前实现包含连续上下文、合并 Wake、普通 Memory/State、通用 Pi 工具、Memory Git 与只读历史查询，见 [ADR 0003](docs/adr/0003-ordinary-memory-history.md)。Server 仅有假 provider CLI 组装，没有 HTTP/UI 或完整产品。
+当前实现包含连续上下文、合并 Wake、普通 Memory/State、通用 Pi 工具、Memory Git、只读历史查询与手工可信 Cordis 扩展，见 [ADR 0003](docs/adr/0003-ordinary-memory-history.md) 和 [扩展宿主](packages/extension-host/README.md)。Server 仅有假 provider CLI 组装，没有 HTTP/UI 或完整产品。
 
 - `apps/server` 组装核心与适配器；`apps/web` 提供单条 Timeline
 - `life` / `context` 保持独立，不导入 Pi、Cordis、数据库或 Web 框架

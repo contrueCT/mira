@@ -5,7 +5,7 @@
 ## 入口与状态
 
 - `README.md` 描述职责；`package.json` 是包名和公开 exports 的事实来源
-- exports 为空，不声称已有可开发扩展的 API。
+- `src/index.ts` 为唯一公开 API；`defineExtension` 不导入 Cordis/Pi/数据库类型。
 - 本目录负责扩展唯一的 Mira 公共契约入口。
 
 ## 本地约束与跨包陷阱
@@ -16,4 +16,4 @@
 
 ## 验证
 
-从仓库根运行 `pnpm check`。依赖或 exports 改动必须同时检查 `scripts/boundaries.json`，并添加允许/拒绝反例。当前没有此包专属测试或启动命令；实现时同时补充真实命令与适用验收，不能填入未实现命令。
+从仓库根运行 `pnpm check`。依赖或 exports 改动必须同时检查 `scripts/boundaries.json`，并添加允许/拒绝反例。离线验证见 `tests/unit/extension-host.test.mts` 和 `tests/unit/official-hmr.test.mts`；实际 HMR 子进程使用 `--expose-internals`，不调用真实模型。

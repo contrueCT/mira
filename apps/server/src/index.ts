@@ -1,3 +1,6 @@
+import { ExtensionHost, type LocalExtensionEntry } from '@mira/extension-host';
+import { extensionManagementTools, extensionReceiver, extensionTools } from './extensions.ts';
+export { extensionManagementTools, extensionReceiver, extensionTools } from './extensions.ts';
 import { realpath, stat } from 'node:fs/promises';
 import { createAssistantMessageEventStream, type AssistantMessage, type Api, type Model } from '@earendil-works/pi-ai';
 import type { AgentTool, StreamFn } from '@earendil-works/pi-agent-core';
@@ -41,6 +44,7 @@ export interface DemoOptions {
   memory?: { memoryRoot: string; stateRoot: string; stateFiles?: string[] };
   events: Array<{ event: LifeEvent; wake?: { id: string; reason: string } }>;
   maxInlineBytes?: number;
+  extensions?: { entries: LocalExtensionEntry[]; hmr?: boolean; configurationFile?: string };
   /** Tests may inject deterministic streams; this demo never loads credentials. */
   streamFn?: StreamFn;
 }
@@ -49,6 +53,7 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
   const persistence = new PostgresPersistence({ connectionString: options.connectionString, schema: options.schema });
   const writer = await persistence.acquire(options.miraId);
   let modelCalls = 0;
+  let extensions: ExtensionHost | undefined;
   const stream: StreamFn = (model, context, streamOptions) => {
     modelCalls++;
     if (options.streamFn) return options.streamFn(model, context, streamOptions);
@@ -72,13 +77,21 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
       ].join('\n\n');
     } : undefined;
     for (const { event, wake } of options.events) await writer.receive(event, wake);
+    const baseTools = [...createWorkspaceTools(workingDirectory), ...createHistoryTools(persistence.history(writer.miraId))];
+    if (options.extensions) {
+      extensions = new ExtensionHost({ ...options.extensions, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension.inspect', 'extension.manage'], receive: extensionReceiver(writer) });
+      await extensions.start();
+    }
+    const host = extensions;
+    const managementTools = host ? extensionManagementTools(host) : [];
     const loop = new WakeLoop({
       writer,
       writeOverflowInput: (runId, content) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content }),
       ...(options.maxInlineBytes === undefined ? {} : { maxInlineBytes: options.maxInlineBytes }),
       ...(roots ? { beforeComplete: memoryCheckpointHook(writer, roots.memoryRoot, roots.repositoryId) } : {}),
       createRuntime: () => new PiDurableRuntime({ writer, model: demoModel, streamFn: stream,
-        tools: [...createWorkspaceTools(workingDirectory), ...createHistoryTools(persistence.history(writer.miraId))],
+        tools: baseTools,
+        ...(host ? { prepareTools: async () => [...baseTools, ...managementTools, ...extensionTools(await host.prepare())], finishTools: () => host.finish() } : {}),
         ...(initialContext ? { initialContext } : {}),
         // Synthetic local demo only. A product composition supplies interpretation
         // of natural-language user intent; it must never infer authority from files.
@@ -87,7 +100,7 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
     });
     const completedRuns = await loop.drain();
     return { completedRuns, modelCalls, miraId: writer.miraId, version: (await writer.load()).version };
-  } finally { await writer.close(); }
+  } finally { try { await extensions?.close(); } finally { await writer.close(); } }
 }
 
 

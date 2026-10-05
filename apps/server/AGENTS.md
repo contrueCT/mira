@@ -5,7 +5,8 @@
 ## 入口与状态
 
 - `README.md` 描述职责；`package.json` 是包名和公开 exports 的事实来源
-- `src/index.ts` 组装假 provider、持久化、WakeLoop、Pi 通用文件/search/bash、Mira 固定范围历史查询与可选 Memory/State；`pnpm demo --help` 为 CLI 入口。尚无 HTTP 服务。
+- `src/index.ts` 组装假 provider、持久化、WakeLoop、Pi 通用文件/search/bash、Mira 固定范围历史查询、可选 Memory/State 与手工可信扩展；`pnpm demo --help` 为 CLI 入口。尚无 HTTP 服务。
+- `src/extensions.ts` 绑定事件来源、把 SDK 工具映射到普通 Pi 授权/intent/outcome，并提供配置内管理工具
 - 本目录负责API、认证、启动和依赖组装；服务框架尚未选定。
 
 ## 本地约束与跨包陷阱

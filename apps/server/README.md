@@ -22,3 +22,12 @@ pnpm demo first-message 'Hello Mira'
 CLI 通过成对的 `MIRA_DEMO_MEMORY` 与 `MIRA_DEMO_STATE` 启用这些根目录，`MIRA_DEMO_STATE_FILES='["current.md"]'` 明确选择初始读取的 State 文件。单独设置一边会报错；未配置时保持原有无 Memory 演示。
 
 `workingDirectory`（CLI 为 `MIRA_DEMO_CWD`）选择已存在的普通默认目录，缺省为进程 cwd，与可能尚未建立的 overflow spool 分开；它不限制工具访问范围。Pi edit 仍使用原生执行与规范 `edits[]` schema，仅移除在授权之前运行的可选旧参数格式转换器；自定义 preparer 仍由 runtime 拒绝，实际执行前保留完整原始/验证参数证据。
+
+
+## 手工可信扩展
+
+`MIRA_DEMO_EXTENSIONS=/absolute/extensions.json` 加载普通 JSON 中明确配置的可信本地模块；格式见 [示例](../../examples/extensions/README.md)。程序化组装可使用 `runDemo({extensions:{entries,hmr?,configurationFile?}, ...})`。不指定配置文件的程序化管理变更仅在当前进程有效。
+
+来源身份由组装层绑定。`emitEvent` 不唤醒；显式 Wake 复用原队列去重/合并。SDK 工具和 `extension.inspect` / `extension.manage` 保留普通 Pi 授权、intent/outcome 路径。管理工具返回 accepted，整批工具完成后等待应用，再由同一 Wake 的下一自然请求看到并调用新工具；不重开已完成的最终回复。
+
+启用/停用/配置先保存到同一 JSON，再交给 Cordis，receipt 区分保存与应用失败。源码 HMR 使用 `node --expose-internals apps/server/src/cli.mts ...`；没有 addon、运行时安装或生成扩展激活。文件 watcher 是异步的，嵌套 CJS require 不自动追踪，apply 失败不保证旧代回滚。完整语义见 [扩展宿主](../../packages/extension-host/README.md)。假 provider 默认仍不自动调用工具；真正同轮激活/调用由确定性测试验证。
