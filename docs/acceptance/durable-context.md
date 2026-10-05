@@ -13,7 +13,7 @@
 ## 验证入口
 
 ```sh
-pnpm install --frozen-lockfile
+pnpm install --frozen-lockfile --ignore-scripts
 pnpm check
 MIRA_TEST_DATABASE_URL='postgres://mira_test:synthetic-ci-only@127.0.0.1:5432/mira_test' pnpm test:integration
 ```
@@ -27,7 +27,7 @@ MIRA_TEST_DATABASE_URL='postgres://mira_test:synthetic-ci-only@127.0.0.1:5432/mi
 2026-10-05 本地验证：
 
 - 固定 pnpm 11.28.4 的 frozen-lockfile 安装通过；安装生命周期脚本关闭
-- `pnpm check` 通过：两套严格源代码类型检查、包边界、50 项离线测试（0 跳过）和工具构建
+- `pnpm check` 通过：两套严格源代码类型检查、包边界、53 项离线测试（0 跳过）和工具构建
 - PostgreSQL 18.6 单进程真实引擎通过迁移 up/down、约束、持久化重启及 advisory-lock 表示检查；此项不替代驱动/多进程验证
 - 原始设计 SHA-256 保持 `fbd116b05b50c3e604a36da96e21d6d5e254e5b67ec689b3a80d7750872c6e15`；相对文档链接、`git diff --check` 通过
 - 前两轮独立审查发现的 checkpoint 边界、system 状态、空摘要、首次工具声明与约束字段问题已修复并补回归；最新独立审查与真实 PostgreSQL CI 结果待补

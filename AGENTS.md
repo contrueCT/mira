@@ -41,7 +41,7 @@
 ## 常用命令（仓库根目录）
 
 ```sh
-pnpm install --frozen-lockfile
+pnpm install --frozen-lockfile --ignore-scripts
 pnpm check
 ```
 

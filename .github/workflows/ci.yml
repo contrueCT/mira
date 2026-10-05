@@ -41,6 +41,6 @@ jobs:
           node-version-file: .node-version
       - name: Install pinned pnpm
         run: npm install --global pnpm@11.28.4
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm check:all
       - run: git diff --exit-code

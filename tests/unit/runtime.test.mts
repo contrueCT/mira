@@ -360,3 +360,24 @@ test('wrapped tools retain constrainedSampling in durable declarations and actua
     assert.deepEqual(getCurrentTools(state.messages)[0]?.constrainedSampling, tool.constrainedSampling);
   }
 });
+
+
+test('JSON array role discriminators fail fresh recovery instead of disappearing from provider context', async () => {
+  const writer = new MemoryWriter(); await seed(writer, [{ role: 'user', content: [{ type: 'text', text: 'Preserve this prior instruction' }], timestamp: 1000 }]);
+  (writer.state.records[0]!.payload as { message: { role: unknown } }).message.role = ['user'];
+  const before = structuredClone(writer.state); const requests: TranscriptContext[] = [];
+  await assert.rejects(runtime(writer).recover(), /Unsupported Pi message/);
+  await assert.rejects(runtime(writer, (_model, context) => { requests.push(structuredClone(context)); return streamOf(assistant()); }).run(input()), /Unsupported Pi message/);
+  assert.deepEqual(requests, []); assert.deepEqual(writer.state, before);
+});
+
+test('assistant stopReason discriminators must be literal strings when encoding and recovering', async () => {
+  const malformed = { ...assistant(), stopReason: ['stop'] };
+  assert.throws(() => encodeEntry(messageEntry(malformed as never, null)), /Invalid completed assistant metadata/);
+  const writer = new MemoryWriter(); await seed(writer, [input(), assistant()]);
+  (writer.state.records.at(-1)!.payload as { message: { stopReason: unknown } }).message.stopReason = ['stop'];
+  let requests = 0;
+  await assert.rejects(runtime(writer).recover(), /Invalid completed assistant metadata/);
+  await assert.rejects(runtime(writer, () => { requests++; return streamOf(assistant()); }).run(input()), /Invalid completed assistant metadata/);
+  assert.equal(requests, 0);
+});

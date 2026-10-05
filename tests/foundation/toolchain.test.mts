@@ -46,3 +46,8 @@ test('Pi declaration exception is scoped and source strictness remains inherited
   assert.ok(pi.include.includes('tests/recovery/**/*.mts'));
   assert.match(manifest.scripts.typecheck, /tsc --noEmit && tsc --noEmit -p tsconfig.pi.json/);
 });
+
+test('CI explicitly suppresses dependency install scripts without broadening build permission', async () => {
+  assert.match(await readFile('.github/workflows/ci.yml', 'utf8'), /pnpm install --frozen-lockfile --ignore-scripts/);
+  assert.match(await readFile('pnpm-workspace.yaml', 'utf8'), /allowBuilds: \{\}/);
+});

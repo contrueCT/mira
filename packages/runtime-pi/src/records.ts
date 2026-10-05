@@ -76,7 +76,7 @@ function validateUsage(value: unknown): void {
 }
 /** Validate required provider-facing structure without dropping unknown JSON fields. */
 export function validateMessage(value: unknown): asserts value is AgentMessage {
-  if (!object(value) || !['system', 'user', 'assistant', 'toolResult'].includes(String(value['role'])) || typeof value['timestamp'] !== 'number' || !Number.isFinite(value['timestamp'])) throw new Error('Unsupported Pi message');
+  if (!object(value) || typeof value['role'] !== 'string' || !['system', 'user', 'assistant', 'toolResult'].includes(value['role']) || typeof value['timestamp'] !== 'number' || !Number.isFinite(value['timestamp'])) throw new Error('Unsupported Pi message');
   const role = value['role'];
   const content = value['content'];
   if (typeof content !== 'string' || (role !== 'user' && role !== 'system')) {
@@ -97,7 +97,7 @@ export function validateMessage(value: unknown): asserts value is AgentMessage {
     if (value['toolsRemoved'] !== undefined && (!Array.isArray(value['toolsRemoved']) || !value['toolsRemoved'].every(tool => object(tool) && nonempty(tool['name'])))) throw new Error('Invalid removed tools');
   }
   if (role === 'assistant') {
-    if (!nonempty(value['api']) || !nonempty(value['provider']) || !nonempty(value['model']) || !['stop', 'length', 'toolUse', 'error', 'aborted'].includes(String(value['stopReason']))) throw new Error('Invalid completed assistant metadata');
+    if (!nonempty(value['api']) || !nonempty(value['provider']) || !nonempty(value['model']) || typeof value['stopReason'] !== 'string' || !['stop', 'length', 'toolUse', 'error', 'aborted'].includes(value['stopReason'])) throw new Error('Invalid completed assistant metadata');
     validateUsage(value['usage']);
   }
   if (role === 'toolResult') {
