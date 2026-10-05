@@ -10,7 +10,9 @@ cleanup callbacks, and lifecycle-owned intervals. `emitEvent` never requests a
 Wake. A Wake includes a stable event and receipt ID; the host binds source identity.
 In-process `publish`/`onEvent` are not durable Life History or Wake requests.
 
-Register resources during `apply`. Capture injected services there so tools retain
+Register resources during `apply`. Resource-creating APIs reject an unloading or
+retired activation; existing service reads, publication and event emission remain
+available to the leased generation until its cleanup finishes. Capture injected services there so tools retain
 their generation. Register every external listener/socket/resource disposer with
 `onCleanup`; cleanup may be asynchronous and is awaited. Cordis cannot clean up
 resources that an extension fails to register. Detached work must be canceled or

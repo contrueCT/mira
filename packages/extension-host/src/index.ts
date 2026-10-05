@@ -137,6 +137,8 @@ export class ExtensionHost {
   private apiFor(ctx: Context): ExtensionContext {
     const prior = this.instances.get(ctx.fiber);
     if (prior) return prior.context;
+    ctx.fiber.assertActive();
+    if (ctx.fiber.state !== 1 && ctx.fiber.state !== 2) throw new Error('Cannot create API for an inactive extension');
     const id = ctx.fiber.entry?.id;
     if (!id || !this.entries.has(id)) throw new Error('Mira API requires a configured extension identity');
     const activation = randomUUID();
@@ -159,15 +161,20 @@ export class ExtensionHost {
     const drainDependencies = async (): Promise<void> => { await Promise.all(serviceDrains); await drainConsumers(); };
     const releaseResource = (cleanup: Cleanup): Promise<void> => this.defer(ctx, async () => { await drainDependencies(); await cleanup(); });
     const alive = (): void => { if (this.closed) throw new Error('Extension host is closed'); if (retired) throw new Error('Extension activation has retired'); };
+    const canRegister = (): void => {
+      alive(); ctx.fiber.assertActive();
+      if (ctx.fiber.state !== 1 && ctx.fiber.state !== 2) throw new Error('Cannot register resources while extension is retiring');
+    };
     const context: ExtensionContext = {
       id,
       registerTool: tool => {
-        alive();
-        if (!/^[a-zA-Z][\w.-]*$/.test(tool.name) || !tool.description.trim() || tool.parameters.type !== 'object' || typeof tool.execute !== 'function') throw new Error('Invalid extension tool');
-        if (this.reserved.has(tool.name) || this.tools.has(tool.name)) throw new Error(`Duplicate registered tool: ${tool.name}`);
-        const registered = { extensionId: id, activation, tool: { ...tool, parameters: structuredClone(tool.parameters) } };
-        this.tools.set(tool.name, registered);
-        resourceDrains.push(releaseResource(() => { if (this.tools.get(tool.name) === registered) this.tools.delete(tool.name); }));
+        canRegister();
+        const name = tool.name;
+        if (!/^[a-zA-Z][\w.-]*$/.test(name) || !tool.description.trim() || tool.parameters.type !== 'object' || typeof tool.execute !== 'function') throw new Error('Invalid extension tool');
+        if (this.reserved.has(name) || this.tools.has(name)) throw new Error(`Duplicate registered tool: ${name}`);
+        const registered = { extensionId: id, activation, tool: { ...tool, name, parameters: structuredClone(tool.parameters) } };
+        resourceDrains.push(releaseResource(() => { if (this.tools.get(name) === registered) this.tools.delete(name); }));
+        this.tools.set(name, registered);
       },
       emitEvent: async event => { alive(); return this.options.receive(id, validatedEvent(event)); },
       requestWake: async request => {
@@ -175,7 +182,7 @@ export class ExtensionHost {
         if (!request.id || !request.reason.trim()) throw new Error('Wake needs a stable ID and reason');
         return this.options.receive(id, validatedEvent(request.event), { id: request.id, reason: request.reason });
       },
-      provideService: (name, value) => { alive(); const key = serviceKey(name); serviceDrains.push(this.deferNative(ctx, ctx.provide(key, value))); provided.add(key); services.set(key, value); },
+      provideService: (name, value) => { canRegister(); const key = serviceKey(name); serviceDrains.push(this.deferNative(ctx, ctx.provide(key, value))); provided.add(key); services.set(key, value); },
       service: <T>(name: string): T => {
         alive(); const key = serviceKey(name);
         if (!(key in ctx.fiber.inject) && !provided.has(key)) throw new Error(`Declare required service: ${name}`);
@@ -186,17 +193,19 @@ export class ExtensionHost {
         }
         return services.get(key) as T;
       },
-      onCleanup: cleanup => { alive(); cleanupDrains.push(this.defer(ctx, async () => { await drainDependencies(); await Promise.all(resourceDrains); await cleanup(); })); },
+      onCleanup: cleanup => { canRegister(); cleanupDrains.push(this.defer(ctx, async () => { await drainDependencies(); await Promise.all(resourceDrains); await cleanup(); })); },
       onEvent: (name, listener) => {
-        alive();
+        canRegister();
+        const registeredListener = (payload: Json): void => listener(payload);
         let listeners = this.listeners.get(name);
-        if (!listeners) this.listeners.set(name, listeners = new Set());
-        listeners.add(listener);
-        resourceDrains.push(releaseResource(() => { listeners.delete(listener); if (!listeners.size) this.listeners.delete(name); }));
+        if (!listeners) listeners = new Set();
+        resourceDrains.push(releaseResource(() => { listeners.delete(registeredListener); if (!listeners.size) this.listeners.delete(name); }));
+        this.listeners.set(name, listeners);
+        listeners.add(registeredListener);
       },
       publish: (name, payload) => { alive(); for (const listener of this.listeners.get(name) ?? []) listener(structuredClone(payload)); },
       interval: (callback, milliseconds) => {
-        alive();
+        canRegister();
         if (!Number.isFinite(milliseconds) || milliseconds <= 0) throw new Error('Interval must be positive');
         resourceDrains.push(this.deferNative(ctx, ctx.interval(callback, milliseconds), drainDependencies));
       },

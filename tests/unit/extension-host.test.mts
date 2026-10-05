@@ -667,3 +667,95 @@ for (const action of ['disable', 'reload', 'close'] as const) test(`provider tim
     const ticks = provider.state.ticks; await delay(20); assert.equal(provider.state.ticks, ticks);
   });
 });
+
+for (const action of ['disable', 'reload', 'close'] as const) test(`retiring callback cannot register resources or publish orphan tools during ${action}`, async () => {
+  await withDirectory(async directory => {
+    const provider = await fixture<{ stopping: boolean; rejected: string[]; registered: string[]; cleanupCalls: number }>(directory, 'late-provider', `
+      export const state = { stopping: false, rejected: [], registered: [], cleanupCalls: 0 };
+      export default defineExtension({ name: 'late-provider', apply(ctx) {
+        state.stopping = false; let attempted = false;
+        ctx.provideService('late-source', { stopping() { state.stopping = true; } });
+        ctx.onCleanup(() => { state.cleanupCalls++; });
+        ctx.interval(() => {
+          if (!state.stopping || attempted) return; attempted = true;
+          for (const [name, register] of [
+            ['tool', () => ctx.registerTool({ name: 'orphan', description: 'must not appear', parameters: { type: 'object' }, async execute() { return { text: 'orphan' }; } })],
+            ['listener', () => ctx.onEvent('late-event', () => {})],
+            ['timer', () => ctx.interval(() => {}, 1000)],
+            ['service', () => ctx.provideService('orphan-service', {})],
+            ['cleanup', () => ctx.onCleanup(() => {})],
+          ]) {
+            try { register(); state.registered.push(name); } catch { state.rejected.push(name); }
+          }
+        }, 1);
+      } });
+    `);
+    const consumer = await fixture(directory, 'late-consumer', `
+      export const state = {};
+      export default defineExtension({ name: 'late-consumer', requires: ['late-source'], apply(ctx) {
+        const source = ctx.service('late-source');
+        ctx.onCleanup(async () => { source.stopping(); await new Promise(resolve => setTimeout(resolve, 15)); });
+      } });
+    `);
+    const host = new ExtensionHost({ entries: [{ id: 'provider', path: provider.path }, { id: 'consumer', path: consumer.path }], receive: received });
+    try {
+      await host.start(); await host.prepare();
+      if (action === 'close') await host.close();
+      else { host.requestChange('provider', { action }); assert.deepEqual(await host.prepare(), []); }
+      assert.deepEqual(provider.state.registered, []);
+      assert.deepEqual(provider.state.rejected, ['tool', 'listener', 'timer', 'service', 'cleanup']);
+      assert.equal(provider.state.cleanupCalls, 1);
+      if (action !== 'close') assert.deepEqual(host.inspect().map(item => item.tools), [[], []]);
+    } finally { await host.close(); }
+    assert.deepEqual(provider.state.registered, []);
+  });
+});
+
+test('shared module callbacks retain independent subscriptions for each configured activation', async () => {
+  await withDirectory(async directory => {
+    const shared = await fixture<{ calls: number }>(directory, 'shared-listener', `
+      export const state = { calls: 0 };
+      const onPing = () => { state.calls++; };
+      export default defineExtension({ name: 'shared-listener', apply(ctx) {
+        ctx.onEvent('shared-ping', onPing);
+        ctx.registerTool({ name: ctx.id + '.publish', description: 'Publish shared ping', parameters: { type: 'object' }, async execute() { ctx.publish('shared-ping', null); return { text: 'published' }; } });
+      } });
+    `);
+    const host = new ExtensionHost({ entries: [{ id: 'alpha', path: shared.path }, { id: 'beta', path: shared.path }], receive: received });
+    try {
+      await host.start();
+      await execute(named(await host.prepare(), 'beta.publish'));
+      assert.equal(shared.state.calls, 2);
+      host.requestChange('alpha', { action: 'disable' });
+      const beta = named(await host.prepare(), 'beta.publish');
+      await execute(beta);
+      assert.equal(shared.state.calls, 3);
+      assert.equal(host.inspect().find(item => item.id === 'beta')!.status, 'active');
+      host.requestChange('alpha', { action: 'enable' });
+      await execute(named(await host.prepare(), 'beta.publish'));
+      assert.equal(shared.state.calls, 5);
+    } finally { await host.close(); }
+  });
+});
+
+test('shared mutable tool definitions cannot change a registered cleanup key', async () => {
+  await withDirectory(async directory => {
+    const shared = await fixture<Record<string, never>>(directory, 'shared-tool', `
+      export const state = {};
+      const tool = { name: 'initial', description: 'Shared definition', parameters: { type: 'object' }, async execute() { return { text: 'shared' }; } };
+      export default defineExtension({ name: 'shared-tool', apply(ctx) { tool.name = 'tool.' + ctx.id; ctx.registerTool(tool); } });
+    `);
+    const host = new ExtensionHost({ entries: [{ id: 'alpha', path: shared.path }, { id: 'beta', path: shared.path }], receive: received });
+    try {
+      await host.start();
+      assert.deepEqual((await host.prepare()).map(item => item.tool.name).sort(), ['tool.alpha', 'tool.beta']);
+      host.requestChange('alpha', { action: 'disable' });
+      assert.deepEqual((await host.prepare()).map(item => item.tool.name), ['tool.beta']);
+      assert.deepEqual(host.inspect().find(item => item.id === 'alpha')!.tools, []);
+      host.requestChange('beta', { action: 'disable' });
+      assert.deepEqual(await host.prepare(), []);
+      host.requestChange('alpha', { action: 'enable' });
+      assert.deepEqual((await host.prepare()).map(item => item.tool.name), ['tool.alpha']);
+    } finally { await host.close(); }
+  });
+});
