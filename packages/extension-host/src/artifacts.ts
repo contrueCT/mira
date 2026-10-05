@@ -313,9 +313,9 @@ async function packageScope(directory: string): Promise<string | undefined> {
     if (current === path.dirname(current)) return undefined;
   }
 }
-async function resolvePackage(directory: string, name: string, rejectBareFiles = true): Promise<{ candidate: string; target: string } | undefined> {
+async function packageCandidates(directory: string, name: string, rejectBareFiles = true): Promise<Array<{ candidate: string; target: string }>> {
   if (!/^(@[a-zA-Z0-9._-]+\/)?[a-zA-Z0-9._-]+$/.test(name) || name.split('/').some(part => part === '.' || part === '..')) throw new Error(`Invalid declared package name: ${name}`);
-  let resolved: { candidate: string; target: string } | undefined;
+  const resolved: Array<{ candidate: string; target: string }> = [];
   for (let current = directory; ; current = path.dirname(current)) {
     if (path.basename(current) !== 'node_modules') {
       const candidate = path.join(current, 'node_modules', name);
@@ -326,14 +326,14 @@ async function resolvePackage(directory: string, name: string, rejectBareFiles =
       for (const suffix of ['', '.js', '.json', '.node']) {
         const file = suffix ? await optionalRealpath(`${candidate}${suffix}`) : target;
         if (file && ((await lstat(file)).isFile() || (!suffix && !(await lstat(file)).isDirectory()))) {
-          if (!rejectBareFiles) return undefined;
+          if (!rejectBareFiles) return [];
           throw new Error(`Declared bare-file dependency ${name} is unsupported: ${file}; use a containing package directory or an explicit relative import`);
         }
       }
-      if (target && !resolved) resolved = { candidate, target };
+      if (target) resolved.push({ candidate, target });
     }
-    // An incomplete nearer directory can make CJS continue to an ancestor
-    // file. Keep scanning for unsupported file candidates before accepting it.
+    // CJS can continue past an incomplete directory or missing subpath. Close
+    // the entire declared namespace instead of assuming the nearest one wins.
     if (current === path.dirname(current)) return resolved;
   }
 }
@@ -363,13 +363,13 @@ async function declaredDependencies(source: string, roots: Set<string>, packages
     const manifest: unknown = JSON.parse(text);
     const names = dependencyNames(manifest, directory, directory === source);
     for (const [name, required] of names) {
-      const resolved = await resolvePackage(directory, name, required);
-      if (!resolved) continue; // Originally absent, including optional/peer deps.
-      if (![...roots].some(root => inside(root, resolved.target))) {
-        if (required) throw new Error(`Missing dependency closure for ${name} in ${directory}; explicitly link its containing package directory into the workspace`);
-        continue;
+      for (const resolved of await packageCandidates(directory, name, required)) {
+        if (![...roots].some(root => inside(root, resolved.target))) {
+          if (required) throw new Error(`Missing dependency closure for ${name} in ${directory}; explicitly link its containing package directory into the workspace`);
+          continue;
+        }
+        links.push(resolved);
       }
-      links.push(resolved);
     }
   }
   return { links, manifests };
@@ -421,8 +421,9 @@ async function contentDigest(container: string, entryRelative: string): Promise<
     const manifest: unknown = JSON.parse(await readFile(path.join(directory, 'package.json'), 'utf8'));
     for (const [name, required] of dependencyNames(manifest, directory, directory === workspace)) {
       if (!required) continue;
-      const resolved = await resolvePackage(directory, name, required);
-      if (resolved && !inside(base, resolved.target)) throw new Error(`Artifact declared dependency ${name} resolves outside its private tree: ${resolved.target}`);
+      for (const resolved of await packageCandidates(directory, name, required)) {
+        if (!inside(base, resolved.target)) throw new Error(`Artifact declared dependency ${name} resolves outside its private tree: ${resolved.target}`);
+      }
     }
   }
   return hash.digest('hex');

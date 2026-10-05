@@ -461,6 +461,99 @@ test('declared directories with same-name local or ancestor CJS suffix files are
   });
 });
 
+async function completeHelper(directory: string, value = 42): Promise<void> {
+  await mkdir(directory, { recursive: true });
+  await writeFile(path.join(directory, 'package.json'), JSON.stringify({ name: 'helper', main: './index.cjs' }));
+  await writeFile(path.join(directory, 'index.cjs'), `module.exports = { value: ${value} };`);
+}
+
+test('an empty nearer package cannot hide an uncaptured valid ancestor package', async () => {
+  await withWorkspace(async (source, store, root) => {
+    await mkdir(path.join(source, 'node_modules', 'helper'), { recursive: true });
+    const ancestor = path.join(root, 'node_modules', 'helper');
+    await completeHelper(ancestor);
+    await writeFile(path.join(source, 'package.json'), JSON.stringify({ dependencies: { helper: '*' } }));
+    await writeFile(path.join(source, 'entry.cjs'), 'module.exports = require("helper").value;');
+    assert.equal((await import(pathToFileURL(path.join(source, 'entry.cjs')).href) as { default: number }).default, 42);
+    await assert.rejects(store.stage(source, 'entry.cjs'), /Missing dependency closure for helper/);
+    await symlink(ancestor, path.join(source, 'captured-ancestor'));
+    const separate = await mkdtemp(path.join(os.tmpdir(), 'mira-detached-artifact-store-'));
+    try {
+      const detached = new ArtifactStore(separate);
+      const artifact = await detached.stage(source, 'entry.cjs');
+      await rm(source, { recursive: true }); await rm(path.join(root, 'node_modules'), { recursive: true });
+      const fresh = await detached.prepareFreshActivation(artifact);
+      assert.equal((await import(pathToFileURL(fresh.entry).href) as { default: number }).default, 42);
+    } finally { await rm(separate, { recursive: true, force: true }); }
+  });
+});
+
+test('ambient farther packages are rejected after a passed test even with an empty or complete nearer package', async () => {
+  for (const complete of [false, true]) {
+    await withWorkspace(async (source, _store, root) => {
+      const nearest = path.join(source, 'node_modules', 'helper');
+      if (complete) await completeHelper(nearest, 1); else await mkdir(nearest, { recursive: true });
+      await writeFile(path.join(source, 'package.json'), JSON.stringify({ optionalDependencies: { helper: '*' } }));
+      await writeFile(path.join(source, 'entry.cjs'), 'try { module.exports = require("helper").value; } catch (error) { if (error.code !== "MODULE_NOT_FOUND") throw error; module.exports = "absent"; }');
+      const host = path.join(root, 'store-parent'); await mkdir(host);
+      const store = new ArtifactStore(path.join(host, 'store'));
+      const artifact = await store.stage(source, 'entry.cjs');
+      const expected = complete ? 1 : 'absent';
+      const tested = await store.test(artifact, { command: process.execPath, args: ['-e', `if (require("./entry.cjs") !== ${JSON.stringify(expected)}) throw Error("unexpected helper");`] });
+      assert.equal(tested.passed, true);
+      const ancestor = path.join(host, 'node_modules', 'helper');
+      await completeHelper(ancestor);
+      await writeFile(path.join(ancestor, 'subpath.js'), 'module.exports = 42;');
+      await assert.rejects(store.verify(artifact), /Artifact declared dependency helper resolves outside/);
+      await assert.rejects(store.testResult(artifact), /Artifact declared dependency helper resolves outside/);
+      await assert.rejects(store.prepareFreshActivation(artifact), /Artifact declared dependency helper resolves outside/);
+      await writeFile(path.join(ancestor, 'index.cjs'), 'module.exports = { value: 99 };');
+      await assert.rejects(store.read(artifact.digest), /Artifact declared dependency helper resolves outside/);
+    });
+  }
+});
+
+test('an uncaptured ancestor subpath cannot hide behind a complete nearer bare package', async () => {
+  await withWorkspace(async (source, store, root) => {
+    await completeHelper(path.join(source, 'node_modules', 'helper'), 1);
+    const ancestor = path.join(root, 'node_modules', 'helper');
+    await completeHelper(ancestor, 2);
+    await writeFile(path.join(ancestor, 'subpath.js'), 'module.exports = 42;');
+    await writeFile(path.join(source, 'package.json'), JSON.stringify({ dependencies: { helper: '*' } }));
+    await writeFile(path.join(source, 'entry.cjs'), 'module.exports = require("helper/subpath");');
+    assert.equal((await import(pathToFileURL(path.join(source, 'entry.cjs')).href) as { default: number }).default, 42);
+    await assert.rejects(store.stage(source, 'entry.cjs'), /Missing dependency closure for helper/);
+    await symlink(ancestor, path.join(source, 'captured-ancestor'));
+    const separate = await mkdtemp(path.join(os.tmpdir(), 'mira-detached-artifact-store-'));
+    try {
+      const detached = new ArtifactStore(separate);
+      const artifact = await detached.stage(source, 'entry.cjs');
+      await rm(source, { recursive: true }); await rm(path.join(root, 'node_modules'), { recursive: true });
+      const fresh = await detached.prepareFreshActivation(artifact);
+      assert.equal((await import(pathToFileURL(fresh.entry).href) as { default: number }).default, 42);
+    } finally { await rm(separate, { recursive: true, force: true }); }
+  });
+});
+
+test('captured complete CJS packages and import-only exports retain fresh independent module state', async () => {
+  await withWorkspace(async (source, store) => {
+    const helper = path.join(source, 'node_modules', 'helper');
+    await completeHelper(helper);
+    await writeFile(path.join(helper, 'index.cjs'), 'let count = 0; module.exports = { next: () => ++count };');
+    const only = path.join(source, 'node_modules', 'import-only'); await mkdir(only);
+    await writeFile(path.join(only, 'package.json'), JSON.stringify({ exports: { '.': { import: './index.mjs' } } }));
+    await writeFile(path.join(only, 'index.mjs'), 'export const value = 42;');
+    await writeFile(path.join(source, 'package.json'), JSON.stringify({ dependencies: { helper: '*', 'import-only': '*' } }));
+    await writeFile(path.join(source, 'entry.mjs'), 'import helper from "helper"; import { value } from "import-only"; export const result = [helper.next(), value];');
+    const artifact = await store.stage(source, 'entry.mjs');
+    await rm(source, { recursive: true });
+    for (let index = 0; index < 2; index++) {
+      const fresh = await store.prepareFreshActivation(artifact);
+      assert.deepEqual((await import(pathToFileURL(fresh.entry).href) as { result: number[] }).result, [1, 42]);
+    }
+  });
+});
+
 test('fresh activation and rollback reload ESM and nested CJS dependency state', async () => {
   await withWorkspace(async (source, store) => {
     await writeFile(path.join(source, 'entry.mjs'), `import { value, increment } from './dependency.mjs'; import nested from './nested.cjs'; export const result = [value, increment(), nested];\n`);

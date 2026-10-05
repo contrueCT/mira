@@ -153,3 +153,11 @@ when reading, verifying and making fresh copies, so previously absent optional
 or peer dependencies cannot start resolving outside the container. Declared bare
 CommonJS file targets (including suffix lookup) require a package directory or
 an explicit within-snapshot relative import; they are rejected before execution.
+
+
+Declared namespaces conservatively include every directory candidate in the
+ordinary ancestor node_modules chain, since CommonJS can fall through an empty
+directory or a missing subpath. An artifact store underneath an ambient same-name
+package namespace is rejected even when a nearer private candidate exists;
+choose an independent data directory. This is snapshot consistency, not a limit
+on the general file/Shell tools or an OS execution sandbox.
