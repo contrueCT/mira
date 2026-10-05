@@ -17,8 +17,9 @@ try {
   } else if (mode === 'recover') {
     let requests = 0, effects = 0;
     try {
-      await runtime(writer, () => { requests++; return streamOf(assistant()); }, { tools: [effectTool(async () => { effects++; return result; })] }).run(input('continue'));
-      process.stdout.write(JSON.stringify({ blocked: false, requests, effects }));
+      const contexts: TranscriptContext[] = [];
+      const restored = await runtime(writer, (_model, context) => { requests++; contexts.push(structuredClone(context)); return streamOf(assistant()); }, { tools: [effectTool(async () => { effects++; return result; })] }).run(input('continue'));
+      process.stdout.write(JSON.stringify({ blocked: false, requests, effects, snapshot: restored.snapshot, recovery: restored.recovery, contexts }));
     } catch (error) {
       process.stdout.write(JSON.stringify({ blocked: true, error: String(error), requests, effects, snapshot: await writer.load() }));
     }

@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-当前增量已实现连续上下文与恢复适配器，包含 PostgreSQL 持久化和 Pi 执行/压缩。这里还没有用户可用的服务端或 Web 页面；真实模型联通未验收。其余目录仍仅代表职责边界。
+当前增量包含 PostgreSQL 持久上下文、合并唤醒、单认知循环、Pi 执行/压缩及假 provider CLI 演示。没有 HTTP 服务、Web 页面、通用授权解析器或真实模型联通验收；未实现目录仍仅代表职责边界。
 
 - [原始设计 v0.4](docs/design/original-v0.4.md)
 - [架构边界](docs/architecture.md)
@@ -15,6 +15,8 @@
 - [分阶段验收](docs/acceptance/foundation.md)
 - [决策记录](docs/adr/README.md)
 - [连续上下文与恢复验收](docs/acceptance/durable-context.md)
+- [合并唤醒设计](docs/adr/0002-coalesced-wake-loop.md)
+- [最小假模型演示](apps/server/README.md)
 
 基础设施优先保证连续性、真实历史、授权和故障恢复。模型负责理解和行为；不建立数值情绪系统、不把每次 Wake 变成新会话。
 

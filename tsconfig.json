@@ -35,6 +35,9 @@
     "node_modules",
     "dist",
     "packages/runtime-pi",
-    "tests/unit/runtime.test.mts"
+    "tests/unit/runtime.test.mts",
+    "apps/server",
+    "tests/unit/wake-runtime.test.mts",
+    "tests/unit/server-demo.test.mts"
   ]
 }

@@ -5,7 +5,7 @@
 ## 入口与状态
 
 - `README.md` 描述职责；`package.json` 是包名和公开 exports 的事实来源
-- 只有 README.md 与 package.json，尚无服务器或启动命令。
+- `src/index.ts` 组装假 provider、持久化、WakeLoop 和普通文件读取；`pnpm demo --help` 为 CLI 入口。尚无 HTTP 服务。
 - 本目录负责API、认证、启动和依赖组装；服务框架尚未选定。
 
 ## 本地约束与跨包陷阱
@@ -16,4 +16,4 @@
 
 ## 验证
 
-从仓库根运行 `pnpm check`。依赖或 exports 改动必须同时检查 `scripts/boundaries.json`，并添加允许/拒绝反例。当前没有此包专属测试或启动命令；实现时同时补充真实命令与适用验收，不能填入未实现命令。
+从仓库根运行 `pnpm check`。依赖或 exports 改动必须同时检查 `scripts/boundaries.json`，并添加允许/拒绝反例。`pnpm demo --help` 离线验证入口；数据库演示由恢复集成测试覆盖。此 Pi 消费项目进入 tsconfig.pi.json，Mira 源码仍严格检查。

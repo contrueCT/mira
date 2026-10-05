@@ -7,6 +7,7 @@ import {
   type CompactionEntry, type ResourceLoader, type SessionEntry,
 } from '@earendil-works/pi-coding-agent';
 import { validateMessage } from './records.ts';
+import { observationText, type RecoveryOperation } from './observations.ts';
 
 export interface CompactionOptions {
   signal?: AbortSignal;
@@ -34,7 +35,7 @@ function emptyResources(): ResourceLoader {
  * network are used. Only the supplied stream can produce a summary. */
 export async function compactSnapshot(
   miraId: string, entries: SessionEntry[], model: Model<Api>, streamFn: StreamFn,
-  options: CompactionOptions = {},
+  options: CompactionOptions = {}, recoveryOperations: RecoveryOperation[] = [],
 ): Promise<CompactionEntry> {
   options.signal?.throwIfAborted();
   const cwd = process.cwd();
@@ -55,7 +56,8 @@ export async function compactSnapshot(
     if (selected.provider !== isolatedProvider) throw new Error('Compaction escaped its isolated provider');
     if (requestOptions?.apiKey !== undefined || requestOptions?.headers !== undefined || requestOptions?.env !== undefined) throw new Error('Compaction unexpectedly resolved request auth');
     // The caller sees the original model in full, never the SDK-only identity.
-    const stream = await streamFn(model, context, requestOptions);
+    const summaryContext = recoveryOperations.length ? { ...context, messages: [...context.messages, { role: 'user' as const, content: `Preserve these exact outstanding execution facts in the summary.\n${observationText(recoveryOperations)}`, timestamp: Date.now() }] } : context;
+    const stream = await streamFn(model, summaryContext, requestOptions);
     // The public stream result is a cached promise. Checking it does not consume
     // events or copy SDK preparation. Guard each split-turn response separately;
     // otherwise SDK boilerplate can conceal an empty summary and discard history.

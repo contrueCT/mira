@@ -14,7 +14,8 @@
     "test": "node scripts/run-tests.mts",
     "build": "tsc -p tsconfig.tools.json",
     "test:integration": "node scripts/run-tests.mts --integration",
-    "check:all": "pnpm check && pnpm test:integration"
+    "check:all": "pnpm check && pnpm test:integration",
+    "demo": "node apps/server/src/cli.mts"
   },
   "devDependencies": {
     "@types/node": "24.19.1",
@@ -27,6 +28,9 @@
     "@types/pg": "8.23.1",
     "@earendil-works/pi-agent-core": "1.0.2",
     "@earendil-works/pi-ai": "1.0.2",
-    "@earendil-works/pi-coding-agent": "1.0.2"
+    "@earendil-works/pi-coding-agent": "1.0.2",
+    "@mira/cognition": "workspace:*",
+    "@mira/workspace": "workspace:*",
+    "@mira/server": "workspace:*"
   }
 }

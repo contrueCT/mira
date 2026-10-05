@@ -5,7 +5,7 @@
 ## 入口与状态
 
 - `README.md` 描述职责；`package.json` 是包名和公开 exports 的事实来源
-- 公开 exports 为空；先通过恢复、工具边界与压缩实验再定义契约。
+- `src/index.ts` 导出最小 CognitionRuntime/CognitionTurn；Pi 与数据库类型不进入契约。
 - 本目录负责核心拥有的 Runtime 接口与规范化可持久化消息。
 
 ## 本地约束与跨包陷阱
@@ -16,4 +16,4 @@
 
 ## 验证
 
-从仓库根运行 `pnpm check`。依赖或 exports 改动必须同时检查 `scripts/boundaries.json`，并添加允许/拒绝反例。当前没有此包专属测试或启动命令；实现时同时补充真实命令与适用验收，不能填入未实现命令。
+从仓库根运行 `pnpm check`。依赖或 exports 改动必须同时检查 `scripts/boundaries.json`，并添加允许/拒绝反例。执行验收由 life 离线循环测试及 runtime-pi 恢复测试覆盖。

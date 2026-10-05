@@ -7,7 +7,11 @@
     "packages/runtime-pi/**/*.ts",
     "packages/runtime-pi/**/*.mts",
     "tests/unit/runtime.test.mts",
-    "tests/recovery/**/*.mts"
+    "tests/recovery/**/*.mts",
+    "apps/server/**/*.ts",
+    "apps/server/**/*.mts",
+    "tests/unit/wake-runtime.test.mts",
+    "tests/unit/server-demo.test.mts"
   ],
   "exclude": [
     "node_modules",

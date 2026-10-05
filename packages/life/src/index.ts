@@ -41,3 +41,27 @@ export interface DurableWriter {
   finishTool(outcome: ToolOutcome): Promise<void>;
   close(): Promise<void>;
 }
+
+export interface WakeRequest { event: LifeEvent; wake: WakeReceipt }
+export interface WakeRun {
+  id: string;
+  claimedAt: string;
+  status: 'running' | 'completed';
+  requests: WakeRequest[];
+  inputRecordId: string | null;
+  finalRecordId: string | null;
+}
+/** Durable consumption uses the same fenced writer as context publication. */
+export interface WakeWriter extends DurableWriter {
+  /** Resume the active run, otherwise atomically claim all currently pending
+   * requests. New receipts never join an already claimed run. */
+  claimWakeBatch(): Promise<WakeRun | null>;
+  loadWakeRun(runId: string): Promise<WakeRun>;
+  /** Append and bind in one transaction; retries verify identical evidence. */
+  appendWakeInput(runId: string, expectedVersion: number, record: RuntimeRecord, signal?: AbortSignal): Promise<number>;
+  appendWakeFinal(runId: string, expectedVersion: number, record: RuntimeRecord, signal?: AbortSignal): Promise<number>;
+  /** Requires persisted input and final reply; safely repeatable after a crash. */
+  completeWakeRun(runId: string): Promise<void>;
+}
+export { WakeLoop, prepareWakeTurn, renderWakeBatch } from './loop.ts';
+export type { WakeLoopOptions } from './loop.ts';
