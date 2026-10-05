@@ -169,10 +169,10 @@ export class ExtensionHost {
       id,
       registerTool: tool => {
         canRegister();
-        const name = tool.name;
-        if (!/^[a-zA-Z][\w.-]*$/.test(name) || !tool.description.trim() || tool.parameters.type !== 'object' || typeof tool.execute !== 'function') throw new Error('Invalid extension tool');
+        const name = tool.name, description = tool.description, parameters = tool.parameters, execute = tool.execute;
+        if (!/^[a-zA-Z][\w.-]*$/.test(name) || !description.trim() || parameters.type !== 'object' || typeof execute !== 'function') throw new Error('Invalid extension tool');
         if (this.reserved.has(name) || this.tools.has(name)) throw new Error(`Duplicate registered tool: ${name}`);
-        const registered = { extensionId: id, activation, tool: { ...tool, name, parameters: structuredClone(tool.parameters) } };
+        const registered = { extensionId: id, activation, tool: { name, description, parameters: structuredClone(parameters), execute: execute.bind(tool) } };
         resourceDrains.push(releaseResource(() => { if (this.tools.get(name) === registered) this.tools.delete(name); }));
         this.tools.set(name, registered);
       },

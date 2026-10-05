@@ -323,6 +323,8 @@ export class PiDurableRuntime implements CognitionRuntime {
         // Later snapshots may replace/remove a name, but never alter its dispatch.
         return registry.map(source => {
           const tool = { ...source,
+            name: source.name, label: source.label, description: source.description,
+            execute: source.execute.bind(source),
             parameters: structuredClone(source.parameters),
             ...(source.outputSchema === undefined ? {} : { outputSchema: structuredClone(source.outputSchema) }),
             ...(source.constrainedSampling === undefined ? {} : { constrainedSampling: structuredClone(source.constrainedSampling) }),

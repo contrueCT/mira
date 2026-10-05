@@ -759,3 +759,28 @@ test('shared mutable tool definitions cannot change a registered cleanup key', a
     } finally { await host.close(); }
   });
 });
+
+test('class-based SDK tools preserve prototype metadata and private-field execute receivers', async () => {
+  await withDirectory(async directory => {
+    const entry = await fixture<Record<string, never>>(directory, 'class-tool', `
+      export const state = {};
+      class Tool {
+        #value = 'private-value';
+        get name() { return 'class.tool'; }
+        get description() { return 'Prototype description'; }
+        get parameters() { return { type: 'object' }; }
+        async execute() { return { text: this.#value }; }
+      }
+      export default defineExtension({ name: 'class-tool', apply(ctx) { ctx.registerTool(new Tool()); } });
+    `);
+    const host = new ExtensionHost({ entries: [{ id: 'class', path: entry.path }], receive: received });
+    try {
+      await host.start();
+      const registered = named(await host.prepare(), 'class.tool');
+      assert.equal(registered.tool.description, 'Prototype description');
+      assert.equal(await execute(registered), 'private-value');
+      host.requestChange('class', { action: 'disable' });
+      assert.deepEqual(await host.prepare(), []);
+    } finally { await host.close(); }
+  });
+});

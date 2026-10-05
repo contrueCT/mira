@@ -263,3 +263,28 @@ test('mutating the source schema after declaration cannot change validation in t
   assert.deepEqual(observed, [{ count: '7' }, { count: 8 }]);
   assert.deepEqual(writer.state.executions.map(item => item.intent.arguments), observed);
 });
+
+for (const dynamic of [false, true]) test(`${dynamic ? 'dynamic' : 'static'} class tools retain prototype metadata and original private receiver`, async () => {
+  const writer = new MemoryWriter(); let requests = 0;
+  class ClassTool implements AgentTool {
+    #calls = 0;
+    get name() { return 'class_tool'; }
+    get label() { return 'Class tool'; }
+    get description() { return 'Prototype description'; }
+    get parameters() { return Type.Object({}); }
+    async execute() { this.#calls++; return { content: [{ type: 'text' as const, text: `private count ${this.#calls}` }], details: {} }; }
+    calls() { return this.#calls; }
+  }
+  const source = new ClassTool();
+  await runtime(writer, (_model, context) => {
+    requests++;
+    assert.equal(getCurrentTools(context.messages)[0]!.name, 'class_tool');
+    assert.equal(getCurrentTools(context.messages)[0]!.description, 'Prototype description');
+    if (requests === 1) return streamOf(calls(['class-call', 'class_tool']));
+    return streamOf(assistant());
+  }, dynamic ? { prepareTools: async () => [source] } : { tools: [source] }).run(input());
+  assert.equal(source.calls(), 1);
+  assert.equal(writer.state.executions.length, 1);
+  assert.ok(writer.state.executions[0]!.outcome);
+  assert.equal((await runtime(writer).recover()).recovery.status, 'complete');
+});
