@@ -7,7 +7,9 @@
   "include": [
     "packages/extension-host/**/*.ts",
     "tests/unit/extension-host.test.mts",
-    "tests/unit/extension-configuration.test.mts"
+    "tests/unit/extension-configuration.test.mts",
+    "tests/unit/extension-artifacts.test.mts",
+    "tests/unit/generated-extensions.test.mts"
   ],
   "exclude": [
     "node_modules",

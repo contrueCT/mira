@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -426,5 +426,37 @@ test('configuration reader rejects malformed ordinary JSON documents without rew
       assert.equal(await readFile(file, 'utf8'), text);
       await assertNoTemporaryFiles(directory);
     }
+  });
+});
+
+
+test('manual settings preserve authored symlink paths across retargeting and restart', async () => {
+  await withDirectory(async directory => {
+    const current = path.join(directory, 'current.mjs');
+    const configurationFile = path.join(directory, 'extensions.json');
+    for (const version of ['one', 'two']) await writeFile(path.join(directory, `${version}.mjs`), `
+      import { defineExtension } from ${JSON.stringify(sdkUrl)};
+      export default defineExtension({ name:'manual-alias', apply(ctx) {
+        ctx.registerTool({ name:'configured', description:'Synthetic manual alias', parameters:{type:'object'}, async execute() { return {text:JSON.stringify(${JSON.stringify(version)})}; } });
+      }});
+    `);
+    await symlink('one.mjs', current);
+    await writeDocument(configurationFile, { entries:[{id:'manual',path:current,enabled:false}] });
+    const host = await savedHost(configurationFile);
+    try {
+      await host.start();
+      for (const change of [{action:'enable'}, {action:'configure',config:{}}, {action:'disable'}] as const) {
+        host.requestChange('manual', change); const tools = await host.prepare();
+        if (change.action !== 'disable') assert.equal(await configured(tools), 'one');
+        assert.equal((await document(configurationFile)).entries[0]!['path'], current);
+      }
+    } finally { await host.close(); }
+    await rm(current); await symlink('two.mjs',current);
+    const restarted = await savedHost(configurationFile);
+    try {
+      await restarted.start(); restarted.requestChange('manual',{action:'enable'});
+      assert.equal(await configured(await restarted.prepare()), 'two');
+      assert.equal((await document(configurationFile)).entries[0]!['path'], current);
+    } finally { await restarted.close(); }
   });
 });

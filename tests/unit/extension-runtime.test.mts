@@ -166,7 +166,7 @@ test('real host configuration and disable preserve every sibling executable unti
     assert.deepEqual(changes[1]!.toolsRemoved, [{ name: 'fixture.echo' }]);
     assert.deepEqual(changes[1]!.toolsAdded?.[0]?.parameters, changedParameters);
     assert.deepEqual(changes[2]!.toolsRemoved, [{ name: 'fixture.echo' }]);
-    assert.deepEqual(getCurrentTools((await runtime(writer).recover()).messages).map(tool => tool.name), [builtin.name, 'extension.inspect', 'extension.manage']);
+    assert.deepEqual(getCurrentTools((await runtime(writer).recover()).messages).map(tool => tool.name), [builtin.name, 'extension.inspect', 'extension.stage', 'extension.manage']);
   } finally { await host.close(); await writer.close(); await rm(fixture.root, { recursive: true, force: true }); }
 });
 

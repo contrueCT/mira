@@ -8,12 +8,14 @@
 
 ## 当前状态与关系
 
-当前实现包含连续上下文、合并 Wake、普通 Memory/State、通用 Pi 工具、Memory Git、只读历史查询与手工可信 Cordis 扩展，见 [ADR 0003](docs/adr/0003-ordinary-memory-history.md) 和 [扩展宿主](packages/extension-host/README.md)。Server 仅有假 provider CLI 组装，没有 HTTP/UI 或完整产品。
+当前实现包含连续上下文、合并 Wake、普通 Memory/State、通用 Pi 工具、Memory Git、只读历史查询与 Cordis 手工/生成扩展生命周期，见 [ADR 0005](docs/adr/0005-generated-extension-lifecycle.md) 和 [扩展宿主](packages/extension-host/README.md)。Server 仅有假 provider CLI 组装，没有 HTTP/UI 或完整产品。
 
 - `apps/server` 组装核心与适配器；`apps/web` 提供单条 Timeline
 - `life` / `context` 保持独立，不导入 Pi、Cordis、数据库或 Web 框架
 - 核心拥有契约，`runtime-pi`、`persistence`、`workspace` 等适配器实现契约
 - 扩展只使用 `extension-sdk`；Cordis 处理生命周期，不是安全沙箱
+- 生成扩展测试/导入/执行按已确认的宿主 OS 身份运行，无产品隔离；默认生成流程不修改核心/授权/历史/security，目录只是约定
+- stage 不执行代码，内容 SHA 包含本地依赖；版本/config 先保存后 apply，rollback 是显式新激活，不是原子撤销
 - 用户数据、Memory 的独立 Git、State 普通文件、日志、凭据均在源码仓库之外；State 不做 Git 版本化
 - 普通文件变化不通知上下文、不 Wake、不重注入；仅真正初始上下文加载 MEMORY.md 和配置的 State
 - Pi 通用文件/search/bash 工具无应用工作目录限制，无产品隔离环境要求；cwd 不是沙箱，OS 权限与自然语言意图判断仍有效

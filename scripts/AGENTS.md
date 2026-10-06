@@ -17,6 +17,7 @@
 
 - 新增 workspace 包必须同时更新策略；不要默认放行所有内部依赖
 - 检查静态/动态导入、重导出、类型导入和 manifest-only 依赖，不能只用正则扫 import
-- 静态边界检查不是未知代码沙箱；不要据此允许生成代码进入宿主
+- 静态边界检查不是未知代码沙箱；生成执行边界见 ADR 0005，不能把静态检查通过当作安全授权
+- `create-extension-workspace.mts` 只复制模板/链接已有私有 SDK 和工具；`extension-artifact.mts` stage 不执行代码，test 执行显式 native command
 - CI 保持最小权限和无凭据测试，新增 workflow 权限或 secrets 使用前先确认
 - 包管理器/TypeScript 升级要验证 API、锁文件格式、真实干净安装、测试和工具构建

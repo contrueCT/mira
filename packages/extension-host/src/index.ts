@@ -1,10 +1,14 @@
+import { ArtifactStore, type ArtifactManifest } from './artifacts.ts';
+export { ArtifactStore } from './artifacts.ts';
+export type { ArtifactManifest, ArtifactTestCommand, ArtifactTestResult } from './artifacts.ts';
 import { ConfigurationWriter } from './configuration.ts';
 export { readExtensionConfiguration } from './configuration.ts';
 export type { ExtensionConfiguration } from './configuration.ts';
 import { randomUUID } from 'node:crypto';
-import { realpath, stat } from 'node:fs/promises';
+import { mkdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { Context, type Fiber, type Disposable } from 'cordis';
 import Loader, { type EntryOptions } from '@cordisjs/plugin-loader';
 import Hmr from '@cordisjs/plugin-hmr';
@@ -17,7 +21,10 @@ export interface LocalExtensionEntry {
   path: string;
   enabled?: boolean;
   config?: Json;
+  generated?: GeneratedVersion;
 }
+export interface GeneratedRevision { id: string; digest: string; config: Json }
+export interface GeneratedVersion { digest: string; revision: string; history: GeneratedRevision[] }
 export interface ExtensionHostOptions {
   entries: LocalExtensionEntry[];
   reservedToolNames?: string[];
@@ -26,19 +33,25 @@ export interface ExtensionHostOptions {
   hmr?: boolean;
   /** Optional same-file desired configuration persistence; otherwise runtime-only. */
   configurationFile?: string;
+  /** Ordinary release files outside the source repository, not a sandbox. */
+  artifactsDirectory?: string;
 }
-export interface RegisteredTool { extensionId: string; activation: string; tool: ExtensionTool }
+export interface RegisteredTool { extensionId: string; activation: string; digest?: string; tool: ExtensionTool }
 export interface ExtensionStatus {
   id: string; path: string; enabled: boolean; config: Json;
   status: 'disabled' | 'import-failed' | 'waiting' | 'loading' | 'active' | 'failed' | 'disposed' | 'unloading';
+  generated?: GeneratedVersion;
   activation: string | null; tools: string[]; diagnostic: string | null;
 }
-export type ExtensionChange = { action: 'enable' | 'disable' | 'reload' } | { action: 'configure'; config: Json };
-export interface ChangeStatus { id: string; extensionId: string; action: ExtensionChange['action']; status: 'accepted' | 'applied' | 'failed'; persistence: 'pending' | 'saved' | 'failed' | 'not-required'; error?: string }
+export type ExtensionChange = { action: 'enable' | 'disable' | 'reload' | 'activate' | 'remove' }
+  | { action: 'configure'; config: Json }
+  | { action: 'install' | 'update'; digest: string; config?: Json }
+  | { action: 'rollback'; revision: string };
+export interface ChangeStatus { id: string; extensionId: string; action: ExtensionChange['action']; status: 'accepted' | 'applied' | 'failed'; persistence: 'pending' | 'saved' | 'failed' | 'not-required' | 'not-attempted'; error?: string; digest?: string; revision?: string; artifact?: 'verified' | 'failed'; test?: 'passed' | 'failed' | 'not-run' | 'invalidated'; cleanup?: 'failed' }
 interface Instance { id: string; activation: string; context: ExtensionContext; fiber: Fiber }
 
 /** Cordis owns dependency/lifecycle/HMR state. This coordinator only protects
- * a published model/tool batch and queues explicit, configured local changes. */
+ * a published model/tool batch and queues explicit local lifecycle changes. */
 export class ExtensionHost {
   private readonly ctx = new Context();
   private readonly entries = new Map<string, LocalExtensionEntry>();
@@ -49,6 +62,7 @@ export class ExtensionHost {
   private readonly listeners = new Map<string, Set<(payload: Json) => void>>();
   private readonly diagnostics = new Map<string, string>();
   private readonly hostDiagnostics: string[] = [];
+  private readonly cleanupFailures = new Map<string, string[]>();
   private readonly changes: Array<{ receipt: ChangeStatus; change: ExtensionChange }> = [];
   private readonly receipts: ChangeStatus[] = [];
   private releaseBatch: (() => void) | undefined;
@@ -60,10 +74,14 @@ export class ExtensionHost {
   private advancing = false;
   private configuration: ConfigurationWriter | undefined;
   private readonly reserved: Set<string>;
+  private readonly artifacts: ArtifactStore | undefined;
+  private artifactWatchRoot: string | undefined;
   readonly hmrEnabled: boolean;
 
   private readonly options: ExtensionHostOptions;
   constructor(options: ExtensionHostOptions) {
+    if (options.artifactsDirectory && !path.isAbsolute(options.artifactsDirectory)) throw new Error('artifactsDirectory must be absolute');
+    this.artifacts = options.artifactsDirectory ? new ArtifactStore(options.artifactsDirectory) : undefined;
     this.reserved = new Set(options.reservedToolNames ?? []);
     this.hmrEnabled = options.hmr ?? false;
     for (const entry of options.entries) {
@@ -71,7 +89,13 @@ export class ExtensionHost {
       if (entry.enabled !== undefined && typeof entry.enabled !== 'boolean') throw new Error('Extension enabled must be boolean');
       if (!path.isAbsolute(entry.path)) throw new Error(`Extension path must be absolute: ${entry.id}`);
       validateConfig(entry.config ?? null);
-      this.entries.set(entry.id, { ...entry, config: structuredClone(entry.config ?? null) });
+      if (entry.generated) {
+        validateGenerated(entry.generated);
+        const revision = entry.generated.history.find(item => item.id === entry.generated!.revision)!;
+        if (!isDeepStrictEqual(entry.config ?? null, revision.config)) throw new Error('Generated config does not match saved revision');
+        if (!this.artifacts) throw new Error('Generated entries require artifactsDirectory');
+      }
+      this.entries.set(entry.id, { ...structuredClone(entry), config: structuredClone(entry.config ?? null) });
     }
     this.options = { ...options, entries: structuredClone(options.entries) };
   }
@@ -79,7 +103,7 @@ export class ExtensionHost {
   async start(): Promise<void> {
     if (this.started || this.closed) throw new Error('Extension host cannot be started twice');
     this.started = true;
-    if (this.options.configurationFile) this.configuration = await ConfigurationWriter.open(this.options.configurationFile, this.options.entries, this.hmrEnabled);
+    if (this.options.configurationFile) this.configuration = await ConfigurationWriter.open(this.options.configurationFile, this.options.entries, this.hmrEnabled, this.options.artifactsDirectory);
     this.ctx.baseUrl = pathToFileURL(`${process.cwd()}${path.sep}`).href;
     this.ctx.logger.exporter({ export: message => {
       if (message.type !== 'error' && message.type !== 'warn') return;
@@ -93,18 +117,37 @@ export class ExtensionHost {
     this.ctx.accessor('mira', { get(this: Context) { return host.apiFor(this); } });
     await this.ctx.plugin(Loader);
     await this.ctx.plugin(Timer);
+    if (this.hmrEnabled && this.artifacts && [...this.entries.values()].some(entry => !entry.generated)) {
+      await mkdir(this.artifacts.root, { recursive: true });
+      this.artifactWatchRoot = await realpath(this.artifacts.root);
+    }
     for (const entry of this.entries.values()) {
       // The configured identity is stable even though Cordis code instances change.
+      if (entry.generated) {
+        try { await this.createGenerated(entry); } catch (error) { this.diagnostics.set(entry.id, error instanceof Error ? error.message : String(error)); }
+        continue;
+      }
       entry.path = await realpath(entry.path);
       if (!(await stat(entry.path)).isFile()) throw new Error(`Extension is not a file: ${entry.id}`);
       const config: EntryOptions = { id: entry.id, name: pathToFileURL(entry.path).href, config: entry.config, disabled: entry.enabled === false, inject: ['timer'] };
       await this.ctx.loader.create(config);
     }
     await this.ctx.loader.await();
-    if (this.hmrEnabled) {
+    if (this.hmrEnabled && [...this.entries.values()].some(entry => !entry.generated)) {
       if (!this.ctx.loader.internal) throw new Error('Source HMR requires Node --expose-internals; native addons are not installed');
-      // Watch only explicitly trusted extension directories, never Memory/State.
-      await this.ctx.plugin(Hmr, { root: [...new Set([...this.entries.values()].map(entry => path.dirname(entry.path)))], ignored: ['**/node_modules/**', '**/.git/**'], debounce: 30 });
+      // A manual directory can contain the artifact store. Exclude both its
+      // authored and canonical paths: generated versions never participate in
+      // source HMR, even when the manual watch roots recurse around them.
+      const ignored = ['**/node_modules/**', '**/.git/**'];
+      if (this.artifacts) {
+        await mkdir(this.artifacts.root, { recursive: true });
+        for (const root of new Set([this.artifacts.root, this.artifactWatchRoot!])) {
+          const relative = path.relative(process.cwd(), root).split(path.sep).join('/');
+          const literal = relative.replace(/[\\*?\[\]{}()!+@]/g, '\\$&');
+          ignored.push(literal || '**', literal ? `${literal}/**` : '**');
+        }
+      }
+      await this.ctx.plugin(Hmr, { root: [...new Set([...this.entries.values()].filter(entry => !entry.generated).map(entry => path.dirname(entry.path)))], ignored, debounce: 30 });
     }
   }
 
@@ -114,7 +157,7 @@ export class ExtensionHost {
     const done = Promise.withResolvers<void>();
     ctx.effect(() => async () => {
       await this.waitBatch();
-      try { await cleanup(); } finally { done.resolve(); }
+      try { await cleanup(); } catch (error) { this.recordCleanupFailure(ctx, error); throw error; } finally { done.resolve(); }
     }, 'Mira batch-safe cleanup');
     return done.promise;
   }
@@ -129,10 +172,17 @@ export class ExtensionHost {
       yield async () => {
         await host.waitBatch();
         await before?.();
-        try { await dispose(); } finally { done.resolve(); }
+        try { await dispose(); } catch (error) { host.recordCleanupFailure(ctx, error); throw error; } finally { done.resolve(); }
       };
     }, 'Mira batch-safe Cordis resource');
     return done.promise;
+  }
+  private recordCleanupFailure(ctx: Context, error: unknown): void {
+    const id = ctx.fiber.entry?.id;
+    const message = error instanceof Error ? error.message : String(error);
+    if (id) this.cleanupFailures.set(id, [...this.cleanupFailures.get(id) ?? [], message]);
+    this.hostDiagnostics.push(`Cleanup failed for ${id ?? 'unknown extension'}: ${message}`);
+    if (this.hostDiagnostics.length > 50) this.hostDiagnostics.shift();
   }
   private apiFor(ctx: Context): ExtensionContext {
     const prior = this.instances.get(ctx.fiber);
@@ -172,7 +222,7 @@ export class ExtensionHost {
         const name = tool.name, description = tool.description, parameters = tool.parameters, execute = tool.execute;
         if (!/^[a-zA-Z][\w.-]*$/.test(name) || !description.trim() || parameters.type !== 'object' || typeof execute !== 'function') throw new Error('Invalid extension tool');
         if (this.reserved.has(name) || this.tools.has(name)) throw new Error(`Duplicate registered tool: ${name}`);
-        const registered = { extensionId: id, activation, tool: { name, description, parameters: structuredClone(parameters), execute: execute.bind(tool) } };
+        const registered = { extensionId: id, activation, ...(this.entries.get(id)?.generated ? { digest: this.entries.get(id)!.generated!.digest } : {}), tool: { name, description, parameters: structuredClone(parameters), execute: execute.bind(tool) } };
         resourceDrains.push(releaseResource(() => { if (this.tools.get(name) === registered) this.tools.delete(name); }));
         this.tools.set(name, registered);
       },
@@ -226,9 +276,17 @@ export class ExtensionHost {
   /** Accepted, not applied. A tool must not await its own batch's retirement. */
   requestChange(id: string, change: ExtensionChange): ChangeStatus {
     this.assertOpen();
-    if (!this.entries.has(id)) throw new Error(`Unknown configured extension: ${id}`);
-    if (!['enable', 'disable', 'reload', 'configure'].includes(change.action)) throw new Error('Unknown extension action');
-    if (change.action === 'configure') validateConfig(change.config);
+    if (!/^[a-zA-Z][\w-]*$/.test(id)) throw new Error('Invalid extension ID');
+    if (!['enable', 'disable', 'reload', 'configure', 'install', 'activate', 'update', 'rollback', 'remove'].includes(change.action)) throw new Error('Unknown extension action');
+    if (change.action === 'install') {
+      if (this.entries.has(id)) throw new Error(`Extension already installed: ${id}`);
+      if (!this.artifacts) throw new Error('Generated extensions require artifactsDirectory');
+    } else if (!this.entries.has(id)) throw new Error(`Unknown configured extension: ${id}`);
+    if (change.action === 'configure' || ((change.action === 'install' || change.action === 'update') && change.config !== undefined)) validateConfig(change.config!);
+    if (change.action === 'install' || change.action === 'update') validateDigest(change.digest);
+    if (change.action === 'update' || change.action === 'rollback' || change.action === 'activate') {
+      if (!this.entries.get(id)?.generated) throw new Error('Action requires an installed generated extension');
+    }
     const receipt: ChangeStatus = { id: randomUUID(), extensionId: id, action: change.action, status: 'accepted', persistence: this.configuration && change.action !== 'reload' ? 'pending' : 'not-required' };
     this.changes.push({ receipt, change: structuredClone(change) }); this.receipts.push(receipt);
     return structuredClone(receipt);
@@ -239,13 +297,90 @@ export class ExtensionHost {
     this.assertOpen();
     const names: ExtensionStatus['status'][] = ['waiting', 'loading', 'active', 'failed', 'disposed', 'unloading'];
     return [...this.entries.values()].map(entry => {
-      const cordis = this.ctx.loader.resolve(entry.id);
-      return { id: entry.id, path: entry.path, enabled: !cordis.disabled, config: structuredClone(entry.config ?? null),
-        status: cordis.disabled ? 'disabled' : cordis.fiber ? names[cordis.fiber.state]! : 'import-failed',
+      const cordis = this.ctx.loader.store[entry.id];
+      return { id: entry.id, path: entry.path, enabled: entry.enabled !== false, config: structuredClone(entry.config ?? null),
+        ...(entry.generated ? { generated: structuredClone(entry.generated) } : {}),
+        status: entry.enabled === false ? 'disabled' : cordis?.fiber ? names[cordis.fiber.state]! : 'import-failed',
         activation: this.latest.get(entry.id)?.activation ?? null,
         tools: [...this.tools.values()].filter(tool => tool.extensionId === entry.id).map(tool => tool.tool.name),
-        diagnostic: this.diagnostics.get(entry.id) ?? (!cordis.disabled && !cordis.fiber ? 'Import did not create a plugin; see host diagnostics' : null) };
+        diagnostic: this.diagnostics.get(entry.id) ?? (entry.enabled !== false && !cordis?.fiber ? 'Import did not create a plugin; see host diagnostics' : null) };
     });
+  }
+
+  /** Copy/hash only: never imports or executes the source tree. */
+  async stage(sourceRoot: string, entryRelative: string, expectedDigest?: string): Promise<ArtifactManifest> {
+    this.assertOpen();
+    if (!this.artifacts) throw new Error('Generated extensions require artifactsDirectory');
+    return this.artifacts.stage(sourceRoot, entryRelative, expectedDigest);
+  }
+  async releases(): Promise<ArtifactManifest[]> { return this.artifacts ? this.artifacts.list() : []; }
+
+  private async removeRuntime(id: string): Promise<void> {
+    const entry = this.ctx.loader.store[id];
+    if (!entry) return;
+    // Await the old fiber explicitly before Loader removes it from its task list.
+    await entry.fiber?.dispose();
+    this.ctx.loader.remove(id);
+    await this.ctx.loader.await();
+    const failures = this.cleanupFailures.get(id);
+    if (failures?.length) throw new Error(`Cleanup failed: ${failures.join('; ')}`);
+  }
+  private async assertArtifactWatchRoot(): Promise<void> {
+    if (this.artifactWatchRoot && await realpath(this.artifacts!.root) !== this.artifactWatchRoot) {
+      throw new Error('Artifact store path changed after HMR exclusion was established; restart the host');
+    }
+  }
+  private async createGenerated(entry: LocalExtensionEntry, receipt?: ChangeStatus): Promise<void> {
+    let fresh: ArtifactManifest;
+    try {
+      await this.assertArtifactWatchRoot();
+      const artifact = await this.artifacts!.read(entry.generated!.digest);
+      await this.artifacts!.verify(artifact);
+      fresh = entry.enabled === false ? artifact : await this.artifacts!.prepareFreshActivation(artifact);
+    } catch (error) {
+      // Old cleanup runs after desired config is saved and may change ordinary
+      // files. Revoke earlier evidence if activation-time verification fails.
+      if (receipt) { receipt.artifact = 'failed'; receipt.test = 'invalidated'; }
+      throw error;
+    }
+    const options: EntryOptions = { id: entry.id, name: pathToFileURL(fresh.entry).href, config: entry.config, disabled: entry.enabled === false, inject: ['timer'] };
+    await this.ctx.loader.create(options);
+  }
+  private async desiredEntry(id: string, change: ExtensionChange, receipt: ChangeStatus): Promise<LocalExtensionEntry | null> {
+    const previous = this.entries.get(id);
+    if (change.action === 'remove') return null;
+    if (change.action === 'install' && previous) throw new Error('Extension already installed');
+    if (change.action !== 'install' && !previous) throw new Error('Extension disappeared before apply');
+    const desired: LocalExtensionEntry = previous ? structuredClone(previous) : { id, path: '', enabled: false, config: null };
+    if (change.action === 'configure') desired.config = structuredClone(change.config);
+    if (change.action === 'enable' || change.action === 'activate') desired.enabled = true;
+    if (change.action === 'disable') desired.enabled = false;
+    if (change.action === 'rollback') {
+      const revision = desired.generated!.history.find(item => item.id === change.revision);
+      if (!revision) throw new Error('Unknown saved revision');
+      desired.config = structuredClone(revision.config);
+      desired.generated!.digest = revision.digest;
+      desired.generated!.revision = revision.id;
+    }
+    if (change.action === 'install' || change.action === 'update' || (change.action === 'configure' && desired.generated)) {
+      const digest = change.action === 'configure' ? desired.generated!.digest : change.digest;
+      const config = change.config === undefined ? desired.config ?? null : structuredClone(change.config);
+      const revision = { id: randomUUID(), digest, config };
+      desired.config = config;
+      desired.generated = { digest, revision: revision.id, history: [...desired.generated?.history ?? [], revision] };
+    }
+    if (desired.generated && change.action !== 'disable') {
+      try {
+        await this.assertArtifactWatchRoot();
+        const artifact = await this.artifacts!.read(desired.generated.digest);
+        await this.artifacts!.verify(artifact);
+        desired.path = artifact.entry;
+        receipt.artifact = 'verified'; receipt.digest = artifact.digest; receipt.revision = desired.generated.revision;
+        const test = await this.artifacts!.testResult(artifact);
+        receipt.test = test ? (test.passed ? 'passed' : 'failed') : 'not-run';
+      } catch (error) { receipt.artifact = 'failed'; throw error; }
+    }
+    return desired;
   }
 
   private release(): void { const release = this.releaseBatch; this.batch = undefined; this.releaseBatch = undefined; release?.(); }
@@ -254,27 +389,55 @@ export class ExtensionHost {
     await this.ctx.loader.await();
     while (this.changes.length) {
       const { receipt, change } = this.changes.shift()!;
+      this.cleanupFailures.delete(receipt.extensionId);
       try {
+        const id = receipt.extensionId;
+        const desired = await this.desiredEntry(id, change, receipt);
         if (this.configuration && change.action !== 'reload') {
-          try { await this.configuration.save(receipt.extensionId, change); receipt.persistence = 'saved'; }
+          try { await this.configuration.replace(id, desired); receipt.persistence = 'saved'; }
           catch (error) { receipt.persistence = 'failed'; throw error; }
         }
-        const desired = this.entries.get(receipt.extensionId)!;
-        if (change.action === 'configure') desired.config = structuredClone(change.config);
-        else if (change.action !== 'reload') desired.enabled = change.action === 'enable';
-        const entry = this.ctx.loader.resolve(receipt.extensionId);
-        this.diagnostics.delete(receipt.extensionId);
-        if (change.action === 'reload') {
-          // This restarts the currently imported module. File code changes use
-          // official HMR, not an invented import cache or rollback mechanism.
-          if (entry.disabled) throw new Error('Enable a disabled extension before restarting it');
-          if (entry.fiber) await entry.fiber.update(entry.fiber.config, true); else await entry.init();
-        } else await this.ctx.loader.update(entry.id, change.action === 'configure' ? { config: change.config } : { disabled: change.action === 'disable' });
-        await this.ctx.loader.await();
-        const state = this.inspect().find(item => item.id === receipt.extensionId)!;
-        if (state.status === 'failed' || state.status === 'import-failed') throw new Error(state.diagnostic ?? `Extension ${state.status}`);
+        this.diagnostics.delete(id);
+        if (desired === null) {
+          try { await this.removeRuntime(id); }
+          finally { this.entries.delete(id); this.latest.delete(id); }
+        } else {
+          this.entries.set(id, desired);
+          if (desired.generated) {
+            if (change.action === 'disable' && this.ctx.loader.store[id]) await this.ctx.loader.update(id, { disabled: true });
+            else {
+              await this.removeRuntime(id);
+              this.latest.delete(id);
+              await this.createGenerated(desired, receipt);
+            }
+          } else {
+            const entry = this.ctx.loader.resolve(id);
+            if (change.action === 'reload') {
+              if (entry.disabled) throw new Error('Enable a disabled extension before restarting it');
+              if (entry.fiber) await entry.fiber.update(entry.fiber.config, true); else await entry.init();
+            } else await this.ctx.loader.update(id, change.action === 'configure' ? { config: change.config } : { disabled: change.action === 'disable' });
+          }
+          await this.ctx.loader.await();
+          const state = this.inspect().find(item => item.id === id)!;
+          if (state.status === 'failed' || state.status === 'import-failed') throw new Error(state.diagnostic ?? `Extension ${state.status}`);
+        }
         receipt.status = 'applied';
-      } catch (error) { receipt.status = 'failed'; receipt.error = error instanceof Error ? error.message : String(error); }
+      } catch (error) { if (receipt.persistence === 'pending') receipt.persistence = 'not-attempted'; receipt.status = 'failed'; receipt.error = error instanceof Error ? error.message : String(error); }
+      // An earlier failure can bypass createGenerated (for example cleanup
+      // mutates a candidate and then throws). Do not retain stale preflight
+      // evidence merely because activation was never reached.
+      if (receipt.status === 'failed' && receipt.artifact === 'verified' && receipt.digest) {
+        try { await this.artifacts!.read(receipt.digest); }
+        catch (error) {
+          receipt.artifact = 'failed'; receipt.test = 'invalidated';
+          receipt.error = `${receipt.error ?? 'Change failed'}; ${error instanceof Error ? error.message : String(error)}`;
+        }
+      }
+      const failures = this.cleanupFailures.get(receipt.extensionId);
+      if (failures?.length) {
+        receipt.cleanup = 'failed'; receipt.status = 'failed';
+        receipt.error ??= `Cleanup failed: ${failures.join('; ')}`;
+      }
     }
     await this.ctx.loader.await();
   }
@@ -319,11 +482,25 @@ function validateConfig(value: Json): void {
   if (typeof value === 'number' && Number.isFinite(value)) return;
   if (Array.isArray(value)) { for (const item of value) validateConfig(item); return; }
   if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
-    // Cordis interprets this key as executable configuration. Manual JSON settings
-    // must not turn configure into a generated-code activation path.
+    // Cordis interprets this key as executable configuration. Plain JSON settings
+    // stay data rather than an implicit configuration-expression execution path.
     if ('__jsExpr' in value) throw new Error('Executable Cordis config expressions are not supported');
     for (const item of Object.values(value)) validateConfig(item);
     return;
   }
   throw new Error('Extension config must be plain finite JSON');
+}
+
+function validateDigest(digest: string): void { if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error('Invalid artifact digest'); }
+function validateGenerated(value: GeneratedVersion): void {
+  validateDigest(value.digest);
+  if (!Array.isArray(value.history) || !value.history.length || typeof value.revision !== 'string') throw new Error('Invalid generated version');
+  const ids = new Set<string>();
+  for (const revision of value.history) {
+    validateDigest(revision.digest); validateConfig(revision.config);
+    if (typeof revision.id !== 'string' || !revision.id || ids.has(revision.id)) throw new Error('Invalid generated revision');
+    ids.add(revision.id);
+  }
+  const current = value.history.find(item => item.id === value.revision);
+  if (!current || current.digest !== value.digest) throw new Error('Generated version does not match revision');
 }

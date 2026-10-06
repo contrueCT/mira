@@ -44,7 +44,7 @@ export interface DemoOptions {
   memory?: { memoryRoot: string; stateRoot: string; stateFiles?: string[] };
   events: Array<{ event: LifeEvent; wake?: { id: string; reason: string } }>;
   maxInlineBytes?: number;
-  extensions?: { entries: LocalExtensionEntry[]; hmr?: boolean; configurationFile?: string };
+  extensions?: { entries: LocalExtensionEntry[]; hmr?: boolean; configurationFile?: string; artifactsDirectory?: string };
   /** Tests may inject deterministic streams; this demo never loads credentials. */
   streamFn?: StreamFn;
 }
@@ -79,7 +79,7 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
     for (const { event, wake } of options.events) await writer.receive(event, wake);
     const baseTools = [...createWorkspaceTools(workingDirectory), ...createHistoryTools(persistence.history(writer.miraId))];
     if (options.extensions) {
-      extensions = new ExtensionHost({ ...options.extensions, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension.inspect', 'extension.manage'], receive: extensionReceiver(writer) });
+      extensions = new ExtensionHost({ ...options.extensions, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension.inspect', 'extension.manage', 'extension.stage'], receive: extensionReceiver(writer) });
       await extensions.start();
     }
     const host = extensions;
