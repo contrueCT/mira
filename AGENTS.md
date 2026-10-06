@@ -8,7 +8,7 @@
 
 ## 当前状态与关系
 
-当前实现包含连续上下文、合并 Wake、普通 Memory 与完整 Mira v0.2 Prompt、通用 Pi 工具、Memory Git、只读历史查询与 Cordis 手工/生成扩展生命周期，见 [ADR 0005](docs/adr/0005-generated-extension-lifecycle.md) 和 [扩展宿主](packages/extension-host/README.md)。Server 有假 provider CLI、Pi 离线模型目录、自定义发现与显式 model/streamFn transport；新增 Fastify/React 本地 Web、持续 Timeline 与模型设置；真实模型联通尚未验收，详见 [ADR 0009](docs/adr/0009-local-web-client.md)。
+当前实现包含连续上下文、合并 Wake、普通 Memory 与完整 Mira v0.2 Prompt、通用 Pi 工具、Memory Git、只读历史查询与 Cordis 手工/生成扩展生命周期，见 [ADR 0005](docs/adr/0005-generated-extension-lifecycle.md) 和 [扩展宿主](packages/extension-host/README.md)。Server 有假 provider CLI、Pi 离线模型目录、自定义发现与显式 model/streamFn transport；新增 Fastify/React 本地 Web、持续 Timeline 与直接 API Key 设置；密钥仅在源码外的私有文件保存，公开接口不回填。真实模型联通尚未验收，详见 [ADR 0009](docs/adr/0009-local-web-client.md)。
 
 - `apps/server` 组装核心与适配器；`apps/web` 提供单条 Timeline
 - `life` / `context` 保持独立，不导入 Pi、Cordis、数据库或 Web 框架

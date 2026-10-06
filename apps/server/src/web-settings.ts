@@ -3,21 +3,38 @@ import { lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createBuiltinCatalog } from './model-catalog.ts';
-import { emptyModelConfiguration, parseModelConfiguration, type ModelConfiguration } from './model-config.ts';
-import { createModelTransport, type ModelSelection } from './model-transport.ts';
+import { createBuiltinCatalog, builtinApiKeySupport } from './model-catalog.ts';
+import { validateBaseUrl } from './model-config.ts';
+import { createModelTransport, type ModelSelection, type ModelTransport } from './model-transport.ts';
+import { discoverModels, type ModelDiscoveryOptions, type ModelDiscoveryResult } from './model-discovery.ts';
+import { parseWebConnectionWrite, parseWebModelConfiguration, parseWebModelConfigurationWrite, validWebApiKey, webConnectionMetadata, webTransportConfiguration,
+  type WebCustomConnectionWrite, type WebModelConfiguration, type WebModelConfigurationWrite } from './web-model-config.ts';
 
 export interface WebSettings {
   revision: string;
-  configuration: ModelConfiguration;
+  configuration: WebModelConfiguration;
   selection: ModelSelection | null;
 }
-type SettingsData = Omit<WebSettings, 'revision'>;
+export interface WebSettingsWrite {
+  revision: string;
+  configuration: WebModelConfigurationWrite;
+  selection: ModelSelection | null;
+}
+interface StoredCredential { apiKey: string | null; binding: string }
+interface StoredData {
+  version: 1;
+  nonce: string;
+  configuration: {
+    builtinCredentials: Record<string, StoredCredential>;
+    customConnections: Array<Omit<WebCustomConnectionWrite, 'hasApiKey' | 'apiKey'> & { apiKey: string | null }>;
+  };
+  selection: ModelSelection | null;
+}
 export const webSettingsMaxBytes = 2_000_000;
 export class WebSettingsError extends Error {
   readonly code: 'invalid_settings' | 'settings_conflict' | 'settings_unavailable';
   constructor(code: WebSettingsError['code']) {
-    super({ invalid_settings: 'Invalid model settings', settings_conflict: 'Settings changed; reload before saving', settings_unavailable: 'Model settings are unavailable; check the local configuration file' }[code]);
+    super({ invalid_settings: 'Invalid model settings', settings_conflict: 'Settings changed; reload before saving', settings_unavailable: 'Model settings are unavailable; check the protected local configuration file' }[code]);
     this.name = 'WebSettingsError'; this.code = code;
   }
 }
@@ -47,24 +64,97 @@ function parseSelection(value: unknown): ModelSelection | null {
   }
   return invalid();
 }
-function parseData(value: unknown): SettingsData {
+function parseSettings(value: unknown, write: boolean): WebSettingsWrite {
   try {
-    const data = object(value); exact(data, ['configuration', 'selection']);
-    const configuration = parseModelConfiguration(data['configuration']);
-    const selection = parseSelection(data['selection']);
-    const catalog = createBuiltinCatalog();
-    for (const id of Object.keys(configuration.builtinCredentials)) if (!catalog.getProvider(id)) invalid();
-    // Pure transport setup validates provider support, limits and configured references.
-    // The callback is deliberately incapable of resolving a credential.
-    if (selection) createModelTransport(configuration, selection, { env: () => undefined });
-    return { configuration, selection };
+    const settings = object(value); exact(settings, ['revision', 'configuration', 'selection']);
+    if (typeof settings['revision'] !== 'string' || !/^[a-f0-9]{64}$/u.test(settings['revision'])) invalid();
+    const configuration = write ? parseWebModelConfigurationWrite(settings['configuration']) : parseWebModelConfiguration(settings['configuration']);
+    const selection = parseSelection(settings['selection']);
+    // Pure transport setup validates model/protocol support, never resolves keys.
+    if (selection) createModelTransport(webTransportConfiguration(configuration), selection, { env: () => undefined });
+    return { revision: settings['revision'] as string, configuration, selection };
   } catch { return invalid(); }
 }
-/** Strict allowlist for API input and output. This never reads environment secrets. */
-export function parseWebSettings(value: unknown): WebSettings {
-  const settings = object(value); exact(settings, ['revision', 'configuration', 'selection']);
-  if (typeof settings['revision'] !== 'string' || !/^[a-f0-9]{64}$/u.test(settings['revision'])) return invalid();
-  return { revision: settings['revision'], ...parseData({ configuration: settings['configuration'], selection: settings['selection'] }) };
+/** Response allowlist: write-only values cannot pass this parser. */
+export function parseWebSettings(value: unknown): WebSettings { return parseSettings(value, false) as WebSettings; }
+export function parseWebSettingsWrite(value: unknown): WebSettingsWrite { return parseSettings(value, true); }
+export function hasSelectedWebApiKey(settings: WebSettings): boolean {
+  const selected = settings.selection;
+  if (!selected) return false;
+  return selected.kind === 'builtin' ? settings.configuration.builtinCredentials[selected.provider]?.hasApiKey === true
+    : settings.configuration.customConnections.find(item => item.id === selected.connection)?.hasApiKey === true;
+}
+function builtinBinding(provider: string): string {
+  const entry = createBuiltinCatalog().getProvider(provider);
+  if (!entry) return invalid();
+  const endpoints = [...new Set(entry.getModels().map(model => JSON.stringify([validateBaseUrl(model.baseUrl), model.api])))].sort();
+  return revision(JSON.stringify([provider, endpoints]));
+}
+function sameConnection(left: WebCustomConnectionWrite, right: WebCustomConnectionWrite): boolean {
+  return left.id === right.id && left.baseUrl === right.baseUrl && left.api === right.api && left.modelsUrl === right.modelsUrl;
+}
+function allKeys(data: StoredData): string[] {
+  return [...Object.values(data.configuration.builtinCredentials), ...data.configuration.customConnections].flatMap(entry => entry.apiKey === null ? [] : [entry.apiKey]);
+}
+function rejectSecretMetadata(value: unknown, keys: string[]): void {
+  if (typeof value === 'string') {
+    let decoded = value;
+    try { decoded = decodeURIComponent(value); } catch { /* Raw string is still checked. */ }
+    if (keys.some(key => value.includes(key) || decoded.includes(key))) invalid();
+  } else if (Array.isArray(value)) { for (const item of value) rejectSecretMetadata(item, keys); }
+  else if (value && typeof value === 'object') for (const [key, item] of Object.entries(value)) { rejectSecretMetadata(key, keys); rejectSecretMetadata(item, keys); }
+}
+function project(data: StoredData, currentRevision: string): WebSettings {
+  const configuration: WebModelConfiguration = {
+    builtinCredentials: Object.fromEntries(Object.entries(data.configuration.builtinCredentials).map(([provider, entry]) => [provider, { hasApiKey: entry.apiKey !== null && entry.binding === builtinBinding(provider) }])),
+    customConnections: data.configuration.customConnections.map(connection => ({ ...webConnectionMetadata(connection), hasApiKey: connection.apiKey !== null })),
+  };
+  const result = { revision: currentRevision, configuration, selection: data.selection === null ? null : structuredClone(data.selection) };
+  rejectSecretMetadata(result, allKeys(data));
+  return result;
+}
+function emptyStored(): StoredData { return { version: 1, nonce: randomUUID(), configuration: { builtinCredentials: {}, customConnections: [] }, selection: null }; }
+function parseStored(value: unknown): StoredData {
+  const root = object(value); exact(root, ['version', 'nonce', 'configuration', 'selection']);
+  if (root['version'] !== 1 || typeof root['nonce'] !== 'string' || !/^[a-f0-9-]{36}$/u.test(root['nonce'])) invalid();
+  const config = object(root['configuration']); exact(config, ['builtinCredentials', 'customConnections']);
+  const credentials = object(config['builtinCredentials']);
+  const input: WebModelConfigurationWrite['builtinCredentials'] = Object.create(null) as WebModelConfigurationWrite['builtinCredentials'];
+  const bindings = new Map<string, string>();
+  for (const [provider, value] of Object.entries(credentials)) {
+    const entry = object(value); exact(entry, ['apiKey', 'binding']);
+    if (typeof entry['binding'] !== 'string' || !/^[a-f0-9]{64}$/u.test(entry['binding'])) invalid();
+    input[provider] = { apiKey: entry['apiKey'] as string | null }; bindings.set(provider, entry['binding'] as string);
+  }
+  if (!Array.isArray(config['customConnections'])) invalid();
+  for (const value of config['customConnections'] as unknown[]) {
+    const connection = object(value);
+    if (!Object.hasOwn(connection, 'apiKey') || Object.hasOwn(connection, 'hasApiKey')) invalid();
+  }
+  const parsed = parseWebSettingsWrite({ revision: missingRevision, configuration: { builtinCredentials: input, customConnections: config['customConnections'] }, selection: root['selection'] });
+  const builtinCredentials = Object.fromEntries(Object.entries(parsed.configuration.builtinCredentials).map(([provider, entry]) => {
+    if (entry.apiKey && !builtinApiKeySupport(createBuiltinCatalog().getProvider(provider)!).supported) invalid();
+    return [provider, { apiKey: entry.apiKey ?? null, binding: bindings.get(provider)! }];
+  }));
+  const data: StoredData = { version: 1, nonce: root['nonce'] as string, configuration: { builtinCredentials,
+    customConnections: parsed.configuration.customConnections.map(connection => ({ ...webConnectionMetadata(connection), apiKey: connection.apiKey ?? null })) }, selection: parsed.selection };
+  project(data, missingRevision);
+  return data;
+}
+function mergeStored(previous: StoredData, input: WebSettingsWrite): StoredData {
+  const builtinCredentials = Object.fromEntries(Object.entries(input.configuration.builtinCredentials).map(([provider, update]) => {
+    const binding = builtinBinding(provider); const old = previous.configuration.builtinCredentials[provider];
+    const apiKey = update.apiKey === undefined ? (old?.binding === binding ? old.apiKey : null) : update.apiKey;
+    if (apiKey && !builtinApiKeySupport(createBuiltinCatalog().getProvider(provider)!).supported) invalid();
+    return [provider, { apiKey, binding }];
+  }));
+  const customConnections = input.configuration.customConnections.map(update => {
+    const old = previous.configuration.customConnections.find(connection => sameConnection(connection, update));
+    return { ...webConnectionMetadata(update), apiKey: update.apiKey === undefined ? old?.apiKey ?? null : update.apiKey };
+  });
+  const data: StoredData = { version: 1, nonce: randomUUID(), configuration: { builtinCredentials, customConnections }, selection: input.selection };
+  rejectSecretMetadata(project(data, missingRevision), allKeys(previous));
+  return data;
 }
 function revision(bytes: Uint8Array | string): string { return createHash('sha256').update(bytes).digest('hex'); }
 const missingRevision = revision('mira-web-settings:missing');
@@ -81,15 +171,24 @@ const pending = new Map<string, Promise<unknown>>();
 export class WebSettingsStore {
   readonly file: string;
   readonly sourceDirectory: string;
-  constructor(file: string, sourceDirectory = fileURLToPath(new URL('../../../', import.meta.url))) {
+  readonly #excludedDirectories: string[];
+  constructor(file: string, sourceDirectory = fileURLToPath(new URL('../../../', import.meta.url)), excludedDirectories: string[] = []) {
     if (!path.isAbsolute(file) || !path.isAbsolute(sourceDirectory)) unavailable();
     this.file = path.resolve(file); this.sourceDirectory = path.resolve(sourceDirectory);
+    if (excludedDirectories.some(directory => !path.isAbsolute(directory))) unavailable();
+    this.#excludedDirectories = excludedDirectories.map(directory => path.resolve(directory));
+    if (this.#excludedDirectories.some(directory => within(directory, this.file))) unavailable();
     if (within(this.sourceDirectory, this.file) || this.file === path.parse(this.file).root) unavailable();
   }
   /** Inspect each ancestor before creating anything; never follow directory links. */
   private async directory(create: boolean): Promise<boolean> {
     const source = await realpath(this.sourceDirectory);
+    const forbidden = [source];
+    for (const directory of this.#excludedDirectories) {
+      try { forbidden.push(await realpath(directory)); } catch (error) { if (!errno(error, 'ENOENT')) throw error; }
+    }
     const directory = path.dirname(this.file);
+    if (forbidden.some(root => within(root, this.file))) unavailable();
     let current = path.parse(directory).root;
     for (const component of directory.slice(current.length).split(path.sep).filter(Boolean)) {
       current = path.join(current, component);
@@ -105,6 +204,8 @@ export class WebSettingsStore {
       if (within(source, current)) unavailable();
     }
     if (within(source, await realpath(directory))) unavailable();
+    const info = await lstat(directory);
+    if ((info.mode & 0o077) !== 0 || (typeof process.getuid === 'function' && info.uid !== process.getuid())) unavailable();
     return true;
   }
   private async read(): Promise<{ bytes: Buffer | null; revision: string }> {
@@ -114,7 +215,7 @@ export class WebSettingsStore {
     catch (error) { if (errno(error, 'ENOENT')) return { bytes: null, revision: missingRevision }; throw error; }
     try {
       const before = await handle.stat();
-      if (!before.isFile() || before.nlink !== 1 || before.size > webSettingsMaxBytes) unavailable();
+      if (!before.isFile() || before.nlink !== 1 || before.size > webSettingsMaxBytes || (before.mode & 0o077) !== 0 || (typeof process.getuid === 'function' && before.uid !== process.getuid())) unavailable();
       const buffer = Buffer.alloc(webSettingsMaxBytes + 1); let length = 0;
       while (length < buffer.length) {
         const { bytesRead } = await handle.read(buffer, length, buffer.length - length);
@@ -123,28 +224,67 @@ export class WebSettingsStore {
       }
       const after = await handle.stat();
       const current = await lstat(this.file);
-      if (length > webSettingsMaxBytes || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || current.isSymbolicLink() || current.dev !== after.dev || current.ino !== after.ino) unavailable();
+      if (length > webSettingsMaxBytes || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || before.mode !== after.mode || before.uid !== after.uid || after.nlink !== 1 || current.isSymbolicLink() || current.dev !== after.dev || current.ino !== after.ino) unavailable();
       const bytes = buffer.subarray(0, length);
       return { bytes, revision: revision(bytes) };
     } finally { await handle.close(); }
   }
-  async get(): Promise<WebSettings> {
+  private async snapshot(): Promise<{ data: StoredData; revision: string }> {
     try {
       const current = await this.read();
-      const data = current.bytes === null ? { configuration: emptyModelConfiguration(), selection: null } : parseData(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(current.bytes)) as unknown);
-      return { revision: current.revision, ...data };
+      const data = current.bytes === null ? emptyStored() : parseStored(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(current.bytes)) as unknown);
+      return { data, revision: current.revision };
     } catch { return unavailable(); }
   }
+  async get(): Promise<WebSettings> {
+    const current = await this.snapshot();
+    return project(current.data, current.revision);
+  }
+  /** Keys are read only at request time and stay inside the server auth closure. */
+  transport(settings: WebSettings, options: { fetch?: typeof globalThis.fetch } = {}): ModelTransport {
+    const current = parseWebSettings(settings);
+    if (!current.selection) return invalid();
+    const selection = current.selection;
+    return createModelTransport(webTransportConfiguration(current.configuration), selection, {
+      ...(options.fetch ? { fetch: options.fetch } : {}),
+      resolveApiKey: async signal => {
+        signal.throwIfAborted();
+        const latest = await this.snapshot();
+        signal.throwIfAborted();
+        if (latest.revision !== current.revision || JSON.stringify(project(latest.data, latest.revision)) !== JSON.stringify(current)) throw new WebSettingsError('settings_conflict');
+        if (selection.kind === 'builtin') {
+          const entry = latest.data.configuration.builtinCredentials[selection.provider];
+          return entry?.binding === builtinBinding(selection.provider) ? entry.apiKey ?? undefined : undefined;
+        }
+        return latest.data.configuration.customConnections.find(connection => connection.id === selection.connection)?.apiKey ?? undefined;
+      },
+    });
+  }
+  /** A draft key is used for this discovery only. It is never written here. */
+  async discover(value: unknown, options: Omit<ModelDiscoveryOptions, 'env'> = {}): Promise<ModelDiscoveryResult> {
+    let connection: WebCustomConnectionWrite;
+    try { connection = parseWebConnectionWrite(value); } catch { return invalid(); }
+    let key = connection.apiKey;
+    if (key === undefined) {
+      const current = await this.snapshot();
+      key = current.data.configuration.customConnections.find(entry => sameConnection(entry, connection))?.apiKey;
+    }
+    if (!validWebApiKey(key)) throw new Error('Model discovery requires a saved or newly entered API key');
+    rejectSecretMetadata(webConnectionMetadata(connection), [key]);
+    const custom = webTransportConfiguration({ builtinCredentials: {}, customConnections: [connection] }).customConnections[0]!;
+    return discoverModels(custom, { env: { [custom.apiKeyEnv]: key }, ...(options.fetch ? { fetch: options.fetch } : {}), ...(options.signal ? { signal: options.signal } : {}) });
+  }
   async save(value: unknown): Promise<WebSettings> {
-    const parsed = parseWebSettings(value);
-    const bytes = Buffer.from(`${JSON.stringify({ configuration: parsed.configuration, selection: parsed.selection }, null, 2)}\n`);
-    if (bytes.length > webSettingsMaxBytes) return invalid();
+    const parsed = parseWebSettingsWrite(value);
     const previous = pending.get(this.file) ?? Promise.resolve();
     const operation = previous.catch(() => undefined).then(async () => {
       let temporary: string | undefined;
       try {
-        const current = await this.read();
+        const current = await this.snapshot();
         if (current.revision !== parsed.revision) throw new WebSettingsError('settings_conflict');
+        const data = mergeStored(current.data, parsed);
+        const bytes = Buffer.from(`${JSON.stringify(data, null, 2)}\n`);
+        if (bytes.length > webSettingsMaxBytes) return invalid();
         await this.directory(true);
         const parentBefore = await lstat(path.dirname(this.file));
         const candidate = path.join(path.dirname(this.file), `.${path.basename(this.file)}.${randomUUID()}.tmp`);
@@ -156,7 +296,9 @@ export class WebSettingsStore {
         if (latest.revision !== parsed.revision) throw new WebSettingsError('settings_conflict');
         if (parentBefore.dev !== parentAfter.dev || parentBefore.ino !== parentAfter.ino) unavailable();
         await rename(temporary, this.file); temporary = undefined;
-        return { revision: revision(bytes), configuration: parsed.configuration, selection: parsed.selection };
+        const directory = await open(path.dirname(this.file), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        try { await directory.sync(); } finally { await directory.close(); }
+        return project(data, revision(bytes));
       } catch (error) {
         if (error instanceof WebSettingsError) throw error;
         return unavailable();

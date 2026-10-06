@@ -1,6 +1,6 @@
 # 模型目录、自定义连接与发现
 
-状态：本增量提供离线目录、显式配置、模型列表发现和可注入 `PiDurableRuntime` 的真实协议 transport。`pnpm demo` 仍是原有假 provider 演示；没有交互 CLI、HTTP/UI、自动压缩策略、OAuth／云账号登录或部署入口。尚未配置用户凭据，也未执行真实付费模型调用。
+状态：本增量提供离线目录、显式配置、模型列表发现和可注入 `PiDurableRuntime` 的真实协议 transport。`pnpm demo` 仍是原有假 provider 演示；本地 Web 设置直接接收并保存 API Key，见 [安装与使用](local-web.md)；下述环境变量 JSON 与命令是独立 CLI／程序化接口。没有交互 CLI、自动压缩策略、OAuth／云账号登录或公网部署入口。尚未配置用户凭据，也未执行真实付费模型调用。
 
 ## 内置目录
 
@@ -17,7 +17,7 @@ pnpm models details openai '<model-id-from-list>'
 
 能列出不代表已经有凭据、模型权益或可用账户。普通 API Key 接入需要显式配置；内置 OpenAI 仅接受其 `sk-` API Key 路径，拒绝 Pi 会解释成 ChatGPT access token 的其它凭据格式，不能借此绕过本阶段未接入的 OAuth 流程；需要云账号、项目／账户参数或订阅登录的条目仍可查看，但会明确标注本阶段不支持该配置流程。当前延期供应商为 Amazon Bedrock、Azure、Cloudflare 两种服务、GitHub Copilot、Google Vertex、OpenAI Codex、Radius。普通 Google Gemini API Key 可使用原生 Pi 适配器；该适配器不支持注入 fetch，因此不支持 mock fetch，且不能改成自定义地址。进程若设置了 `GOOGLE_GENAI_USE_VERTEXAI` 或 `GOOGLE_GENAI_USE_ENTERPRISE`，此 Gemini 组装明确拒绝启动／请求，需先移除这些模式变量；不会偷偷切换到云协议或修改进程环境。
 
-## 显式配置
+## CLI／程序化显式配置
 
 配置文件放在源码仓库之外；使用绝对路径更容易确认。只保存环境变量名字，不保存 API Key，不加载默认 auth 文件、不执行取密钥 shell 命令、不扫描其他环境变量、不读取云凭据文件。以下是格式示例，数字仅用于展示配置结构，实际值必须按供应商资料填写。
 

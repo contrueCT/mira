@@ -10,6 +10,8 @@ export type ModelSelection = { kind: 'builtin'; provider: string; model: string 
 export interface ModelTransportOptions {
   /** Only the selected, explicitly configured variable is read, at request time. */
   env?: (name: string) => string | undefined;
+  /** Server-owned literal credential resolver; when present, no environment key is read. */
+  resolveApiKey?: (signal: AbortSignal) => Promise<string | undefined>;
   /** Test injection; production uses global fetch with redirect and origin guards. */
   fetch?: typeof globalThis.fetch;
 }
@@ -162,12 +164,16 @@ export function createModelTransport(configuration: ModelConfiguration, selectio
       const collection = createModels({ authContext: { env: async () => undefined, fileExists: async () => false } });
       collection.setProvider({ ...provider, auth: { apiKey: { name: 'Explicit configured API key', resolve: async ({ signal }) => {
         signal.throwIfAborted();
-        key = resolveConfiguredApiKey(apiKeyEnv, env);
+        if (options.resolveApiKey) {
+          try { key = await options.resolveApiKey(signal); } catch { throw Error('Unable to read the configured API key'); }
+          signal.throwIfAborted();
+          if (!key || !/^[\x21-\x7e]{1,16384}$/u.test(key) || key.includes('sk-ant-oat')) throw Error('The configured API key is missing or invalid');
+        } else key = resolveConfiguredApiKey(apiKeyEnv, env);
         // Pi treats a non-sk- credential at this exact endpoint as ChatGPT
         // sign-in and silently removes output/sampling fields. That auth mode
         // is outside this API-key-only composition.
         if (canonicalModel.provider === 'openai' && canonicalModel.baseUrl === 'https://api.openai.com/v1' && !key.startsWith('sk-')) throw Error('The built-in OpenAI connection requires an API key, not a ChatGPT access token');
-        return { auth: { apiKey: key }, source: 'explicit environment reference' };
+        return { auth: { apiKey: key }, source: options.resolveApiKey ? 'explicit server credential' : 'explicit environment reference' };
       } } } });
       const headers = (): Headers => {
         if (!key) throw Error('Explicit API key was not resolved');

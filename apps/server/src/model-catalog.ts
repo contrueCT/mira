@@ -22,7 +22,7 @@ export function protocolDescription(api: string): { id: string; name: string } {
 const deferredProviders = new Set(['amazon-bedrock', 'azure-openai-responses', 'cloudflare-ai-gateway', 'cloudflare-workers-ai', 'github-copilot', 'google-vertex', 'openai-codex', 'radius']);
 export function builtinApiKeySupport(provider: Provider): { supported: boolean; explanation: string } {
   if (deferredProviders.has(provider.id) || !provider.auth.apiKey) return { supported: false, explanation: 'Catalog only in this phase: this integration needs OAuth, cloud/account configuration, or another provider-specific login. These setup flows are not implemented.' };
-  return { supported: true, explanation: 'Requires an explicitly configured API-key environment reference for this provider. Catalog presence does not mean credentials, account access, or model entitlement are configured. OAuth and cloud login are not implemented.' };
+  return { supported: true, explanation: 'Requires an explicitly configured API key for this provider. Catalog presence does not mean credentials, account access, or model entitlement are configured. OAuth and cloud login are not implemented.' };
 }
 /** Never resolve auth or refresh catalogs while browsing the bundled catalog. */
 export function createBuiltinCatalog() {

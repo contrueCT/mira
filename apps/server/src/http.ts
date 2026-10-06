@@ -3,9 +3,9 @@ import fastifyStatic from '@fastify/static';
 import { lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { listBuiltinCatalog } from './model-catalog.ts';
-import { parseModelConfiguration } from './model-config.ts';
+import { parseWebConnectionWrite } from './web-model-config.ts';
 import type { ModelDiscoveryResult } from './model-discovery.ts';
-import { parseWebSettings, WebSettingsError, webSettingsMaxBytes, type WebSettings } from './web-settings.ts';
+import { parseWebSettings, parseWebSettingsWrite, WebSettingsError, webSettingsMaxBytes, type WebSettings } from './web-settings.ts';
 
 export interface WebBackend {
   status(): Promise<{ state: 'idle' | 'working' | 'error' | 'stopped'; mode: 'synthetic' | 'live'; model: string | null; error: string | null }>;
@@ -142,7 +142,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   });
   app.get('/api/settings', { schema: { querystring: noQuery } }, async () => parseWebSettings(await backend.settings()));
   app.put('/api/settings', { bodyLimit: webSettingsMaxBytes, schema: { querystring: noQuery, body: settingsSchema } }, async request => {
-    const settings = parseWebSettings(request.body);
+    const settings = parseWebSettingsWrite(request.body);
     return parseWebSettings(await backend.saveSettings(settings));
   });
   app.get('/api/models/catalog', { schema: { querystring: noQuery } }, async () => listBuiltinCatalog());
@@ -151,7 +151,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     schema: { querystring: noQuery, body: objectSchema({ connection: { type: 'object' } }, ['connection']) },
   }, async request => {
     let connection;
-    try { connection = parseModelConfiguration({ customConnections: [request.body.connection] }).customConnections[0]; }
+    try { connection = parseWebConnectionWrite(request.body.connection); }
     catch { throw new WebHttpError('invalid_input'); }
     if (!connection) throw new WebHttpError('invalid_input');
     if (discovering) throw new WebHttpError('busy');

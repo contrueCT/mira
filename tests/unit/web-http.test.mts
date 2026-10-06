@@ -11,7 +11,7 @@ const readHeaders = { host: `127.0.0.1:${port}`, 'x-mira-client': 'web' };
 const writeHeaders = { ...readHeaders, origin, 'content-type': 'application/json' };
 const settings = (): WebSettings => ({ revision: 'a'.repeat(64), configuration: { builtinCredentials: {}, customConnections: [] }, selection: null });
 const message = { id: 'user-1', text: 'Hello Mira', occurredAt: '2026-10-06T07:00:00.000Z' };
-const connection = { id: 'custom', baseUrl: 'https://models.example.test/v1', api: 'openai-completions', apiKeyEnv: 'SYNTHETIC_EXPLICIT_KEY_REFERENCE', models: [] };
+const connection = { id: 'custom', baseUrl: 'https://models.example.test/v1', api: 'openai-completions', hasApiKey: true, models: [] };
 function backend(overrides: Partial<WebBackend> = {}): WebBackend {
   return {
     status: async () => ({ state: 'idle', mode: 'synthetic', model: null, error: null }),
@@ -98,13 +98,13 @@ test('schema validation rejects unknown keys, coercion, repeated and oversized q
   assert.equal(calls, 0);
 });
 
-test('settings and discovery reject credential values and unknown nested fields before reaching backend', async t => {
+test('settings and discovery reject misplaced credentials, old env references and unknown nested fields before backend', async t => {
   let calls = 0;
   const app = createLocalHttp({ backend: backend({ saveSettings: async () => { calls++; throw Error('never'); }, discover: async () => { calls++; throw Error('never'); } }), port }); t.after(() => app.close());
   for (const payload of [{ ...settings(), apiKey: 'synthetic-secret' }, { ...settings(), configuration: { apiKey: 'synthetic-secret' } }, { ...settings(), selection: { kind: 'custom', connection: 'x', model: 'm', token: 'synthetic-secret' } }]) {
     const response = await app.inject({ method: 'PUT', url: '/api/settings', headers: writeHeaders, payload }); assert.equal(response.statusCode, 400); assert.ok(!response.body.includes('synthetic-secret'));
   }
-  for (const payload of [{ connection: { ...connection, apiKey: 'synthetic-secret' } }, { connection, extra: true }, { connection: { ...connection, apiKeyEnv: 'not a variable' } }, { connection: { ...connection, modelsUrl: 'https://another.example.test/models' } }]) {
+  for (const payload of [{ connection: { ...connection, apiKey: 'invalid whitespace key' } }, { connection, extra: true }, { connection: { ...connection, apiKeyEnv: 'not a variable' } }, { connection: { ...connection, modelsUrl: 'https://another.example.test/models' } }]) {
     const response = await app.inject({ method: 'POST', url: '/api/models/discover', headers: writeHeaders, payload }); assert.equal(response.statusCode, 400);
   }
   assert.equal((await app.inject({ method: 'PUT', url: '/api/settings', headers: writeHeaders, payload: ' '.repeat(2_000_001) })).statusCode, 413);
@@ -226,4 +226,39 @@ test('encoded API aliases cannot bypass client, origin or resource guards', asyn
     assert.equal((await app.inject({ method: 'POST', url, headers: writeHeaders, payload: message })).statusCode, 400);
   }
   assert.equal(calls, 0);
+});
+
+test('HTTP accepts write-only keys, masks every settings response, and discovery drafts remain unpersisted', async t => {
+  const { WebSettingsStore } = await import('@mira/server');
+  const { readFile } = await import('node:fs/promises');
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'mira-http-key-')); t.after(() => rm(directory, { recursive: true, force: true }));
+  const store = new WebSettingsStore(path.join(directory, 'private', 'models.json'));
+  const secret = 'synthetic-http-private-key'; const draft = 'synthetic-discovery-only-key'; let observed: string | null = null;
+  const app = createLocalHttp({ port, backend: backend({ settings: () => store.get(), saveSettings: value => store.save(value),
+    discover: (value, signal) => store.discover(value, { ...(signal ? { signal } : {}), fetch: async (_url, init) => {
+      observed = new Headers(init?.headers).get('authorization'); return Response.json({ data: [{ id: 'example-model' }] });
+    } }),
+  }) }); t.after(() => app.close());
+  const initial = (await app.inject({ url: '/api/settings', headers: readHeaders })).json();
+  const saved = await app.inject({ method: 'PUT', url: '/api/settings', headers: writeHeaders,
+    payload: { ...initial, configuration: { builtinCredentials: {}, customConnections: [{ ...connection, apiKey: secret }] } } });
+  assert.equal(saved.statusCode, 200); assert.equal(saved.json().configuration.customConnections[0].hasApiKey, true);
+  assert.ok(!saved.body.includes(secret)); assert.ok(!saved.body.includes('"apiKey"'));
+  const read = await app.inject({ url: '/api/settings', headers: readHeaders }); assert.equal(read.statusCode, 200); assert.ok(!read.body.includes(secret));
+  const before = await readFile(store.file, 'utf8');
+  const discovered = await app.inject({ method: 'POST', url: '/api/models/discover', headers: writeHeaders, payload: { connection: { ...connection, apiKey: draft } } });
+  assert.equal(discovered.statusCode, 200); assert.equal(observed, `Bearer ${draft}`); assert.ok(!discovered.body.includes(draft));
+  assert.equal(await readFile(store.file, 'utf8'), before);
+  const removed = await app.inject({ method: 'PUT', url: '/api/settings', headers: writeHeaders, payload: { ...saved.json<WebSettings>(), configuration: { builtinCredentials: {}, customConnections: [{ ...connection, apiKey: null }] } } });
+  assert.equal(removed.statusCode, 200); assert.equal(removed.json().configuration.customConnections[0].hasApiKey, false);
+  assert.ok(!(await readFile(store.file, 'utf8')).includes(secret));
+});
+
+test('malformed backend response containing a write-only key never reaches GET or PUT response bodies', async t => {
+  const secret = 'synthetic-backend-must-not-leak';
+  const bad = { ...settings(), configuration: { builtinCredentials: { openai: { hasApiKey: true, apiKey: secret } }, customConnections: [] } };
+  const app = createLocalHttp({ backend: backend({ settings: async () => bad, saveSettings: async () => bad }), port }); t.after(() => app.close());
+  for (const request of [{ url: '/api/settings', headers: readHeaders }, { method: 'PUT' as const, url: '/api/settings', headers: writeHeaders, payload: settings() }]) {
+    const result = await app.inject(request); assert.ok(result.statusCode >= 400); assert.ok(!result.body.includes(secret)); assert.ok(!result.body.includes('"apiKey"'));
+  }
 });

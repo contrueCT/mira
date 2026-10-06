@@ -1,4 +1,4 @@
-/** Browser DTOs deliberately contain no runtime trace, raw tool data or credentials. */
+/** Read DTOs contain no runtime trace, raw tool data or stored credentials. */
 export interface TimelineItem {
   id: string;
   role: 'user' | 'assistant' | 'notice';
@@ -24,17 +24,25 @@ export interface CustomConnection {
   name?: string;
   baseUrl: string;
   api: CustomProtocol;
-  apiKeyEnv: string;
+  hasApiKey: boolean;
   modelsUrl?: string;
   models: CustomModel[];
 }
 export type ModelSelection = { kind: 'builtin'; provider: string; model: string } | { kind: 'custom'; connection: string; model: string } | null;
 export interface Settings {
   revision: string;
-  configuration: { builtinCredentials: Record<string, { apiKeyEnv: string }>; customConnections: CustomConnection[] };
+  configuration: { builtinCredentials: Record<string, ApiKeyStatus>; customConnections: CustomConnection[] };
   selection: ModelSelection;
 }
 export interface CatalogModel extends CustomModel { provider: string; protocol: { id: string; name: string }; catalogBaseUrl: string | null }
 export interface CatalogProvider { id: string; name: string; apiKeySupport: { supported: boolean; explanation: string }; models: CatalogModel[] }
 export interface BuiltinCatalog { source: string; generatedAt: string | null; providers: CatalogProvider[] }
 export interface Discovery { endpoint: string; models: { id: string; name?: string }[] }
+
+/** Secret values exist only in the transient settings form and write requests. */
+export interface ApiKeyStatus { hasApiKey: boolean }
+export interface ApiKeyWrite extends ApiKeyStatus { apiKey?: string | null }
+export interface CustomConnectionWrite extends CustomConnection { apiKey?: string | null }
+export interface SettingsWrite extends Omit<Settings, 'configuration'> {
+  configuration: { builtinCredentials: Record<string, ApiKeyWrite>; customConnections: CustomConnectionWrite[] };
+}

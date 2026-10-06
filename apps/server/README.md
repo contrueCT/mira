@@ -41,4 +41,4 @@ CLI 设置 `MIRA_DEMO_MEMORY` 即可启用 Memory；只支持当前 Memory 配�
 
 ## Local web composition
 
-`web-cli.mts` / `pnpm start` starts Fastify on 127.0.0.1 and opens the built React/Vite UI. `web-service.ts` keeps the existing PostgreSQL writer and wake/runtime contracts; `web-settings.ts` stores only explicit credential references outside source with atomic CAS. See [local-web](../../docs/development/local-web.md) for exact setup and verification. No live model request is made by the offline/browser fixtures.
+`web-cli.mts` / `pnpm start` starts Fastify on 127.0.0.1 and opens the built React/Vite UI. `web-service.ts` keeps the existing PostgreSQL writer and wake/runtime contracts; `web-settings.ts` stores private API keys and model settings together outside source with protected permissions and atomic CAS; explicit public projections only return `hasApiKey`, never stored keys. CLI configuration retains explicit environment references. See [local-web](../../docs/development/local-web.md) for exact setup and verification. No live model request is made by the offline/browser fixtures.

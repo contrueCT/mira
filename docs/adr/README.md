@@ -29,6 +29,8 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 - [0009 本地 Web 界面](0009-local-web-client.md)：Accepted，2026-10-06，React/Vite/CSS、Fastify、本地启动、持续 Timeline 与模型设置
 
+- [0010 Web 直接填写 API Key](0010-web-api-key-storage.md)：Accepted，2026-10-06，密码式输入、后端本地明文权限保护、严格脱敏响应与目标绑定
+
 ## 后续范围
 
 不提前引入部署、付费模型调用、第三方账户、新凭据或不必要的框架。阶段临近时给出具体方案、取舍和验证结果。

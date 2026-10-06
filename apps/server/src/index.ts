@@ -129,7 +129,9 @@ export { listBuiltinCatalog, getBuiltinCatalogModel, protocolDescription } from 
 export { createModelTransport, type ModelTransport, type ModelTransportOptions, type ModelSelection } from './model-transport.ts';
 export { discoverModels, modelDiscoveryLimits, type DiscoveredModel, type ModelDiscoveryOptions, type ModelDiscoveryResult } from './model-discovery.ts';
 export { createLocalHttp, WebHttpError, type WebBackend } from './http.ts';
-export { WebSettingsStore, WebSettingsError, parseWebSettings, webSettingsMaxBytes, type WebSettings } from './web-settings.ts';
+export { WebSettingsStore, WebSettingsError, parseWebSettings, parseWebSettingsWrite, hasSelectedWebApiKey, webSettingsMaxBytes, type WebSettings, type WebSettingsWrite } from './web-settings.ts';
 export { LocalWebService, type WebServiceOptions } from './web-service.ts';
 export { browserLaunchEnvironment } from './browser-launch.ts';
 export { localDatabaseUrl } from './web-config.ts';
+
+export { parseWebConnectionWrite, type WebCredential, type WebCredentialWrite, type WebCustomConnection, type WebCustomConnectionWrite, type WebModelConfiguration, type WebModelConfigurationWrite } from './web-model-config.ts';

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
@@ -109,9 +109,11 @@ test('settings reload sees an external revision instead of trapping the UI in a 
     service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'external-settings', sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile });
     await settled(service); const initial = await service.settings();
     const model = listBuiltinCatalog('openai').providers[0]!.models[0]!.id;
-    await writeFile(settingsFile, JSON.stringify({ configuration: { builtinCredentials: { openai: { apiKeyEnv: 'EXTERNAL_REFERENCE' } }, customConnections: [] }, selection: { kind: 'builtin', provider: 'openai', model } }));
+    const external = new WebSettingsStore(settingsFile, process.cwd());
+    await external.save({ ...await external.get(), configuration: { builtinCredentials: { openai: { apiKey: 'sk-synthetic-external-key' } }, customConnections: [] }, selection: { kind: 'builtin', provider: 'openai', model } });
     const reloaded = await service.settings(); assert.notEqual(reloaded.revision, initial.revision);
-    assert.equal(reloaded.configuration.builtinCredentials['openai']?.apiKeyEnv, 'EXTERNAL_REFERENCE');
+    assert.equal(reloaded.configuration.builtinCredentials['openai']?.hasApiKey, true);
+    assert.ok(!JSON.stringify(reloaded).includes('sk-synthetic-external-key'));
     await settled(service);
     assert.equal((await service.status()).model, model, 'displayed disk selection and next-Wake runtime agree');
     await service.saveSettings(reloaded);
@@ -126,7 +128,8 @@ test('a stale settings read cannot replace a successfully saved model selection'
   try {
     const models = listBuiltinCatalog('openai').providers[0]!.models;
     const settingsFile = path.join(root, 'models.json');
-    await writeFile(settingsFile, JSON.stringify({ configuration: { builtinCredentials: { openai: { apiKeyEnv: 'SYNTHETIC_MISSING_KEY' } }, customConnections: [] }, selection: { kind: 'builtin', provider: 'openai', model: models[0]!.id } }));
+    const initialStore = new WebSettingsStore(settingsFile, process.cwd());
+    await initialStore.save({ ...await initialStore.get(), configuration: { builtinCredentials: { openai: { apiKey: 'sk-synthetic-race-key' } }, customConnections: [] }, selection: { kind: 'builtin', provider: 'openai', model: models[0]!.id } });
     service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'settings-race', sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile });
     await settled(service); const current = await service.settings(); let delay = true;
     WebSettingsStore.prototype.get = async function() { const result = await originalGet.call(this); if (delay) { delay = false; entered(); await gate; } return result; };
@@ -136,4 +139,48 @@ test('a stale settings read cannot replace a successfully saved model selection'
     assert.equal((await service.status()).model, models[1]!.id);
     assert.deepEqual((await service.settings()).selection, saved.selection);
   } finally { release(); WebSettingsStore.prototype.get = originalGet; await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('live WebService resolves saved dummy keys after restart and never records them in PostgreSQL or timeline', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-key-recovery-');
+  const key = 'synthetic-server-only-recovery-key'; const originalFetch = globalThis.fetch;
+  const oldAmbient = process.env['MIRA_WEB_EXPLICIT_KEY']; let requests = 0; let service: LocalWebService | undefined;
+  try {
+    process.env['MIRA_WEB_EXPLICIT_KEY'] = 'synthetic-ambient-key-must-not-be-used';
+    globalThis.fetch = async (input, init) => {
+      requests++; assert.equal(String(input), 'https://synthetic-model.example.test/v1/chat/completions');
+      assert.equal(new Headers(init?.headers).get('authorization'), `Bearer ${key}`);
+      assert.ok(!String(init?.body).includes(key));
+      return new Response([
+        { id: `synthetic-${requests}`, choices: [{ index: 0, delta: { role: 'assistant', content: `Saved-key response ${requests}` }, finish_reason: null }] },
+        { id: `synthetic-${requests}`, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }, '[DONE]',
+      ].map(item => `data: ${typeof item === 'string' ? item : JSON.stringify(item)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } });
+    };
+    const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'web-private-key', sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json') };
+    service = await LocalWebService.open(options); await settled(service);
+    const saved = await service.saveSettings({ ...await service.settings(), configuration: { builtinCredentials: {}, customConnections: [{ id: 'fixture', baseUrl: 'https://synthetic-model.example.test/v1', api: 'openai-completions', apiKey: key,
+      models: [{ id: 'offline-model', contextWindow: 65536, maxTokens: 1024, reasoning: false, input: ['text'] }] }] }, selection: { kind: 'custom', connection: 'fixture', model: 'offline-model' } });
+    await settled(service); assert.equal(requests, 0); assert.ok(!JSON.stringify(saved).includes(key));
+    await service.submit({ id: 'key-first', text: 'Persist a safe response', occurredAt: '2026-10-06T08:00:00.000Z' }); await settled(service);
+    assert.equal((await service.status()).state, 'idle'); assert.equal(requests, 1);
+    await service.close(); service = undefined;
+    service = await LocalWebService.open(options); await settled(service);
+    const reloaded = await service.settings(); assert.equal(reloaded.configuration.customConnections[0]?.hasApiKey, true); assert.equal(reloaded.revision, saved.revision);
+    await service.submit({ id: 'key-second', text: 'Continue after restart', occurredAt: '2026-10-06T08:01:00.000Z' }); await settled(service);
+    assert.equal((await service.status()).state, 'idle'); assert.equal(requests, 2);
+    const timeline = await service.timeline(); assert.match(JSON.stringify(timeline), /Saved-key response 1/); assert.match(JSON.stringify(timeline), /Saved-key response 2/); assert.ok(!JSON.stringify(timeline).includes(key));
+    for (const table of ['context_records', 'life_events', 'wake_requests', 'wake_runs', 'wake_run_requests', 'tool_executions', 'wake_memory_checkpoints', 'wake_memory_receipts']) {
+      const rows = await db.admin.query(`SELECT row_to_json(t) AS record FROM ${table} t`); assert.ok(!JSON.stringify(rows.rows).includes(key), table);
+    }
+    assert.ok((await readFile(options.settingsFile, 'utf8')).includes(key));
+    const removed = await service.saveSettings({ ...reloaded, configuration: { builtinCredentials: {}, customConnections: [{ ...reloaded.configuration.customConnections[0]!, apiKey: null }] } });
+    assert.equal(removed.configuration.customConnections[0]?.hasApiKey, false); await settled(service);
+    await assert.rejects(service.submit({ id: 'no-key', text: 'Must not enqueue', occurredAt: '2026-10-06T08:02:00.000Z' }), WebHttpError);
+    assert.equal(requests, 2); assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM life_events')).rows[0].n, 2);
+    assert.ok(!(await readFile(options.settingsFile, 'utf8')).includes(key));
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (oldAmbient === undefined) delete process.env['MIRA_WEB_EXPLICIT_KEY']; else process.env['MIRA_WEB_EXPLICIT_KEY'] = oldAmbient;
+    await service?.close(); await db.close(); await rm(root, { recursive: true, force: true });
+  }
 });
