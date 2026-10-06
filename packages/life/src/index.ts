@@ -67,4 +67,4 @@ export { WakeLoop, prepareWakeTurn, renderWakeBatch } from './loop.ts';
 export type { WakeLoopOptions } from './loop.ts';
 export type { MemoryCheckpoint, MemoryCheckpointState, MemoryCheckpointWriter, MemorySnapshotReceipt } from './memory-lifecycle.ts';
 export { HistoryError } from './history.ts';
-export type { HistoryKind, HistorySearchMode, HistoryReference, HistorySearchRequest, HistoryHit, HistorySearchResult, HistoryReadRequest, HistoryEvent, HistoryContext, HistoryTool, HistoryWake, HistoryEntry, HistoryReader } from './history.ts';
+export type { HistoryKind, HistorySearchMode, HistoryReference, HistorySearchRequest, HistoryHit, HistorySearchResult, HistoryPageCursor, HistoryPageRequest, HistoryPageHit, HistoryPageResult, HistoryReadRequest, HistoryEvent, HistoryContext, HistoryTool, HistoryWake, HistoryEntry, HistoryReader } from './history.ts';

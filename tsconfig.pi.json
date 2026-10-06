@@ -19,7 +19,10 @@
     "tests/unit/generated-runtime.test.mts",
     "tests/unit/system-prompt.test.mts",
     "tests/unit/model-connections.test.mts",
-    "tests/unit/model-discovery.test.mts"
+    "tests/unit/model-discovery.test.mts",
+    "tests/unit/web-http.test.mts",
+    "tests/unit/web-settings.test.mts",
+    "tests/unit/web-service.test.mts"
   ],
   "exclude": [
     "node_modules",

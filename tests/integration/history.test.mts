@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { RuntimeRecord } from '@mira/context';
 import { HistoryError } from '@mira/life';
-import type { LifeEvent, ToolIntent } from '@mira/life';
+import type { HistoryPageHit, LifeEvent, ToolIntent } from '@mira/life';
 import { createTestDatabase, testDatabaseUrl } from './database.mts';
 
 const now = '2026-10-05T00:00:00.000Z';
@@ -39,6 +39,9 @@ test('history search/read is Mira scoped across original events, context, tools,
     assert.equal((await reader.search({ query: run.id, mode: 'substring', kinds: ['wake'] })).hits[0]!.id, run.id);
     assert.equal(await db.store.history('mira-b').read({ kind: 'context', id: 'same-id' }), null);
     assert.equal(await reader.read({ kind: 'event', id: 'missing' }), null);
+    const timeline = await reader.page({ limit: 100 });
+    assert.deepEqual(timeline.hits.map(hit => [hit.kind, hit.id]).sort(), [['context', 'same-id'], ['context', 'input'], ['context', 'final'], ['event', 'same-id'], ['tool', 'same-id'], ['wake', run.id]].sort());
+    assert.equal(timeline.nextCursor, null);
     assert.deepEqual(await writer.load(), before); assert.equal(writer.epoch, epoch); await writer.verifyActive();
   } finally { await db.close(); }
 });
@@ -80,6 +83,7 @@ test('history works for an unregistered Mira without creating an owner or a wake
     const reader = db.store.history('nonexistent');
     assert.equal((await reader.search({ query: 'nothing' })).hits.length, 0);
     assert.equal(await reader.read({ kind: 'wake', id: 'nothing' }), null);
+    assert.deepEqual(await reader.page(), { hits: [], nextCursor: null });
     assert.equal((await db.admin.query('SELECT count(*)::integer AS n FROM mira_owners')).rows[0].n, 0);
   } finally { await db.close(); }
 });
@@ -93,6 +97,79 @@ test('bounded full-text indexes preserve large originals and history readers do 
     assert((await writer.load()).records[0]!.payload);
     const reader = db.store.history(writer.miraId);
     assert.deepEqual((await reader.search({ query: 'uniqueword99999', mode: 'substring' })).hits.map(hit => hit.id), ['large-runtime']);
+    assert.deepEqual(await reader.page({ kinds: ['context'] }), { hits: [{ kind: 'context', id: 'large-runtime', miraId: writer.miraId, occurredAt: now }], nextCursor: null });
     await assert.rejects(reader.read({ kind: 'context', id: 'large-runtime', maxBytes: 1_048_576 }), (error: unknown) => error instanceof HistoryError && error.code === 'too_large');
+  } finally { await db.close(); }
+});
+
+
+test('chronological pages traverse timestamp/kind/ID ties without gaps, remain scoped, and survive new records and checkpoints', async () => {
+  const db = await createTestDatabase();
+  try {
+    const writer = await db.acquire('mira-a'); const other = await db.acquire('mira-b');
+    await writer.receive({ ...event('old', 'old'), occurredAt: '2026-10-04T00:00:00.000Z' });
+    for (const id of ['z', 'same-id', 'a']) await writer.receive(event(id, 'same timestamp'));
+    await writer.receive({ ...event('offset-latest', 'offset timestamps sort by instant'), occurredAt: '2026-10-04T23:30:00-02:00' });
+    await writer.receive({ ...event('micros-older', 'precision'), occurredAt: '2026-10-05T00:00:00.000001Z' });
+    await writer.receive({ ...event('micros-newer', 'precision'), occurredAt: '2026-10-05T00:00:00.000002Z' });
+    await writer.append(0, record('same-id', null, 'original before checkpoint'));
+    await writer.beginTool(1, { callId: 'same-id', assistantRecordId: 'same-id', toolName: 'synthetic', requestedArguments: {}, arguments: {}, occurredAt: now });
+    await writer.finishTool({ callId: 'same-id', occurredAt: now, payload: null });
+    await other.receive(event('foreign', 'never in mira-a'));
+    const reader = db.store.history('mira-a');
+    const kinds = ['event', 'context', 'tool'] as const;
+    const first = await reader.page({ kinds: [...kinds], limit: 2 });
+    assert.deepEqual(first.hits.map(hit => hit.id), ['micros-newer', 'offset-latest']);
+    assert(first.nextCursor);
+    assert.deepEqual(await reader.page({ kinds: [...kinds], limit: 2 }), first, 'refresh is deterministic');
+    await assert.rejects(db.store.history('mira-b').page({ kinds: [...kinds], before: first.nextCursor }), HistoryError);
+    await assert.rejects(reader.page({ kinds: ['event'], before: first.nextCursor }), HistoryError);
+    // A compaction checkpoint is an appended runtime envelope, not replacement
+    // history. Readers do not interpret or expand its runtime-specific payload.
+    await writer.append(1, { ...record('checkpoint', 'same-id', 'opaque checkpoint'), kind: 'checkpoint', occurredAt: '2026-10-06T00:00:00.000Z' });
+    await writer.receive({ ...event('new-latest', 'arrived between page requests'), occurredAt: '2026-10-06T01:00:00.000Z' });
+    const before = await writer.load(); const epoch = writer.epoch;
+    let beforeCursor: string | null = first.nextCursor;
+    const older: HistoryPageHit[] = [];
+    while (beforeCursor) {
+      const page = await db.store.history('mira-a').page({ kinds: [...kinds].reverse(), limit: 1, before: beforeCursor });
+      assert.equal(page.hits.length, 1); older.unshift(...page.hits); beforeCursor = page.nextCursor;
+    }
+    assert.deepEqual([...older, ...first.hits].map(hit => [hit.kind, hit.id]), [
+      ['event', 'old'], ['context', 'same-id'], ['event', 'a'], ['event', 'same-id'], ['event', 'z'], ['tool', 'same-id'],
+      ['event', 'micros-older'], ['event', 'micros-newer'], ['event', 'offset-latest'],
+    ]);
+    const refreshed = await reader.page({ kinds: [...kinds], limit: 2 });
+    assert.deepEqual(refreshed.hits.map(hit => hit.id), ['checkpoint', 'new-latest']);
+    assert.deepEqual((await reader.page({ kinds: ['context'], limit: 100 })).hits.map(hit => hit.id), ['same-id', 'checkpoint']);
+    assert.deepEqual(await writer.load(), before); assert.equal(writer.epoch, epoch); await writer.verifyActive();
+  } finally { await db.close(); }
+});
+
+
+test('writer-accepted non-PostgreSQL dates never block paging or disappear from history', async () => {
+  const db = await createTestDatabase();
+  try {
+    const writer = await db.acquire(); const reader = db.store.history(writer.miraId);
+    const originals = [
+      { ...event('abbreviated-date', 'Date.parse accepts this'), occurredAt: '1' },
+      { ...event('overflow-date', 'Date.parse normalizes the calendar overflow'), occurredAt: '2026-02-30T00:00:00Z' },
+    ];
+    for (const original of originals) {
+      assert(Number.isFinite(Date.parse(original.occurredAt)));
+      await writer.receive(original);
+    }
+    await writer.receive(event('normal-date', 'canonical timestamp'));
+    const latest = await reader.page({ kinds: ['event'], limit: 1 });
+    assert.deepEqual(latest.hits.map(hit => hit.id), ['normal-date']); assert(latest.nextCursor);
+    const fallback = await reader.page({ kinds: ['event'], limit: 1, before: latest.nextCursor });
+    assert.deepEqual(fallback.hits, [{ kind: 'event', id: 'overflow-date', miraId: writer.miraId, occurredAt: originals[1]!.occurredAt, timestampWarning: 'timestamp_not_normalized' }]);
+    assert(fallback.nextCursor);
+    const oldest = await reader.page({ kinds: ['event'], limit: 1, before: fallback.nextCursor });
+    assert.deepEqual(oldest.hits, [{ kind: 'event', id: 'abbreviated-date', miraId: writer.miraId, occurredAt: '1', timestampWarning: 'timestamp_not_normalized' }]);
+    assert.equal(oldest.nextCursor, null);
+    for (const original of originals) {
+      const saved = await reader.read({ kind: 'event', id: original.id }); assert(saved?.kind === 'event'); assert.deepEqual(saved.event, original);
+    }
   } finally { await db.close(); }
 });

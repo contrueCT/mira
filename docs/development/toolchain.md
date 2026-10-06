@@ -1,6 +1,6 @@
 # 基础工具链
 
-状态：用户已确认工具链方向，以下是可重复的具体版本。build 只构建开发检查工具；运行时包用 Node 24 的 TypeScript 类型擦除执行，尚无应用构建。
+状态：用户已确认工具链方向，以下是可重复的具体版本。build 构建开发检查工具和 Vite Web 应用；服务端仍用 Node 24 的 TypeScript 类型擦除执行。
 
 | 工具 | 固定版本 | 用途 |
 | --- | --- | --- |
@@ -24,10 +24,10 @@ pnpm check
 
 `pnpm check` 顺序执行：
 
-1. `pnpm typecheck`：所有已有 TypeScript 源文件的严格检查
+1. `pnpm typecheck`：核心、Pi、Cordis、Web 和 E2E TypeScript 源文件的严格检查
 2. `pnpm boundaries`：包目录、manifest、exports、依赖图、实际模块导入
 3. `pnpm test`：Node 内置测试框架中的基础验证、违规反例和离线运行时测试
-4. `pnpm build`：将检查工具编译到 `dist/`，不代表应用已可运行
+4. `pnpm build`：将检查工具编译到 `dist/`，并构建 `apps/web/dist/`
 
 CI 固定第三方 Action 的完整 commit SHA，只有只读仓库权限，不保存 checkout 凭据，不提供真实模型/生产数据库/部署凭据。CI 的 PostgreSQL 18.6 服务仅使用固定合成测试凭据。安装脚本默认不获允许。pnpm 11 的 `engineStrict`、`saveExact` 放在 workspace YAML；测试实际查询配置并验证不支持的 Node 版本会拒绝安装，不依赖已不生效的 `.npmrc` 配置。
 
@@ -70,3 +70,7 @@ See ADR 0004. Official Cordis RC declaration exports omit ESM file extensions.
 the previously approved skipLibCheck exception for all declarations consumed by that project. Root/core/SDK retain
 NodeNext. No bundler is installed: Node 24 executes explicit .ts ESM and actual HMR
 children use `--expose-internals`. All three projects run under `pnpm typecheck`.
+
+## 本地 Web 工具链
+
+React/ReactDOM/对应类型 19.3.0、Vite 8.3.3、Fastify 5.12.5、@fastify/static 10.1.5、Playwright 1.63.0，见 ADR 0009。Web 配置 `tsconfig.web.json` 保持 strict 和声明检查，E2E 消费 Pi 后端沿用 `tsconfig.pi.json` 的既有声明例外。`pnpm test` 同时运行前端状态测试，CI 单独安装官方 Chromium 并执行 `pnpm test:e2e`，产物均为合成测试截图。依赖安装脚本仍禁用。

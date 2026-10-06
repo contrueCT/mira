@@ -9,14 +9,16 @@
   },
   "scripts": {
     "check": "pnpm typecheck && pnpm boundaries && pnpm test && pnpm build",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.pi.json && tsc --noEmit -p tsconfig.extensions.json",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.pi.json && tsc --noEmit -p tsconfig.extensions.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.e2e.json",
     "boundaries": "node scripts/check-boundaries.mts",
-    "test": "node scripts/run-tests.mts",
-    "build": "tsc -p tsconfig.tools.json",
+    "test": "node scripts/run-tests.mts && pnpm --filter @mira/web test",
+    "build": "tsc -p tsconfig.tools.json && pnpm --filter @mira/web build",
     "test:integration": "node scripts/run-tests.mts --integration",
     "check:all": "pnpm check && pnpm test:integration",
     "demo": "node apps/server/src/cli.mts",
-    "models": "node apps/server/src/models-cli.mts"
+    "models": "node apps/server/src/models-cli.mts",
+    "start": "pnpm --filter @mira/web build && node apps/server/src/web-cli.mts",
+    "test:e2e": "node scripts/run-web-tests.mts"
   },
   "devDependencies": {
     "@types/node": "24.19.1",
@@ -34,6 +36,7 @@
     "@mira/workspace": "workspace:*",
     "@mira/server": "workspace:*",
     "@mira/extension-sdk": "workspace:*",
-    "@mira/extension-host": "workspace:*"
+    "@mira/extension-host": "workspace:*",
+    "@playwright/test": "1.63.0"
   }
 }

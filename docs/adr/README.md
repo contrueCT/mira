@@ -27,10 +27,8 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 - [0008 Pi 目录与显式自定义连接](0008-model-catalog-and-connections.md)：Accepted，2026-10-06，完整离线 chat 目录、逐模型协议、三种自定义协议、独立 API Key、模型发现与 transport 组装
 
-## 待确认
+- [0009 本地 Web 界面](0009-local-web-client.md)：Accepted，2026-10-06，React/Vite/CSS、Fastify、本地启动、持续 Timeline 与模型设置
 
-| 决策 | 当前建议 / 需要验证 | 开始依赖它的工作前确认 |
-| --- | --- | --- |
-| Web/API/Schema | React/Next、Fastify/Hono、Zod/TypeBox 等尚未选定 | 服务端与 UI 实现 |
+## 后续范围
 
 不提前引入部署、付费模型调用、第三方账户、新凭据或不必要的框架。阶段临近时给出具体方案、取舍和验证结果。

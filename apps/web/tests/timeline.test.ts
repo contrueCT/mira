@@ -1,0 +1,111 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { PENDING_KEY, latestPagination, nextHistoryRequest, olderPagination, mergeTimeline, readPending, reconcilePending, writePending } from '../src/timeline.ts';
+import type { PendingMessage, TimelineItem } from '../src/types.ts';
+
+const envelope = { id: 'a5017dbb-0c3f-4cfe-ab34-63997612ebcd', text: '一条保留原样的消息\n第二行', occurredAt: '2026-10-06T07:00:00.000Z' };
+const item = (id: string, occurredAt: string, text = id): TimelineItem => ({ id, occurredAt, role: 'user', text });
+function memoryStorage() {
+  const data = new Map<string, string>();
+  return { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => { data.set(key, value); }, removeItem: (key: string) => { data.delete(key); } };
+}
+
+test('latest and older history merge by ID without duplicating the timeline', () => {
+  const original = item('two', '2026-10-06T02:00:00.000Z');
+  const newer = item('three', '2026-10-06T03:00:00.000Z');
+  const older = item('one', '2026-10-06T01:00:00.000Z');
+  const merged = mergeTimeline(mergeTimeline([original], [original, newer]), [older, original]);
+  assert.deepEqual(merged.map(value => value.id), ['one', 'two', 'three']);
+});
+
+test('unconfirmed sends recover their exact envelope and become uncertain, never auto-sending', () => {
+  const storage = memoryStorage();
+  writePending(storage, [{ ...envelope, state: 'sending', error: 'do not persist diagnostics' }]);
+  assert.deepEqual(readPending(storage), [{ ...envelope, state: 'uncertain' }]);
+  assert.equal(storage.getItem(PENDING_KEY)?.includes('diagnostics'), false);
+});
+
+test('a receipt stays queued across refresh and does not imply a completed model reply', () => {
+  const storage = memoryStorage();
+  writePending(storage, [{ ...envelope, state: 'queued' }]);
+  assert.deepEqual(readPending(storage), [{ ...envelope, state: 'queued' }]);
+});
+
+test('only the exact durable event ID clears the pending message', () => {
+  const pending: PendingMessage[] = [{ ...envelope, state: 'uncertain' }];
+  assert.equal(reconcilePending(pending, [item(envelope.id, envelope.occurredAt)]).length, 1);
+  assert.equal(reconcilePending(pending, [item(`event:${envelope.id}`, envelope.occurredAt)]).length, 0);
+});
+
+test('confirmed envelopes are removed from this tab storage', () => {
+  const storage = memoryStorage();
+  writePending(storage, [{ ...envelope, state: 'sending' }]);
+  writePending(storage, []);
+  assert.equal(storage.getItem(PENDING_KEY), null);
+  assert.deepEqual(readPending(storage), []);
+});
+
+test('unavailable storage fails before a new send and malformed storage is not silently cleared', () => {
+  assert.throws(() => writePending({ setItem: () => { throw new Error('blocked'); }, removeItem: () => {} }, [{ ...envelope, state: 'sending' }]), /blocked/u);
+  const storage = memoryStorage();
+  storage.setItem(PENDING_KEY, 'not-json');
+  assert.throws(() => readPending(storage));
+  assert.equal(storage.getItem(PENDING_KEY), 'not-json');
+  storage.setItem(PENDING_KEY, JSON.stringify([{ ...envelope, id: 'invalid' }]));
+  assert.throws(() => readPending(storage), /无法读取/u);
+});
+
+
+test('ordering uses timestamp instants and retains sub-millisecond precision', () => {
+  const merged = mergeTimeline([], [item('offset', '2026-10-06T09:00:00+02:00'), item('utc', '2026-10-06T08:00:00Z'), item('z-micro', '2026-10-06T08:00:00.000001Z'), item('a-micro', '2026-10-06T08:00:00.000002Z')]);
+  assert.deepEqual(merged.map(value => value.id), ['offset', 'utc', 'z-micro', 'a-micro']);
+});
+
+test('disconnected latest pages expose missing history before the existing older frontier', () => {
+  const original = [item('10', '2026-10-06T01:00:00Z'), item('59', '2026-10-06T02:00:00Z')];
+  const initial = latestPagination({ oldestCursor: null, gaps: [] }, [], { items: original, nextCursor: 'before-10' }, false);
+  const gap = latestPagination(initial, original, { items: [item('80', '2026-10-06T03:00:00Z'), item('129', '2026-10-06T04:00:00Z')], nextCursor: 'before-80' }, true);
+  assert.deepEqual(nextHistoryRequest(gap), { cursor: 'before-80', gapId: 'before-80' });
+  const middle = olderPagination(gap, nextHistoryRequest(gap)!, { items: [item('60', '2026-10-06T02:01:00Z')], nextCursor: 'before-60' });
+  assert.deepEqual(nextHistoryRequest(middle), { cursor: 'before-60', gapId: 'before-80' });
+  const filled = olderPagination(middle, nextHistoryRequest(middle)!, { items: [original[1]!], nextCursor: 'before-59' });
+  assert.deepEqual(nextHistoryRequest(filled), { cursor: 'before-10', gapId: null });
+});
+
+test('history grown after an initially exhausted page still creates a reachable gap', () => {
+  const original = [item('one', '2026-10-06T01:00:00Z')];
+  const gap = latestPagination({ oldestCursor: null, gaps: [] }, original, { items: [item('newest', '2026-10-06T03:00:00Z')], nextCursor: 'before-newest' }, true);
+  assert.equal(nextHistoryRequest(gap)?.cursor, 'before-newest');
+  const filled = olderPagination(gap, nextHistoryRequest(gap)!, { items: original, nextCursor: null });
+  assert.equal(nextHistoryRequest(filled), null);
+});
+
+test('overlapping latest windows retain the already loaded older-history frontier', () => {
+  const original = [item('known', '2026-10-06T01:00:00Z')];
+  const pagination = { oldestCursor: 'oldest-unread', gaps: [] };
+  assert.deepEqual(latestPagination(pagination, original, { items: original, nextCursor: 'duplicate-page' }, true), pagination);
+});
+
+test('multiple disconnected windows keep independent gap frontiers', () => {
+  const first = item('first', '2026-10-06T01:00:00Z'); const second = item('second', '2026-10-06T03:00:00Z'); const third = item('third', '2026-10-06T05:00:00Z');
+  const gapA = latestPagination({ oldestCursor: 'oldest', gaps: [] }, [first], { items: [second], nextCursor: 'gap-a' }, true);
+  const gapB = latestPagination(gapA, [first, second], { items: [third], nextCursor: 'gap-b' }, true);
+  const fillB = olderPagination(gapB, nextHistoryRequest(gapB)!, { items: [second], nextCursor: 'ignored' });
+  assert.equal(nextHistoryRequest(fillB)?.cursor, 'gap-a');
+  const fillA = olderPagination(fillB, nextHistoryRequest(fillB)!, { items: [first], nextCursor: 'ignored' });
+  assert.equal(nextHistoryRequest(fillA)?.cursor, 'oldest');
+});
+
+
+test('empty visible pages keep pagination progress across repeated latest polls', () => {
+  const latest = { items: [], nextCursor: 'before-150' };
+  let pagination = latestPagination({ oldestCursor: null, gaps: [] }, [], latest, false);
+  pagination = olderPagination(pagination, nextHistoryRequest(pagination)!, { items: [], nextCursor: 'before-100' });
+  pagination = latestPagination(pagination, [], latest, true);
+  assert.equal(nextHistoryRequest(pagination)?.cursor, 'before-100');
+  pagination = olderPagination(pagination, nextHistoryRequest(pagination)!, { items: [], nextCursor: 'before-50' });
+  pagination = latestPagination(pagination, [], latest, true);
+  assert.equal(nextHistoryRequest(pagination)?.cursor, 'before-50');
+  pagination = olderPagination(pagination, nextHistoryRequest(pagination)!, { items: [item('old-message', '2026-10-06T01:00:00Z')], nextCursor: null });
+  assert.equal(nextHistoryRequest(pagination), null);
+});
