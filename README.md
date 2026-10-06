@@ -51,17 +51,29 @@
 
 用户记忆、生成扩展、数据库、运行日志和凭据必须放在源码仓库之外。不要把源码仓库当作 Mira 的持久工作空间。
 
-## 基础验证
+## 安装、使用与测试
+
+第一次安装请按 [本地安装与测试指南](docs/development/local-web.md) 完成 Node/pnpm、PostgreSQL 用户与数据库配置。指南包含完整命令、模型密钥环境变量、独立模拟环境和测试方式。
 
 ```sh
+# 克隆这个私有仓库需要已有 GitHub 访问权限
+git clone https://github.com/contrueCT/mira.git
+cd mira
 pnpm install --frozen-lockfile --ignore-scripts
-pnpm check
+
+# 已按指南创建数据库并设置数据库认证后，正常启动（不是模拟模式）
+MIRA_DATABASE_URL=postgres://mira@127.0.0.1:5432/mira pnpm start
 ```
 
-这些命令验证工具链、包边界与离线模型测试。真实 PostgreSQL 测试另运行 `pnpm test:integration`，要求显式 `MIRA_TEST_DATABASE_URL`；CI 执行 `pnpm check:all`。具体隔离要求见验收文档。
+默认打开 `http://127.0.0.1:3210`。新数据库显示空时间线；已有数据库恢复自己的持久历史，不加载截图中的示例对话。先在设置中选择模型和密钥环境变量名，再发送真实消息。模型密钥只在启动终端设置，网页不接收密钥值。
 
-模型目录与显式 transport：`pnpm models --help`，见 [配置与发现说明](docs/development/models.md)。目录/合成 HTTP 测试不等于真实模型联通，OAuth 与云账号配置仍待后续。
+### 测试入口
 
-## 本地界面
+- `pnpm check`：严格类型、包边界、离线测试和应用构建，无真实模型调用
+- `pnpm test:integration`：需要显式独立的本地 `mira_test` 数据库；创建/清理测试 schema，不能指向日常数据
+- `pnpm test:e2e`：先 `pnpm build` 并安装 Playwright Chromium；只启动专用浏览器测试 fixture
+- 手动模拟需显式 `--synthetic`，并使用指南中的独立数据库、`MIRA_HOME` 与端口，避免把模拟回复写入日常历史
 
-准备本地 PostgreSQL 后运行 `MIRA_DATABASE_URL=postgres://localhost/mira pnpm start --synthetic`，浏览器打开同一条 Mira 时间线。真实模式与数据位置见 [本地 Web 启动说明](docs/development/local-web.md)。
+测试源码里的合成对话是回归测试夹具，不是应用初始数据。截图、运行数据、数据库、Memory、密钥、构建产物和浏览器测试输出不提交到源码仓库。真实模型效果与付费调用尚未验收。
+
+模型目录与协议配置详见 [模型配置与发现](docs/development/models.md)。
