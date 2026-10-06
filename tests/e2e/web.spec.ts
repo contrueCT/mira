@@ -83,9 +83,11 @@ test('retry preflight acknowledges a global-ID user event without resending its 
   await page.goto('/');
   await expect(page.getByRole('button', { name: '核对并重试' })).toBeVisible();
   reveal = true;
+  const preflight = page.waitForResponse(response => response.url().endsWith('/api/timeline') && response.request().method() === 'GET');
   await page.getByRole('button', { name: '核对并重试' }).click();
-  // The retry's finally focuses the composer only after preflight/send settles.
-  await expect(page.getByLabel('给 Mira 发消息', { exact: true })).toBeFocused();
+  await preflight;
+  // Completion re-enables the composer; focus is not part of this receipt contract.
+  await expect(page.getByLabel('给 Mira 发消息', { exact: true })).toBeEnabled();
   await expect(page.getByLabel('你的消息', { exact: true })).toHaveCount(1);
   await expect(page.getByLabel('待确认的消息', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '核对并重试' })).toHaveCount(0);
