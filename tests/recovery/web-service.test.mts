@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
-import { LocalWebService, WebHttpError, WebSettingsStore, listBuiltinCatalog } from '@mira/server';
+import { createLocalHttp, LocalWebService, WebHttpError, WebSettingsStore, listBuiltinCatalog, type WebSettings } from '@mira/server';
 import { createAssistantMessageEventStream } from '@earendil-works/pi-ai';
 import { createTestDatabase } from '../integration/database.mts';
 import { assistant, streamOf } from './fixtures.mts';
@@ -182,5 +182,147 @@ test('live WebService resolves saved dummy keys after restart and never records 
     globalThis.fetch = originalFetch;
     if (oldAmbient === undefined) delete process.env['MIRA_WEB_EXPLICIT_KEY']; else process.env['MIRA_WEB_EXPLICIT_KEY'] = oldAmbient;
     await service?.close(); await db.close(); await rm(root, { recursive: true, force: true });
+  }
+});
+
+const httpPort = 4317;
+const readHeaders = { host: `127.0.0.1:${httpPort}`, 'x-mira-client': 'web' };
+const writeHeaders = { ...readHeaders, origin: `http://${readHeaders.host}`, 'content-type': 'application/json' };
+const diagnosticConnection = (key: string) => ({ id: 'diagnostic-fixture', baseUrl: 'https://synthetic-model.example.test/v1', api: 'openai-completions', apiKey: key,
+  models: [{ id: 'offline-model', contextWindow: 65536, maxTokens: 1024, reasoning: false, input: ['text'] }] });
+
+for (const recovery of ['restart', 'new-message'] as const) test(`live model HTTP failures persist safe diagnostics and preserve the failed Wake until ${recovery} recovery`, { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-model-failure-');
+  const originalFetch = globalThis.fetch; const key = 'synthetic-private-diagnostic-key';
+  let service: LocalWebService | undefined; let app: ReturnType<typeof createLocalHttp> | undefined; let requests = 0;
+  let release!: () => void; let entered!: () => void;
+  const recovering = new Promise<void>(resolve => { entered = resolve; }); const gate = new Promise<void>(resolve => { release = resolve; });
+  try {
+    globalThis.fetch = async (url, init) => {
+      const call = ++requests;
+      assert.equal(String(url), 'https://synthetic-model.example.test/v1/chat/completions');
+      assert.equal(new Headers(init?.headers).get('authorization'), `Bearer ${key}`);
+      assert.ok(!String(init?.body).includes(key));
+      if (call === 1) return Response.json({ error: {
+        message: `Invalid tool name history.search; apiKey=${key}; endpoint https://synthetic-model.example.test/private-error-url`,
+        code: 'invalid_request_error', type: 'invalid_request_error',
+        debug: { authorization: 'synthetic-unselected-header-secret', stack: 'synthetic-provider-stack-secret' },
+      } }, { status: 400, headers: { 'x-request-id': 'synthetic-error-request-id' } });
+      entered(); await gate;
+      return new Response([
+        { id: `synthetic-${call}`, choices: [{ index: 0, delta: { role: 'assistant', content: `Recovered response ${call}` }, finish_reason: null }] },
+        { id: `synthetic-${call}`, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }, '[DONE]',
+      ].map(item => `data: ${typeof item === 'string' ? item : JSON.stringify(item)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } });
+    };
+    const options = { connectionString: db.connectionString, schema: db.schema, miraId: `model-failure-${recovery}`, sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json') };
+    service = await LocalWebService.open(options); await settled(service); app = createLocalHttp({ backend: service, port: httpPort });
+    const configured = await app.inject({ method: 'PUT', url: '/api/settings', headers: writeHeaders, payload: {
+      ...await service.settings(), configuration: { builtinCredentials: {}, customConnections: [diagnosticConnection(key)] },
+      selection: { kind: 'custom', connection: 'diagnostic-fixture', model: 'offline-model' },
+    } });
+    assert.equal(configured.statusCode, 200); await settled(service); assert.equal(requests, 0);
+    const input = { id: 'diagnostic-original-input', text: 'Keep this original request after the model fails', occurredAt: '2026-10-06T08:00:00.000Z' };
+    const submitted = await app.inject({ method: 'POST', url: '/api/messages', headers: writeHeaders, payload: input });
+    assert.equal(submitted.statusCode, 201); await settled(service); assert.equal(requests, 1);
+    const failed = await app.inject({ url: '/api/status', headers: readHeaders }); assert.equal(failed.statusCode, 200);
+    const diagnostic = failed.json<{ state: string; error: string }>().error;
+    assert.equal(failed.json().state, 'error');
+    assert.match(diagnostic, /Model request failed.*HTTP 400.*synthetic-error-request-id.*Invalid tool name history\.search/);
+    assert.match(diagnostic, /invalid_request_error/); assert.match(diagnostic, /\[redacted\]/);
+    assert.ok(diagnostic.length <= 2_100);
+    const forbidden = /synthetic-private-diagnostic-key|synthetic-unselected-header-secret|synthetic-provider-stack-secret|private-error-url/;
+    assert.doesNotMatch(failed.body, forbidden); assert.doesNotMatch(configured.body, forbidden);
+    const failedRuns = await db.admin.query<{ run_id: string; input_record_id: string; final_record_id: string | null; completed: boolean }>('SELECT run_id, input_record_id, final_record_id, completed FROM wake_runs');
+    assert.equal(failedRuns.rowCount, 1); const originalRun = failedRuns.rows[0]!;
+    assert.ok(originalRun.input_record_id); assert.equal(originalRun.final_record_id, null); assert.equal(originalRun.completed, false);
+    const originalInput = (await db.admin.query('SELECT envelope FROM context_records WHERE record_id = $1', [originalRun.input_record_id])).rows;
+    assert.match(JSON.stringify(originalInput), /Keep this original request after the model fails/);
+    const errorRecords = await db.admin.query("SELECT record_id, envelope->'payload'->'message' AS message FROM context_records WHERE envelope->'payload'->'message'->>'stopReason' = 'error'");
+    assert.equal(errorRecords.rowCount, 1); assert.equal(errorRecords.rows[0].message.errorMessage, diagnostic);
+    assert.deepEqual(errorRecords.rows[0].message.content, []);
+    const failedTimeline = await app.inject({ url: '/api/timeline', headers: readHeaders }); assert.equal(failedTimeline.statusCode, 200);
+    assert.equal(failedTimeline.json().items.filter((item: { role: string }) => item.role === 'user').length, 1);
+    assert.equal(failedTimeline.json().items.filter((item: { role: string }) => item.role === 'assistant').length, 0, 'a model error is not a final assistant reply');
+    assert.doesNotMatch(failedTimeline.body, forbidden);
+    // Both routes must preserve the failed run without silently retrying it.
+    const saved = await app.inject({ method: 'PUT', url: '/api/settings', headers: writeHeaders, payload: configured.json<WebSettings>() });
+    assert.equal(saved.statusCode, 200); await settled(service); assert.equal(requests, 1);
+    const duplicate = await app.inject({ method: 'POST', url: '/api/messages', headers: writeHeaders, payload: input });
+    assert.equal(duplicate.statusCode, 200); assert.equal(duplicate.json().receipt, 'duplicate'); await settled(service); assert.equal(requests, 1);
+    assert.equal((await app.inject({ url: '/api/status', headers: readHeaders })).json().error, diagnostic);
+    assert.deepEqual((await db.admin.query('SELECT run_id, input_record_id, final_record_id, completed FROM wake_runs')).rows, failedRuns.rows);
+    if (recovery === 'restart') {
+      await app.close(); app = undefined; await service.close(); service = undefined;
+      service = await LocalWebService.open(options); app = createLocalHttp({ backend: service, port: httpPort });
+    } else {
+      const resumed = await app.inject({ method: 'POST', url: '/api/messages', headers: writeHeaders,
+        payload: { id: 'diagnostic-follow-up', text: 'Continue with the saved request', occurredAt: '2026-10-06T08:01:00.000Z' } });
+      assert.equal(resumed.statusCode, 201);
+    }
+    await recovering;
+    const working = await app.inject({ url: '/api/status', headers: readHeaders });
+    assert.equal(working.json().state, 'working'); assert.equal(working.json().error, null, 'new work clears the previous request diagnostic');
+    release(); await settled(service);
+    const recovered = await app.inject({ url: '/api/status', headers: readHeaders }); assert.equal(recovered.json().state, 'idle'); assert.equal(recovered.json().error, null);
+    assert.equal(requests, recovery === 'restart' ? 2 : 3);
+    const completed = (await db.admin.query('SELECT run_id, input_record_id, final_record_id, completed FROM wake_runs WHERE run_id = $1', [originalRun.run_id])).rows[0];
+    assert.equal(completed.run_id, originalRun.run_id); assert.equal(completed.input_record_id, originalRun.input_record_id);
+    assert.ok(completed.final_record_id); assert.equal(completed.completed, true);
+    assert.deepEqual((await db.admin.query('SELECT envelope FROM context_records WHERE record_id = $1', [originalRun.input_record_id])).rows, originalInput);
+    assert.deepEqual((await db.admin.query("SELECT record_id, envelope->'payload'->'message' AS message FROM context_records WHERE envelope->'payload'->'message'->>'stopReason' = 'error'")).rows, errorRecords.rows);
+    const expectedTurns = recovery === 'restart' ? 1 : 2;
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_runs WHERE completed')).rows[0].n, expectedTurns);
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM life_events')).rows[0].n, expectedTurns);
+    const timeline = await app.inject({ url: '/api/timeline', headers: readHeaders });
+    assert.equal(timeline.json().items.filter((item: { role: string }) => item.role === 'user').length, expectedTurns);
+    assert.equal(timeline.json().items.filter((item: { role: string }) => item.role === 'assistant').length, expectedTurns);
+    assert.match(timeline.body, /Recovered response 2/); assert.doesNotMatch(timeline.body, forbidden);
+    for (const table of ['context_records', 'life_events', 'wake_requests', 'wake_runs', 'wake_run_requests', 'tool_executions', 'wake_memory_checkpoints', 'wake_memory_receipts']) {
+      assert.doesNotMatch(JSON.stringify((await db.admin.query(`SELECT row_to_json(t) AS record FROM ${table} t`)).rows), forbidden, table);
+    }
+  } finally {
+    release(); await app?.close(); await service?.close(); globalThis.fetch = originalFetch; await db.close(); await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a PostgreSQL failure saving a provider error remains generic instead of reusing the provider diagnostic', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-model-db-failure-');
+  const originalFetch = globalThis.fetch; const key = 'synthetic-database-diagnostic-key';
+  let service: LocalWebService | undefined; let app: ReturnType<typeof createLocalHttp> | undefined; let requests = 0;
+  try {
+    // A sequence survives transaction rollback and proves the error append reached this fault.
+    await db.admin.query(`CREATE SEQUENCE synthetic_error_append_attempts;
+      CREATE FUNCTION synthetic_reject_model_error() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+        IF NEW.envelope->'payload'->'message'->>'stopReason' = 'error' THEN
+          PERFORM nextval('synthetic_error_append_attempts'); RAISE EXCEPTION 'synthetic-database-private-error';
+        END IF; RETURN NEW; END $$;
+      CREATE TRIGGER synthetic_model_error_fault BEFORE INSERT ON context_records FOR EACH ROW EXECUTE FUNCTION synthetic_reject_model_error()`);
+    globalThis.fetch = async (url, init) => {
+      requests++; assert.equal(String(url), 'https://synthetic-model.example.test/v1/chat/completions');
+      assert.equal(new Headers(init?.headers).get('authorization'), `Bearer ${key}`);
+      return Response.json({ error: { message: `synthetic-provider-before-database-failure ${key}`, code: 'invalid_request_error' } }, { status: 400 });
+    };
+    service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'model-db-failure', sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json') });
+    await settled(service);
+    await service.saveSettings({ ...await service.settings(), configuration: { builtinCredentials: {}, customConnections: [diagnosticConnection(key)] }, selection: { kind: 'custom', connection: 'diagnostic-fixture', model: 'offline-model' } });
+    await service.submit({ id: 'database-failed-input', text: 'Keep this receipt despite the storage fault', occurredAt: '2026-10-06T08:00:00.000Z' });
+    // A database exception fences the writer before the drain publishes its error.
+    const deadline = Date.now() + 10_000;
+    while ((await service.status()).error === null) {
+      if (Date.now() > deadline) throw Error('Database failure was not reported');
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(requests, 1);
+    assert.deepEqual((await db.admin.query('SELECT last_value::int, is_called FROM synthetic_error_append_attempts')).rows, [{ last_value: 1, is_called: true }]);
+    app = createLocalHttp({ backend: service, port: httpPort });
+    const status = await app.inject({ url: '/api/status', headers: readHeaders }); assert.equal(status.statusCode, 200); assert.equal(status.json().state, 'stopped');
+    assert.equal(status.json().error, 'Mira could not complete the operation. Check the local server and model configuration.');
+    assert.doesNotMatch(status.body, /synthetic-provider-before-database-failure|synthetic-database-private-error|synthetic-database-diagnostic-key|HTTP 400/);
+    const runs = (await db.admin.query('SELECT input_record_id, final_record_id, completed FROM wake_runs')).rows;
+    assert.equal(runs.length, 1); assert.ok(runs[0].input_record_id); assert.equal(runs[0].final_record_id, null); assert.equal(runs[0].completed, false);
+    assert.equal((await db.admin.query("SELECT count(*)::int AS n FROM context_records WHERE envelope->'payload'->'message'->>'role' = 'assistant'")).rows[0].n, 0);
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM life_events')).rows[0].n, 1);
+  } finally {
+    await app?.close(); await service?.close(); globalThis.fetch = originalFetch; await db.close(); await rm(root, { recursive: true, force: true });
   }
 });

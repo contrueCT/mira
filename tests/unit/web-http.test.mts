@@ -262,3 +262,13 @@ test('malformed backend response containing a write-only key never reaches GET o
     const result = await app.inject(request); assert.ok(result.statusCode >= 400); assert.ok(!result.body.includes(secret)); assert.ok(!result.body.includes('"apiKey"'));
   }
 });
+
+test('status exposes only transport-minted model diagnostics and preserves useful redacted details', async t => {
+  const { ModelRequestFailure } = await import('../../apps/server/src/model-errors.ts');
+  const diagnostic = ModelRequestFailure.from('403 {"error":{"message":"invalid tool name history.search synthetic-key","code":"invalid_request_error"}}', { status: 403, requestId: 'req-1' }, 'synthetic-key');
+  const app = createLocalHttp({ backend: backend({ status: async () => ({ state: 'error', mode: 'live', model: 'fixture', error: diagnostic }) }), port });
+  t.after(() => app.close());
+  const response = await app.inject({ url: '/api/status', headers: readHeaders });
+  assert.equal(response.statusCode, 200); assert.equal(response.json().error, diagnostic.message);
+  assert.match(response.json().error, /HTTP 403.*req-1.*invalid tool name/); assert.doesNotMatch(response.body, /synthetic-key/);
+});

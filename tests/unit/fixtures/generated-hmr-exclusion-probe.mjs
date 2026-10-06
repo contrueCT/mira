@@ -19,7 +19,7 @@ for (const alias of [false, true]) {
     if (alias) await symlink(canonicalStore, storePath);
     const manualEntry = path.join(manual, 'manual.mjs');
     const manualSource = version => `import { defineExtension } from ${JSON.stringify(sdk)};
-      export default defineExtension({name:'manual', apply(ctx) { ctx.registerTool({name:'manual.echo',description:'Manual test',parameters:{type:'object'},async execute(){return {text:${JSON.stringify(version)}};}}); }});`;
+      export default defineExtension({name:'manual', apply(ctx) { ctx.registerTool({name:'manual_echo',description:'Manual test',parameters:{type:'object'},async execute(){return {text:${JSON.stringify(version)}};}}); }});`;
     await writeFile(manualEntry, manualSource('manual-one'));
     await writeFile(path.join(source, 'package.json'), '{"type":"module"}');
     await mkdir(path.join(source, 'node_modules/@mira'), {recursive:true});
@@ -27,12 +27,12 @@ for (const alias of [false, true]) {
     await writeFile(path.join(source,'helper.mjs'), "export const value = 'one';");
     await writeFile(path.join(source,'entry.mjs'), `import {defineExtension} from '@mira/extension-sdk'; import {value} from './helper.mjs';
       globalThis.generatedHmrProbe.entries.push(import.meta.url);
-      export default defineExtension({name:'generated',apply(ctx){ctx.registerTool({name:'generated.echo',description:'Generated test',parameters:{type:'object'},async execute(){return{text:value}}});}});`);
+      export default defineExtension({name:'generated',apply(ctx){ctx.registerTool({name:'generated_echo',description:'Generated test',parameters:{type:'object'},async execute(){return{text:value}}});}});`);
     const store = new ArtifactStore(storePath); const artifact = await store.stage(source,'entry.mjs');
     host = new ExtensionHost({entries:[{id:'manual',path:manualEntry}],artifactsDirectory:storePath,hmr:true,receive:async()=> 'inserted'});
     await host.start(); host.requestChange('generated',{action:'install',digest:artifact.digest}); await host.finish();
     host.requestChange('generated',{action:'activate'}); let tools = await host.prepare();
-    const generated = tools.find(item=>item.tool.name==='generated.echo'); assert.ok(generated);
+    const generated = tools.find(item=>item.tool.name==='generated_echo'); assert.ok(generated);
     const originalActivation = generated.activation;
     const execute = async tool => (await tool.tool.execute(null,{callId:'hmr-test',signal:new AbortController().signal})).text;
     assert.equal(await execute(generated),'one'); await host.finish();
@@ -42,12 +42,12 @@ for (const alias of [false, true]) {
     const deadline = Date.now()+5000;
     do {
       await sleep(30); tools=await host.prepare();
-      if (await execute(tools.find(item=>item.tool.name==='manual.echo'))==='manual-two') break;
+      if (await execute(tools.find(item=>item.tool.name==='manual_echo'))==='manual-two') break;
       await host.finish();
     } while(Date.now()<deadline);
-    assert.equal(await execute(tools.find(item=>item.tool.name==='manual.echo')),'manual-two','manual HMR must still work');
+    assert.equal(await execute(tools.find(item=>item.tool.name==='manual_echo')),'manual-two','manual HMR must still work');
     await host.finish(); await sleep(250); tools=await host.prepare();
-    const after=tools.find(item=>item.tool.name==='generated.echo');
+    const after=tools.find(item=>item.tool.name==='generated_echo');
     assert.equal(await execute(after),'one'); assert.equal(after.activation,originalActivation); assert.equal(after.digest,artifact.digest);
     assert.equal(state.entries.length,1,'generated code must not be reimported by the manual watcher');
     await store.verify(artifact);
@@ -59,7 +59,7 @@ for (const alias of [false, true]) {
       tools=await host.prepare();
       const receipt=host.changeStatus().find(item=>item.id===requested.id);
       assert.equal(receipt.status,'failed'); assert.match(receipt.error,/Artifact store path changed/);
-      assert.equal(tools.find(item=>item.tool.name==='generated.echo').activation,originalActivation);
+      assert.equal(tools.find(item=>item.tool.name==='generated_echo').activation,originalActivation);
     }
   } finally { await host?.close(); await rm(root,{recursive:true,force:true}); }
 }

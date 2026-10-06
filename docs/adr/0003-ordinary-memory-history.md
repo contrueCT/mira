@@ -26,7 +26,7 @@ Git 注册身份额外标识仓库实例；checkpoint 绑定该身份，丢失�
 
 ## 只读历史
 
-history.search 和 history.read 面向当前 Mira 的事件、原始上下文、工具意图/结果和 Wake。模型参数不能切换 Mira 身份。查询返回有界摘要与确切 kind/ID；read 返回完整原始记录及来源，超过明确字节预算时报错而非悄悄截断。历史内容不能冒充当前用户授权，通用 persistence 不解析 Pi 消息。
+history_search 和 history_read 面向当前 Mira 的事件、原始上下文、工具意图/结果和 Wake。模型参数不能切换 Mira 身份。查询返回有界摘要与确切 kind/ID；read 返回完整原始记录及来源，超过明确字节预算时报错而非悄悄截断。历史内容不能冒充当前用户授权，通用 persistence 不解析 Pi 消息。
 
 第一版沿用 PostgreSQL simple FTS，并对每条记录的前 65,536 字符建立搜索索引，避免全文向量限制影响原始历史写入；结果明确给出限制。simple 不提供中文词切分或语义匹配。显式 substring 模式对完整原文作字面匹配，不自动推断中文语义；查询超时和数量限制保持有界。没有引入搜索服务、向量数据库或 embeddings。
 

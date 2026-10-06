@@ -40,7 +40,7 @@ async function sourceVersion(source: string, root: string, version: string, fail
       let live = true;
       ctx.provideService('generated', { read: () => { if (!live) throw Error('retired service'); return version; } });
       ctx.onCleanup(() => { events.push('clean:' + version); live = false; });
-      ctx.registerTool({ name: 'generated.echo', description: 'Generated synthetic echo ' + version,
+      ctx.registerTool({ name: 'generated_echo', description: 'Generated synthetic echo ' + version,
         parameters: { type: 'object', properties: { value: { type: ${JSON.stringify(version === 'two' ? 'number' : 'string')} } } },
         async execute() { return { text: version + ':' + config.label + ':' + (++calls) }; } });
       ${fail === 'apply' ? "throw Error('synthetic apply failure');" : ''}
@@ -48,7 +48,7 @@ async function sourceVersion(source: string, root: string, version: string, fail
   `);
 }
 const state = (host: ExtensionHost, accepted: ChangeStatus) => host.changeStatus().find(item => item.id === accepted.id)!;
-const echo = (tools: RegisteredTool[]) => tools.find(item => item.tool.name === 'generated.echo')!;
+const echo = (tools: RegisteredTool[]) => tools.find(item => item.tool.name === 'generated_echo')!;
 const execute = async (tool: RegisteredTool) => (await tool.tool.execute(null, execution)).text;
 
 test('generated install is import-free; activate, dependency update, explicit rollback and removal preserve real versions and config', async () => fixture(async (root, source, store, config) => {

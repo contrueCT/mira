@@ -2,6 +2,7 @@
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type Cleanup = () => void | Promise<void>;
 export interface ExtensionTool {
+  /** 1-64 ASCII letters, digits, underscores or hyphens; start with a letter or underscore. Used unchanged on model APIs. */
   name: string;
   description: string;
   parameters: { type: 'object'; properties?: { [key: string]: Json }; required?: string[]; additionalProperties?: boolean };

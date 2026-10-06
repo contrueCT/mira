@@ -7,9 +7,9 @@
 1. `node scripts/create-extension-workspace.mts /absolute/coding/extension`，使用已安装的本地私有 SDK/TypeScript/Node types，不联网安装或运行安装脚本
 2. 普通 Pi read/write/edit/bash 查阅 SDK、编辑 `src/index.ts` / 其他文件
 3. native `node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json` 和 `node --test tests/*.test.mts`
-4. `node scripts/extension-artifact.mts stage /absolute/data/artifacts /absolute/coding/extension src/index.ts`，或 `extension.stage`
+4. `node scripts/extension-artifact.mts stage /absolute/data/artifacts /absolute/coding/extension src/index.ts`，或 `extension_stage`
 5. 对返回的 digest 用 CLI test 运行显式 typecheck/test 命令。测试在该完整版本副本执行，receipt 绑定其内容；源工作区改动不改变已 staged release
-6. 普通 JSON 设置 `artifactsDirectory`。`extension.manage` install 新 ID/digest/config；下一请求 inspect 确认 disabled；activate 后下一自然请求看到新 schema/dispatcher 并调用
+6. 普通 JSON 设置 `artifactsDirectory`。`extension_manage` install 新 ID/digest/config；下一请求 inspect 确认 disabled；activate 后下一自然请求看到新 schema/dispatcher 并调用
 7. update 选新 digest；rollback 选 inspection 的历史 revision ID；disable 保留 desired；remove 撤销配置/注册但保留源文件和 releases
 
 直接在源码工作区跑 test 的终端结果仍有意义，但不是受保存的 digest 绑定 receipt。不会把一次旧测试自动套给改过的版本。若没有受绑定测试，receipt 如实报告 not-run，而不是强制风险门禁。

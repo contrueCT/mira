@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createBuiltinCatalog, builtinApiKeySupport } from './model-catalog.ts';
 import { validateBaseUrl } from './model-config.ts';
-import { createModelTransport, type ModelSelection, type ModelTransport } from './model-transport.ts';
+import { createModelTransport, type ModelSelection, type ModelTransport, type ModelTransportOptions } from './model-transport.ts';
 import { discoverModels, type ModelDiscoveryOptions, type ModelDiscoveryResult } from './model-discovery.ts';
 import { parseWebConnectionWrite, parseWebModelConfiguration, parseWebModelConfigurationWrite, validWebApiKey, webConnectionMetadata, webTransportConfiguration,
   type WebCustomConnectionWrite, type WebModelConfiguration, type WebModelConfigurationWrite } from './web-model-config.ts';
@@ -241,12 +241,12 @@ export class WebSettingsStore {
     return project(current.data, current.revision);
   }
   /** Keys are read only at request time and stay inside the server auth closure. */
-  transport(settings: WebSettings, options: { fetch?: typeof globalThis.fetch } = {}): ModelTransport {
+  transport(settings: WebSettings, options: Pick<ModelTransportOptions, 'fetch' | 'onFailure'> = {}): ModelTransport {
     const current = parseWebSettings(settings);
     if (!current.selection) return invalid();
     const selection = current.selection;
     return createModelTransport(webTransportConfiguration(current.configuration), selection, {
-      ...(options.fetch ? { fetch: options.fetch } : {}),
+      ...options,
       resolveApiKey: async signal => {
         signal.throwIfAborted();
         const latest = await this.snapshot();

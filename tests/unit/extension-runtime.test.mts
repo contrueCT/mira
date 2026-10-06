@@ -24,10 +24,10 @@ test('real extension host enables a configured module within one runtime turn an
   const fixture = await createExtensionFixture(); const writer = new MemoryWriter();
   const builtIn = effectTool(async () => result);
   const host = new ExtensionHost({ entries: [{ id: 'manual', path: fixture.modulePath, enabled: false, config: fixture.config }],
-    reservedToolNames: [builtIn.name, 'extension.manage', 'extension.inspect'], receive: extensionReceiver(writer) });
+    reservedToolNames: [builtIn.name, 'extension_manage', 'extension_inspect'], receive: extensionReceiver(writer) });
   writer.beforeIntent = async intent => {
     assert.equal(writer.state.executions.some(execution => execution.intent.callId === intent.callId), false);
-    if (intent.toolName === 'fixture.echo') assert.deepEqual(await fixture.effects(), [], 'durable intent precedes the effect');
+    if (intent.toolName === 'fixture_echo') assert.deepEqual(await fixture.effects(), [], 'durable intent precedes the effect');
   };
   let prepared: AgentTool[] = []; let requests = 0;
   try {
@@ -36,16 +36,16 @@ test('real extension host enables a configured module within one runtime turn an
     const instance = runtime(writer, (_model, context) => {
       requests++; assertDeclarations(writer, context, prepared);
       assert.ok(prepared.some(tool => tool.name === builtIn.name), 'builtin survives each registry update');
-      const extension = getCurrentTools(context.messages).find(tool => tool.name === 'fixture.echo');
+      const extension = getCurrentTools(context.messages).find(tool => tool.name === 'fixture_echo');
       if (requests === 1) {
         assert.equal(extension, undefined);
-        return streamOf(call('enable-manual', 'extension.manage', { id: 'manual', action: 'enable' }));
+        return streamOf(call('enable-manual', 'extension_manage', { id: 'manual', action: 'enable' }));
       }
       assert.ok(extension); assert.deepEqual(extension.parameters, fixtureParameters);
       assert.match(extension.description, /Extension "manual", activation /);
       assert.equal(host.inspect()[0]!.status, 'active');
       assert.equal(host.changeStatus()[0]!.status, 'applied');
-      if (requests === 2) return streamOf(call('echo-manual', 'fixture.echo', { count: '7', label: 'synthetic' }));
+      if (requests === 2) return streamOf(call('echo-manual', 'fixture_echo', { count: '7', label: 'synthetic' }));
       assert.equal(requests, 3);
       assert.match(JSON.stringify(context.messages), /Synthetic extension result/);
       return streamOf(assistant('Completed the configured extension in the same turn'));
@@ -87,7 +87,7 @@ test('extension restart restores history without replay and replaces same-schema
   };
   try {
     const first = await start(); const tools = extensionManagementTools(first); let requests = 0;
-    await runtime(writer, () => streamOf(++requests === 1 ? call('original-effect', 'fixture.echo', { count: 3, label: 'synthetic' }) : assistant('Original completed result')), {
+    await runtime(writer, () => streamOf(++requests === 1 ? call('original-effect', 'fixture_echo', { count: 3, label: 'synthetic' }) : assistant('Original completed result')), {
       prepareTools: async () => [builtIn, ...tools, ...extensionTools(await first.prepare())], finishTools: () => first.finish(),
     }).run(input('Run the synthetic extension'));
     const saved = structuredClone(writer.state); const oldActivation = first.inspect()[0]!.activation;
@@ -97,11 +97,11 @@ test('extension restart restores history without replay and replaces same-schema
     const restored = await runtime(writer, () => { throw Error('recover must not call the model'); }).recover();
     assert.deepEqual(restored.snapshot, saved);
     assert.equal((await fixture.effects()).length, 1);
-    assert.match(getCurrentTools(restored.messages).find(tool => tool.name === 'fixture.echo')!.description, new RegExp(oldActivation!));
+    assert.match(getCurrentTools(restored.messages).find(tool => tool.name === 'fixture_echo')!.description, new RegExp(oldActivation!));
     let prepared: AgentTool[] = []; const management = extensionManagementTools(second); let newRequests = 0;
     await runtime(writer, (_model, context) => {
       newRequests++; assertDeclarations(writer, context, prepared);
-      const current = getCurrentTools(context.messages).find(tool => tool.name === 'fixture.echo'); assert.ok(current);
+      const current = getCurrentTools(context.messages).find(tool => tool.name === 'fixture_echo'); assert.ok(current);
       assert.deepEqual(current.parameters, fixtureParameters); assert.match(current.description, new RegExp(newActivation!));
       assert.doesNotMatch(current.description, new RegExp(oldActivation!));
       assert.match(JSON.stringify(context.messages), /Original completed result/);
@@ -113,8 +113,8 @@ test('extension restart restores history without replay and replaces same-schema
     const deltas = decodeRecords(writer.state.records.slice(saved.records.length), saved.records.at(-1)!.id)
       .flatMap(entry => entry.type === 'message' && entry.message.role === 'system' ? [entry.message] : []);
     assert.equal(deltas.length, 1);
-    assert.deepEqual(deltas[0]!.toolsRemoved, [{ name: 'fixture.echo' }]);
-    assert.deepEqual(deltas[0]!.toolsAdded, prepared.filter(tool => tool.name === 'fixture.echo').map(toToolDeclaration));
+    assert.deepEqual(deltas[0]!.toolsRemoved, [{ name: 'fixture_echo' }]);
+    assert.deepEqual(deltas[0]!.toolsAdded, prepared.filter(tool => tool.name === 'fixture_echo').map(toToolDeclaration));
   } finally { await host?.close(); await writer.close(); await rm(fixture.root, { recursive: true, force: true }); }
 });
 
@@ -128,16 +128,16 @@ test('real host configuration and disable preserve every sibling executable unti
     await runtime(writer, (_model, context) => {
       requests++; assertDeclarations(writer, context, prepared);
       assert.ok(prepared.some(tool => tool.name === builtin.name));
-      const declaration = getCurrentTools(context.messages).find(tool => tool.name === 'fixture.echo');
+      const declaration = getCurrentTools(context.messages).find(tool => tool.name === 'fixture_echo');
       const promptText = getCurrentSystemPrompt(context.messages);
       const guidance = promptText.split('<available_capabilities>')[1]!.split('</available_capabilities>')[0]!;
       assert.equal((JSON.stringify(context.messages).match(/You are Mira\./g) ?? []).length, 1);
       if (requests === 1) {
         assert.deepEqual(declaration?.parameters, fixtureParameters);
-        assert.match(guidance, /fixture.echo/); assert.match(guidance, /revision 1/); assert.doesNotMatch(guidance, /revision 2/);
+        assert.match(guidance, /fixture_echo/); assert.match(guidance, /revision 1/); assert.doesNotMatch(guidance, /revision 2/);
         return streamOf({ ...assistant(), stopReason: 'toolUse', content: [
-          { type: 'toolCall', id: 'configure-manual', name: 'extension.manage', arguments: { id: 'manual', action: 'configure', config: { ...fixture.config, revision: 2, parameters: changedParameters } } },
-          { type: 'toolCall', id: 'old-sibling', name: 'fixture.echo', arguments: { count: '2', label: 'synthetic' } },
+          { type: 'toolCall', id: 'configure-manual', name: 'extension_manage', arguments: { id: 'manual', action: 'configure', config: { ...fixture.config, revision: 2, parameters: changedParameters } } },
+          { type: 'toolCall', id: 'old-sibling', name: 'fixture_echo', arguments: { count: '2', label: 'synthetic' } },
         ] });
       }
       if (requests === 2) {
@@ -146,12 +146,12 @@ test('real host configuration and disable preserve every sibling executable unti
         assert.match(declaration.description, /revision 2/);
         assert.match(guidance, /revision 2/); assert.doesNotMatch(guidance, /revision 1/);
         return streamOf({ ...assistant(), stopReason: 'toolUse', content: [
-          { type: 'toolCall', id: 'disable-manual', name: 'extension.manage', arguments: { id: 'manual', action: 'disable' } },
-          { type: 'toolCall', id: 'new-sibling', name: 'fixture.echo', arguments: { text: 'replacement' } },
+          { type: 'toolCall', id: 'disable-manual', name: 'extension_manage', arguments: { id: 'manual', action: 'disable' } },
+          { type: 'toolCall', id: 'new-sibling', name: 'fixture_echo', arguments: { text: 'replacement' } },
         ] });
       }
       assert.equal(requests, 3); assert.equal(declaration, undefined);
-      assert.doesNotMatch(guidance, /fixture.echo|revision 2/);
+      assert.doesNotMatch(guidance, /fixture_echo|revision 2/);
       assert.equal(host.inspect()[0]!.status, 'disabled');
       return streamOf(assistant('Both complete batches settled before replacement and removal'));
     }, {
@@ -167,10 +167,10 @@ test('real host configuration and disable preserve every sibling executable unti
     assert.ok(writer.state.executions.every(execution => execution.outcome));
     const changes = decodeRecords(writer.state.records).flatMap(entry => entry.type === 'message' && entry.message.role === 'system' && (entry.message.toolsAdded || entry.message.toolsRemoved) ? [entry.message] : []);
     assert.equal(changes.length, 3);
-    assert.deepEqual(changes[1]!.toolsRemoved, [{ name: 'fixture.echo' }]);
+    assert.deepEqual(changes[1]!.toolsRemoved, [{ name: 'fixture_echo' }]);
     assert.deepEqual(changes[1]!.toolsAdded?.[0]?.parameters, changedParameters);
-    assert.deepEqual(changes[2]!.toolsRemoved, [{ name: 'fixture.echo' }]);
-    assert.deepEqual(getCurrentTools((await runtime(writer).recover()).messages).map(tool => tool.name), [builtin.name, 'extension.inspect', 'extension.stage', 'extension.manage']);
+    assert.deepEqual(changes[2]!.toolsRemoved, [{ name: 'fixture_echo' }]);
+    assert.deepEqual(getCurrentTools((await runtime(writer).recover()).messages).map(tool => tool.name), [builtin.name, 'extension_inspect', 'extension_stage', 'extension_manage']);
   } finally { await host.close(); await writer.close(); await rm(fixture.root, { recursive: true, force: true }); }
 });
 
@@ -183,7 +183,7 @@ for (const managementCall of [true, false]) test(`the model asks before extensio
     const recovered = await runtime(writer, (_model, context) => {
       requests++; assertDeclarations(writer, context, prepared);
       assert.equal(requests, 1);
-      assert.ok(prepared.some(tool => tool.name === (managementCall ? 'extension.manage' : 'fixture.echo')));
+      assert.ok(prepared.some(tool => tool.name === (managementCall ? 'extension_manage' : 'fixture_echo')));
       return streamOf(assistant('Which destination did you mean?'));
     }, {
       prepareTools: async () => prepared = [...management, ...extensionTools(await host.prepare())], finishTools: () => host.finish(),

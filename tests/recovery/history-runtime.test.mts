@@ -42,7 +42,7 @@ async function assertProviderEvidence(db: Database, miraId: string, context: Tra
   const entries = decodeRecords(rows.map(row => row.envelope));
   const messages = entries.flatMap(entry => entry.type === 'message' ? [entry.message] : []);
   assert.deepEqual(getCurrentTools(messages), getCurrentTools(context.messages), 'tool declarations are durable before every model request');
-  assert.deepEqual(getCurrentTools(context.messages).filter(tool => tool.name.startsWith('history.')).map(tool => tool.name), ['history.search', 'history.read']);
+  assert.deepEqual(getCurrentTools(context.messages).filter(tool => tool.name.startsWith('history_')).map(tool => tool.name), ['history_search', 'history_read']);
   const executions = (await db.admin.query<{ context_version: string; intent: ToolIntent; outcome: ToolOutcome | null }>(
     'SELECT context_version, intent, outcome FROM tool_executions WHERE mira_id = $1 ORDER BY context_version', [miraId])).rows;
   for (const execution of executions) {
@@ -92,7 +92,7 @@ test('real PostgreSQL server: model searches then reads exact event, context, to
       events: [{ event: event(original.id, 'archiveneedle foreignneedle must never reach the reader'), wake: requestedWake }],
       streamFn: async (_model, context) => {
         foreignRequests++; await assertProviderEvidence(db, 'other-mira', context);
-        if (foreignRequests === 1) return streamOf(calls(call('original-read', 'history.read', { kind: 'event', id: original.id })));
+        if (foreignRequests === 1) return streamOf(calls(call('original-read', 'history_read', { kind: 'event', id: original.id })));
         assert.equal(foreignRequests, 2);
         return streamOf(assistant('archiveneedle foreignneedle original final response'));
       },
@@ -104,7 +104,7 @@ test('real PostgreSQL server: model searches then reads exact event, context, to
     let seededRequests = 0;
     const seeded = await runDemo({ ...options, events: [{ event: original, wake: requestedWake }], streamFn: async (_model, context) => {
       seededRequests++; await assertProviderEvidence(db, miraId, context);
-      if (seededRequests === 1) return streamOf(calls(call('original-read', 'history.read', { kind: 'event', id: original.id })));
+      if (seededRequests === 1) return streamOf(calls(call('original-read', 'history_read', { kind: 'event', id: original.id })));
       assert.equal(seededRequests, 2);
       assert.deepEqual(value(context, 'original-read'), { kind: 'event', id: original.id, miraId, occurredAt, event: original, requestedWake });
       return streamOf(assistant('archiveneedle original final response'));
@@ -124,9 +124,9 @@ test('real PostgreSQL server: model searches then reads exact event, context, to
       streamFn: async (_model, context) => {
         requests++; await assertProviderEvidence(db, miraId, context);
         if (requests === 1) return streamOf(calls(
-          call('search-originals', 'history.search', { query: 'archiveneedle', kinds: ['event', 'context', 'tool'], limit: 100 }),
-          call('search-wake', 'history.search', { query: oldRun.run_id, mode: 'substring', kinds: ['wake'] }),
-          call('search-foreign', 'history.search', { query: 'foreignneedle', kinds: ['event'] }),
+          call('search-originals', 'history_search', { query: 'archiveneedle', kinds: ['event', 'context', 'tool'], limit: 100 }),
+          call('search-wake', 'history_search', { query: oldRun.run_id, mode: 'substring', kinds: ['wake'] }),
+          call('search-foreign', 'history_search', { query: 'foreignneedle', kinds: ['event'] }),
         ));
         const found = value<HistorySearchResult>(context, 'search-originals');
         assert.equal(found.mode, 'full_text'); assert.equal(found.fullTextPrefixChars, 65_536); assert.equal(found.hasMore, false);
@@ -144,10 +144,10 @@ test('real PostgreSQL server: model searches then reads exact event, context, to
         if (requests === 2) return streamOf(calls(
           ...references.map((reference, index) => {
             assert.ok(reference, 'the actual search result supplies the exact next read reference');
-            return call(`read-original-${index}`, 'history.read', { kind: reference.kind, id: reference.id });
+            return call(`read-original-${index}`, 'history_read', { kind: reference.kind, id: reference.id });
           }),
-          call('read-foreign-context', 'history.read', { kind: 'context', id: foreignRun.final_record_id }),
-          call('read-foreign-wake', 'history.read', { kind: 'wake', id: foreignRun.run_id }),
+          call('read-foreign-context', 'history_read', { kind: 'context', id: foreignRun.final_record_id }),
+          call('read-foreign-wake', 'history_read', { kind: 'wake', id: foreignRun.run_id }),
         ));
         assert.equal(requests, 3);
         assert.deepEqual(value(context, 'read-original-0'), { kind: 'event', id: original.id, miraId, occurredAt, event: original, requestedWake });
@@ -184,21 +184,21 @@ test('real PostgreSQL server: model explicitly selects Chinese/literal substring
       events: [{ event: chinese }, { event: literal }, { event: event('request', 'Find the exact food preference and literal punctuation; tell me when a record is absent'), wake: { id: 'wake', reason: 'Read exact historical evidence' } }],
       streamFn: async (_model, context) => {
         requests++; await assertProviderEvidence(db, miraId, context);
-        if (requests === 1) return streamOf(calls(call('chinese-full-text', 'history.search', { query: '顺德菜', kinds: ['event'] })));
+        if (requests === 1) return streamOf(calls(call('chinese-full-text', 'history_search', { query: '顺德菜', kinds: ['event'] })));
         assert.deepEqual(value<HistorySearchResult>(context, 'chinese-full-text').hits, [], 'simple full text does not segment the contiguous Chinese phrase');
         if (requests === 2) return streamOf(calls(
-          call('chinese-substring', 'history.search', { query: '顺德菜', mode: 'substring', kinds: ['event'] }),
-          call('literal-substring', 'history.search', { query: '%_', mode: 'substring', kinds: ['event'] }),
+          call('chinese-substring', 'history_search', { query: '顺德菜', mode: 'substring', kinds: ['event'] }),
+          call('literal-substring', 'history_search', { query: '%_', mode: 'substring', kinds: ['event'] }),
         ));
         const found = value<HistorySearchResult>(context, 'chinese-substring');
         assert.equal(found.mode, 'substring'); assert.equal(found.fullTextPrefixChars, null); assert.equal(found.hasMore, false);
         assert.deepEqual(found.hits.map(hit => [hit.kind, hit.id, hit.miraId, hit.rank]), [['event', chinese.id, miraId, null]]);
         assert.deepEqual(value<HistorySearchResult>(context, 'literal-substring').hits.map(hit => hit.id).sort(), [chinese.id, literal.id].sort(), 'percent and underscore remain literal characters, including those in an exact ID');
         if (requests === 3) return streamOf(calls(
-          call('read-chinese', 'history.read', { kind: found.hits[0]!.kind, id: found.hits[0]!.id }),
-          call('read-missing', 'history.read', { kind: 'event', id: 'missing-id' }),
-          call('read-foreign', 'history.read', { kind: 'event', id: 'foreign-only-id' }),
-          call('read-wrong-kind', 'history.read', { kind: 'context', id: chinese.id }),
+          call('read-chinese', 'history_read', { kind: found.hits[0]!.kind, id: found.hits[0]!.id }),
+          call('read-missing', 'history_read', { kind: 'event', id: 'missing-id' }),
+          call('read-foreign', 'history_read', { kind: 'event', id: 'foreign-only-id' }),
+          call('read-wrong-kind', 'history_read', { kind: 'context', id: chinese.id }),
         ));
         assert.equal(requests, 4);
         assert.deepEqual(value(context, 'read-chinese'), { kind: 'event', id: chinese.id, miraId, occurredAt, event: chinese, requestedWake: null });
@@ -227,7 +227,7 @@ test('real PostgreSQL server: oversized history read reaches the model truthfull
         requests++; await assertProviderEvidence(db, miraId, context);
         if (requests === 1) {
           rawBefore = (await db.admin.query('SELECT event::text AS raw FROM life_events WHERE mira_id = $1 AND event_id = $2', [miraId, original.id])).rows[0].raw;
-          return streamOf(calls(call('read-default-budget', 'history.read', { kind: 'event', id: original.id })));
+          return streamOf(calls(call('read-default-budget', 'history_read', { kind: 'event', id: original.id })));
         }
         const error = value<{ error: string; message: string; requiredBytes: number }>(context, 'read-default-budget');
         assert.equal(error.error, 'too_large'); assert.ok(error.requiredBytes > 65_536 && error.requiredBytes <= 1_048_576);
@@ -236,7 +236,7 @@ test('real PostgreSQL server: oversized history read reaches the model truthfull
         assert.equal(JSON.stringify(error).includes('untruncated-tail-marker'), false, 'the failure contains no misleading partial original');
         if (requests === 2) {
           requiredBytes = error.requiredBytes;
-          return streamOf(calls(call('read-larger-budget', 'history.read', { kind: 'event', id: original.id, maxBytes: requiredBytes })));
+          return streamOf(calls(call('read-larger-budget', 'history_read', { kind: 'event', id: original.id, maxBytes: requiredBytes })));
         }
         assert.equal(requests, 3);
         assert.deepEqual(value(context, 'read-larger-budget'), { kind: 'event', id: original.id, miraId, occurredAt, event: original, requestedWake: null });

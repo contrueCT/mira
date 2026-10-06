@@ -110,19 +110,39 @@ test('code-only generation changes are visible through the source description re
   assert.equal(states.length, 2); assert.deepEqual(states[1]!.toolsAdded, [toToolDeclaration(versions[1]!)]);
 });
 
-for (const invalid of ['duplicate', 'prepareArguments'] as const) {
+for (const invalid of ['duplicate', 'prepareArguments', 'dotted-name', 'empty-name', 'long-name', 'unicode-name', 'newline-name', 'leading-digit', 'leading-hyphen'] as const) {
   for (const phase of ['initial', 'next'] as const) test(`dynamic ${invalid} rejects at ${phase} preparation before a mismatched request/effect`, async () => {
     const writer = new MemoryWriter(); let preparations = 0, requests = 0, effects = 0;
     const valid = tool('existing', async () => { effects++; return result; });
-    const registry = invalid === 'duplicate' ? [valid, valid] : [{ ...valid, prepareArguments: (args: unknown) => args }];
+    const invalidNames = { 'dotted-name': 'history.search', 'empty-name': '', 'long-name': 'x'.repeat(65), 'unicode-name': '工具', 'newline-name': 'valid\n', 'leading-digit': '0tool', 'leading-hyphen': '-tool' };
+    const registry = invalid === 'duplicate' ? [valid, valid] : invalid === 'prepareArguments' ? [{ ...valid, prepareArguments: (args: unknown) => args }] : [{ ...valid, name: invalidNames[invalid] }];
+    const expected = invalid === 'duplicate' ? /Duplicate registered tool/ : invalid === 'prepareArguments' ? /prepareArguments/ : /Invalid registered tool name: use 1-64 ASCII letters, digits, underscores or hyphens, starting with a letter or underscore/;
     const instance = runtime(writer, () => { requests++; return streamOf(calls(['first', valid.name])); }, {
       prepareTools: async () => ++preparations === 1 && phase === 'next' ? [valid] : registry,
     });
-    await assert.rejects(instance.run(input()), invalid === 'duplicate' ? /Duplicate registered tool/ : /prepareArguments/);
+    await assert.rejects(instance.run(input()), expected);
     assert.equal(requests, phase === 'initial' ? 0 : 1); assert.equal(effects, requests);
-    await assert.rejects(instance.recover(), invalid === 'duplicate' ? /Duplicate registered tool/ : /prepareArguments/);
+    await assert.rejects(instance.recover(), expected);
   });
 }
+
+test('static registry rejects nonportable names and accepts the complete portable boundary', async () => {
+  for (const name of ['', 'history.search', 'x'.repeat(65), '工具', 'valid\n', 'has space', 'path/tool', '0', '-', '0tool', '-tool']) {
+    const writer = new MemoryWriter();
+    assert.throws(() => runtime(writer, () => { assert.fail('invalid names must not reach the model'); }, { tools: [tool(name, async () => result)] }), /Invalid registered tool name/);
+    assert.deepEqual(writer.state.records, []);
+    assert.deepEqual(writer.state.executions, []);
+  }
+  for (const name of ['a', '_', '_0-', 'Tool-0', 'A0_-'.repeat(16)]) {
+    const writer = new MemoryWriter(); let requests = 0;
+    await runtime(writer, (_model, context) => {
+      assert.equal(getCurrentTools(context.messages)[0]!.name, name);
+      return streamOf(++requests === 1 ? calls(['portable-call', name]) : assistant());
+    }, { tools: [tool(name, async () => result)] }).run(input());
+    assert.equal(writer.state.executions[0]!.intent.toolName, name);
+    assert.ok(writer.state.executions[0]!.outcome);
+  }
+});
 
 test('dynamic preparation failure after a durable batch does not manufacture an outcome or reopen the model', async () => {
   const writer = new MemoryWriter(); let requests = 0, preparations = 0;

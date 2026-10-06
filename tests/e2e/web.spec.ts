@@ -384,3 +384,18 @@ test('repeated save submits once and an interrupted save is not replayed on reop
   await expectNoStoredKey(page, 'dummy-interrupted-save-key');
   expect(writes).toBe(1);
 });
+
+test('model diagnostics stay visible as text on narrow screens, through settings dismissal and refresh', async ({ page }, testInfo) => {
+  let failed = true;
+  const detail = 'Model request failed · HTTP 400 · request ID: req-fixture · message: invalid tool name <script>window.injected=true</script> · code: invalid_request_error · credential [redacted]';
+  await page.route('**/api/status', route => route.fulfill({ json: { state: failed ? 'error' : 'idle', mode: 'live', model: 'fixture-model', error: failed ? detail : null } }));
+  await page.setViewportSize({ width: 390, height: 844 }); await page.goto('/');
+  const notice = page.locator('.connection-notice');
+  await expect(notice).toContainText('运行错误'); await expect(notice).toContainText(detail);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(await page.evaluate(() => Reflect.get(window, 'injected'))).toBeUndefined();
+  await page.screenshot({ path: testInfo.outputPath('mira-model-error-narrow.png'), fullPage: true });
+  await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.keyboard.press('Escape');
+  await expect(notice).toContainText(detail); await page.reload(); await expect(notice).toContainText(detail);
+  failed = false; await expect(notice).toHaveCount(0, { timeout: 10_000 });
+});

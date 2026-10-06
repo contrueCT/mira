@@ -533,6 +533,7 @@ export class PiDurableRuntime implements CognitionRuntime {
 function validateTools(tools: AgentTool[]): void {
   const names = new Set<string>();
   for (const tool of tools) {
+    if (typeof tool.name !== 'string' || !/^[a-zA-Z_]/.test(tool.name) || tool.name.length > 64 || /[^a-zA-Z0-9_-]/.test(tool.name)) throw new Error('Invalid registered tool name: use 1-64 ASCII letters, digits, underscores or hyphens, starting with a letter or underscore');
     if (names.has(tool.name)) throw new Error(`Duplicate registered tool: ${tool.name}`);
     if (tool.prepareArguments) throw new Error('Tool prepareArguments is not supported before durable intent and schema validation');
     names.add(tool.name);

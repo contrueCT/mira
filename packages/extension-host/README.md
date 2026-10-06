@@ -11,6 +11,11 @@ plugin state, load/apply/disposal and HMR. Registry inspection combines that sta
 with registered tools, activation IDs, diagnostics, and requested-change receipts;
 there is no additional registry database.
 
+Every registered tool name must start with an ASCII letter or underscore and
+contain 1–64 ASCII letters, digits, underscores or hyphens
+(`^[A-Za-z_][A-Za-z0-9_-]{0,63}$`). Invalid names fail activation with an explicit diagnostic.
+Names are used unchanged by Pi and model APIs; dotted names are not supported.
+
 `requestChange` returns **accepted**, not applied. The next `prepare()` releases the
 previous entire model/tool batch, awaits queued operations and known Cordis work,
 then captures a complete immutable registry and holds its resources. `finish()`
@@ -112,7 +117,7 @@ node scripts/extension-artifact.mts test /absolute/data/releases SHA256 -- node 
 node scripts/extension-artifact.mts status /absolute/data/releases SHA256
 ```
 
-Use the returned digest in `extension.manage`; `extension.stage` exposes the same
+Use the returned digest in `extension_manage`; `extension_stage` exposes the same
 file-only stage operation. Read the template for its exact entry filename and
 compiler command. A test receipt is tied to unchanged complete snapshot bytes;
 changed code/dependencies get a new digest and cannot inherit old test success.

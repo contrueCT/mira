@@ -42,7 +42,7 @@ import { version, parameters, next } from './helper.mjs';
 await appendFile(${JSON.stringify(lifecyclePath)}, JSON.stringify({ phase: 'import', version }) + '\\n');
 export default defineExtension({ name: 'synthetic-generated', async apply(context, config) {
   await appendFile(config.lifecyclePath, JSON.stringify({ phase: 'apply', version, label: config.label }) + '\\n');
-  context.registerTool({ name: 'generated.echo', description: 'Synthetic generated echo ' + version, parameters,
+  context.registerTool({ name: 'generated_echo', description: 'Synthetic generated echo ' + version, parameters,
     async execute(args, execution) {
       execution.signal.throwIfAborted();
       const witness = { extensionId: context.id, version, label: config.label, callId: execution.callId, serial: next(), arguments: args };
@@ -85,23 +85,23 @@ test('generated tools stage, install disabled, activate, update and roll back wi
     const completed = await runtime(writer, async (_model, context) => {
       requests++; assertDeclarations(writer, context, prepared);
       assert.ok(prepared.some(tool => tool.name === builtin.name));
-      const declaration = getCurrentTools(context.messages).find(tool => tool.name === 'generated.echo');
+      const declaration = getCurrentTools(context.messages).find(tool => tool.name === 'generated_echo');
       if (requests === 1) {
         assert.equal(declaration, undefined);
-        return streamOf(calls(request('stage-one', 'extension.stage', { sourceRoot: files.sources.one, entryRelative: 'entry.mjs' })));
+        return streamOf(calls(request('stage-one', 'extension_stage', { sourceRoot: files.sources.one, entryRelative: 'entry.mjs' })));
       }
       if (requests === 2) {
         first = toolResult<ArtifactManifest>(context, 'stage-one');
         assert.match(first.digest, /^[a-f0-9]{64}$/); assert.notEqual(first.digest, second.digest);
         assert.deepEqual(await files.lifecycle(), []);
-        return streamOf(calls(request('install-one', 'extension.manage', { id: 'generated', action: 'install', digest: first.digest, config: files.config('original') })));
+        return streamOf(calls(request('install-one', 'extension_manage', { id: 'generated', action: 'install', digest: first.digest, config: files.config('original') })));
       }
       if (requests === 3) {
         assert.equal(declaration, undefined); assert.equal(host.inspect()[0]!.status, 'disabled');
         assert.equal(toolResult<{ status: string }>(context, 'install-one').status, 'accepted');
         assert.equal(host.changeStatus()[0]!.persistence, 'saved'); assert.deepEqual(await files.lifecycle(), []);
         originalRevision = host.inspect()[0]!.generated!.revision;
-        return streamOf(calls(request('activate-one', 'extension.manage', { id: 'generated', action: 'activate' })));
+        return streamOf(calls(request('activate-one', 'extension_manage', { id: 'generated', action: 'activate' })));
       }
       if (requests === 4 || requests === 5 || requests === 7) {
         assert.ok(declaration); assert.deepEqual(declaration.parameters, parameters.one);
@@ -111,11 +111,11 @@ test('generated tools stage, install disabled, activate, update and roll back wi
       }
       if (requests === 4) {
         originalActivation = host.inspect()[0]!.activation!;
-        return streamOf(calls(request('first-effect', 'generated.echo', { count: '1' })));
+        return streamOf(calls(request('first-effect', 'generated_echo', { count: '1' })));
       }
       if (requests === 5) return streamOf(calls(
-        request('update-two', 'extension.manage', { id: 'generated', action: 'update', digest: second.digest, config: files.config('updated') }),
-        request('old-sibling', 'generated.echo', { count: '2' }),
+        request('update-two', 'extension_manage', { id: 'generated', action: 'update', digest: second.digest, config: files.config('updated') }),
+        request('old-sibling', 'generated_echo', { count: '2' }),
       ));
       if (requests === 6) {
         assert.ok(declaration); assert.deepEqual(declaration.parameters, parameters.two);
@@ -123,13 +123,13 @@ test('generated tools stage, install disabled, activate, update and roll back wi
         assert.notEqual(host.inspect()[0]!.activation, originalActivation);
         assert.equal(host.inspect()[0]!.generated!.history.find(item => item.id === originalRevision)!.digest, first.digest);
         return streamOf(calls(
-          request('rollback-one', 'extension.manage', { id: 'generated', action: 'rollback', revision: originalRevision }),
-          request('new-sibling', 'generated.echo', { text: 'replacement' }),
+          request('rollback-one', 'extension_manage', { id: 'generated', action: 'rollback', revision: originalRevision }),
+          request('new-sibling', 'generated_echo', { text: 'replacement' }),
         ));
       }
       if (requests === 7) {
         assert.notEqual(host.inspect()[0]!.activation, originalActivation);
-        return streamOf(calls(request('disable-restored', 'extension.manage', { id: 'generated', action: 'disable' }), request('restored-sibling', 'generated.echo', { count: 3 })));
+        return streamOf(calls(request('disable-restored', 'extension_manage', { id: 'generated', action: 'disable' }), request('restored-sibling', 'generated_echo', { count: 3 })));
       }
       assert.equal(requests, 8); assert.equal(declaration, undefined); assert.equal(host.inspect()[0]!.status, 'disabled');
       return streamOf(assistant('Generated lifecycle completed in the same turn'));
@@ -151,13 +151,13 @@ test('generated tools stage, install disabled, activate, update and roll back wi
       const message = completed.messages.find(message => message.role === 'toolResult' && message.toolCallId === execution.intent.callId);
       assert.ok(message?.role === 'toolResult'); assert.deepEqual(execution.outcome.payload, message);
       assert.equal(execution.outcome.occurredAt, new Date(message.timestamp).toISOString());
-      if (execution.intent.toolName === 'extension.manage') assert.equal(JSON.parse((message.content[0] as { text: string }).text).status, 'accepted');
+      if (execution.intent.toolName === 'extension_manage') assert.equal(JSON.parse((message.content[0] as { text: string }).text).status, 'accepted');
     }
     assert.deepEqual(writer.state.executions.find(execution => execution.intent.callId === 'old-sibling')!.intent.requestedArguments, { count: '2' });
     const deltas = decodeRecords(writer.state.records).flatMap(entry => entry.type === 'message' && entry.message.role === 'system' ? [entry.message] : []);
     assert.equal(deltas.length, 5);
-    assert.deepEqual(deltas.slice(1).map(message => message.toolsAdded?.find(tool => tool.name === 'generated.echo')?.parameters ?? null), [parameters.one, parameters.two, parameters.one, null]);
-    assert.deepEqual(deltas.slice(2).map(message => message.toolsRemoved), [[{ name: 'generated.echo' }], [{ name: 'generated.echo' }], [{ name: 'generated.echo' }]]);
+    assert.deepEqual(deltas.slice(1).map(message => message.toolsAdded?.find(tool => tool.name === 'generated_echo')?.parameters ?? null), [parameters.one, parameters.two, parameters.one, null]);
+    assert.deepEqual(deltas.slice(2).map(message => message.toolsRemoved), [[{ name: 'generated_echo' }], [{ name: 'generated_echo' }], [{ name: 'generated_echo' }]]);
   } finally { await host.close(); await writer.close(); await rm(files.root, { recursive: true, force: true }); }
 });
 
@@ -175,7 +175,7 @@ test('accepted generated update with a lost durable outcome is not replayed afte
       assert.equal(original.inspect()[0]!.generated!.digest, first.digest);
       lost++; throw Error('synthetic accepted receipt write loss');
     };
-    await assert.rejects(runtime(writer, () => streamOf(calls(request('lost-update', 'extension.manage', { id: 'generated', action: 'update', digest: second.digest, config: files.config('updated') }))), {
+    await assert.rejects(runtime(writer, () => streamOf(calls(request('lost-update', 'extension_manage', { id: 'generated', action: 'update', digest: second.digest, config: files.config('updated') }))), {
       prepareTools: async () => [...management, ...extensionTools(await original.prepare())], finishTools: () => original.finish(),
     }).run(input('Update the generated synthetic extension')), /synthetic accepted receipt write loss/);
     assert.equal(lost, 1); assert.equal(writer.state.executions[0]!.outcome, null);
@@ -197,9 +197,9 @@ test('accepted generated update with a lost durable outcome is not replayed afte
       await runtime(replacement, (_model, context) => {
         requests++; assertDeclarations(replacement, context, prepared);
         assert.match(JSON.stringify(context.messages), /may already have executed/);
-        const current = getCurrentTools(context.messages).find(tool => tool.name === 'generated.echo');
+        const current = getCurrentTools(context.messages).find(tool => tool.name === 'generated_echo');
         assert.deepEqual(current?.parameters, parameters.two); assert.match(current!.description, new RegExp(second.digest));
-        return streamOf(requests === 1 ? calls(request('new-effect', 'generated.echo', { text: 'after recovery' })) : assistant('Current generated version verified without replay'));
+        return streamOf(requests === 1 ? calls(request('new-effect', 'generated_echo', { text: 'after recovery' })) : assistant('Current generated version verified without replay'));
       }, { prepareTools: async () => prepared = [...currentManagement, ...extensionTools(await restarted.prepare())], finishTools: () => restarted.finish() }).run(input('Check the saved generated version'));
       assert.equal(requests, 2); assert.deepEqual(restarted.changeStatus(), []);
       assert.equal(await readFile(files.configurationFile, 'utf8'), savedConfig);

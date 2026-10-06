@@ -52,7 +52,7 @@ is correct.
 `prepareTools(signal): Promise<AgentTool[]>` instead returns the **complete** live
 registry, including any built-ins. When provided, it replaces the static registry.
 It may await pending extension activation or reload before returning its snapshot.
-Duplicate names and `prepareArguments` are rejected for every prepared snapshot.
+Names must start with an ASCII letter or underscore and contain 1–64 ASCII letters, digits, underscores or hyphens (`^[A-Za-z_][A-Za-z0-9_-]{0,63}$`), matching the portable model function-name contract. Invalid names, duplicates and `prepareArguments` are rejected for every static or prepared snapshot before a provider request. Names are passed unchanged to providers; no aliases or transport mapping are added.
 All dynamic tools use the same schema validation, immutable durable intent/outcome,
 provenance, sequential execution, and recovery path as static tools.
 
@@ -202,7 +202,7 @@ ordinary wakes, file changes and compaction reuse that snapshot. No automatic
 memory-change notices or new Wakes exist. There is no separate `initialContext`
 entrypoint or destructive rebuild API.
 
-`createHistoryTools(reader)` registers `history.search` and `history.read` against an assembly-bound Mira reader. It returns original record provenance without interpreting Pi inside persistence. Full-text prefix/Chinese limitations and exact-read byte budgets are included in tool descriptions. Expected bounded-query errors become explicit tool results; database faults remain faults. Ordinary Pi file/bash tools are composed by the server without cwd confinement. The existing intent/effect boundary still applies.
+`createHistoryTools(reader)` registers `history_search` and `history_read` against an assembly-bound Mira reader. It returns original record provenance without interpreting Pi inside persistence. Full-text prefix/Chinese limitations and exact-read byte budgets are included in tool descriptions. Expected bounded-query errors become explicit tool results; database faults remain faults. Ordinary Pi file/bash tools are composed by the server without cwd confinement. The existing intent/effect boundary still applies.
 
 
 ## Complete Mira system prompt

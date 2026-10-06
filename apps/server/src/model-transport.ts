@@ -3,11 +3,14 @@ import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completio
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
 import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messages.lazy';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
+import { ModelRequestFailure, providerFailureReason, secretVariants, transportFailureReason, type ModelFailureContext } from './model-errors.ts';
 import { builtinApiKeySupport, createBuiltinCatalog, protocolDescription } from './model-catalog.ts';
 import { parseModelConfiguration, validateBaseUrl, type CustomProtocol, type ModelConfiguration } from './model-config.ts';
 
 export type ModelSelection = { kind: 'builtin'; provider: string; model: string } | { kind: 'custom'; connection: string; model: string };
 export interface ModelTransportOptions {
+  /** Request-local sanitized failure; null clears an earlier attempt. */
+  onFailure?: (failure: ModelRequestFailure | null) => void;
   /** Only the selected, explicitly configured variable is read, at request time. */
   env?: (name: string) => string | undefined;
   /** Server-owned literal credential resolver; when present, no environment key is read. */
@@ -34,17 +37,28 @@ export function resolveConfiguredApiKey(name: string, env: (name: string) => str
   return value;
 }
 /** Redirects are disabled even on the same host; a new destination needs explicit configuration. */
-function scopedModelFetch(baseUrl: string, fetch: typeof globalThis.fetch, headers: () => Headers): typeof globalThis.fetch {
+function scopedModelFetch(baseUrl: string, fetch: typeof globalThis.fetch, headers: () => Headers, failure: ModelFailureContext, secret: () => string | undefined): typeof globalThis.fetch {
   const origin = new URL(validateBaseUrl(baseUrl)).origin;
   return async (input, init) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
     if (url.origin !== origin || url.username || url.password) throw Error('Model request destination does not match the configured origin');
     try {
       const response = await fetch(input, { ...init, headers: headers(), redirect: 'error', credentials: 'omit', referrerPolicy: 'no-referrer' });
+      if (!response.ok) {
+        failure.status = response.status;
+        const id = response.headers.get('x-request-id') ?? response.headers.get('request-id');
+        if (id) failure.requestId = id;
+      }
       if (response.status >= 300 && response.status < 400) { void response.body?.cancel().catch(() => undefined); throw Error('Redirect rejected'); }
+      if (!response.ok) {
+        failure.providerReason = await providerFailureReason(response, secret());
+        // The SDK receives only selected, sanitized error text, never a huge raw
+        // body whose truncation could erase the useful provider message/code.
+        return new Response(JSON.stringify({ error: { message: failure.providerReason } }), { status: response.status, headers: { 'content-type': 'application/json' } });
+      }
       return response;
     }
-    catch { throw Error('Model HTTP request failed or was cancelled; redirects are disabled'); }
+    catch (error) { failure.transportReason = transportFailureReason(error, secret()); throw Error(failure.transportReason); }
   };
 }
 function safeOptions(options: SimpleStreamOptions | undefined, model: Model<Api>, fetch: typeof globalThis.fetch | undefined): SimpleStreamOptions {
@@ -59,25 +73,26 @@ function safeOptions(options: SimpleStreamOptions | undefined, model: Model<Api>
     ...(fetch ? { fetch } : {}), transport: 'sse', maxRetries: 0,
   };
 }
-const protectedError = 'Model provider request failed; verify the configured endpoint, protocol, model and credential. Response details were omitted to protect credentials.';
 function containsSecret(value: unknown, secret: string | undefined): boolean {
   if (!secret) return false;
-  if (typeof value === 'string') return value.includes(secret);
+  if (typeof value === 'string') return secretVariants(secret).some(variant => value.includes(variant));
   if (Array.isArray(value)) return value.some(item => containsSecret(item, secret));
-  return !!value && typeof value === 'object' && Object.entries(value).some(([key, item]) => key.includes(secret) || containsSecret(item, secret));
+  return !!value && typeof value === 'object' && Object.entries(value).some(([key, item]) => secretVariants(secret).some(variant => key.includes(variant)) || containsSecret(item, secret));
 }
-function sanitizeMessage(message: AssistantMessage): void {
+function sanitizeMessage(message: AssistantMessage, failure: ModelFailureContext, secret: string | undefined): void {
   // Provider error/diagnostic fields may contain raw response text even in an
   // earlier partial. Keep normalized stopReason, never raw error metadata.
   delete message.rawStopReason;
   delete message.diagnostics;
-  if (message.errorMessage !== undefined) message.errorMessage = message.stopReason === 'aborted' ? 'Model request was cancelled' : protectedError;
+  if (message.errorMessage !== undefined) message.errorMessage = message.stopReason === 'aborted' ? 'Model request was cancelled' : ModelRequestFailure.from(message.errorMessage, failure, secret).message;
 }
-function maskProviderErrors(source: AssistantMessageEventStream, model: Model<Api>, secret: () => string | undefined, signal?: AbortSignal): AssistantMessageEventStream {
+function maskProviderErrors(source: AssistantMessageEventStream, model: Model<Api>, secret: () => string | undefined, signal: AbortSignal | undefined, failure: ModelFailureContext, onFailure: ModelTransportOptions['onFailure']): AssistantMessageEventStream {
   const output = createAssistantMessageEventStream();
-  const fail = (): void => {
+  const fail = (detail?: unknown): void => {
+    const diagnostic = ModelRequestFailure.from(detail, failure, secret());
     const reason = signal?.aborted ? 'aborted' : 'error';
-    output.push({ type: 'error', reason, error: { role: 'assistant', content: [], api: model.api, provider: model.provider, model: model.id, stopReason: reason, timestamp: Date.now(), errorMessage: reason === 'aborted' ? 'Model request was cancelled' : protectedError, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } });
+    if (reason === 'error') onFailure?.(diagnostic);
+    output.push({ type: 'error', reason, error: { role: 'assistant', content: [], api: model.api, provider: model.provider, model: model.id, stopReason: reason, timestamp: Date.now(), errorMessage: reason === 'aborted' ? 'Model request was cancelled' : diagnostic.message, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } });
   };
   void (async () => {
     let terminal = false;
@@ -88,20 +103,24 @@ function maskProviderErrors(source: AssistantMessageEventStream, model: Model<Ap
         // reconstructed by a streaming subscriber before terminal redaction.
         if (event.type !== 'done' && event.type !== 'error') continue;
         const safe: AssistantMessageEvent = structuredClone(event);
-        if (safe.type === 'done') { sanitizeMessage(safe.message); terminal = true; }
+        if (safe.type === 'done') { sanitizeMessage(safe.message, failure, secret()); terminal = true; }
         if (safe.type === 'error') {
-          sanitizeMessage(safe.error); safe.error.errorMessage = protectedError;
+          sanitizeMessage(safe.error, failure, secret());
           if (signal?.aborted) { safe.reason = 'aborted'; safe.error.stopReason = 'aborted'; }
           if (safe.reason === 'aborted') safe.error.errorMessage = 'Model request was cancelled';
           terminal = true;
         }
         // Never rewrite valid tool arguments/IDs/content into a different
         // executable message. A credential echo rejects the complete response.
-        if (signal?.aborted || containsSecret(safe, secret())) { terminal = true; fail(); break; }
+        if (signal?.aborted || containsSecret(safe, secret())) { terminal = true; fail('Response contained a credential echo and was withheld'); break; }
+        if (safe.type === 'error' && safe.reason !== 'aborted') {
+          const diagnostic = ModelRequestFailure.from(event.type === 'error' ? event.error.errorMessage : undefined, failure, secret());
+          safe.error.errorMessage = diagnostic.message; onFailure?.(diagnostic);
+        }
         output.push(safe);
       }
-      if (!terminal) fail();
-    } catch { fail(); }
+      if (!terminal) fail('Provider stream ended without a terminal message');
+    } catch (error) { fail(transportFailureReason(error, secret())); }
   })();
   return output;
 }
@@ -157,6 +176,8 @@ export function createModelTransport(configuration: ModelConfiguration, selectio
     streamFn: (requested, context, streamOptions) => {
       if (requested.id !== canonicalModel.id || requested.provider !== canonicalModel.provider || requested.api !== canonicalModel.api) throw Error('Injected transport is bound to a different model');
       checkSdkEnvironment(canonicalModel);
+      options.onFailure?.(null);
+      const failure: ModelFailureContext = {};
       let key: string | undefined;
       let betas: string[] = [];
       // Request-local state prevents concurrent calls or key rotation from
@@ -191,7 +212,7 @@ export function createModelTransport(configuration: ModelConfiguration, selectio
         } else result.set('authorization', `Bearer ${key}`);
         return result;
       };
-      const fetch = canonicalModel.api === 'google-generative-ai' ? undefined : scopedModelFetch(canonicalModel.baseUrl, options.fetch ?? globalThis.fetch, headers);
+      const fetch = canonicalModel.api === 'google-generative-ai' ? undefined : scopedModelFetch(canonicalModel.baseUrl, options.fetch ?? globalThis.fetch, headers, failure, () => key);
       const requestOptions = safeOptions(streamOptions, canonicalModel, fetch);
       const cap = streamOptions?.maxTokens ?? canonicalModel.maxTokens;
       requestOptions.onPayload = payload => {
@@ -215,7 +236,7 @@ export function createModelTransport(configuration: ModelConfiguration, selectio
         if (Array.isArray(body['betas']) && body['betas'].every(value => typeof value === 'string')) betas = [...body['betas']] as string[];
         return undefined;
       };
-      return maskProviderErrors(collection.streamSimple(structuredClone(canonicalModel), context, requestOptions), canonicalModel, () => key, streamOptions?.signal);
+      return maskProviderErrors(collection.streamSimple(structuredClone(canonicalModel), context, requestOptions), canonicalModel, () => key, streamOptions?.signal, failure, options.onFailure);
     },
   };
 }

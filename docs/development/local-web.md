@@ -160,3 +160,9 @@ Linux 缺少系统库时，使用 Playwright 官方 `pnpm exec playwright instal
 正常启动路径是 `pnpm start` → `web-cli.mts` → `LocalWebService` → PostgreSQL 历史；前端初始消息数组为空。截图里的四条示例对话仅在专用 E2E fixture 源码中，应用不会导入它。显式 synthetic provider 的固定回复属于测试功能代码，不是预置历史。
 
 合并前按跟踪文件核查：没有截图、浏览器 trace、运行日志、数据库/数据导出、用户 Memory、密钥、node_modules 或 dist 产物进入这批提交。合法测试夹具保留，以继续验证恢复与防重复发送；`.gitignore` 排除运行/构建产物。不要把自己的聊天、配置、数据库或截图另行加入 Git。
+
+### 查看模型请求错误
+
+顶部“运行错误”会显示脱敏后的具体模型诊断，包括 provider 给出的原因/代码、实际 HTTP 状态与 request ID（有返回时）。复制这段文字即可用于排查；无需把 API Key、原始 headers 或请求正文发给别人。网络原因只能显示底层实际提供的 message/code，不能据此推断账户余额或权限。过长诊断会标明截断，HTML 与无支持字段的原始错误对象不直接显示。
+
+失败输入仍已保存，不生成虚假的助手成功回复。修改模型设置不会自动重试，重复提交同一消息也仅核对 receipt；重启或发送新消息时，先按既有恢复规则处理未完成的 Wake。未知工具结果不会因此自动重放。

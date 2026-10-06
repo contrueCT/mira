@@ -285,3 +285,118 @@ test('builtin OpenAI rejects the SDK ChatGPT credential path before an uncapped 
   const message = await (await transport.streamFn(transport.model, transcript, { maxTokens: 100, temperature: 0.3 })).result();
   assert.equal(requests, 0); assert.equal(message.stopReason, 'error'); assert.doesNotMatch(JSON.stringify(message), /synthetic-non-api-key-token/);
 });
+
+for (const api of ['openai-completions', 'openai-responses', 'anthropic-messages'] as const) {
+  test(`${api} retains redacted provider reason, HTTP status and request ID`, async () => {
+    for (const status of [401, 403, 404, 429, 500, 503]) {
+      const failures: Array<import('../../apps/server/src/model-errors.ts').ModelRequestFailure | null> = [];
+      const transport = createModelTransport(config(api), { kind: 'custom', connection: 'openai', model: 'manual-id' }, {
+        env: () => syntheticKey, onFailure: failure => failures.push(failure),
+        fetch: async () => new Response(JSON.stringify({ error: { message: `Tool name is invalid; credential ${syntheticKey}`, code: 'invalid_tool_name', type: 'invalid_request_error', headers: { authorization: 'other-secret' }, request: 'private-request' } }), {
+          status, headers: { 'content-type': 'application/json', 'x-request-id': 'req-fixture-123', 'set-cookie': 'private-cookie', authorization: 'private-header' },
+        }),
+      });
+      const message = await (await transport.streamFn(transport.model, transcript)).result();
+      assert.equal(message.stopReason, 'error');
+      assert.match(message.errorMessage!, new RegExp(`HTTP ${status}`));
+      assert.match(message.errorMessage!, /Tool name is invalid/);
+      assert.match(message.errorMessage!, /invalid_tool_name/);
+      assert.match(message.errorMessage!, /req-fixture-123/);
+      assert.doesNotMatch(JSON.stringify(message), /synthetic-custom-key|private-header|private-cookie|private-request|other-secret/);
+      assert.equal(failures[0], null); assert.equal(failures.at(-1)?.message, message.errorMessage);
+    }
+  });
+}
+
+test('network and TLS causes retain available code without inventing an HTTP status', async () => {
+  for (const code of ['ENOTFOUND', 'ECONNREFUSED', 'CERT_HAS_EXPIRED', 'UND_ERR_CONNECT_TIMEOUT']) {
+    const transport = createModelTransport(config(), { kind: 'custom', connection: 'openai', model: 'manual-id' }, {
+      env: () => syntheticKey,
+      fetch: async () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error(`connection failure ${syntheticKey}`), { code }) }); },
+    });
+    const message = await (await transport.streamFn(transport.model, transcript)).result();
+    assert.match(message.errorMessage!, new RegExp(code)); assert.match(message.errorMessage!, /fetch failed/);
+    assert.doesNotMatch(message.errorMessage!, /HTTP \d|synthetic-custom-key/);
+  }
+});
+
+test('diagnostics are text-safe, bounded, redact encoded credentials and omit raw HTML/unsupported body fields', async () => {
+  const { ModelRequestFailure } = await import('../../apps/server/src/model-errors.ts');
+  const key = 'secret/with+chars';
+  for (const encoded of [key, encodeURIComponent(key), Buffer.from(key).toString('base64')]) {
+    const failure = ModelRequestFailure.from(`401 ${JSON.stringify({ error: { message: `denied ${encoded}`, code: 'bad_key', raw: 'private-raw' } })}`, { status: 401, requestId: key }, key);
+    assert.match(failure.message, /denied/); assert.ok(!failure.message.includes(encoded)); assert.doesNotMatch(failure.message, /private-raw/);
+  }
+  const text = ModelRequestFailure.from('bad\u001b\u202e token Authorization: Bearer private-other https://example.test/?key=private-url ' + 'x'.repeat(4000), {}, key).message;
+  assert.ok(text.length <= 2070); assert.match(text, /truncated/); assert.doesNotMatch(text, /private-other|private-url|[\u001b\u202e]/u);
+  assert.doesNotMatch(ModelRequestFailure.from('<html><body>private raw body</body></html>', { status: 502 }).message, /private raw body/);
+  assert.doesNotMatch(ModelRequestFailure.from('502 {"headers":{"key":"private-header"}}', {}).message, /private-header/);
+});
+
+test('each model request clears a previous diagnostic and successful retry does not retain it', async () => {
+  let attempts = 0; let failure: import('../../apps/server/src/model-errors.ts').ModelRequestFailure | null = null;
+  const transport = createModelTransport(config(), { kind: 'custom', connection: 'openai', model: 'manual-id' }, {
+    env: () => syntheticKey, onFailure: value => { failure = value; },
+    fetch: async () => ++attempts === 1 ? new Response('{"error":{"message":"capacity exhausted","code":"overloaded"}}', { status: 503 }) : completions(),
+  });
+  await (await transport.streamFn(transport.model, transcript)).result(); assert.ok(failure);
+  assert.equal((await (await transport.streamFn(transport.model, transcript)).result()).stopReason, 'stop'); assert.equal(failure, null);
+});
+
+test('protocol failures retain the Pi reason while error content remains non-executable', async () => {
+  const transport = createModelTransport(config(), { kind: 'custom', connection: 'openai', model: 'manual-id' }, {
+    env: () => syntheticKey, fetch: async () => sse([{ id: 'invalid-fixture', choices: [{ index: 0, delta: {}, finish_reason: 'unsupported-fixture-reason' }] }, '[DONE]']),
+  });
+  const message = await (await transport.streamFn(transport.model, transcript)).result();
+  assert.equal(message.stopReason, 'error'); assert.match(message.errorMessage!, /Provider finish_reason: unsupported-fixture-reason/u);
+});
+
+test('encoded credential echoes in executable arguments reject the whole message', async () => {
+  const encoded = Buffer.from(syntheticKey).toString('base64');
+  const transport = createModelTransport(config(), { kind: 'custom', connection: 'openai', model: 'manual-id' }, {
+    env: () => syntheticKey, fetch: async () => sse([{ id: 'encoded-fixture', choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: 'encoded-call', type: 'function', function: { name: 'effect', arguments: JSON.stringify({ text: encoded }) } }] }, finish_reason: 'tool_calls' }] }, '[DONE]']),
+  });
+  const message = await (await transport.streamFn(transport.model, transcript)).result();
+  assert.equal(message.stopReason, 'error'); assert.deepEqual(message.content, []); assert.ok(!JSON.stringify(message).includes(encoded));
+});
+
+test('error-boundary parsing preserves useful fields before SDK truncation and omits HTML fragments', async () => {
+  for (const api of ['openai-completions', 'openai-responses', 'anthropic-messages'] as const) {
+    const transport = createModelTransport(config(api), { kind: 'custom', connection: 'openai', model: 'manual-id' }, {
+      env: () => syntheticKey, fetch: async () => Response.json({ error: { message: 'Tool name was invalid', code: 'invalid_tool_name', metadata: { raw: 'private'.repeat(1000) } } }, { status: 502 }),
+    });
+    const message = await (await transport.streamFn(transport.model, transcript)).result();
+    assert.match(message.errorMessage!, /Tool name was invalid.*invalid_tool_name/); assert.doesNotMatch(message.errorMessage!, /private|malformed error JSON/);
+  }
+  const transport = createModelTransport(config(), { kind: 'custom', connection: 'openai', model: 'manual-id' }, {
+    env: () => syntheticKey, fetch: async () => new Response('<h1>Bad Gateway</h1><pre>private-response-dump</pre>', { status: 502, headers: { 'content-type': 'text/html' } }),
+  });
+  const message = await (await transport.streamFn(transport.model, transcript)).result();
+  assert.match(message.errorMessage!, /HTTP 502.*HTML error page/); assert.doesNotMatch(message.errorMessage!, /private-response-dump|<h1>/);
+});
+
+test('form-encoded selected keys are redacted in provider diagnostics and refused in executable content', async () => {
+  const key = 'review~key!'; const encoded = new URLSearchParams({ key }).toString().slice(4);
+  for (const echo of [encoded, encoded.toLowerCase()]) {
+    const transport = createModelTransport(config(), { kind: 'custom', connection: 'openai', model: 'manual-id' }, {
+      env: () => key, fetch: async () => Response.json({ error: { message: `denied ${echo}`, code: 'invalid_api_key' } }, { status: 401 }),
+    });
+    const message = await (await transport.streamFn(transport.model, transcript)).result();
+    assert.match(message.errorMessage!, /denied/); assert.ok(!JSON.stringify(message).includes(echo)); assert.ok(!JSON.stringify(message).includes(key));
+  }
+  const transport = createModelTransport(config(), { kind: 'custom', connection: 'openai', model: 'manual-id' }, { env: () => key, fetch: async () => completions(encoded) });
+  const message = await (await transport.streamFn(transport.model, transcript)).result();
+  assert.equal(message.stopReason, 'error'); assert.deepEqual(message.content, []); assert.ok(!JSON.stringify(message).includes(encoded));
+});
+
+test('oversized HTTP error bodies are cancelled and never passed through to the SDK or history', async () => {
+  let cancelled = false;
+  const transport = createModelTransport(config(), { kind: 'custom', connection: 'openai', model: 'manual-id' }, {
+    env: () => syntheticKey, fetch: async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode('private-response'.repeat(5000))); },
+      cancel() { cancelled = true; },
+    }), { status: 500 }),
+  });
+  const message = await (await transport.streamFn(transport.model, transcript)).result();
+  assert.equal(cancelled, true); assert.match(message.errorMessage!, /HTTP 500.*exceeded the diagnostic limit/); assert.doesNotMatch(message.errorMessage!, /private-response/);
+});

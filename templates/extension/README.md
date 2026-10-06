@@ -36,7 +36,10 @@ SDK snapshot rather than these development links.
 
 ## Write and test
 
-Give the extension and each tool distinct names. Keep relative source imports
+Give the extension and each tool distinct names. Tool names must start with an
+ASCII letter or underscore and contain 1–64 ASCII letters, digits, underscores
+or hyphens (`^[A-Za-z_][A-Za-z0-9_-]{0,63}$`), for example `hello_world`. Names are passed unchanged to model APIs; dots are not allowed.
+Keep relative source imports
 explicit (`./helper.ts`). The supplied `tsconfig.json` uses strict NodeNext with
 full declaration checking. `tests/index.test.mts` uses Node's test runner, the
 public SDK types, and synthetic arguments; no database, credentials, live model,
