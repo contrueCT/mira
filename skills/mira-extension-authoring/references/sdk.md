@@ -51,6 +51,42 @@ An unknown remote result needs reconciliation, not an assumed-safe repeat.
 Start with [greeting.ts](../../../examples/extensions/greeting.ts) or the
 [template tool and its tests](../../../templates/extension/src/index.ts).
 
+## TypeScript narrowing and lifecycle tests
+
+The JSON schema validates runtime input; it does not specialize the SDK's TypeScript
+`Json` argument type. Keep the checked property in a local variable and use an
+explicit type predicate when validating an array. For example:
+
+```ts
+import type { Json } from '@mira/extension-sdk';
+
+function numericValues(arguments_: Json): number[] {
+  if (arguments_ === null || typeof arguments_ !== 'object' || Array.isArray(arguments_)) {
+    throw new TypeError('Expected an object');
+  }
+  const values = arguments_['values'];
+  if (!Array.isArray(values) || !values.every(
+    (value): value is number => typeof value === 'number' && Number.isFinite(value),
+  )) throw new TypeError('values must be an array of finite numbers');
+  return values;
+}
+```
+
+Adapt validation to the actual schema rather than bypassing it with `as number[]`.
+The returned plugin's `apply` type is `void | Promise<void>` even when your own
+implementation is synchronous. A test for rejected/invalid configuration must
+turn either case into a Promise before giving it to `assert.rejects`:
+
+```ts
+await assert.rejects(async () => {
+  await extension.apply({ mira: context }, invalidConfig);
+}, /the expected validation message/);
+```
+
+Use `assert.throws` only for an API that is definitely synchronous. Adapt the
+existing template's test context instead of guessing SDK methods or rewriting the
+fixture from memory. Compile the authored tests as well as the implementation.
+
 ## Durable facts and explicit cognition
 
 `ExtensionEvent` has `id: string`, `type: string`, `occurredAt: string`, `payload: Json`.
