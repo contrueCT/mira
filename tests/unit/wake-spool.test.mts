@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { writeWakeInput } from '@mira/workspace';
+import { prepareWakeTurn, renderWakeBatch, type WakeRun } from '@mira/life';
 
 const sourceDirectory = fileURLToPath(new URL('../../', import.meta.url));
 async function withRoot(run: (root: string, base: string) => Promise<void>): Promise<void> {
@@ -74,6 +75,29 @@ test('a fresh process reconstructs the same ordinary file from canonical run sta
     ], { cwd: sourceDirectory });
     assert.deepEqual(JSON.parse(stdout), artifact);
     assert.equal(await readFile(artifact.path, 'utf8'), options.content);
+  });
+});
+
+test('current concise overflow recreates byte-identical input and notice after process restart', async () => {
+  await withRoot(async root => {
+    const batch: WakeRun = { id: 'concise-restart', claimedAt: '2026-10-06T08:01:00.000Z', status: 'running', inputRecordId: 'persisted-input', finalRecordId: null, requests: [
+      { event: { id: 'user-event', source: 'user', type: 'web.message', occurredAt: '2026-10-06T08:00:00.000Z', payload: { text: '  完整原文 🧠\nDo not trim  ' } }, wake: { id: 'user-wake', reason: 'User message from the local web interface' } },
+      { event: { id: 'external-event', source: 'external', type: 'custom.event', occurredAt: '2026-10-06T08:00:01.000Z', payload: { text: 'Third-party source material', attachments: [{ path: 'reported.txt' }], details: [null, false, 0] } }, wake: { id: 'external-wake', reason: 'External update' } },
+    ] };
+    const content = renderWakeBatch(batch);
+    const artifact = await materialize(root, batch.id, content);
+    const first = await prepareWakeTurn(batch, (id, text) => materialize(root, id, text), 1);
+    assert.equal(await readFile(artifact.path, 'utf8'), content);
+    assert.ok(content.includes('  完整原文 🧠\nDo not trim  ')); assert.ok(content.includes('"attachments"'));
+    assert.doesNotMatch(content, /"requests"|"wake"|"payload"|"claimedAt"/);
+    await rm(root, { recursive: true });
+    const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e',
+      `import { prepareWakeTurn } from '@mira/life'; import { writeWakeInput } from '@mira/workspace';
+       const turn = await prepareWakeTurn(${JSON.stringify(batch)}, (runId, content) => writeWakeInput({rootDirectory:${JSON.stringify(root)},sourceDirectory:${JSON.stringify(sourceDirectory)},runId,content}), 1);
+       process.stdout.write(JSON.stringify(turn));`,
+    ], { cwd: sourceDirectory });
+    assert.deepEqual(JSON.parse(stdout), first);
+    assert.equal(await readFile(artifact.path, 'utf8'), content);
   });
 });
 

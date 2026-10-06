@@ -49,12 +49,15 @@
     "tests/unit/generated-extensions.test.mts",
     "tests/unit/generated-runtime.test.mts",
     "tests/unit/system-prompt.test.mts",
+    "tests/unit/skills.test.mts",
     "tests/unit/model-connections.test.mts",
     "tests/unit/model-tool-names.test.mts",
     "tests/unit/model-discovery.test.mts",
     "apps/web",
     "tests/unit/web-http.test.mts",
     "tests/unit/web-settings.test.mts",
-    "tests/unit/web-service.test.mts"
+    "tests/unit/web-service.test.mts",
+    "scripts/tool-usability.mts",
+    "tests/unit/tool-guidance.test.mts"
   ]
 }

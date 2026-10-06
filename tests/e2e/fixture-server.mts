@@ -16,7 +16,7 @@ let working = false;
 const envelopes = new Map<string, string>();
 const backend: WebBackend = {
   async status() { return { state: working ? 'working' : 'idle', mode: 'synthetic', model: '模拟模型', error: null }; },
-  async timeline() { return { items: structuredClone(items), nextCursor: null, tools: [] }; },
+  async timeline() { return { items: structuredClone(items), nextCursor: null }; },
   async submit(input) {
     const prior = envelopes.get(input.id); const exact = JSON.stringify(input);
     if (prior && prior !== exact) throw Error('Conflicting fixture envelope');

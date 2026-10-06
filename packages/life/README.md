@@ -12,6 +12,10 @@ PostgreSQL 与 Git 不能原子提交。Git 适配器须按 Mira/run 保存可�
 
 `src/history.ts` 的 `HistoryReader` 契约提供固定 Mira 范围的只读历史搜索、时间顺序分页与精确读取；原始 Event、Runtime envelope、工具 intent/outcome 和 Wake 关联保持分离。分页只返回原始记录引用及时间，不返回 payload 或创建第二份消息库；最新一页按时间升序展示，使用绑定 Mira/种类的 opaque before cursor 继续读取旧页。检索不启动认知，不修改 Memory，原始 Runtime payload 仍由对应 Runtime 解读。
 
-超过 `maxInlineBytes`（默认 65,536）的完整输入通过 `writeOverflowInput` 写成普通文本，模型获得路径和概要，按需用普通文件工具读取。文件不自动删除。没有消息优先级、专用分页服务或心理状态机。
+`renderWakeBatch` 使用精简文本，而非完整 Event/Wake 请求信封 JSON。普通 Web 消息（`source=user`、`type=web.message`、仅 `{text}`、固定本地 Web 原因）仅附来源与原始时间，正文不转义、不裁剪。其它用户事件保留类型、原因、事件 ID；有额外字段或非用户来源的 payload 完整保留为 JSON，不只摘取 `text`。合并批次仍包含所有请求，外部内容不构成用户授权。
+
+超过 `maxInlineBytes`（默认 65,536）的同一精简输入通过 `writeOverflowInput` 写成普通文本，模型获得路径和概要，按需用普通文件工具读取。阈值按 UTF-8 字节计算，不拆成多轮。相同版本恢复前从不可变批次重建丢失文件，字节和路径不变；已有文件内容冲突仍失败且不覆盖。文件不自动删除。没有消息优先级、专用分页服务或心理状态机。
+
+旧版已持久化输入/overflow、尚未生成 final 的活动 Wake 不承诺跨这次布局修改恢复：运行时会拒绝与已存输入不一致的渲染，普通文件也拒绝同一 run 的内容变化。未加入兼容解析、迁移或数据重置；发布前处理方式见 [升级注意](../../docs/development/local-web.md#wake-输入布局升级注意)。
 
 接口见 `src/index.ts` 和 `src/loop.ts`，语义见 [ADR 0002](../../docs/adr/0002-coalesced-wake-loop.md)。验证为根目录 `pnpm check` 及 `pnpm check:all`。

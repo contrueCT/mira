@@ -35,6 +35,7 @@ Shared rules: [root AGENTS.md](../../AGENTS.md). Read `README.md` before changes
   register a provider, or mutate process env to prevent ambient auth discovery
 - `miraPrompt.loadInitialMemory` loads only an empty version-zero durable stream; persist the first-record `miraMemory` snapshot and never reread after ordinary wake, restart, file change or compaction. No change-notice machinery
 - `miraPrompt` uses the full source template and `mira.system.v0.2` section at the actual request boundary; persist updates before requests under the same writer/CAS
+- `loadSkills` refreshes Pi metadata at natural requests only; append the public formatter after rendering in that same section. Bodies use ordinary read; no scanner during recover/compact, watcher, extra Wake or Memory reload
 - Maintain current v0.5/v0.2 only: no old initialization entrypoint, bootstrap parser or checkpoint migration; preserve current raw history, tool recovery and exact-system compaction checks
 - Renderer substitutions are allowlisted, escaped and single-pass; tool guidance uses the same declared registry, never a stale separate snapshot
 - `history-tools.ts` returns Mira-bound original history; generic persistence never parses Pi

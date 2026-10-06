@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { runDemo } from './index.ts';
 
 if (process.argv.includes('--help')) {
-  console.log('Mira synthetic PostgreSQL demo\nMIRA_DEMO_DATABASE_URL=<explicit localhost mira_demo or mira_test URL> MIRA_DEMO_SPOOL=<outside source/home directory> pnpm demo <stable-input-id> <message>\nOptional: MIRA_DEMO_SCHEMA (default mira_demo), MIRA_DEMO_MIRA_ID (default synthetic-mira), MIRA_DEMO_MAX_INLINE_BYTES, MIRA_DEMO_CWD (existing directory), MIRA_DEMO_MEMORY (optional Memory root), MIRA_DEMO_EXTENSIONS (trusted local JSON configuration file; source HMR needs node --expose-internals)\nRepeat the same input ID/message to verify idempotency. No real model or credentials are used.');
+  console.log('Mira synthetic PostgreSQL demo\nMIRA_DEMO_DATABASE_URL=<explicit localhost mira_demo or mira_test URL> MIRA_DEMO_SPOOL=<outside source/home directory> pnpm demo <stable-input-id> <message>\nOptional: MIRA_DEMO_SCHEMA (default mira_demo), MIRA_DEMO_MIRA_ID (default synthetic-mira), MIRA_DEMO_MAX_INLINE_BYTES, MIRA_DEMO_CWD (existing directory), MIRA_HOME (user skills under skills/; defaults to ~/.mira), MIRA_DEMO_MEMORY (optional Memory root), MIRA_DEMO_EXTENSIONS (trusted local JSON configuration file; source HMR needs node --expose-internals)\nRepeat the same input ID/message to verify idempotency. No real model or credentials are used.');
 } else {
   const connectionString = process.env['MIRA_DEMO_DATABASE_URL'];
   const spoolDirectory = process.env['MIRA_DEMO_SPOOL'];

@@ -9,6 +9,8 @@ import { WakeLoop, type LifeEvent, type MemoryCheckpointWriter, type WakeRun } f
 import { migrate, PostgresPersistence } from '@mira/persistence';
 import { PiDurableRuntime, createHistoryTools } from '@mira/runtime-pi';
 import { writeWakeInput, setupMemoryWorkspace, loadMemoryBootstrap, snapshotMemory } from '@mira/workspace';
+import { createSkillLoader } from './skills.ts';
+export { createSkillLoader, type SkillLoaderOptions } from './skills.ts';
 
 /** Native Pi tools. cwd is only a default directory, never a sandbox.
  * OS permissions apply; the main model interprets the user's natural-language intent. */
@@ -38,6 +40,8 @@ export interface DemoOptions {
   spoolDirectory: string;
   /** Existing ordinary cwd, default process.cwd(); never a path confinement. */
   workingDirectory?: string;
+  /** User skills live under this directory; defaults to MIRA_HOME or ~/.mira. */
+  miraHome?: string;
   /** Ordinary persistent Memory root, independent of the source Git repository. */
   memory?: { memoryRoot: string };
   events: Array<{ event: LifeEvent; wake?: { id: string; reason: string } }>;
@@ -66,6 +70,7 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
     const workingDirectory = await realpath(options.workingDirectory ?? process.cwd());
     if (!(await stat(workingDirectory)).isDirectory()) throw new Error('Tool workingDirectory must be an existing directory');
     const roots = options.memory ? await setupMemoryWorkspace({ memoryRoot: options.memory.memoryRoot, sourceDirectory: options.sourceDirectory }) : undefined;
+    const loadSkills = createSkillLoader({ sourceDirectory: options.sourceDirectory, ...(options.miraHome === undefined ? {} : { miraHome: options.miraHome }) });
     for (const { event, wake } of options.events) await writer.receive(event, wake);
     const baseTools = [...createWorkspaceTools(workingDirectory), ...createHistoryTools(persistence.history(writer.miraId))];
     if (options.extensions) {
@@ -80,7 +85,7 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
       ...(options.maxInlineBytes === undefined ? {} : { maxInlineBytes: options.maxInlineBytes }),
       ...(roots ? { beforeComplete: memoryCheckpointHook(writer, roots.memoryRoot, roots.repositoryId) } : {}),
       createRuntime: () => new PiDurableRuntime({ writer, model: demoModel, streamFn: stream,
-        tools: baseTools,
+        tools: baseTools, loadSkills,
         ...(host ? { prepareTools: async () => [...baseTools, ...managementTools, ...extensionTools(await host.prepare())], finishTools: () => host.finish() } : {}),
         miraPrompt: {
           ...(roots ? { memoryRoot: roots.memoryRoot,

@@ -76,3 +76,9 @@ v0.5 §40 不引入额外产品隔离。用户再次确认普通工具和生成�
 ## 本地 Web
 
 按 [ADR 0009](adr/0009-local-web-client.md)，Fastify 组装同源 localhost API，React/Vite 显示单 Timeline 与模型设置。前端无核心/Pi/数据库依赖；历史只是既有事件/上下文的只读显示投影。技术来源校验、后端私有凭据与脱敏投影、revision 与幂等提交保护真实执行边界，不引入工具批准 UI 或第二个认知循环。
+
+## 对话呈现与普通 Skills
+
+按 [ADR 0011](adr/0011-conversation-context-and-skills.md)，普通 Web 对话不展示工具活动或工具展示投影；持久工具协议与事实仍完整保存。普通 Web Wake 只呈现来源、时间与消息正文，其他事件保留完整业务 payload，超限仍是普通文件。已有进行中 Wake 升级前应完成，不添加旧格式兼容。
+
+Skills 直接复用 Pi 公共加载器，明确扫描源码 skills/ 与 Mira home skills/。每次自然请求只更新技能目录，正文用 read 按需加载，文件修改不产生 Wake。目录附在同一个持久 Mira system section，Memory 和压缩边界不变。内置扩展作者技能引用当前 SDK、模板及生命周期说明。普通聊天纯文本的批准修订只改变 Prompt 对话格式指导，不影响文件格式。

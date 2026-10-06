@@ -16,6 +16,7 @@
 - API 必须区分 emit event 与 request wake，并在边界验证不可信输入
 - cwd 只是默认位置，无应用目录限制或产品隔离环境；主模型通过自然语言 Prompt/对话决定调用或澄清，不注入 authorize 或合成批准证据
 - 完整 Mira Prompt 必须到达实际请求，包括无 Memory 和当前上下文恢复；Memory 初始快照与 wake-end checkpoint 不得变成每 Wake 重读/重注入或文件变更通知
+- `skills.ts` 仅加载源码 `skills/` 与 `${MIRA_HOME}/skills`（默认 `~/.mira/skills`），使用 Pi 显式路径及 `includeDefaults:false`；内置同名优先并报告诊断，缺失用户目录为空，不扩大到 `.pi` / `.agents` 扫描
 - 启动恢复、停机和错误处理不能生成第二个活跃认知写者
 
 ## 验证

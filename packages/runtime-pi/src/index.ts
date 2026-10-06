@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type AgentToolCall, type StreamFn } from '@earendil-works/pi-agent-core';
 import { getCurrentSystemMessage, type Api, type Model, type ToolResultMessage } from '@earendil-works/pi-ai';
-import { buildSessionProjection, convertToLlm, type SessionEntry } from '@earendil-works/pi-coding-agent';
+import { buildSessionProjection, convertToLlm, formatSkillsForPrompt, type SessionEntry, type Skill } from '@earendil-works/pi-coding-agent';
 import type { DurableWriter, RecoverySnapshot, ToolExecution, WakeWriter } from '@mira/life';
 import type { CognitionRuntime, CognitionTurn } from '@mira/cognition';
 import { observationEntry, sanitizeEntries, validateObservation, withRecoveryAdvisory, type RecoveryOperation } from './observations.ts';
@@ -28,6 +28,9 @@ export interface PiRuntimeOptions {
    * or failed preparation. Cleanup never schedules an extra model request. */
   finishTools?: () => Promise<void>;
   miraPrompt?: MiraPromptOptions;
+  /** Refresh metadata before each natural model request. Requires miraPrompt;
+   * bodies remain ordinary files read on demand, never bootstrap Memory. */
+  loadSkills?: (signal: AbortSignal) => Promise<Skill[]>;
 }
 export interface RecoveredContext {
   snapshot: RecoverySnapshot; entries: SessionEntry[]; messages: AgentMessage[];
@@ -51,6 +54,7 @@ export class PiDurableRuntime implements CognitionRuntime {
 
   constructor(options: PiRuntimeOptions) {
     if (typeof options.streamFn !== 'function') throw new Error('Injected streamFn is required');
+    if (options.loadSkills && !options.miraPrompt) throw new Error('Skill loading requires the Mira prompt');
     validateTools(options.tools ?? []);
     this.options = options;
     if (options.writer.signal.aborted) this.stop(options.writer.signal.reason ?? new Error('Writer lost'));
@@ -401,6 +405,11 @@ export class PiDurableRuntime implements CognitionRuntime {
               if (state.snapshot.version !== version) throw new Error('Context changed during prompt preparation');
               const memory = initialMemory(state.entries);
               if (memory === undefined) throw new Error('Missing initial Memory snapshot');
+              // Take one immutable metadata rendering for this request. Changes
+              // on disk do not wake Mira or alter a request already in flight.
+              const skills = formatSkillsForPrompt(await this.options.loadSkills?.(this.controller.signal) ?? []);
+              await this.verified();
+              attemptGate();
               const text = renderMiraPrompt({
                 MEMORY_ROOT: config.memoryRoot ?? 'Not configured', MEMORY_STATE: memory,
                 CURRENT_TIME: (config.now?.() ?? new Date()).toISOString(),
@@ -408,7 +417,7 @@ export class PiDurableRuntime implements CognitionRuntime {
                 OTHER_ENVIRONMENT_CONTEXT: config.environmentContext,
                 DYNAMIC_TOOL_AND_EXTENSION_GUIDANCE: (context.tools ?? []).map(tool => `${tool.name}: ${tool.description}`).join('\n\n') || 'No tools are available',
                 CURRENT_AUTHORIZATION_CONTEXT: config.authorizationContext,
-              });
+              }) + skills;
               if (getCurrentSystemMessage(state.messages)?.sections?.[MIRA_PROMPT_SECTION] !== text) {
                 await this.verified();
                 const entry = messageEntry({ role: 'system', content: '', sections: { [MIRA_PROMPT_SECTION]: text }, timestamp: Date.now() }, parentId);

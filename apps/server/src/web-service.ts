@@ -11,11 +11,14 @@ import { extensionManagementTools, extensionReceiver, extensionTools } from './e
 import { WebSettingsStore, hasSelectedWebApiKey, type WebSettings } from './web-settings.ts';
 import { ModelRequestFailure } from './model-errors.ts';
 import { WebHttpError, type WebBackend } from './http.ts';
+import { createSkillLoader } from './skills.ts';
 
 export interface WebServiceOptions {
   connectionString: string; schema: string; miraId: string;
   sourceDirectory: string; spoolDirectory: string; settingsFile: string;
   workingDirectory?: string; memoryRoot?: string;
+  /** User skills live under this directory; defaults to MIRA_HOME or ~/.mira. */
+  miraHome?: string;
   extensions?: { entries: LocalExtensionEntry[]; hmr?: boolean; configurationFile?: string; artifactsDirectory?: string };
   synthetic?: boolean;
   /** Deterministic test injection only; never obtains ambient credentials. */
@@ -53,7 +56,6 @@ export class LocalWebService implements WebBackend {
   readonly #loop: WakeLoop;
   readonly #host: ExtensionHost | undefined;
   readonly #abort = new AbortController();
-  readonly #startedAt = Date.now();
   #drain: Promise<void> | undefined;
   #error: string | ModelRequestFailure | null = null;
   #modelFailure: ModelRequestFailure | null = null;
@@ -70,6 +72,7 @@ export class LocalWebService implements WebBackend {
   static async open(options: WebServiceOptions): Promise<LocalWebService> {
     const cwd = await realpath(options.workingDirectory ?? process.cwd());
     if (!(await stat(cwd)).isDirectory()) throw Error('Working directory must exist');
+    const loadSkills = createSkillLoader({ sourceDirectory: options.sourceDirectory, ...(options.miraHome === undefined ? {} : { miraHome: options.miraHome }) });
     const settings = new WebSettingsStore(options.settingsFile, options.sourceDirectory, [options.memoryRoot, options.extensions?.artifactsDirectory].filter((directory): directory is string => directory !== undefined));
     const settingsValue = await settings.get();
     await migrate({ connectionString: options.connectionString, schema: options.schema, direction: 'up' });
@@ -98,7 +101,7 @@ export class LocalWebService implements WebBackend {
           const current = service!.#settingsValue;
           if (!options.synthetic && !hasSelectedWebApiKey(current)) throw Error('Choose a model with a saved API key first');
           const transport = options.synthetic ? { model: demoModel, streamFn: options.syntheticStream ?? syntheticStream } : settings.transport(current, { onFailure: failure => { service!.#modelFailure = failure; } });
-          return new PiDurableRuntime({ writer, ...transport, tools: baseTools,
+          return new PiDurableRuntime({ writer, ...transport, tools: baseTools, loadSkills,
             ...(extensionHost ? { prepareTools: async () => [...baseTools, ...management, ...extensionTools(await extensionHost.prepare())], finishTools: () => extensionHost.finish() } : {}),
             miraPrompt: {
               ...(roots ? { memoryRoot: roots.memoryRoot, loadInitialMemory: async (signal: AbortSignal) => (await loadMemoryBootstrap({ memoryRoot: roots.memoryRoot, signal })).memory.content } : {}),
@@ -189,19 +192,7 @@ export class LocalWebService implements WebBackend {
       }
       const item = this.#cache.get(key); if (item) items.push(item);
     }
-    const toolPage = await this.#history.page({ kinds: ['tool'], limit: 8 });
-    const tools: Timeline['tools'] = [];
-    for (const ref of toolPage.hits) {
-      try {
-        const execution = await this.#history.read({ kind: 'tool', id: ref.id, maxBytes: 1_048_576 });
-        if (execution?.kind !== 'tool') continue;
-        const payload = execution.outcome?.payload;
-        const failed = object(payload) && payload['isError'] === true;
-        tools.push({ id: execution.intent.callId, name: execution.intent.toolName,
-          status: execution.outcome ? (failed ? 'failed' : 'completed') : this.#drain && Date.parse(execution.intent.occurredAt) >= this.#startedAt ? 'running' : 'unknown' });
-      } catch (error) { if (!(error instanceof HistoryError) || error.code !== 'too_large') throw error; }
-    }
-    return { items, nextCursor: page.nextCursor, tools };
+    return { items, nextCursor: page.nextCursor };
   }
   async close(): Promise<void> {
     if (this.#closed) return;

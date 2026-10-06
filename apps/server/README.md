@@ -26,6 +26,16 @@ CLI 设置 `MIRA_DEMO_MEMORY` 即可启用 Memory；只支持当前 Memory 配�
 `workingDirectory`（CLI 为 `MIRA_DEMO_CWD`）选择已存在的普通默认目录，缺省为进程 cwd，与可能尚未建立的 overflow spool 分开；它不限制工具访问范围。Pi edit 仍使用原生执行与规范 `edits[]` schema，仅移除在持久 intent 之前运行的可选旧参数格式转换器；自定义 preparer 仍由 runtime 拒绝，实际执行前保留完整原始/验证参数证据。
 
 
+## 普通技能目录
+
+Demo 与 Web 都使用 `createSkillLoader` 调用 Pi 1.0.2 的公开 `loadSkills`，仅按顺序加载当前源码仓库的 `skills/`、`${MIRA_HOME}/skills`。`MIRA_HOME` 默认 `~/.mira`；程序化 `runDemo` / `LocalWebService.open` 可用 `miraHome` 指定同一根目录。用户技能目录尚不存在时视为空目录，不创建文件，也不持续报警。内置技能不复制到用户目录。
+
+加载器显式传入 `skillPaths` 与 `includeDefaults: false`，不扫描 `.pi`、`.agents`、祖先目录或包资源。沿用 Pi 的普通 Markdown / `SKILL.md` 发现、frontmatter 校验、真实路径去重和同名首项优先规则。内置技能优先；重名诊断包含胜出与被遮蔽的路径。诊断发生变化时在终端报告类型与路径，解析错误不把文件片段写入日志。显式 `onDiagnostics` 回调可取得完整 Pi 诊断。
+
+每个自然模型请求前刷新元数据，目录只向 Prompt 提供名称、描述和绝对路径。模型按任务需要调用现有 `read` 读取正文与相对引用，不新增技能工具或 `/skill` 命令。`disable-model-invocation: true` 沿用 Pi 行为，不进入模型目录；用户仍可明确指定文件路径让模型读取。普通文件编辑不额外 Wake，当前请求保留自己的已持久化目录快照，下一自然请求才看到新增、修改和移除。恢复与压缩继续使用确切持久 system，不重新读取 Memory。
+
+仓库内置的 [扩展开发技能](../../skills/mira-extension-authoring/SKILL.md) 跟随当前 Mira SDK 更新。技能不能创建用户授权，也不改变宿主 OS 权限、普通工具 intent/outcome、历史或 Memory 的边界。
+
 ## 手工可信扩展
 
 `MIRA_DEMO_EXTENSIONS=/absolute/extensions.json` 加载普通 JSON 中明确配置的可信本地模块；格式见 [示例](../../examples/extensions/README.md)。程序化组装可使用 `runDemo({extensions:{entries,hmr?,configurationFile?,artifactsDirectory?}, ...})`。不指定配置文件的程序化管理变更仅在当前进程有效。

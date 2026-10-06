@@ -5,7 +5,7 @@
 ## 入口与事实来源
 
 - `design/architecture-v0.5.md` 是最新设计，`design/system-prompt-design-v0.1.md` 是 Prompt 设计；实际 v0.2 模板在 `../packages/runtime-pi/prompts/`
-- 上述原文及 `design/original-v0.4.md` 历史存档保留原始字节；来源、大小与 SHA-256 见 `design/sources.json`
+- 设计原文及 `design/original-v0.4.md` 历史存档保留原始字节；实际 v0.2 Prompt 含用户明确批准的普通聊天纯文本修订，见 ADR 0011。来源 manifest 同时保存原始与当前大小/SHA，不把修订冒充原始附件
 - `adr/0006-memory-only-system-prompt.md` 记录 Memory-only、动态 Prompt、冻结快照、早期开发不保留旧设计兼容层与既有宿主 OS 执行边界的解释优先级
 - `adr/0007-model-owned-action-decisions.md` 记录主模型直接决定调用/澄清、移除 authorize gate 且保留技术执行与来源边界；不新增替代引擎
 - `adr/0008-model-catalog-and-connections.md` 和 `development/models.md` 记录 Pi 目录、显式连接、发现路径、延期登录方式和无 live 模型验收限制

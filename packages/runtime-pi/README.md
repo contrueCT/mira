@@ -88,6 +88,35 @@ old operations, or automatic Wake is introduced. Recovering history only restore
 declarations and operation evidence; executable functions still come from the
 current caller-owned registry.
 
+## Live skill metadata
+
+The optional `loadSkills(signal): Promise<Skill[]>` uses Pi's public metadata
+type and requires `miraPrompt`. Server assembly supplies this loader for both the
+demo and Web runtime. It runs once at each natural model request, after the full
+previous tool batch and its durable appends. Pi's public `formatSkillsForPrompt`
+formats names, descriptions and absolute `SKILL.md` locations; full bodies and
+relative references remain ordinary files for the existing `read` tool.
+
+The formatter output is appended **after** rendering the v0.2 template, in the
+same `mira.system.v0.2` section. It is already escaped by Pi and does not pass
+through a template placeholder again. That complete immutable string is compared
+and durably appended under the same writer fencing/CAS before the provider
+request. Old skill catalogs are removed from the active projection with old
+prompt revisions, while raw history stays intact. Body-only edits do not change
+the catalog. Skill content and metadata are context, not user permission.
+
+No watcher, skill-specific tool, `AgentSession`, slash-command expansion, new Wake
+or extra model call is introduced. A completed reply remains terminal. Recovery
+and compaction do not scan files: they preserve and verify the exact persisted
+system, then the next natural model request may refresh its catalog. Skill files
+are independent of the frozen initial Memory snapshot and Memory Git.
+
+`tests/unit/skills.test.mts` covers explicit discovery, Pi diagnostics, request
+snapshots, natural additions/changes/removals, escaping, read-on-demand bodies,
+compaction/recovery and failure fencing. `tests/recovery/skills-prompt.test.mts`
+requires isolated PostgreSQL and covers persisted recovery plus demo/Web assembly;
+the offline fixtures alone do not establish database or live-model behavior.
+
 ## Failure and recovery semantics
 
 Tools execute sequentially. Awaited agent-core subscribers persist assistant
@@ -214,8 +243,8 @@ The optional runtime configuration has `memoryRoot?`, `extensionsRoot?`, require
 Extensions Workspace field and describes this limited meaning in the environment
 text; it does not invent a universal extension directory.
 
-`prompts/mira-system-v0.2.md` is the byte-identical supplied template, checked by
-SHA-256 when loaded. `renderMiraPrompt` validates seven allowlisted keys used in
+`prompts/mira-system-v0.2.md` is the user-approved current template revision, checked
+by SHA-256 when loaded. `renderMiraPrompt` validates seven allowlisted keys used in
 eight locations, replaces them once and escapes `&`, `<` and `>` in runtime data.
 Template-looking text inside values stays literal. Required values and unknown or
 missing template placeholders fail explicitly. Unconfigured roots are represented

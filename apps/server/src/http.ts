@@ -13,7 +13,6 @@ export interface WebBackend {
   timeline(before?: string): Promise<{
     items: Array<{ id: string; role: 'user' | 'assistant' | 'notice'; text: string; occurredAt: string }>;
     nextCursor: string | null;
-    tools: Array<{ id: string; name: string; status: 'running' | 'completed' | 'failed' | 'unknown' }>;
   }>;
   submit(input: { id: string; text: string; occurredAt: string }): Promise<{ id: string; receipt: 'inserted' | 'duplicate' }>;
   settings(): Promise<WebSettings>;
@@ -122,7 +121,6 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     return {
       items: result.items.map(item => ({ id: item.id, role: item.role, text: item.text, occurredAt: item.occurredAt })),
       nextCursor: result.nextCursor,
-      tools: result.tools.map(tool => ({ id: tool.id, name: tool.name, status: tool.status })),
     };
   });
   // Large history IDs belong in a bounded body, not a request URL/header line.
@@ -131,8 +129,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     schema: { querystring: noQuery, body: objectSchema({ before: { type: 'string', minLength: 1, maxLength: 524_288, pattern: '^[A-Za-z0-9_=-]+$' } }, ['before']) },
   }, async request => {
     const result = await backend.timeline(request.body.before);
-    return { items: result.items.map(item => ({ id: item.id, role: item.role, text: item.text, occurredAt: item.occurredAt })), nextCursor: result.nextCursor,
-      tools: result.tools.map(tool => ({ id: tool.id, name: tool.name, status: tool.status })) };
+    return { items: result.items.map(item => ({ id: item.id, role: item.role, text: item.text, occurredAt: item.occurredAt })), nextCursor: result.nextCursor };
   });
   app.post<{ Body: { id: string; text: string; occurredAt: string } }>('/api/messages', {
     schema: { querystring: noQuery, body: objectSchema({ id: identifier, text: { type: 'string', minLength: 1, maxLength: 65_536 }, occurredAt: { type: 'string', format: 'date-time', maxLength: 40 } }, ['id', 'text', 'occurredAt']) },
