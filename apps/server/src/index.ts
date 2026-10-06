@@ -128,3 +128,8 @@ export { parseModelConfiguration, readModelConfiguration, emptyModelConfiguratio
 export { listBuiltinCatalog, getBuiltinCatalogModel, protocolDescription } from './model-catalog.ts';
 export { createModelTransport, type ModelTransport, type ModelTransportOptions, type ModelSelection } from './model-transport.ts';
 export { discoverModels, modelDiscoveryLimits, type DiscoveredModel, type ModelDiscoveryOptions, type ModelDiscoveryResult } from './model-discovery.ts';
+export { createLocalHttp, WebHttpError, type WebBackend } from './http.ts';
+export { WebSettingsStore, WebSettingsError, parseWebSettings, webSettingsMaxBytes, type WebSettings } from './web-settings.ts';
+export { LocalWebService, type WebServiceOptions } from './web-service.ts';
+export { browserLaunchEnvironment } from './browser-launch.ts';
+export { localDatabaseUrl } from './web-config.ts';

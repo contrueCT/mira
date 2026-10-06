@@ -72,3 +72,7 @@ v0.5 §40 不引入额外产品隔离。用户再次确认普通工具和生成�
 ## 模型目录与 transport
 
 按 [ADR 0008](adr/0008-model-catalog-and-connections.md)，server 直接使用 Pi 内置 chat 目录与逐模型协议，组装显式 API Key 和三种独立自定义连接。模型发现只返回候选 ID/名称，限额／能力需明确配置。runtime-pi 继续接收 model/streamFn，不拥有凭据、provider registry 或 ambient fallback；核心依赖方向、完整 Prompt、同轮工具、恢复与显式压缩不变。命令和限制见 [模型说明](development/models.md)。
+
+## 本地 Web
+
+按 [ADR 0009](adr/0009-local-web-client.md)，Fastify 组装同源 localhost API，React/Vite 显示单 Timeline 与模型设置。前端无核心/Pi/数据库依赖；历史只是既有事件/上下文的只读显示投影。技术来源校验、credential references、revision 与幂等提交保护真实执行边界，不引入工具批准 UI 或第二个认知循环。

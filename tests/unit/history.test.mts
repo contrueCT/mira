@@ -112,3 +112,99 @@ test('failed history queries roll back and close; connection failures do not que
     assert.deepEqual(mock.queries, []); assert.equal(mock.closed(), 1);
   });
 });
+
+test('chronological pages reject malformed or oversized requests before connecting', async (t) => {
+  const mock = mockDatabase(t, null); const history = store().history('mira-a');
+  const encoded = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  for (const request of [null, { limit: 0 }, { limit: 101 }, { limit: 1.5 }, { kinds: [] }, { kinds: ['event', 'event'] }, { kinds: ['event; DROP TABLE life_events'] }, { before: null }, { before: '' }, { before: 'not a cursor' }, { before: 'a' }, { before: 'a'.repeat(524_289) }, { before: encoded(null) }, { before: encoded({}) }]) {
+    await assert.rejects(history.page(request as never), (error: unknown) => error instanceof HistoryError && error.code === 'invalid');
+  }
+  assert.equal(mock.connected(), 0);
+});
+
+test('chronological page SQL is read-only, scoped, bounded, and projects references without original payloads', async (t) => {
+  const mock = mockDatabase(t, { hits: [], hasMore: false });
+  assert.deepEqual(await store().history('mira-a').page(), { hits: [], nextCursor: null });
+  const query = mock.queries.find(item => item.parameters)!;
+  assert.equal((query.sql.match(/WHERE mira_id = \$1/g) ?? []).length, 4);
+  assert(query.sql.includes('LIMIT $2 + 1'));
+  assert(query.sql.includes('ORDER BY time_group DESC, occurred_time DESC, raw_timestamp COLLATE "C" DESC, kind COLLATE "C" DESC, id COLLATE "C" DESC'));
+  assert(query.sql.includes("CASE WHEN pg_input_is_valid(event->>'occurredAt', 'timestamp with time zone') THEN extract(epoch FROM"));
+  assert(query.sql.includes('ORDER BY n DESC'));
+  assert(query.sql.includes('extract(epoch FROM'));
+  assert(!/event::text|envelope::text|intent::text|json_build_object\('record'/.test(query.sql));
+  assert.deepEqual(query.parameters, ['mira-a', 20, null, null, null, null, null, 262_144]);
+  assert.equal(mock.queries[0]!.sql, 'BEGIN READ ONLY');
+  assert(mock.queries.some(item => item.sql === "SET LOCAL TIME ZONE 'UTC'"));
+  assert(!mock.queries.some(item => /INSERT|UPDATE|DELETE|advisory|FOR UPDATE/.test(item.sql)));
+  assert.equal(mock.queries.at(-1)!.sql, 'COMMIT'); assert.equal(mock.closed(), 1);
+});
+
+test('chronological cursors preserve timestamp precision, bind scope and kinds, and use the oldest displayed reference', async (t) => {
+  const rows = [
+    { kind: 'context', id: "a' OR true --", miraId: 'mira-a', occurredAt: '2026-10-05T00:00:00.000001Z', cursorGroup: 1, cursorTimestamp: '1791158400.000001', cursorRawTimestamp: '' },
+    { kind: 'event', id: 'same-instant', miraId: 'mira-a', occurredAt: '2026-10-05T08:00:00.000001+08:00', cursorGroup: 1, cursorTimestamp: '1791158400.000001', cursorRawTimestamp: '' },
+  ];
+  const mock = mockDatabase(t, { hits: rows, hasMore: true }); const reader = store().history('mira-a');
+  const first = await reader.page({ kinds: ['context', 'event'], limit: 2 });
+  assert.deepEqual(first.hits, rows.map(({ cursorGroup: _group, cursorTimestamp: _time, cursorRawTimestamp: _raw, ...hit }) => hit));
+  assert(first.nextCursor); assert(!JSON.stringify(first.hits).includes('cursorTimestamp'));
+  const fields = JSON.parse(Buffer.from(first.nextCursor, 'base64url').toString('utf8')) as unknown[];
+  assert.deepEqual(fields.slice(2), [1, '1791158400.000001', '', 'context', "a' OR true --"]);
+  const second = await reader.page({ kinds: ['event', 'context'], limit: 2, before: first.nextCursor });
+  assert.deepEqual(second, first, 'reordered kinds have the same cursor scope');
+  const queries = mock.queries.filter(item => item.parameters); const query = queries[1]!;
+  assert.deepEqual(query.parameters, ['mira-a', 2, 1, '1791158400.000001', '', 'context', "a' OR true --", 262_144]);
+  assert(!query.sql.includes("a' OR true --"));
+  assert(query.sql.includes('(time_group, occurred_time, raw_timestamp COLLATE "C", kind COLLATE "C", id COLLATE "C") <'));
+  assert(query.sql.includes('($3::integer, $4::numeric, $5::text COLLATE "C", $6::text COLLATE "C", $7::text COLLATE "C")'));
+  assert(!query.sql.includes('FROM tool_executions')); assert(!query.sql.includes('FROM wake_runs'));
+  await assert.rejects(store().history('mira-b').page({ kinds: ['event', 'context'], before: first.nextCursor }), HistoryError);
+  await assert.rejects(reader.page({ kinds: ['event'], before: first.nextCursor }), HistoryError);
+  const malformed = [
+    [2, ...fields.slice(1)], [...fields, 'extra'], [1, fields[1], 1, 'Infinity', '', 'context', 'id'],
+    [1, fields[1], 1, '1791158400.0000001', '', 'context', 'id'], [1, fields[1], 1, fields[3], '', 'tool', 'id'],
+    [1, fields[1], 1, fields[3], '', 'context', ''], [1, fields[1], 1, fields[3], '', 'context', '\ud800'],
+    [1, fields[1], 1, fields[3], '', 'context', 'x'.repeat(65_537)], [1, fields[1], 2, fields[3], '', 'context', 'id'],
+    [1, fields[1], 0, '1', '1', 'context', 'id'], [1, fields[1], 0, '0', '', 'context', 'id'],
+    [1, fields[1], 1, fields[3], 'unnecessary', 'context', 'id'],
+  ];
+  for (const cursor of malformed) await assert.rejects(reader.page({ kinds: ['event', 'context'], before: Buffer.from(JSON.stringify(cursor)).toString('base64url') }), HistoryError);
+  const invalidUtf8 = Buffer.concat([Buffer.from(JSON.stringify([1, fields[1], 1, fields[3], '', 'context']).slice(0, -1) + ',"'), Buffer.from([0xff]), Buffer.from('"]')]).toString('base64url');
+  await assert.rejects(reader.page({ kinds: ['event', 'context'], before: invalidUtf8 }), HistoryError);
+  assert.equal(mock.connected(), 2);
+});
+
+test('chronological pages report oversized or corrupt metadata and clean up failed read-only requests', async (t) => {
+  await t.test('oversized', async (child) => {
+    const mock = mockDatabase(child, null, { bytes: 300_000 });
+    await assert.rejects(store().history('mira-a').page(), (error: unknown) => error instanceof HistoryError && error.code === 'too_large' && error.requiredBytes === 300_000);
+    assert(mock.queries.find(item => item.parameters)!.sql.includes('CASE WHEN bytes <= $8 THEN body ELSE NULL END'));
+  });
+  await t.test('corrupt source', async (child) => {
+    mockDatabase(child, { hits: [], hasMore: false }, { valid: false });
+    await assert.rejects(store().history('mira-a').page(), (error: unknown) => error instanceof HistoryError && error.code === 'corrupt');
+  });
+  await t.test('corrupt scope', async (child) => {
+    mockDatabase(child, { hits: [{ ...eventEntry, miraId: 'other', cursorTimestamp: '1791158400.000000' }], hasMore: false });
+    await assert.rejects(store().history('mira-a').page(), (error: unknown) => error instanceof HistoryError && error.code === 'corrupt');
+  });
+  await t.test('query failure', async (child) => {
+    const failure = Error('synthetic page timeout'); const mock = mockDatabase(child, null, { queryError: failure });
+    await assert.rejects(store().history('mira-a').page(), failure);
+    assert.equal(mock.queries.at(-1)!.sql, 'ROLLBACK'); assert.equal(mock.closed(), 1);
+  });
+});
+
+
+test('writer-accepted timestamps PostgreSQL cannot normalize remain pageable with the complete fallback cursor', async (t) => {
+  const occurredAt = '2026-02-30T00:00:00Z';
+  assert(Number.isFinite(Date.parse(occurredAt)));
+  const hit = { kind: 'event', id: 'overflow-date', miraId: 'mira-a', occurredAt };
+  const mock = mockDatabase(t, { hits: [{ ...hit, cursorGroup: 0, cursorTimestamp: '0', cursorRawTimestamp: occurredAt }], hasMore: true });
+  const reader = store().history('mira-a');
+  const page = await reader.page({ kinds: ['event'], limit: 1 });
+  assert.deepEqual(page.hits, [{ ...hit, timestampWarning: 'timestamp_not_normalized' }]); assert(page.nextCursor);
+  await reader.page({ kinds: ['event'], limit: 1, before: page.nextCursor });
+  assert.deepEqual(mock.queries.filter(query => query.parameters)[1]!.parameters, ['mira-a', 1, 0, '0', occurredAt, 'event', 'overflow-date', 262_144]);
+});

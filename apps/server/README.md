@@ -1,6 +1,6 @@
 # @mira/server
 
-当前仅实现最小组装和 PostgreSQL + 假 provider 的 CLI 演示，没有 HTTP 服务、UI、真实模型认证或费用。
+当前包含 PostgreSQL + 假 provider CLI、Fastify 本地 Web 组装，以及显式模型配置/transport。浏览器前端见 apps/web；真实模型联通与费用尚未验收。
 
 ```sh
 pnpm demo --help
@@ -38,3 +38,7 @@ CLI 设置 `MIRA_DEMO_MEMORY` 即可启用 Memory；只支持当前 Memory 配�
 ## 模型目录与连接
 
 `pnpm models --help` 提供完整 Pi chat 目录、逐模型协议、显式自定义配置和按 base URL 发现模型。`createModelTransport` 返回可注入既有 `PiDurableRuntime` 的 model/streamFn；不会改动假 provider demo。配置与 URL 语义、独立 API Key、延期的 OAuth/云登录、unknown pricing 和验证边界见 [模型说明](../../docs/development/models.md)及 [ADR 0008](../../docs/adr/0008-model-catalog-and-connections.md)。
+
+## Local web composition
+
+`web-cli.mts` / `pnpm start` starts Fastify on 127.0.0.1 and opens the built React/Vite UI. `web-service.ts` keeps the existing PostgreSQL writer and wake/runtime contracts; `web-settings.ts` stores only explicit credential references outside source with atomic CAS. See [local-web](../../docs/development/local-web.md) for exact setup and verification. No live model request is made by the offline/browser fixtures.

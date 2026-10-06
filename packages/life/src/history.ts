@@ -30,6 +30,30 @@ export interface HistorySearchResult {
   hits: HistoryHit[];
   hasMore: boolean;
 }
+/** Opaque timestamp/kind/ID continuation. Callers must not parse or construct it. */
+export type HistoryPageCursor = string;
+export interface HistoryPageRequest {
+  kinds?: HistoryKind[];
+  /** Default 20, maximum 100. */
+  limit?: number;
+  /** Fetch records strictly older than this boundary, using the same kinds. */
+  before?: HistoryPageCursor;
+}
+/** Metadata only. Fetch an original separately with read and its byte budget. */
+export interface HistoryPageHit extends HistoryReference {
+  miraId: string;
+  occurredAt: string;
+  /** Unnormalizable original timestamps sort before normalized timestamps,
+   * deterministically by original timestamp, kind, and ID. Evidence is retained. */
+  timestampWarning?: 'timestamp_not_normalized';
+}
+export interface HistoryPageResult {
+  /** Latest matching page, ascending by timestamp, kind, ID. Unnormalizable
+   * timestamp references sort first as documented by timestampWarning. */
+  hits: HistoryPageHit[];
+  /** Older records remain, or null when the beginning has been reached. */
+  nextCursor: HistoryPageCursor | null;
+}
 export interface HistoryReadRequest extends HistoryReference {
   /** Complete serialized response budget. Default 65,536; maximum 1,048,576.
    * Oversized records fail explicitly instead of silently losing evidence. */
@@ -69,6 +93,9 @@ export type HistoryEntry = HistoryEvent | HistoryContext | HistoryTool | History
 export interface HistoryReader {
   readonly miraId: string;
   search(request: HistorySearchRequest): Promise<HistorySearchResult>;
+  /** Read original append-only history, including records outside compacted
+   * working context. Pagination never copies runtime payloads into its result. */
+  page(request?: HistoryPageRequest): Promise<HistoryPageResult>;
   /** Null means this exact kind/ID was not found in this Mira. */
   read(request: HistoryReadRequest): Promise<HistoryEntry | null>;
 }

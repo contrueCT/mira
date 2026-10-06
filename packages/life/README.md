@@ -10,7 +10,7 @@
 
 PostgreSQL 与 Git 不能原子提交。Git 适配器须按 Mira/run 保存可恢复的确定结果，receipt 写入失败后才能重取同一结果，而不捕获后来文件变化或产生第二个提交；已有待处理 checkpoint 时持久化适配器禁止先完成 Wake。
 
-`src/history.ts` 的 `HistoryReader` 契约提供固定 Mira 范围的只读历史搜索与精确读取；原始 Event、Runtime envelope、工具 intent/outcome 和 Wake 关联保持分离。检索不启动认知，不修改 Memory，原始 Runtime payload 仍由对应 Runtime 解读。
+`src/history.ts` 的 `HistoryReader` 契约提供固定 Mira 范围的只读历史搜索、时间顺序分页与精确读取；原始 Event、Runtime envelope、工具 intent/outcome 和 Wake 关联保持分离。分页只返回原始记录引用及时间，不返回 payload 或创建第二份消息库；最新一页按时间升序展示，使用绑定 Mira/种类的 opaque before cursor 继续读取旧页。检索不启动认知，不修改 Memory，原始 Runtime payload 仍由对应 Runtime 解读。
 
 超过 `maxInlineBytes`（默认 65,536）的完整输入通过 `writeOverflowInput` 写成普通文本，模型获得路径和概要，按需用普通文件工具读取。文件不自动删除。没有消息优先级、专用分页服务或心理状态机。
 

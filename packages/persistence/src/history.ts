@@ -1,11 +1,14 @@
+import { createHash } from 'node:crypto';
 import { Client } from 'pg';
 import { assertJson, assertRecord } from '@mira/context';
 import { HistoryError } from '@mira/life';
-import type { HistoryEntry, HistoryKind, HistoryReader, HistoryReadRequest, HistorySearchRequest, HistorySearchResult } from '@mira/life';
+import type { HistoryEntry, HistoryKind, HistoryPageHit, HistoryPageRequest, HistoryPageResult, HistoryReader, HistoryReadRequest, HistorySearchRequest, HistorySearchResult } from '@mira/life';
 import type { PostgresOptions } from './index.ts';
 
 const FULL_TEXT_PREFIX_CHARS = 65_536;
 const MAX_SEARCH_BYTES = 262_144;
+const MAX_PAGE_BYTES = 262_144;
+const MAX_CURSOR_BYTES = 524_288;
 const kinds: HistoryKind[] = ['event', 'context', 'tool', 'wake'];
 interface Source { table: string; id: string; timestamp: string; document: string; body: string; integrity: string }
 /** Runtime payloads are opaque JSON. The same bounded expression appears in
@@ -52,6 +55,50 @@ function kind(value: unknown): asserts value is HistoryKind {
 }
 function object(value: unknown): asserts value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) invalid('Invalid history request');
+}
+function selectedKinds(value: unknown): HistoryKind[] {
+  const selected = value ?? kinds;
+  if (!Array.isArray(selected) || !selected.length || selected.length > kinds.length || new Set(selected).size !== selected.length) invalid('Invalid history kinds');
+  selected.forEach(kind);
+  // Filter order has no effect on pagination or cursor scope.
+  return kinds.filter(sourceKind => selected.includes(sourceKind));
+}
+interface PageBoundary { group: number; timestamp: string; rawTimestamp: string; kind: HistoryKind; id: string }
+interface PageRow extends HistoryPageHit { cursorGroup: number; cursorTimestamp: string; cursorRawTimestamp: string }
+interface PageBody { hits: PageRow[]; hasMore: boolean }
+function cursorScope(miraId: string, selected: HistoryKind[]): string {
+  return createHash('sha256').update(JSON.stringify([miraId, selected])).digest('hex');
+}
+function timestampKey(value: unknown): asserts value is string {
+  // PostgreSQL epoch seconds retain microsecond precision without depending on
+  // timezone formatting or JavaScript's millisecond Date precision.
+  if (typeof value !== 'string' || !/^-?\d{1,18}(?:\.\d{1,6})?$/.test(value)) invalid('Invalid history cursor timestamp');
+}
+function decodeCursor(value: unknown, scope: string, selected: HistoryKind[]): PageBoundary {
+  string(value, 'cursor', MAX_CURSOR_BYTES);
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) invalid('Invalid history cursor');
+  const decoded = Buffer.from(value, 'base64url');
+  if (decoded.toString('base64url') !== value) invalid('Invalid history cursor');
+  const json = decoded.toString('utf8');
+  if (!Buffer.from(json, 'utf8').equals(decoded)) invalid('Invalid history cursor');
+  let fields: unknown;
+  try { fields = JSON.parse(json); } catch { invalid('Invalid history cursor'); }
+  if (!Array.isArray(fields) || fields.length !== 7 || fields[0] !== 1 || fields[1] !== scope) invalid('History cursor does not match this Mira and kinds');
+  const [, , group, timestamp, rawTimestamp, sourceKind, id] = fields;
+  timestampKey(timestamp); kind(sourceKind); string(id, 'cursor ID', 65_536);
+  if (!id.isWellFormed()) invalid('Invalid history cursor ID');
+  if (group !== 0 && group !== 1) invalid('Invalid history cursor timestamp group');
+  if (group === 0) {
+    string(rawTimestamp, 'cursor original timestamp', 65_536);
+    if (timestamp !== '0' || !rawTimestamp.isWellFormed()) invalid('Invalid history cursor original timestamp');
+  } else if (rawTimestamp !== '') invalid('Invalid history cursor original timestamp');
+  if (!selected.includes(sourceKind)) invalid('History cursor kind is outside the selected kinds');
+  return { group, timestamp, rawTimestamp: rawTimestamp as string, kind: sourceKind, id };
+}
+function encodeCursor(scope: string, boundary: PageBoundary): string {
+  const cursor = Buffer.from(JSON.stringify([1, scope, boundary.group, boundary.timestamp, boundary.rawTimestamp, boundary.kind, boundary.id]), 'utf8').toString('base64url');
+  if (Buffer.byteLength(cursor, 'utf8') > MAX_CURSOR_BYTES) throw new HistoryError('too_large', 'History cursor exceeds its bounded size');
+  return cursor;
 }
 interface BoundedRow { bytes: number; body: unknown; valid: boolean }
 function bound(sql: string, maxParameter: string): string {
@@ -121,6 +168,7 @@ export class PostgresHistoryReader implements HistoryReader {
       inTransaction = true;
       await client.query(`SET LOCAL search_path TO "${this.#options.schema ?? 'public'}"`);
       await client.query("SET LOCAL statement_timeout = '5s'");
+      await client.query("SET LOCAL TIME ZONE 'UTC'");
       const result = await client.query<BoundedRow>(sql, parameters);
       await client.query('COMMIT');
       inTransaction = false;
@@ -137,9 +185,7 @@ export class PostgresHistoryReader implements HistoryReader {
     const mode = request.mode ?? 'full_text';
     if (mode !== 'full_text' && mode !== 'substring') invalid('Invalid history search mode');
     const limit = request.limit ?? 20; integer(limit, 1, 100, 'limit');
-    const selected = request.kinds ?? kinds;
-    if (!Array.isArray(selected) || !selected.length || selected.length > kinds.length || new Set(selected).size !== selected.length) invalid('Invalid history kinds');
-    selected.forEach(kind);
+    const selected = selectedKinds(request.kinds);
     const matches = selected.map(sourceKind => {
       const source = sources[sourceKind];
       const vector = `to_tsvector('simple'::regconfig, left(${source.document}, ${FULL_TEXT_PREFIX_CHARS}))`;
@@ -164,6 +210,57 @@ export class PostgresHistoryReader implements HistoryReader {
       [this.miraId, request.query, limit, mode, mode === 'full_text' ? FULL_TEXT_PREFIX_CHARS : null, MAX_SEARCH_BYTES]));
     if (!result) throw new HistoryError('corrupt', 'History search returned no response');
     return result;
+  }
+  async page(request: HistoryPageRequest = {}): Promise<HistoryPageResult> {
+    object(request);
+    const limit = request.limit ?? 20; integer(limit, 1, 100, 'limit');
+    const selected = selectedKinds(request.kinds);
+    const scope = cursorScope(this.miraId, selected);
+    const boundary = request.before === undefined ? null : decodeCursor(request.before, scope, selected);
+    const matches = selected.map(sourceKind => {
+      const source = sources[sourceKind];
+      // Project only immutable reference metadata. Even a multi-megabyte private
+      // system/runtime payload must not consume the history page's byte budget.
+      const normalizable = `pg_input_is_valid(${source.timestamp}, 'timestamp with time zone')`;
+      return `SELECT '${sourceKind}'::text AS kind, ${source.id} AS id, ${source.timestamp} AS occurred_at,
+        CASE WHEN ${normalizable} THEN 1 ELSE 0 END AS time_group,
+        CASE WHEN ${normalizable} THEN extract(epoch FROM (${source.timestamp})::timestamptz) ELSE 0 END AS occurred_time,
+        CASE WHEN ${normalizable} THEN '' ELSE ${source.timestamp} END AS raw_timestamp,
+        (${source.integrity}) AS valid FROM ${source.table} AS s WHERE mira_id = $1`;
+    }).join('\nUNION ALL\n');
+    const order = 'time_group DESC, occurred_time DESC, raw_timestamp COLLATE "C" DESC, kind COLLATE "C" DESC, id COLLATE "C" DESC';
+    const sql = `WITH matches AS (${matches}), limited AS MATERIALIZED
+      (SELECT * FROM matches WHERE $3::integer IS NULL OR
+        (time_group, occurred_time, raw_timestamp COLLATE "C", kind COLLATE "C", id COLLATE "C") <
+        ($3::integer, $4::numeric, $5::text COLLATE "C", $6::text COLLATE "C", $7::text COLLATE "C")
+        ORDER BY ${order} LIMIT $2 + 1),
+      numbered AS (SELECT *, row_number() OVER (ORDER BY ${order}) AS n FROM limited)
+      SELECT json_build_object('hasMore', count(*) > $2,
+        'hits', coalesce(json_agg(json_build_object('kind', kind, 'id', id, 'miraId', $1::text,
+          'occurredAt', occurred_at, 'cursorGroup', time_group, 'cursorTimestamp', occurred_time::text, 'cursorRawTimestamp', raw_timestamp)
+          ORDER BY n DESC) FILTER (WHERE n <= $2), '[]'::json)) AS body,
+        coalesce(bool_and(valid IS TRUE), true) AS valid FROM numbered`;
+    const result = response<PageBody>(await this.#query(bound(sql, '$8'),
+      [this.miraId, limit, boundary?.group ?? null, boundary?.timestamp ?? null, boundary?.rawTimestamp ?? null, boundary?.kind ?? null, boundary?.id ?? null, MAX_PAGE_BYTES]));
+    if (!result) throw new HistoryError('corrupt', 'History page returned no response');
+    try {
+      if (!Array.isArray(result.hits) || result.hits.length > limit || typeof result.hasMore !== 'boolean' || (result.hasMore && result.hits.length !== limit)) throw Error();
+      for (const hit of result.hits) {
+        kind(hit.kind); string(hit.id, 'ID', 65_536); timestampKey(hit.cursorTimestamp);
+        if (hit.cursorGroup !== 0 && hit.cursorGroup !== 1) throw Error();
+        if (hit.cursorGroup === 0) {
+          string(hit.cursorRawTimestamp, 'original timestamp', 65_536);
+          if (hit.cursorTimestamp !== '0' || hit.cursorRawTimestamp !== hit.occurredAt) throw Error();
+        } else if (hit.cursorRawTimestamp !== '') throw Error();
+        if (!selected.includes(hit.kind) || hit.miraId !== this.miraId || typeof hit.occurredAt !== 'string' || !Number.isFinite(Date.parse(hit.occurredAt))) throw Error();
+      }
+    } catch { throw new HistoryError('corrupt', 'Invalid history page metadata'); }
+    const oldest = result.hits[0];
+    return {
+      hits: result.hits.map(({ kind, id, miraId, occurredAt, cursorGroup }) => ({ kind, id, miraId, occurredAt,
+        ...(cursorGroup === 0 ? { timestampWarning: 'timestamp_not_normalized' as const } : {}) })),
+      nextCursor: result.hasMore && oldest ? encodeCursor(scope, { group: oldest.cursorGroup, timestamp: oldest.cursorTimestamp, rawTimestamp: oldest.cursorRawTimestamp, kind: oldest.kind, id: oldest.id }) : null,
+    };
   }
   async read(request: HistoryReadRequest): Promise<HistoryEntry | null> {
     object(request); kind(request.kind); string(request.id, 'ID', 65_536);

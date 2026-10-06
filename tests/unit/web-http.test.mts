@@ -1,0 +1,229 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { createLocalHttp, WebHttpError, WebSettingsError, type WebBackend, type WebSettings } from '@mira/server';
+
+const port = 4317;
+const origin = `http://127.0.0.1:${port}`;
+const readHeaders = { host: `127.0.0.1:${port}`, 'x-mira-client': 'web' };
+const writeHeaders = { ...readHeaders, origin, 'content-type': 'application/json' };
+const settings = (): WebSettings => ({ revision: 'a'.repeat(64), configuration: { builtinCredentials: {}, customConnections: [] }, selection: null });
+const message = { id: 'user-1', text: 'Hello Mira', occurredAt: '2026-10-06T07:00:00.000Z' };
+const connection = { id: 'custom', baseUrl: 'https://models.example.test/v1', api: 'openai-completions', apiKeyEnv: 'SYNTHETIC_EXPLICIT_KEY_REFERENCE', models: [] };
+function backend(overrides: Partial<WebBackend> = {}): WebBackend {
+  return {
+    status: async () => ({ state: 'idle', mode: 'synthetic', model: null, error: null }),
+    timeline: async () => ({ items: [{ id: 'user-1', role: 'user', text: 'Hello Mira', occurredAt: message.occurredAt }], nextCursor: null, tools: [] }),
+    submit: async input => ({ id: input.id, receipt: 'inserted' }),
+    settings: async () => settings(), saveSettings: async value => value as WebSettings,
+    discover: async () => ({ endpoint: `${connection.baseUrl}/models`, models: [{ id: 'example', name: 'Example' }] }),
+    ...overrides,
+  };
+}
+
+test('local API exposes allowlisted complete messages, lifecycle status, settings and catalog without credentials', async t => {
+  const app = createLocalHttp({ backend: backend(), port }); t.after(() => app.close());
+  const status = await app.inject({ url: '/api/status', headers: readHeaders });
+  assert.equal(status.statusCode, 200); assert.deepEqual(status.json(), { state: 'idle', mode: 'synthetic', model: null, error: null });
+  assert.equal(status.headers['cache-control'], 'private, no-store');
+  assert.equal(status.headers['x-content-type-options'], 'nosniff'); assert.equal(status.headers['referrer-policy'], 'no-referrer');
+  assert.equal(status.headers['x-frame-options'], 'DENY'); assert.match(String(status.headers['content-security-policy']), /frame-ancestors 'none'/u);
+  assert.ok(!String(status.headers['content-security-policy']).includes('unsafe-inline')); assert.equal(status.headers['access-control-allow-origin'], undefined);
+  const timeline = await app.inject({ url: '/api/timeline', headers: readHeaders }); assert.equal(timeline.statusCode, 200); assert.equal(timeline.json().items.length, 1);
+  const current = await app.inject({ url: '/api/settings', headers: readHeaders }); assert.deepEqual(current.json(), settings());
+  const saved = await app.inject({ method: 'PUT', url: '/api/settings', headers: writeHeaders, payload: settings() }); assert.equal(saved.statusCode, 200);
+  const submitted = await app.inject({ method: 'POST', url: '/api/messages', headers: writeHeaders, payload: message }); assert.equal(submitted.statusCode, 201); assert.deepEqual(submitted.json(), { id: message.id, receipt: 'inserted' });
+  const catalog = await app.inject({ url: '/api/models/catalog', headers: readHeaders }); assert.equal(catalog.statusCode, 200); assert.ok(catalog.json().providers.length > 0);
+  assert.equal(catalog.json().source, '@earendil-works/pi-ai@1.0.2'); assert.ok(!catalog.body.includes('"apiKey":'));
+  const discovered = await app.inject({ method: 'POST', url: '/api/models/discover', headers: writeHeaders, payload: { connection } }); assert.equal(discovered.statusCode, 200); assert.equal(discovered.json().models[0].id, 'example');
+});
+
+test('all routes reject foreign hosts, rebinding names and foreign/null origins before backend work', async t => {
+  let calls = 0;
+  const app = createLocalHttp({ backend: backend({ status: async () => { calls++; throw Error('must not run'); } }), port }); t.after(() => app.close());
+  for (const host of ['localhost:4317', '127.0.0.1', '127.0.0.1:4318', 'evil.example:4317', '[::1]:4317', '127.0.0.1:4317, evil.example']) {
+    for (const url of ['/', '/assets/main.js', '/api/status', '/missing']) {
+      const response = await app.inject({ url, headers: { ...readHeaders, host } }); assert.equal(response.statusCode, 403, `${url} ${host}`);
+    }
+  }
+  for (const foreign of ['null', 'https://evil.example', 'http://localhost:4317', `${origin}/`, 'http://127.0.0.1:4318']) {
+    const response = await app.inject({ url: '/api/status', headers: { ...readHeaders, origin: foreign } }); assert.equal(response.statusCode, 403);
+  }
+  assert.equal(calls, 0);
+});
+
+test('API reads require the custom header and reject foreign fetch metadata even without Origin', async t => {
+  const app = createLocalHttp({ backend: backend(), port }); t.after(() => app.close());
+  for (const extra of [{}, { 'x-mira-client': 'wrong' }, { 'x-mira-client': 'web, web' }]) {
+    assert.equal((await app.inject({ url: '/api/settings', headers: { host: readHeaders.host, ...extra } })).statusCode, 403);
+  }
+  for (const extra of [
+    { 'sec-fetch-site': 'cross-site' }, { 'sec-fetch-site': 'same-site' }, { 'sec-fetch-site': 'null' },
+    { 'sec-fetch-mode': 'navigate' }, { 'sec-fetch-mode': 'no-cors' }, { 'sec-fetch-dest': 'script' }, { 'sec-fetch-dest': 'document' },
+  ]) assert.equal((await app.inject({ url: '/api/status', headers: { ...readHeaders, ...extra } })).statusCode, 403);
+  assert.equal((await app.inject({ url: '/api/status', headers: { ...readHeaders, origin, 'sec-fetch-site': 'same-origin', 'sec-fetch-mode': 'cors', 'sec-fetch-dest': 'empty' } })).statusCode, 200);
+});
+
+test('writes require exact Origin, JSON and client header; methods and preflights are not enabled', async t => {
+  let calls = 0; const app = createLocalHttp({ backend: backend({ submit: async input => { calls++; return { id: input.id, receipt: 'duplicate' }; } }), port }); t.after(() => app.close());
+  assert.equal((await app.inject({ method: 'POST', url: '/api/messages', headers: readHeaders, payload: message })).statusCode, 403);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/messages', headers: { host: readHeaders.host, origin, 'content-type': 'application/json' }, payload: message })).statusCode, 403);
+  for (const contentType of ['text/plain', 'application/x-www-form-urlencoded', 'multipart/form-data; boundary=x', 'application/json-patch+json', 'application/json; charset=latin1']) {
+    assert.equal((await app.inject({ method: 'POST', url: '/api/messages', headers: { ...writeHeaders, 'content-type': contentType }, payload: JSON.stringify(message) })).statusCode, 415);
+  }
+  for (const method of ['HEAD', 'POST', 'PATCH', 'DELETE', 'OPTIONS'] as const) {
+    const response = await app.inject({ method, url: '/api/status', headers: writeHeaders }); assert.equal(response.statusCode, 405); assert.equal(response.headers['access-control-allow-origin'], undefined);
+  }
+  const duplicate = await app.inject({ method: 'POST', url: '/api/messages', headers: { ...writeHeaders, 'content-type': 'application/json; charset=utf-8' }, payload: message });
+  assert.equal(duplicate.statusCode, 200); assert.equal(duplicate.json().receipt, 'duplicate'); assert.equal(calls, 1);
+});
+
+test('schema validation rejects unknown keys, coercion, repeated and oversized queries, malformed JSON and messages', async t => {
+  let calls = 0; const app = createLocalHttp({ backend: backend({ submit: async input => { calls++; return { id: input.id, receipt: 'inserted' }; } }), port }); t.after(() => app.close());
+  for (const payload of [
+    {}, null, [], { ...message, extra: true }, { ...message, id: 1 }, { ...message, id: 'not a valid id' }, { ...message, text: ' \n ' },
+    { ...message, text: false }, { ...message, occurredAt: 'not-a-date' }, { ...message, occurredAt: '2026-02-31T00:00:00Z' },
+  ]) {
+    const response = await app.inject({ method: 'POST', url: '/api/messages', headers: writeHeaders, payload: JSON.stringify(payload) }); assert.equal(response.statusCode, 400, JSON.stringify(payload));
+  }
+  for (const payload of ['{"text":', '{"__proto__":{"polluted":true}}', '{"constructor":{"prototype":{}}}']) {
+    assert.equal((await app.inject({ method: 'POST', url: '/api/messages', headers: writeHeaders, payload })).statusCode, 400);
+  }
+  for (const url of ['/api/status?extra=secret', '/api/timeline?before=', '/api/timeline?before=a&before=b', '/api/timeline?before=a.b', '/api/timeline?before=' + 'a'.repeat(2_049), '/api/models/catalog?provider=openai']) {
+    assert.equal((await app.inject({ url, headers: readHeaders })).statusCode, 400, url.slice(0, 80));
+  }
+  for (const text of ['a'.repeat(65_537), '界'.repeat(22_000)]) assert.equal((await app.inject({ method: 'POST', url: '/api/messages', headers: writeHeaders, payload: { ...message, text } })).statusCode, 413);
+  assert.equal(calls, 0);
+});
+
+test('settings and discovery reject credential values and unknown nested fields before reaching backend', async t => {
+  let calls = 0;
+  const app = createLocalHttp({ backend: backend({ saveSettings: async () => { calls++; throw Error('never'); }, discover: async () => { calls++; throw Error('never'); } }), port }); t.after(() => app.close());
+  for (const payload of [{ ...settings(), apiKey: 'synthetic-secret' }, { ...settings(), configuration: { apiKey: 'synthetic-secret' } }, { ...settings(), selection: { kind: 'custom', connection: 'x', model: 'm', token: 'synthetic-secret' } }]) {
+    const response = await app.inject({ method: 'PUT', url: '/api/settings', headers: writeHeaders, payload }); assert.equal(response.statusCode, 400); assert.ok(!response.body.includes('synthetic-secret'));
+  }
+  for (const payload of [{ connection: { ...connection, apiKey: 'synthetic-secret' } }, { connection, extra: true }, { connection: { ...connection, apiKeyEnv: 'not a variable' } }, { connection: { ...connection, modelsUrl: 'https://another.example.test/models' } }]) {
+    const response = await app.inject({ method: 'POST', url: '/api/models/discover', headers: writeHeaders, payload }); assert.equal(response.statusCode, 400);
+  }
+  assert.equal((await app.inject({ method: 'PUT', url: '/api/settings', headers: writeHeaders, payload: ' '.repeat(2_000_001) })).statusCode, 413);
+  assert.equal(calls, 0);
+});
+
+test('responses omit internal fields and sanitize backend errors, status diagnostics and settings conflicts', async t => {
+  const secret = 'synthetic-provider-secret-stack-path';
+  const app = createLocalHttp({ backend: backend({
+    status: async () => ({ state: 'error', mode: 'live', model: 'example-model', error: secret, apiKey: secret }),
+    timeline: async before => { assert.equal(before, 'cursor_1'); return { items: [{ id: '1', role: 'assistant', text: 'Visible answer', occurredAt: message.occurredAt, raw: secret }], nextCursor: null, tools: [{ id: 'tool-1', name: 'read', status: 'unknown', arguments: secret }], raw: secret }; },
+    submit: async () => { throw Error(secret); },
+    saveSettings: async () => { throw new WebSettingsError('settings_conflict'); },
+    discover: async () => ({ endpoint: `${connection.baseUrl}/models`, models: [{ id: 'safe-model', raw: secret }], headers: { authorization: secret } }),
+  }), port }); t.after(() => app.close());
+  for (const url of ['/api/status', '/api/timeline?before=cursor_1']) { const response = await app.inject({ url, headers: readHeaders }); assert.equal(response.statusCode, 200); assert.ok(!response.body.includes(secret)); assert.ok(!response.body.includes('"raw"')); }
+  const failed = await app.inject({ method: 'POST', url: '/api/messages', headers: writeHeaders, payload: message }); assert.equal(failed.statusCode, 500); assert.ok(!failed.body.includes(secret)); assert.ok(!failed.body.includes('stack'));
+  const conflict = await app.inject({ method: 'PUT', url: '/api/settings', headers: writeHeaders, payload: settings() }); assert.equal(conflict.statusCode, 409); assert.match(conflict.json().error, /reload/u);
+  const discovered = await app.inject({ method: 'POST', url: '/api/models/discover', headers: writeHeaders, payload: { connection } }); assert.equal(discovered.statusCode, 200); assert.ok(!discovered.body.includes(secret));
+});
+
+test('busy and unavailable service errors have fixed status and text, never raw messages', async t => {
+  const app = createLocalHttp({ backend: backend({ submit: async () => { throw new WebHttpError('unavailable'); }, saveSettings: async () => { throw new WebHttpError('busy'); } }), port }); t.after(() => app.close());
+  assert.equal((await app.inject({ method: 'POST', url: '/api/messages', headers: writeHeaders, payload: message })).statusCode, 503);
+  assert.equal((await app.inject({ method: 'PUT', url: '/api/settings', headers: writeHeaders, payload: settings() })).statusCode, 409);
+});
+
+test('model discovery has one active request and a bounded per-minute rate', async t => {
+  let release: (() => void) | undefined; let started: (() => void) | undefined;
+  const begin = new Promise<void>(resolve => { started = resolve; });
+  const block = new Promise<void>(resolve => { release = resolve; });
+  let calls = 0;
+  const app = createLocalHttp({ backend: backend({ discover: async (_connection, signal) => { assert.ok(signal instanceof AbortSignal); calls++; started?.(); await block; return { endpoint: `${connection.baseUrl}/models`, models: [] }; } }), port }); t.after(() => app.close());
+  const first = app.inject({ method: 'POST', url: '/api/models/discover', headers: writeHeaders, payload: { connection } }).then(value => value);
+  await begin;
+  assert.equal((await app.inject({ method: 'POST', url: '/api/models/discover', headers: writeHeaders, payload: { connection } })).statusCode, 409);
+  release?.(); assert.equal((await first).statusCode, 200);
+  for (let index = 0; index < 4; index++) assert.equal((await app.inject({ method: 'POST', url: '/api/models/discover', headers: writeHeaders, payload: { connection } })).statusCode, 200);
+  const capped = await app.inject({ method: 'POST', url: '/api/models/discover', headers: writeHeaders, payload: { connection } }); assert.equal(capped.statusCode, 429); assert.equal(capped.headers['retry-after'], '60'); assert.equal(calls, 5);
+});
+
+test('local API has a global bound on outstanding backend reads', async t => {
+  let release: (() => void) | undefined; let started: (() => void) | undefined; let calls = 0;
+  const block = new Promise<void>(resolve => { release = resolve; }); const begin = new Promise<void>(resolve => { started = resolve; });
+  const app = createLocalHttp({ backend: backend({ status: async () => { calls++; if (calls === 32) started?.(); await block; return { state: 'idle', mode: 'synthetic', model: null, error: null }; } }), port }); t.after(() => app.close());
+  const requests = Array.from({ length: 32 }, () => app.inject({ url: '/api/status', headers: readHeaders }).then(value => value));
+  await begin; assert.equal((await app.inject({ url: '/api/status', headers: readHeaders })).statusCode, 429);
+  release?.(); assert.ok((await Promise.all(requests)).every(response => response.statusCode === 200));
+  assert.equal((await app.inject({ url: '/api/status', headers: readHeaders })).statusCode, 200);
+});
+
+test('production static files use the same origin, CSP and explicit build routes with no traversal, source or symlink leaks', async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'mira-web-assets-')); t.after(() => rm(directory, { recursive: true, force: true }));
+  await mkdir(path.join(directory, 'assets')); await writeFile(path.join(directory, 'index.html'), '<!doctype html><script type="module" src="/assets/main.js"></script>');
+  await writeFile(path.join(directory, 'assets/main.js'), 'console.log("synthetic")'); await writeFile(path.join(directory, 'secret.json'), 'synthetic-private-source');
+  await symlink(path.join(directory, 'secret.json'), path.join(directory, 'assets/leak.js'));
+  const app = createLocalHttp({ backend: backend(), port, assetsDirectory: directory }); t.after(() => app.close());
+  for (const url of ['/', '/assets/main.js']) {
+    const response = await app.inject({ url, headers: { host: readHeaders.host, 'sec-fetch-site': 'none', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' } }); assert.equal(response.statusCode, 200); assert.ok(response.headers['content-security-policy']);
+  }
+  for (const url of ['/secret.json', '/src/main.tsx', '/missing', '/assets/leak.js', '/assets/../secret.json', '/assets/%2e%2e/secret.json', '/assets/.hidden', '/assets/%5c..%5csecret.json', '/api/unknown']) {
+    const response = await app.inject({ url, headers: readHeaders }); assert.ok(response.statusCode >= 400, url); assert.ok(!response.body.includes('synthetic-private-source'));
+  }
+  assert.equal((await app.inject({ url: '/assets/main.js', headers: { host: 'evil.example' } })).statusCode, 403);
+});
+
+test('server requires a concrete localhost port', () => {
+  for (const invalid of [0, -1, 65_536, 4.5, NaN]) assert.throws(() => createLocalHttp({ backend: backend(), port: invalid }));
+});
+
+test('router-level malformed URL errors also enforce Host and omit raw request data', async t => {
+  const app = createLocalHttp({ backend: backend(), port }); t.after(() => app.close());
+  for (const host of [readHeaders.host, 'evil.example']) {
+    const response = await app.inject({ url: '/assets/%zz-synthetic-secret', headers: { ...readHeaders, host } });
+    assert.equal(response.statusCode, host === readHeaders.host ? 400 : 403);
+    assert.ok(!response.body.includes('synthetic-secret')); assert.ok(response.headers['content-security-policy']);
+    assert.equal(response.headers['cache-control'], 'private, no-store');
+  }
+});
+
+test('read-only timeline POST carries the full history cursor without request-line truncation', async t => {
+  const before = 'a'.repeat(200_000); let received: string | undefined;
+  const app = createLocalHttp({ backend: backend({ timeline: async cursor => { received = cursor; return { items: [], nextCursor: null, tools: [] }; } }), port });
+  t.after(() => app.close());
+  const response = await app.inject({ method: 'POST', url: '/api/timeline', headers: writeHeaders, payload: { before } });
+  assert.equal(response.statusCode, 200); assert.equal(received, before);
+  const oversized = await app.inject({ method: 'POST', url: '/api/timeline', headers: writeHeaders, payload: { before: 'a'.repeat(524_289) } });
+  assert.equal(oversized.statusCode, 400);
+  const foreign = await app.inject({ method: 'POST', url: '/api/timeline', headers: { ...writeHeaders, origin: 'https://foreign.example' }, payload: { before } });
+  assert.equal(foreign.statusCode, 403);
+});
+
+test('browser opener environment cannot inherit server credentials or code-injection flags', async () => {
+  const { browserLaunchEnvironment } = await import('@mira/server');
+  const original = { PATH: '/usr/bin', HOME: '/tmp/synthetic', DISPLAY: ':1', SystemRoot: 'C:\\Windows', OPENAI_API_KEY: 'secret-sentinel', CUSTOM_TOKEN: 'custom-sentinel', MIRA_DATABASE_URL: 'postgres://secret@localhost/mira', NODE_OPTIONS: '--import=evil.mjs', LD_PRELOAD: 'evil.so' };
+  assert.deepEqual(browserLaunchEnvironment(original), { PATH: '/usr/bin', HOME: '/tmp/synthetic', DISPLAY: ':1', SystemRoot: 'C:\\Windows' });
+  assert.equal(original.OPENAI_API_KEY, 'secret-sentinel');
+});
+
+test('local database URL requires an explicit database and never echoes credentials', async () => {
+  const { localDatabaseUrl } = await import('@mira/server');
+  for (const value of [undefined, '', 'postgres://localhost', 'postgres://localhost/', 'postgres://127.0.0.1', 'postgres://[::1]/', 'postgres://remote.example/mira', 'postgres://localhost/mira?options=x', 'not-a-url-secret-sentinel']) {
+    assert.throws(() => localDatabaseUrl(value), error => error instanceof Error && !error.message.includes('secret-sentinel'));
+  }
+  assert.equal(localDatabaseUrl('postgres://user:synthetic@127.0.0.1/mira'), 'postgres://user:synthetic@127.0.0.1/mira');
+});
+
+test('encoded API aliases cannot bypass client, origin or resource guards', async t => {
+  let calls = 0;
+  const app = createLocalHttp({ backend: backend({ status: async () => { calls++; return { state: 'idle', mode: 'synthetic', model: null, error: null }; }, submit: async value => { calls++; return { id: value.id, receipt: 'inserted' }; } }), port });
+  t.after(() => app.close());
+  for (const url of ['/%61pi/status', '/api/%73tatus', '/%61%70%69/status']) {
+    assert.equal((await app.inject({ url, headers: { host: readHeaders.host } })).statusCode, 400);
+    assert.equal((await app.inject({ url, headers: readHeaders })).statusCode, 400);
+  }
+  for (const url of ['/%61pi/messages', '/api/%6dessages']) {
+    const response = await app.inject({ method: 'POST', url, headers: { host: readHeaders.host, 'content-type': 'application/json' }, payload: message });
+    assert.equal(response.statusCode, 400);
+    assert.equal((await app.inject({ method: 'POST', url, headers: writeHeaders, payload: message })).statusCode, 400);
+  }
+  assert.equal(calls, 0);
+});

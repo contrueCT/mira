@@ -16,6 +16,8 @@
     "@earendil-works/pi-agent-core": "1.0.2",
     "@earendil-works/pi-ai": "1.0.2",
     "@earendil-works/pi-coding-agent": "1.0.2",
-    "@mira/extension-host": "workspace:*"
+    "@mira/extension-host": "workspace:*",
+    "fastify": "5.12.5",
+    "@fastify/static": "10.1.5"
   }
 }

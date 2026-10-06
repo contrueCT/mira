@@ -121,9 +121,13 @@ test('strict configuration includes workspace mts and tsx files', async () => {
     const files = ['packages/life/wrong.mts', 'apps/web/wrong.tsx'];
     for (const file of files) await writeFile(path.join(root, file), 'const definitelyWrong: number = "text";');
     const config = JSON.parse(await readFile(path.join(process.cwd(), 'tsconfig.json'), 'utf8'));
-    const parsed = ts.parseJsonConfigFileContent(config, ts.sys, root);
-    const program = ts.createProgram(parsed.fileNames, { ...parsed.options, types: [] });
+    const web = JSON.parse(await readFile(path.join(process.cwd(), 'tsconfig.web.json'), 'utf8'));
+    const manifest = JSON.parse(await readFile(path.join(process.cwd(), 'package.json'), 'utf8'));
+    assert.match(manifest.scripts.typecheck, /tsconfig\.web\.json/);
     for (const file of files) {
+      const selected = file.startsWith('apps/web/') ? { ...config, ...web, extends: undefined, compilerOptions: { ...config.compilerOptions, ...web.compilerOptions } } : config;
+      const parsed = ts.parseJsonConfigFileContent(selected, ts.sys, root);
+      const program = ts.createProgram(parsed.fileNames, { ...parsed.options, types: [] });
       const absolute = path.join(root, file);
       assert.ok(parsed.fileNames.includes(absolute), `${file} must enter typecheck`);
       assert.ok(program.getSemanticDiagnostics(program.getSourceFile(absolute)).some((diagnostic) => diagnostic.code === 2322), `${file} must reject type mismatch`);

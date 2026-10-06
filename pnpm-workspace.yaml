@@ -4,6 +4,8 @@ packages:
 
 engineStrict: true
 saveExact: true
+minimumReleaseAgeExclude:
+  - vite@8.3.3
 
-# Dependencies may not execute installation scripts without an explicit update.
+# Dependency lifecycle scripts remain disabled.
 allowBuilds: {}
