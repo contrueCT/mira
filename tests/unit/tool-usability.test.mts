@@ -4,6 +4,8 @@ import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import test from 'node:test';
+import { HistoryError, type HistoryReadRequest } from '@mira/life';
+import { FixtureHistoryReader, fixtureHistoryIds, fixtureMiraId, historyFixtures } from '../../scripts/tool-usability-fixtures.mts';
 const execute = promisify(execFile);
 const script = path.resolve('scripts/tool-usability.mts');
 async function cli(...args: string[]) {
@@ -19,26 +21,133 @@ test('tool CLI exposes live declarations, bounded history results and production
     const list = await cli(session, 'list');
     assert.deepEqual(list.tools.map((tool: { name: string }) => tool.name), ['history_search', 'history_read', 'extension_inspect', 'extension_stage', 'extension_manage']);
     assert.match(list.historyBackend, /not PostgreSQL/);
+    const readSchema = list.tools.find((tool: { name: string }) => tool.name === 'history_read').parameters;
+    assert.deepEqual(Object.keys(readSchema.properties).sort(), ['id', 'maxBytes']);
+    assert.deepEqual(readSchema.required, ['id']);
+    assert.equal(readSchema.additionalProperties, false);
+    assert.match(fixtureHistoryIds.requirement, new RegExp(readSchema.properties.id.pattern));
     assert.ok(list.tools.every((tool: { description: string; parameters: unknown }) => tool.description.length > 40 && tool.parameters));
     const prompt = await cli(session, 'prompt');
     assert.match(prompt.prompt, /You are Mira/);
     assert.match(prompt.prompt, /mira-extension-authoring/);
-    const search = value(await cli(session, 'call', 'history_search', '{"query":"中文提醒","mode":"substring"}'));
+    const search = value(await cli(session, 'call', 'history_search', '{"query":"中文提醒","mode":"substring","kinds":["event"]}'));
     assert.equal(search.hits.length, 1);
-    const original = value(await cli(session, 'call', 'history_read', JSON.stringify({ kind: search.hits[0].kind, id: search.hits[0].id })));
+    const original = value(await cli(session, 'call', 'history_read', JSON.stringify({ id: search.hits[0].id })));
     assert.match(original.event.payload.text, /状态发生变化/);
+    assert.equal(original.kind, 'event');
+    assert.equal(original.id, fixtureHistoryIds.requirement);
+    assert.equal(original.event.id, 'evt-104');
+    assert.notEqual(original.id, original.event.id);
+    const prefixMiss = value(await cli(session, 'call', 'history_search', '{"query":"灯塔尾注","mode":"full_text"}'));
+    assert.deepEqual(prefixMiss.hits, []);
+    assert.equal(prefixMiss.fullTextPrefixChars, 65_536);
     const appendix = value(await cli(session, 'call', 'history_search', '{"query":"灯塔尾注","mode":"substring"}'));
-    const reference = { kind: appendix.hits[0].kind, id: appendix.hits[0].id };
+    const reference = { id: appendix.hits[0].id };
     const bounded = value(await cli(session, 'call', 'history_read', JSON.stringify(reference)));
     assert.equal(bounded.error, 'too_large');
     const full = value(await cli(session, 'call', 'history_read', JSON.stringify({ ...reference, maxBytes: bounded.requiredBytes })));
     assert.match(full.event.payload.text, /45 days/);
-    assert.equal(value(await cli(session, 'call', 'history_read', '{"kind":"event","id":"missing"}')), null);
+    assert.equal(value(await cli(session, 'call', 'history_read', '{"id":"ffffffff-ffff-4fff-8fff-ffffffffffff"}')), null);
+    assert.equal(value(await cli(session, 'call', 'history_read', JSON.stringify({ id: fixtureHistoryIds.otherMira }))), null);
+    assert.deepEqual(value(await cli(session, 'call', 'history_search', '{"query":"belonging only to another Mira","mode":"substring"}')).hits, []);
+    const wrongShape = await cli(session, 'call', 'history_read', JSON.stringify({ id: original.id, kind: 'event' }));
+    assert.ok(wrongShape.results[0].error?.includes('Validation failed') || value(wrongShape).error === 'invalid');
+    const invalidId = await cli(session, 'call', 'history_read', '{"id":"evt-104"}');
+    assert.match(invalidId.results[0].error, /Validation failed/);
     const invalid = await cli(session, 'call', 'history_search', '{"query":"x","limit":101}');
     assert.match(invalid.results[0].error, /Validation failed/);
     const records = (await readFile(path.join(session, 'evidence.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     assert.ok(records.some(record => record.type === 'declarations'));
     assert.ok(records.some(record => record.type === 'call_finished' && record.name === 'history_read'));
+  } finally { await rm(session, { recursive: true, force: true }); }
+});
+
+test('fixture identities keep original source keys and resolve every provenance link', async () => {
+  const entries = historyFixtures();
+  const byId = new Map(entries.map(entry => [entry.id, entry]));
+  assert.equal(byId.size, entries.length);
+  const reader = new FixtureHistoryReader(entries);
+  for (const entry of entries) {
+    assert.match(entry.id, /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    if (entry.miraId !== fixtureMiraId) continue;
+    assert.deepEqual(await reader.read({ id: entry.id, maxBytes: 1_048_576 }), entry);
+    if (entry.kind === 'context') {
+      assert.equal(entry.record.id, entry.id);
+      if (entry.record.parentId) assert.equal(byId.get(entry.record.parentId)?.kind, 'context');
+    } else if (entry.kind === 'tool') {
+      const assistant = byId.get(entry.intent.assistantRecordId);
+      assert.equal(assistant?.kind, 'context');
+      assert.ok(assistant?.kind === 'context');
+      assert.equal(assistant.version, entry.contextVersion);
+      assert.match(JSON.stringify(assistant.record.payload), new RegExp(entry.intent.callId));
+      assert.notEqual(entry.id, entry.intent.callId);
+      if (entry.outcome) assert.equal(entry.outcome.callId, entry.intent.callId);
+    } else if (entry.kind === 'wake') {
+      assert.equal(byId.get(entry.inputRecordId!)?.kind, 'context');
+      if (entry.finalRecordId) assert.equal(byId.get(entry.finalRecordId)?.kind, 'context');
+      for (const request of entry.requests) {
+        const event = byId.get(request.eventId);
+        assert.ok(event?.kind === 'event');
+        assert.equal(event.event.id, request.externalEventId);
+        assert.equal(event.requestedWake?.id, request.wakeReceiptId);
+        assert.notEqual(request.eventId, request.externalEventId);
+      }
+    }
+  }
+  for (const request of [
+    { id: 'evt-104' }, { id: 'FFFFFFFF-FFFF-4FFF-8FFF-FFFFFFFFFFFF' }, { id: `${fixtureHistoryIds.requirement}\n` },
+    { id: fixtureHistoryIds.requirement, kind: 'event' }, { id: fixtureHistoryIds.requirement, miraId: 'another-synthetic-mira' },
+  ]) await assert.rejects(reader.read(request as HistoryReadRequest), (error: unknown) => error instanceof HistoryError && error.code === 'invalid');
+  assert.equal(await reader.read({ id: fixtureHistoryIds.otherMira }), null);
+  assert.deepEqual((await reader.search({ query: 'belonging only to another Mira', mode: 'substring' })).hits, []);
+  assert.throws(() => new FixtureHistoryReader([...entries, { ...entries[0]!, miraId: 'duplicate-in-other-mira' }]), /globally unique/);
+});
+
+test('tool CLI traces a real production Memory Git commit through direct History IDs', async () => {
+  const { session, paths, exercises } = await cli('init');
+  try {
+    assert.equal(paths.memory, path.join(session, 'Memory'));
+    assert.ok(exercises.some((goal: string) => goal.includes('commit’s provenance')));
+    assert.ok(!exercises.join(' ').includes(fixtureHistoryIds.wake));
+    const git = async (...args: string[]) => (await execute('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-C', paths.memory, ...args], {
+      env: { PATH: process.env['PATH'], HOME: session, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' },
+    })).stdout.trim();
+    assert.equal(await git('rev-parse', '--show-toplevel'), paths.memory);
+    const commit = await git('rev-parse', 'HEAD');
+    assert.match(commit, /^[0-9a-f]{40,64}$/);
+    assert.equal(await git('cat-file', '-t', commit), 'commit');
+    const message = await git('show', '-s', '--format=%B', commit);
+    const historyId = /^History-Id: (.+)$/m.exec(message)?.[1];
+    assert.equal(historyId, fixtureHistoryIds.wake);
+    assert.match(message, /^Mira-Run-Key: [0-9a-f]{64}$/m);
+    assert.match(await git('show', `${commit}:harbor-export.md`), /Harbor export/);
+    assert.equal(await git('status', '--porcelain'), '');
+    assert.equal(await git('remote'), '');
+    const wake = value(await cli(session, 'call', 'history_read', JSON.stringify({ id: historyId })));
+    assert.equal(wake.kind, 'wake');
+    assert.equal(wake.status, 'completed');
+    const input = value(await cli(session, 'call', 'history_read', JSON.stringify({ id: wake.inputRecordId })));
+    const final = value(await cli(session, 'call', 'history_read', JSON.stringify({ id: wake.finalRecordId })));
+    assert.equal(input.kind, 'context');
+    assert.equal(final.kind, 'context');
+    assert.match(JSON.stringify(final.record.payload), new RegExp(commit));
+    for (const request of wake.requests) {
+      const event = value(await cli(session, 'call', 'history_read', JSON.stringify({ id: request.eventId })));
+      assert.equal(event.kind, 'event');
+      assert.equal(event.event.id, request.externalEventId);
+      assert.equal(event.requestedWake.id, request.wakeReceiptId);
+    }
+    const search = value(await cli(session, 'call', 'history_search', '{"query":"verify-harbor-export","mode":"substring","kinds":["tool"]}'));
+    assert.equal(search.hits.length, 1);
+    const tool = value(await cli(session, 'call', 'history_read', JSON.stringify({ id: search.hits[0].id })));
+    assert.equal(tool.outcome, null);
+    assert.equal(tool.intent.callId, 'call-312');
+    const assistant = value(await cli(session, 'call', 'history_read', JSON.stringify({ id: tool.intent.assistantRecordId })));
+    assert.equal(assistant.kind, 'context');
+    assert.equal(assistant.version, tool.contextVersion);
+    assert.equal(assistant.record.payload.message.content[1].id, tool.intent.callId);
+    const prompt = await cli(session, 'prompt');
+    assert.ok(prompt.prompt.includes(paths.memory));
   } finally { await rm(session, { recursive: true, force: true }); }
 });
 

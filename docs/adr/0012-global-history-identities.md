@@ -12,6 +12,10 @@ Pi 公共压缩流程仍在内存中运行。仅新建的压缩候选改用完�
 
 Memory commit 的 `History-Id` trailer 直接保存对应 Wake UUID。`Mira-Run-Key` 仍是内部 Git receipt 的恢复键，用于校验 Mira/run 身份、查找已完成提交及修复崩溃窗口，不对外充当 History 引用。无变化回执、HEAD CAS、仓库身份校验和 PostgreSQL checkpoint 关联继续保留。
 
+## 主模型使用说明
+
+实际 v0.2 Prompt 的 History 段补充搜索参数、literal Chinese 示例、ID-only read、普通 Git commit 的 History-Id 回查，以及 Wake → 原始事件/输入/最终回复的完整调用路径。工具自身说明字段含义、默认值、读取预算和错误；不依靠模型猜测命名空间。来源 manifest 保留原始与当前 SHA；测试去除用户批准的聊天格式/History 新增段后验证其余原文逐字节不变。
+
 ## 新建数据环境
 
 用户确认这一早期开发改动从新空数据库和新的适用运行目录开始，不做旧数据兼容。直接更新当前初始 schema，文档说明新环境要求。程序不包含额外旧库检测、历史映射、兼容分支或自动清理；本改动不运行、清空或转换现有用户库。旧数据自行保留在原位置。
