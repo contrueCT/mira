@@ -232,3 +232,28 @@ test('identity reservation rolls back with context CAS failure and generated eve
     } finally { await db.close(); }
   }
 });
+
+test('two Mira writer sessions racing one global UUID commit exactly one context and preserve the loser', { timeout: 15_000 }, async () => {
+  const db = await createTestDatabase();
+  try {
+    const writers = [await db.acquire('race-a'), await db.acquire('race-b')];
+    const candidate = record('global-race', null, 'one global identity');
+    const outcomes = await Promise.allSettled(writers.map(writer => writer.append(0, candidate)));
+    assert.deepEqual(outcomes.map(outcome => outcome.status).sort(), ['fulfilled', 'rejected']);
+    const winner = outcomes.findIndex(outcome => outcome.status === 'fulfilled');
+    const loser = winner === 0 ? 1 : 0;
+    const rejected = outcomes[loser]; assert.ok(rejected?.status === 'rejected');
+    assert.ok(rejected.reason instanceof PersistenceError && rejected.reason.code === 'duplicate');
+    assert.equal((await writers[winner]!.load()).version, 1);
+    assert.deepEqual((await writers[loser]!.load()).records, []);
+    assert.equal((await writers[loser]!.load()).version, 0);
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM history_records')).rows[0].n, 1);
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM context_records')).rows[0].n, 1);
+    assert.equal((await db.store.history(writers[winner]!.miraId).read({ id: candidate.id }))?.kind, 'context');
+    assert.equal(await db.store.history(writers[loser]!.miraId).read({ id: candidate.id }), null);
+    await Promise.all(writers.map(writer => writer.verifyActive()));
+    await writers[loser]!.append(0, record('global-race-loser-retry', null, 'a fresh identity after conflict'));
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM history_records')).rows[0].n, 2);
+    assert.equal((await writers[loser]!.load()).version, 1);
+  } finally { await db.close(); }
+});
