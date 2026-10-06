@@ -231,7 +231,7 @@ ordinary wakes, file changes and compaction reuse that snapshot. No automatic
 memory-change notices or new Wakes exist. There is no separate `initialContext`
 entrypoint or destructive rebuild API.
 
-`createHistoryTools(reader)` registers `history_search` and `history_read` against an assembly-bound Mira reader. It returns original record provenance without interpreting Pi inside persistence. Full-text prefix/Chinese limitations and exact-read byte budgets are included in tool descriptions. Expected bounded-query errors become explicit tool results; database faults remain faults. Ordinary Pi file/bash tools are composed by the server without cwd confinement. The existing intent/effect boundary still applies.
+`createHistoryTools(reader)` registers `history_search` and `history_read` against an assembly-bound Mira reader. It returns original record provenance without interpreting Pi inside persistence. Each History result carries a global UUID; `history_read({id})` obtains kind from the identity registry. Use the UUID directly from a search hit, context/Wake reference, or Memory `History-Id` trailer; external event IDs/provider call IDs are separate. Full-text prefix/Chinese limitations and exact-read byte budgets are included in tool descriptions. Pi compaction gives only the new candidate a full UUID, retaining existing parent/first-kept IDs and raw evidence. Expected bounded-query errors become explicit tool results; database faults remain faults. Ordinary Pi file/bash tools are composed by the server without cwd confinement. The existing intent/effect boundary still applies.
 
 
 ## Complete Mira system prompt

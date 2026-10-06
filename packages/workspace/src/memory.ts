@@ -21,6 +21,7 @@ export interface MemorySnapshotOptions {
   /** Persist this setup identity with the pending DB checkpoint and replay it. */
   expectedRepositoryId?: string;
   miraId: string;
+  /** The canonical global History UUID of the WakeRun being snapshotted. */
   runId: string;
   signal?: AbortSignal;
 }
@@ -190,6 +191,14 @@ export async function loadMemoryBootstrap(options: MemoryBootstrapOptions): Prom
 function identifier(value: string, label: string): void {
   if (typeof value !== 'string' || !value || value.length > 4096 || !value.isWellFormed()) throw new Error(`${label} must be nonempty well-formed text of at most 4096 characters`);
 }
+function historyId(value: string): void {
+  if (typeof value !== 'string' || value.length !== 36 || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)) {
+    throw new Error('runId must be a canonical lowercase History UUID');
+  }
+}
+/** Internal receipt identity, not the public History ID. Hashing keeps arbitrary
+ * Mira IDs out of Git ref names, command streams and commit trailers.
+ */
 function runKey(options: MemorySnapshotOptions): string {
   return createHash('sha256').update(JSON.stringify([options.miraId, options.runId])).digest('hex');
 }
@@ -238,9 +247,18 @@ async function outcome(root: string, ref: string, options: MemorySnapshotOptions
   const type = (await git(root, ['cat-file', '-t', oid], options.signal)).stdout.trim();
   if (type !== 'tree' && type !== 'commit') throw new Error('Unexpected Memory snapshot receipt object');
   if (type === 'commit') {
-    const message = (await git(root, ['show', '-s', '--format=%B', oid], options.signal)).stdout.split('\n');
-    for (const expected of [`Mira-Run-Key: ${runKey(options)}`, `Mira-Id-Base64: ${Buffer.from(options.miraId).toString('base64')}`, `Mira-Run-Id-Base64: ${Buffer.from(options.runId).toString('base64')}`]) {
-      if (!message.includes(expected)) throw new Error('Memory snapshot commit does not match this Mira/run key');
+    const message = (await git(root, ['show', '-s', '--format=%B', oid], options.signal)).stdout.trimEnd();
+    const paragraphs = message.split('\n\n');
+    const trailers = paragraphs.at(-1)!.split('\n');
+    // Only the emitted two-line block is valid. Ignoring other lines would
+    // accept case-insensitive duplicate keys, folded values or body text that
+    // Git itself would not treat as this exact identity trailer block.
+    if (paragraphs.length < 2 || trailers.length !== 2) throw new Error('Memory snapshot commit does not match this Mira/run key and History ID');
+    for (const [name, value] of [['History-Id', options.runId], ['Mira-Run-Key', runKey(options)]]) {
+      const matches = trailers.filter((line) => line.startsWith(`${name}:`));
+      if (matches.length !== 1 || matches[0] !== `${name}: ${value}`) {
+        throw new Error('Memory snapshot commit does not match this Mira/run key and History ID');
+      }
     }
     await reconcileSnapshotHead(root, oid, options.signal);
   }
@@ -265,7 +283,7 @@ async function outcome(root: string, ref: string, options: MemorySnapshotOptions
  * Files present/changed before this wake are included too; no authorship claim.
  */
 export async function snapshotMemory(options: MemorySnapshotOptions): Promise<MemorySnapshot> {
-  identifier(options.miraId, 'miraId'); identifier(options.runId, 'runId');
+  identifier(options.miraId, 'miraId'); historyId(options.runId);
   const { memoryRoot: root, repositoryId } = await registeredRoot(options.memoryRoot, options.signal);
   if (options.expectedRepositoryId !== undefined && options.expectedRepositoryId !== repositoryId) {
     throw new Error('Memory repository identity changed; refusing to snapshot a pending run into a replacement repository');
@@ -287,7 +305,7 @@ export async function snapshotMemory(options: MemorySnapshotOptions): Promise<Me
   let object = tree;
   const changed = tree !== oldTree;
   if (changed) {
-    const message = `Memory snapshot\n\nMira-Run-Key: ${key}\nMira-Id-Base64: ${Buffer.from(options.miraId).toString('base64')}\nMira-Run-Id-Base64: ${Buffer.from(options.runId).toString('base64')}\n`;
+    const message = `Memory snapshot\n\nHistory-Id: ${options.runId}\nMira-Run-Key: ${key}\n`;
     object = (await git(root, ['commit-tree', tree, ...(head ? ['-p', head] : []), '-m', message], options.signal)).stdout.trim();
   }
   const commands = `start\n${changed ? `update HEAD ${object} ${head ?? zero}` : `verify HEAD ${head ?? zero}`}\ncreate ${ref} ${object}\nprepare\ncommit\n`;

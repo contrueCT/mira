@@ -7,15 +7,15 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { RuntimeRecord } from '@mira/context';
 import type { LifeEvent, ToolIntent } from '@mira/life';
 import { migrate, PersistenceError, PostgresPersistence } from '@mira/persistence';
-import { createTestDatabase, testDatabaseUrl } from './database.mts';
+import { createTestDatabase, testDatabaseUrl, testHistoryId as uuid } from './database.mts';
 
 const now = '2026-10-05T00:00:00.000Z';
-const record = (id = 'r1', parentId: string | null = null): RuntimeRecord => ({
+const record = (id = uuid('r1'), parentId: string | null = null): RuntimeRecord => ({
   formatVersion: 1, runtime: 'synthetic-runtime', runtimeVersion: '1', id, parentId,
   kind: 'message', occurredAt: now, payload: { role: 'assistant', content: [{ type: 'text', text: 'synthetic only' }], provider: { opaque: ['retained', 42] } },
 });
 const event = (id = 'e1'): LifeEvent => ({ id, type: 'synthetic.observed', source: 'external', occurredAt: now, payload: { exact: [1, true, null] } });
-const intent = (callId = 'tool-1'): ToolIntent => ({ callId, assistantRecordId: 'r1', toolName: 'synthetic-counter', requestedArguments: { amount: 1 }, arguments: { amount: 1 }, occurredAt: now });
+const intent = (callId = 'tool-1'): ToolIntent => ({ callId, assistantRecordId: uuid('r1'), toolName: 'synthetic-counter', requestedArguments: { amount: 1 }, arguments: { amount: 1 }, occurredAt: now });
 const code = (expected: PersistenceError['code']) => (error: unknown) => error instanceof PersistenceError && error.code === expected;
 
 // Calling the integration suite without its explicit isolated service is an error, never a pass/skip.
@@ -25,7 +25,7 @@ test('migration up/down/up uses node-pg-migrate and preserves no stale tables', 
   const db = await createTestDatabase();
   try {
     const before = await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema = $1", [db.schema]);
-    assert.equal(before.rows[0].n, 10);
+    assert.equal(before.rows[0].n, 11);
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM pg_indexes WHERE schemaname = $1 AND indexname LIKE '%_history_fts'", [db.schema])).rows[0].n, 0, 'first down removes only history indexes');
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
@@ -46,10 +46,10 @@ test('raw envelopes are append-only, ordered, CAS protected and restored after o
   try {
     const first = await db.acquire();
     assert.equal(await first.append(0, record()), 1);
-    await assert.rejects(first.append(0, record('stale', 'r1')), code('version'));
-    await assert.rejects(first.append(1, record('bad-parent')), /parent/);
-    await assert.rejects(first.append(1, record('r1', 'r1')), code('duplicate'));
-    const secondRecord = record('r2', 'r1');
+    await assert.rejects(first.append(0, record(uuid('stale'), uuid('r1'))), code('version'));
+    await assert.rejects(first.append(1, record(uuid('bad-parent'))), /parent/);
+    await assert.rejects(first.append(1, record(uuid('r1'), uuid('r1'))), code('duplicate'));
+    const secondRecord = record(uuid('r2'), uuid('r1'));
     assert.equal(await first.append(1, secondRecord), 2);
     await assert.rejects(db.admin.query("UPDATE context_records SET envelope = '{}' WHERE mira_id = 'synthetic-mira'"), /append-only/);
     await assert.rejects(db.admin.query("DELETE FROM context_records WHERE mira_id = 'synthetic-mira'"), /append-only/);
@@ -57,7 +57,7 @@ test('raw envelopes are append-only, ordered, CAS protected and restored after o
     const next = await db.acquire();
     assert.equal(BigInt(next.epoch), BigInt(first.epoch) + 1n);
     assert.deepEqual((await next.load()).records, [record(), secondRecord]);
-    await assert.rejects(first.append(2, record('old-writer', 'r2')), code('ownership'));
+    await assert.rejects(first.append(2, record(uuid('old-writer'), uuid('r2'))), code('ownership'));
   } finally { await db.close(); }
 });
 
@@ -65,7 +65,7 @@ test('concurrent calls on one client serialize transactions and only one CAS win
   const db = await createTestDatabase();
   try {
     const writer = await db.acquire();
-    const result = await Promise.allSettled([writer.append(0, record('a')), writer.append(0, record('b'))]);
+    const result = await Promise.allSettled([writer.append(0, record(uuid('a'))), writer.append(0, record(uuid('b')))]);
     assert.equal(result.filter((item) => item.status === 'fulfilled').length, 1);
     assert.equal(result.filter((item) => item.status === 'rejected').length, 1);
     assert.equal((await writer.load()).version, 1);
@@ -101,7 +101,7 @@ test('tool intentions and first outcomes survive restart without replay or overw
     const writer = await db.acquire();
     await writer.append(0, record());
     await assert.rejects(writer.beginTool(0, intent()), code('version'));
-    await assert.rejects(writer.beginTool(1, { ...intent(), assistantRecordId: 'missing' }), code('invalid'));
+    await assert.rejects(writer.beginTool(1, { ...intent(), assistantRecordId: uuid('missing') }), code('invalid'));
     await writer.beginTool(1, intent());
     await writer.beginTool(1, intent('tool-2'));
     await assert.rejects(writer.beginTool(1, intent()), code('duplicate'));
@@ -123,9 +123,9 @@ test('late tool outcomes cannot rewrite execution evidence after an unknown obse
     const writer = await db.acquire();
     await writer.append(0, record());
     await writer.beginTool(1, intent());
-    const observation: RuntimeRecord = { ...record('unknown-observation', 'r1'), payload: { syntheticObservation: { callId: 'tool-1', state: 'unknown', explanation: 'No outcome was durably received' } } };
+    const observation: RuntimeRecord = { ...record(uuid('unknown-observation'), uuid('r1')), payload: { syntheticObservation: { callId: 'tool-1', state: 'unknown', explanation: 'No outcome was durably received' } } };
     await writer.append(1, observation);
-    await writer.append(2, record('continued', observation.id));
+    await writer.append(2, record(uuid('continued'), observation.id));
     const before = await writer.load();
     const late = { callId: 'tool-1', occurredAt: now, payload: { result: 'late synthetic receipt' } };
     await assert.rejects(writer.finishTool(late), code('version'));
@@ -138,7 +138,7 @@ test('late tool outcomes cannot rewrite execution evidence after an unknown obse
     await assert.rejects(recovered.finishTool(late), code('version'));
     assert.equal(recovered.signal.aborted, false);
     assert.deepEqual(await recovered.load(), before);
-    await recovered.append(3, record('further-context', 'continued'));
+    await recovered.append(3, record(uuid('further-context'), uuid('continued')));
     assert.equal((await recovered.load()).version, 4);
   } finally { await db.close(); }
 });
@@ -151,11 +151,11 @@ test('sequential sibling tool outcomes use their own begin versions before resul
     await writer.beginTool(1, intent('first'));
     const first = { callId: 'first', occurredAt: now, payload: { synthetic: 'first outcome' } };
     await writer.finishTool(first);
-    await writer.append(1, record('first-result', 'r1'));
+    await writer.append(1, record(uuid('first-result'), uuid('r1')));
     await writer.beginTool(2, intent('second'));
     const second = { callId: 'second', occurredAt: now, payload: { synthetic: 'second outcome' } };
     await writer.finishTool(second);
-    await writer.append(2, record('second-result', 'first-result'));
+    await writer.append(2, record(uuid('second-result'), uuid('first-result')));
     await assert.rejects(writer.finishTool(second), code('duplicate'));
     await assert.rejects(writer.finishTool({ ...second, callId: 'missing' }), code('duplicate'));
     assert.equal(writer.signal.aborted, false);
@@ -182,8 +182,9 @@ test('unknown envelope versions fail closed instead of resetting context', { tim
     const writer = await db.acquire();
     const future = { ...record(), formatVersion: 999 };
     assert.throws(() => writer.append(0, future as RuntimeRecord), /Unsupported envelope/);
-    await db.admin.query('INSERT INTO context_records(mira_id, record_id, version, envelope) VALUES ($1, $2, 1, $3)', ['synthetic-mira', 'r1', JSON.stringify(future)]);
-    await db.admin.query("UPDATE mira_owners SET context_version = 1, head_record_id = 'r1'");
+    await db.admin.query("INSERT INTO history_records(id, mira_id, kind) VALUES ($1, $2, 'context')", [uuid('r1'), writer.miraId]);
+    await db.admin.query('INSERT INTO context_records(mira_id, record_id, version, envelope) VALUES ($1, $2, 1, $3)', ['synthetic-mira', uuid('r1'), JSON.stringify(future)]);
+    await db.admin.query("UPDATE mira_owners SET context_version = 1, head_record_id = $1", [uuid('r1')]);
     await assert.rejects(writer.load(), /Unsupported envelope/);
     assert.equal(writer.signal.aborted, true);
   } finally { await db.close(); }
@@ -224,8 +225,8 @@ test('connection loss aborts the owner and fences every old write after takeover
       await abort;
       assert.equal(writer.signal.aborted, true);
       const next = await db.acquire();
-      await next.append(1, record('r2', 'r1'));
-      await assert.rejects(writer.append(2, record('stale', 'r2')), code('ownership'));
+      await next.append(1, record(uuid('r2'), uuid('r1')));
+      await assert.rejects(writer.append(2, record(uuid('stale'), uuid('r2'))), code('ownership'));
       await assert.rejects(writer.receive(event()), code('ownership'));
       await assert.rejects(writer.beginTool(2, intent()), code('ownership'));
       await assert.rejects(writer.finishTool({ callId: 'tool-1', occurredAt: now, payload: null }), code('ownership'));
@@ -272,7 +273,7 @@ test('registry keys distinguish different Miras and remain stable across takeove
     const first = await db.acquire('synthetic-a');
     const second = await db.acquire('synthetic-b');
     await first.append(0, record());
-    await second.append(0, record());
+    await second.append(0, record(uuid('other-mira-record')));
     const keys = await db.admin.query('SELECT mira_id, lock_key FROM mira_owners ORDER BY mira_id');
     assert.notEqual(keys.rows[0].lock_key, keys.rows[1].lock_key);
     await first.close();
@@ -304,7 +305,7 @@ test('checkpoint cancellation during SQL insertion rolls back before commit with
       BEGIN PERFORM pg_sleep(0.5); RETURN NEW; END $$;
       CREATE TRIGGER delay_checkpoint BEFORE INSERT ON context_records FOR EACH ROW EXECUTE FUNCTION delay_checkpoint()`);
     const controller = new AbortController();
-    const checkpoint: RuntimeRecord = { ...record('checkpoint', 'r1'), kind: 'checkpoint', payload: { synthetic: 'summary' } };
+    const checkpoint: RuntimeRecord = { ...record(uuid('checkpoint'), uuid('r1')), kind: 'checkpoint', payload: { synthetic: 'summary' } };
     const pending = writer.append(1, checkpoint, controller.signal);
     // Attach the rejection assertion immediately, before intentionally causing rejection.
     const rejected = assert.rejects(pending, (error: unknown) => error === controller.signal.reason);
@@ -322,9 +323,9 @@ test('checkpoint cancellation during SQL insertion rolls back before commit with
     assert.deepEqual((await writer.load()).records, [record()]);
     assert.equal((await writer.load()).version, 1);
     await db.admin.query('DROP TRIGGER delay_checkpoint ON context_records');
-    await writer.append(1, record('r2', 'r1'));
+    await writer.append(1, record(uuid('r2'), uuid('r1')));
     const alreadyAborted = new AbortController(); alreadyAborted.abort();
-    await assert.rejects(writer.append(2, record('r3', 'r2'), alreadyAborted.signal), (error: unknown) => error === alreadyAborted.signal.reason);
+    await assert.rejects(writer.append(2, record(uuid('r3'), uuid('r2')), alreadyAborted.signal), (error: unknown) => error === alreadyAborted.signal.reason);
     assert.equal((await writer.load()).version, 2);
   } finally { await db.close(); }
 });

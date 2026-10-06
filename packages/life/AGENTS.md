@@ -12,6 +12,7 @@
 ## 本地约束与跨包陷阱
 
 - 禁止导入 Pi、Cordis、数据库、Web 框架或 Node 平台模块
+- `WakeRequest.eventId` 是全局 History UUID；`event.id` 与 `wake.id` 保留外部去重含义，渲染不得混淆。History read 不接收 kind
 - Life Event 不等于 Wake；先持久化事实，再明确请求认知
 - 跨进程单写者、版本冲突、增量工具持久化和结果不明的恢复都必须测试
 - ToolIntent 保存实际调用、原始/验证参数和 assistantRecordId，不含 authorization 或替代决策字段；执行判断归主模型

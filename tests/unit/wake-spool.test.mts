@@ -81,8 +81,8 @@ test('a fresh process reconstructs the same ordinary file from canonical run sta
 test('current concise overflow recreates byte-identical input and notice after process restart', async () => {
   await withRoot(async root => {
     const batch: WakeRun = { id: 'concise-restart', claimedAt: '2026-10-06T08:01:00.000Z', status: 'running', inputRecordId: 'persisted-input', finalRecordId: null, requests: [
-      { event: { id: 'user-event', source: 'user', type: 'web.message', occurredAt: '2026-10-06T08:00:00.000Z', payload: { text: '  完整原文 🧠\nDo not trim  ' } }, wake: { id: 'user-wake', reason: 'User message from the local web interface' } },
-      { event: { id: 'external-event', source: 'external', type: 'custom.event', occurredAt: '2026-10-06T08:00:01.000Z', payload: { text: 'Third-party source material', attachments: [{ path: 'reported.txt' }], details: [null, false, 0] } }, wake: { id: 'external-wake', reason: 'External update' } },
+      { eventId: '10000000-0000-4000-8000-000000000001', event: { id: 'user-event', source: 'user', type: 'web.message', occurredAt: '2026-10-06T08:00:00.000Z', payload: { text: '  完整原文 🧠\nDo not trim  ' } }, wake: { id: 'user-wake', reason: 'User message from the local web interface' } },
+      { eventId: '10000000-0000-4000-8000-000000000002', event: { id: 'external-event', source: 'external', type: 'custom.event', occurredAt: '2026-10-06T08:00:01.000Z', payload: { text: 'Third-party source material', attachments: [{ path: 'reported.txt' }], details: [null, false, 0] } }, wake: { id: 'external-wake', reason: 'External update' } },
     ] };
     const content = renderWakeBatch(batch);
     const artifact = await materialize(root, batch.id, content);

@@ -40,13 +40,13 @@ function object(value: unknown): value is Record<string, unknown> { return !!val
 function visible(entry: HistoryEntry): Timeline['items'][number] | null {
   if (entry.kind === 'event') {
     if (entry.event.source !== 'user' || entry.event.type !== 'web.message' || !object(entry.event.payload) || typeof entry.event.payload['text'] !== 'string') return null;
-    return { id: `event:${entry.id}`, role: 'user', text: entry.event.payload['text'], occurredAt: entry.occurredAt };
+    return { id: entry.id, externalEventId: entry.event.id, role: 'user', text: entry.event.payload['text'], occurredAt: entry.occurredAt };
   }
   if (entry.kind !== 'context') return null;
   const [record] = decodeRecords([entry.record], entry.record.parentId);
   if (record?.type !== 'message' || record.message.role !== 'assistant') return null;
   const text = record.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
-  return text ? { id: `context:${entry.id}`, role: 'assistant', text, occurredAt: entry.occurredAt } : null;
+  return text ? { id: entry.id, role: 'assistant', text, occurredAt: entry.occurredAt } : null;
 }
 export class LocalWebService implements WebBackend {
   readonly #options: WebServiceOptions;
@@ -179,10 +179,10 @@ export class LocalWebService implements WebBackend {
     const page = await this.#history.page({ kinds: ['event', 'context'], limit: 50, ...(before ? { before } : {}) });
     const items: Timeline['items'] = [];
     for (const ref of page.hits) {
-      const key = `${ref.kind}:${ref.id}`;
+      const key = ref.id;
       if (!this.#cache.has(key)) {
         try {
-          const entry = await this.#history.read({ kind: ref.kind, id: ref.id, maxBytes: 1_048_576 });
+          const entry = await this.#history.read({ id: ref.id, maxBytes: 1_048_576 });
           this.#cache.set(key, entry ? visible(entry) : null);
         } catch (error) {
           if (!(error instanceof HistoryError) || error.code !== 'too_large') throw error;

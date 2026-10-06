@@ -16,8 +16,9 @@
 
 - 只有树内容变化才创建提交；不维护额外 SemanticState
 - `changedPaths` 只是相对上一 Git 版本观察到的差异，包括 Wake 前已存在的人工作业，不声称变更由 agent 创作
-- 每个 Mira/run 键的技术回执位于 `.git` 的 `refs/mira/wake-snapshots/<SHA256>`；变更回执指向提交，无变更回执指向树，`commitId` 为 `null`
-- 重试先恢复同键回执，因此后来的编辑不会被误归给原运行；变更提交包含编码后的 Mira/run trailer，不在 Memory 正文插入来源字段
+- `runId` 必须是 WakeRun 自身的全局 History UUID（规范小写 RFC UUID，版本 1–8）；变更提交直接写入 `History-Id: <runId>`，可以原样用于 `history.read({id})`，不使用类型前缀或 Base64 编码
+- 每个 Mira/run 键的技术回执位于 `.git` 的 `refs/mira/wake-snapshots/<SHA256>`；变更回执指向提交，无变更回执指向树，`commitId` 为 `null`。SHA-256 对 `[miraId, runId]` 的 JSON 数组计算，只是内部幂等／崩溃恢复键，不是第二个公开 History ID
+- 重试先恢复同键回执，因此后来的编辑不会被误归给原运行；提交同时保留 `Mira-Run-Key: <SHA256>`，恢复时严格校验它与直接 History ID 两个 trailer，拒绝重复或冲突身份。任意 Mira ID 不直接写入 trailer；不在 Memory 正文插入来源字段，也不保留旧 Base64 trailer 的解析或兼容路径
 - HEAD 与回执使用带旧值检查的 Git ref transaction 发布。Git 多 ref 文件不提供跨断电原子性；HEAD 已持久化而回执缺失时，校验完整身份 trailer 后恢复该提交的回执；回执先持久化时，只在 HEAD 仍恰好为该提交的父提交（首提交对应 unborn HEAD）时以 CAS 补齐 HEAD。已有后续历史且包含此提交时保持不动，其余分叉证据报错，不强制覆盖 HEAD
 - 调用方把 setup 返回的 `repositoryId` 一起保存进待完成数据库 checkpoint，恢复时传回 `expectedRepositoryId`。如果 `.git` 丢失后重建或替换，注册身份改变，快照在读取运行回执或暂存新内容前拒绝继续，不能把后来的内容冒充旧运行的快照
 - PostgreSQL lineage 由调用方另行关联；Git 成功不等于数据库成功，不声称二者原子提交。同一键重试用于恢复 Git 完成、数据库关联未完成的情况

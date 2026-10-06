@@ -11,7 +11,7 @@ import { parseWebSettings, parseWebSettingsWrite, WebSettingsError, webSettingsM
 export interface WebBackend {
   status(): Promise<{ state: 'idle' | 'working' | 'error' | 'stopped'; mode: 'synthetic' | 'live'; model: string | null; error: string | ModelRequestFailure | null }>;
   timeline(before?: string): Promise<{
-    items: Array<{ id: string; role: 'user' | 'assistant' | 'notice'; text: string; occurredAt: string }>;
+    items: Array<{ id: string; externalEventId?: string; role: 'user' | 'assistant' | 'notice'; text: string; occurredAt: string }>;
     nextCursor: string | null;
   }>;
   submit(input: { id: string; text: string; occurredAt: string }): Promise<{ id: string; receipt: 'inserted' | 'duplicate' }>;
@@ -119,7 +119,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   }, async request => {
     const result = await backend.timeline(request.query.before);
     return {
-      items: result.items.map(item => ({ id: item.id, role: item.role, text: item.text, occurredAt: item.occurredAt })),
+      items: result.items.map(item => ({ id: item.id, role: item.role, text: item.text, occurredAt: item.occurredAt, ...(item.role === 'user' && item.externalEventId !== undefined ? { externalEventId: item.externalEventId } : {}) })),
       nextCursor: result.nextCursor,
     };
   });
@@ -129,7 +129,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     schema: { querystring: noQuery, body: objectSchema({ before: { type: 'string', minLength: 1, maxLength: 524_288, pattern: '^[A-Za-z0-9_=-]+$' } }, ['before']) },
   }, async request => {
     const result = await backend.timeline(request.body.before);
-    return { items: result.items.map(item => ({ id: item.id, role: item.role, text: item.text, occurredAt: item.occurredAt })), nextCursor: result.nextCursor };
+    return { items: result.items.map(item => ({ id: item.id, role: item.role, text: item.text, occurredAt: item.occurredAt, ...(item.role === 'user' && item.externalEventId !== undefined ? { externalEventId: item.externalEventId } : {}) })), nextCursor: result.nextCursor };
   });
   app.post<{ Body: { id: string; text: string; occurredAt: string } }>('/api/messages', {
     schema: { querystring: noQuery, body: objectSchema({ id: identifier, text: { type: 'string', minLength: 1, maxLength: 65_536 }, occurredAt: { type: 'string', format: 'date-time', maxLength: 40 } }, ['id', 'text', 'occurredAt']) },

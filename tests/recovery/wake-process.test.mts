@@ -78,7 +78,7 @@ async function waitForBackendExit(db: Database, applicationName: string): Promis
   }
 }
 
-const requests: WakeRequest[] = [
+const requests: Omit<WakeRequest, 'eventId'>[] = [
   { event: { id: 'first-event', source: 'user', type: 'message', occurredAt: '2026-01-01T00:00:01.000Z', payload: { text: 'synthetic first wake' } }, wake: { id: 'first-wake', reason: 'synthetic user request' } },
   { event: { id: 'second-event', source: 'external', type: 'notice', occurredAt: '2025-12-31T23:59:59.000Z', payload: { text: 'synthetic second wake' } }, wake: { id: 'second-wake', reason: 'synthetic requested notice' } },
 ];
@@ -102,7 +102,7 @@ function assertFinished(run: WakeRun, snapshot: RecoverySnapshot, original: Reco
   assert.deepEqual(snapshot.records.slice(0, original.records.length), original.records);
   assert.equal(new Set(snapshot.records.map(record => record.id)).size, snapshot.records.length);
   assert.equal(run.status, 'completed');
-  assert.deepEqual(run.requests, requests);
+  assert.deepEqual(run.requests.map(({ event, wake }) => ({ event, wake })), requests);
   assert.ok(run.inputRecordId); assert.ok(run.finalRecordId);
   const added = snapshot.records.slice(original.records.length);
   assert.equal(added.filter(record => record.id === run.inputRecordId).length, 1);
@@ -132,7 +132,7 @@ for (const boundary of ['after-claim', 'after-input', 'after-final', 'after-comp
       const first = startWorker(db, boundary); children.push(first);
       const checkpoint = await first.next('checkpoint');
       assert.equal(checkpoint.boundary, boundary);
-      assert.deepEqual(checkpoint.run.requests, requests);
+      assert.deepEqual(checkpoint.run.requests.map(({ event, wake }) => ({ event, wake })), requests);
       assert.equal(checkpoint.run.status, boundary === 'after-complete' ? 'completed' : 'running');
       assert.equal(checkpoint.run.inputRecordId !== null, boundary !== 'after-claim');
       assert.equal(checkpoint.run.finalRecordId !== null, boundary === 'after-final' || boundary === 'after-complete');

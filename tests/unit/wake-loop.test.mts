@@ -1,9 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { WakeLoop, prepareWakeTurn, renderWakeBatch, type WakeRun, type WakeRequest, type WakeWriter } from '@mira/life';
 import type { CognitionTurn } from '@mira/cognition';
 
-const event = (id: string): WakeRequest => ({ event: { id, type: 'message', source: 'user', occurredAt: '2026-10-05T00:00:00.000Z', payload: { text: `Message ${id}` } }, wake: { id: `wake-${id}`, reason: 'user message' } });
+const event = (id: string): WakeRequest => ({ eventId: randomUUID(), event: { id, type: 'message', source: 'user', occurredAt: '2026-10-05T00:00:00.000Z', payload: { text: `Message ${id}` } }, wake: { id: `wake-${id}`, reason: 'user message' } });
 const run = (requests = [event('one')]): WakeRun => ({ id: 'run-one', claimedAt: '2026-10-05T01:00:00.000Z', status: 'running', requests, inputRecordId: null, finalRecordId: null });
 const noOverflow = async (): Promise<never> => { throw Error('unexpected overflow'); };
 
@@ -22,7 +23,7 @@ test('custom user event types and reasons retain their meaningful provenance', (
     const request = event('custom-user'); request.event.type = type!; request.wake.reason = reason!;
     const rendered = renderWakeBatch(run([request]));
     assert.ok(rendered.includes(JSON.stringify(type))); assert.ok(rendered.includes(`Wake reason: ${JSON.stringify(reason)}`));
-    assert.ok(rendered.includes('event "custom-user"')); assert.ok(rendered.endsWith('Message custom-user'));
+    assert.ok(rendered.includes('external event ID "custom-user"')); assert.ok(rendered.endsWith('Message custom-user'));
   }
 });
 
@@ -31,9 +32,9 @@ test('all source types retain exact types, reasons, IDs and complete arbitrary J
     ['first', false, 0, null, { nested: ['全部内容 🧠', 'last'] }], 'raw external string\nnext line', null, 0, false, {}];
   for (const source of ['user', 'external', 'extension', 'system', 'mira'] as const) {
     for (const payload of payloads) {
-      const request: WakeRequest = { event: { id: 'event-"\nmarker', type: 'custom.\nnotification', source, occurredAt: '2026-10-05T08:34:00+08:00', payload }, wake: { id: 'internal-receipt', reason: 'Full reason\nwith "quoted" detail' } };
+      const request: WakeRequest = { eventId: randomUUID(), event: { id: 'event-"\nmarker', type: 'custom.\nnotification', source, occurredAt: '2026-10-05T08:34:00+08:00', payload }, wake: { id: 'internal-receipt', reason: 'Full reason\nwith "quoted" detail' } };
       const rendered = renderWakeBatch(run([request]));
-      assert.ok(rendered.includes(`[${source} | ${JSON.stringify(request.event.occurredAt)} | ${JSON.stringify(request.event.type)} | event ${JSON.stringify(request.event.id)}]`));
+      assert.ok(rendered.includes(`[${source} | ${JSON.stringify(request.event.occurredAt)} | ${JSON.stringify(request.event.type)} | History ID ${JSON.stringify(request.eventId)} | external event ID ${JSON.stringify(request.event.id)}]`));
       assert.ok(rendered.includes(`Wake reason: ${JSON.stringify(request.wake.reason)}`));
       assert.deepEqual(JSON.parse(rendered.slice(rendered.indexOf('Payload (JSON):\n') + 'Payload (JSON):\n'.length)), payload);
       assert.doesNotMatch(rendered, /internal-receipt/);

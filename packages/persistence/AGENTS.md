@@ -15,6 +15,8 @@
 - 每个 Mira 的 writer 使用独占连接、session advisory lock 和 epoch；所有写事务必须在同一连接验证实际锁与 epoch
 - registry 初始登记使用独立全局 session lock；lock key 由表唯一生成，禁止哈希碰撞或重复使用
 - 连接丢失必须永久停止该 writer 并中止 signal；禁止在旧 writer 内透明重连
+- `history_records` 的 UUID 主键拥有全局跨类型/Mira 身份；详情固定类型外键、身份预留与详情同事务。事件/provider ID 是独立去重/协议字段，不能替换为 History ID
+- 当前初始 schema 用于新空库；不添加旧库检测、映射、兼容层或自动清理，见 ADR 0012
 - append-only 历史、parent 链、版本 CAS 与工具首次 outcome 不可放宽
 - intent 保留原始/验证参数与 assistantRecordId，工具行 context version 保留来源；不保存合成授权决策，不因移除 JSON 字段添加迁移或改写历史
 - finishTool 仅在当前 context version 等于该 intent 的 beginTool version 时写入；先保存 outcome 再追加工具结果。上下文推进后的迟到 outcome 拒绝且不修改证据，不把这个完整性边界用作新调用的风险或授权判定

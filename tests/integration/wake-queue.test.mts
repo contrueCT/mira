@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { RuntimeRecord } from '@mira/context';
 import type { LifeEvent, WakeReceipt } from '@mira/life';
 import { migrate, PersistenceError, PostgresPersistence } from '@mira/persistence';
-import { createTestDatabase, testDatabaseUrl } from './database.mts';
+import { createTestDatabase, testDatabaseUrl, testHistoryId as uuid } from './database.mts';
 
 const now = '2026-10-05T00:00:00.000Z';
 const event = (id: string, occurredAt = now): LifeEvent => ({ id, type: 'synthetic.request', source: 'external', occurredAt, payload: { synthetic: id } });
@@ -33,7 +33,8 @@ test('wake claim coalesces every pending receipt in durable arrival order; event
     for (const pair of pairs) await writer.receive(pair.event, pair.wake);
     assert.equal(await writer.receive(pairs[0]!.event, pairs[0]!.wake), 'duplicate');
     const run = await writer.claimWakeBatch(); assert(run);
-    assert.deepEqual(run.requests, pairs);
+    assert.deepEqual(run.requests.map(({ event, wake }) => ({ event, wake })), pairs);
+    assert(run.requests.every(request => /^[0-9a-f-]{36}$/.test(request.eventId)));
     assert.equal(run.status, 'running'); assert.equal(run.inputRecordId, null); assert.equal(run.finalRecordId, null);
     assert(Number.isFinite(Date.parse(run.claimedAt)));
     assert.deepEqual(await writer.claimWakeBatch(), run);
@@ -42,7 +43,7 @@ test('wake claim coalesces every pending receipt in durable arrival order; event
     assert.equal((await db.admin.query('SELECT count(*)::integer AS n FROM wake_runs')).rows[0].n, 1);
     // Returned values are detached from durable storage.
     run.requests[0]!.event.payload = { changed: true };
-    assert.deepEqual((await writer.loadWakeRun(run.id)).requests, pairs);
+    assert.deepEqual((await writer.loadWakeRun(run.id)).requests.map(({ event, wake }) => ({ event, wake })), pairs);
   } finally { await db.close(); }
 });
 
@@ -54,14 +55,14 @@ test('new arrivals remain queued throughout the active run and form the next coa
     const first = await writer.claimWakeBatch(); assert(first);
     await writer.receive(event('during-claim'), wake('during-claim'));
     await assert.rejects(writer.completeWakeRun(first.id), code('invalid'));
-    await assert.rejects(writer.appendWakeFinal(first.id, 0, record('too-soon')), code('invalid'));
-    assert.equal(await writer.appendWakeInput(first.id, 0, record('input')), 1);
+    await assert.rejects(writer.appendWakeFinal(first.id, 0, record(uuid('too-soon'))), code('invalid'));
+    assert.equal(await writer.appendWakeInput(first.id, 0, record(uuid('input'))), 1);
     await writer.receive(event('during-model'), wake('during-model'));
-    assert.equal(await writer.append(1, record('intermediate', 'input')), 2);
+    assert.equal(await writer.append(1, record(uuid('intermediate'), uuid('input'))), 2);
     assert.deepEqual((await writer.claimWakeBatch())?.requests, first.requests);
-    await writer.appendWakeFinal(first.id, 2, record('final', 'intermediate'));
+    await writer.appendWakeFinal(first.id, 2, record(uuid('final'), uuid('intermediate')));
     await writer.receive(event('before-completion'), wake('before-completion'));
-    await assert.rejects(writer.append(3, record('interleaved', 'final')), /Complete the finalized/);
+    await assert.rejects(writer.append(3, record(uuid('interleaved'), uuid('final'))), /Complete the finalized/);
     await writer.completeWakeRun(first.id);
     const second = await writer.claimWakeBatch(); assert(second);
     assert.notEqual(second.id, first.id);
@@ -69,7 +70,7 @@ test('new arrivals remain queued throughout the active run and form the next coa
     assert.equal((await writer.loadWakeRun(first.id)).status, 'completed');
     await writer.completeWakeRun(first.id);
     assert.equal((await writer.claimWakeBatch())?.id, second.id);
-    await assert.rejects(writer.appendWakeInput(first.id, 3, record('other-input', 'final')), code('duplicate'));
+    await assert.rejects(writer.appendWakeInput(first.id, 3, record(uuid('other-input'), uuid('final'))), code('duplicate'));
     assert.equal((await writer.load()).version, 3);
   } finally { await db.close(); }
 });
@@ -81,29 +82,29 @@ test('wake input and final associations are CAS protected and exact retries are 
     await writer.receive(event('first'), wake('first'));
     const run = await writer.claimWakeBatch(); assert(run);
     // Runtime recovery can publish known outcomes/notices before this wake input.
-    await writer.append(0, record('prior-repair'));
-    const input = record('input', 'prior-repair');
+    await writer.append(0, record(uuid('prior-repair')));
+    const input = record(uuid('input'), uuid('prior-repair'));
     await assert.rejects(writer.appendWakeInput(run.id, 0, input), code('version'));
     await assert.rejects(writer.appendWakeInput(run.id, 1, { ...input, parentId: null }), /parent/);
     assert.throws(() => writer.appendWakeInput(run.id, 1, { ...input, kind: 'checkpoint' }), /message record/);
     assert.equal(await writer.appendWakeInput(run.id, 1, input), 2);
     assert.equal(await writer.appendWakeInput(run.id, 1, input), 2);
-    await writer.append(2, record('intermediate', 'input'));
+    await writer.append(2, record(uuid('intermediate'), uuid('input')));
     assert.equal(await writer.appendWakeInput(run.id, 1, input), 2, 'retry returns the associated version, not the later head');
     await assert.rejects(writer.appendWakeInput(run.id, 2, input), code('version'));
     await assert.rejects(writer.appendWakeInput(run.id, 1, { ...input, payload: { changed: true } }), code('duplicate'));
-    const final = record('final', 'intermediate');
+    const final = record(uuid('final'), uuid('intermediate'));
     await assert.rejects(writer.appendWakeFinal(run.id, 2, final), code('version'));
     assert.equal(await writer.appendWakeFinal(run.id, 3, final), 4);
     assert.equal(await writer.appendWakeFinal(run.id, 3, final), 4);
     await assert.rejects(writer.appendWakeFinal(run.id, 3, { ...final, id: 'different' }), code('duplicate'));
     await writer.completeWakeRun(run.id);
     await writer.completeWakeRun(run.id);
-    await writer.append(4, record('after-completion', 'final'));
+    await writer.append(4, record(uuid('after-completion'), uuid('final')));
     assert.equal(await writer.appendWakeInput(run.id, 1, input), 2);
     assert.equal(await writer.appendWakeFinal(run.id, 3, final), 4);
     assert.equal((await writer.load()).version, 5);
-    await assert.rejects(writer.loadWakeRun('missing'), code('invalid'));
+    await assert.rejects(writer.loadWakeRun(uuid('missing')), code('invalid'));
   } finally { await db.close(); }
 });
 
@@ -116,13 +117,13 @@ test('restart at each durable boundary preserves one run, one input and one fina
     const claimed = await writer.claimWakeBatch(); assert(claimed);
     await writer.close(); writer = await db.acquire();
     assert.deepEqual(await writer.claimWakeBatch(), claimed);
-    const input = record('input');
+    const input = record(uuid('input'));
     await writer.appendWakeInput(claimed.id, 0, input);
     await writer.close(); writer = await db.acquire();
     const afterInput = await writer.claimWakeBatch(); assert(afterInput);
     assert.equal(afterInput.id, claimed.id); assert.equal(afterInput.inputRecordId, input.id); assert.equal(afterInput.finalRecordId, null);
     assert.equal(await writer.appendWakeInput(claimed.id, 0, input), 1);
-    const final = record('final', 'input');
+    const final = record(uuid('final'), uuid('input'));
     await writer.appendWakeFinal(claimed.id, 1, final);
     await writer.close(); writer = await db.acquire();
     const afterFinal = await writer.claimWakeBatch(); assert(afterFinal);
@@ -156,25 +157,25 @@ test('claim failure rolls back both the run and every membership without consumi
   } finally { await db.close(); }
 });
 
-for (const stage of ['input', 'final'] as const) test(`wake ${stage} association failure rolls back record, CAS and link atomically`, async () => {
+for (const stage of [uuid('input'), uuid('final')] as const) test(`wake ${stage} association failure rolls back record, CAS and link atomically`, async () => {
   const db = await createTestDatabase();
   try {
     const writer = await db.acquire();
     await writer.receive(event('first'), wake('first'));
     const run = await writer.claimWakeBatch(); assert(run);
-    if (stage === 'final') await writer.appendWakeInput(run.id, 0, record('input'));
+    if (stage === uuid('final')) await writer.appendWakeInput(run.id, 0, record(uuid('input')));
     const before = await writer.load();
     await db.admin.query(`CREATE FUNCTION reject_wake_link() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN IF NEW.${stage}_record_id IS DISTINCT FROM OLD.${stage}_record_id THEN RAISE EXCEPTION 'synthetic link failure'; END IF; RETURN NEW; END $$;
       CREATE TRIGGER reject_wake_link BEFORE UPDATE ON wake_runs FOR EACH ROW EXECUTE FUNCTION reject_wake_link()`);
-    const candidate = record(stage, stage === 'final' ? 'input' : null);
-    await assert.rejects(stage === 'input' ? writer.appendWakeInput(run.id, before.version, candidate) : writer.appendWakeFinal(run.id, before.version, candidate), /synthetic link failure/);
+    const candidate = record(stage, stage === uuid('final') ? uuid('input') : null);
+    await assert.rejects(stage === uuid('input') ? writer.appendWakeInput(run.id, before.version, candidate) : writer.appendWakeFinal(run.id, before.version, candidate), /synthetic link failure/);
     await writer.close();
     await db.admin.query('DROP TRIGGER reject_wake_link ON wake_runs');
     const next = await db.acquire();
     assert.deepEqual(await next.load(), before);
-    assert.equal((await next.loadWakeRun(run.id))[stage === 'input' ? 'inputRecordId' : 'finalRecordId'], null);
-    if (stage === 'input') await next.appendWakeInput(run.id, before.version, candidate);
+    assert.equal((await next.loadWakeRun(run.id))[stage === uuid('input') ? 'inputRecordId' : 'finalRecordId'], null);
+    if (stage === uuid('input')) await next.appendWakeInput(run.id, before.version, candidate);
     else await next.appendWakeFinal(run.id, before.version, candidate);
     assert.equal((await next.load()).version, before.version + 1);
   } finally { await db.close(); }
@@ -186,8 +187,8 @@ test('completion failure preserves final evidence and recovery completes without
     const writer = await db.acquire();
     await writer.receive(event('first'), wake('first'));
     const run = await writer.claimWakeBatch(); assert(run);
-    await writer.appendWakeInput(run.id, 0, record('input'));
-    await writer.appendWakeFinal(run.id, 1, record('final', 'input'));
+    await writer.appendWakeInput(run.id, 0, record(uuid('input')));
+    await writer.appendWakeFinal(run.id, 1, record(uuid('final'), uuid('input')));
     const before = await writer.load();
     await db.admin.query(`CREATE FUNCTION reject_wake_completion() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN IF NEW.completed THEN RAISE EXCEPTION 'synthetic completion failure'; END IF; RETURN NEW; END $$;
@@ -196,7 +197,7 @@ test('completion failure preserves final evidence and recovery completes without
     await writer.close();
     await db.admin.query('DROP TRIGGER reject_wake_completion ON wake_runs');
     const next = await db.acquire();
-    assert.equal((await next.claimWakeBatch())?.finalRecordId, 'final');
+    assert.equal((await next.claimWakeBatch())?.finalRecordId, uuid('final'));
     await next.completeWakeRun(run.id);
     assert.deepEqual(await next.load(), before);
     assert.equal(await next.claimWakeBatch(), null);
@@ -209,11 +210,11 @@ test('wake membership and published associations cannot be rewritten or removed'
     const writer = await db.acquire();
     await writer.receive(event('first'), wake('first'));
     const run = await writer.claimWakeBatch(); assert(run);
-    await writer.appendWakeInput(run.id, 0, record('input'));
-    await writer.appendWakeFinal(run.id, 1, record('final', 'input'));
+    await writer.appendWakeInput(run.id, 0, record(uuid('input')));
+    await writer.appendWakeFinal(run.id, 1, record(uuid('final'), uuid('input')));
     await writer.completeWakeRun(run.id);
     await assert.rejects(db.admin.query('DELETE FROM wake_run_requests'), /append-only/);
-    await assert.rejects(db.admin.query("UPDATE wake_run_requests SET run_id = 'different'"), /append-only/);
+    await assert.rejects(db.admin.query('UPDATE wake_run_requests SET run_id = $1', [uuid('different')]), /append-only/);
     await assert.rejects(db.admin.query('DELETE FROM wake_runs'), /append-only/);
     await assert.rejects(db.admin.query('UPDATE wake_runs SET input_record_id = NULL'), /appended once/);
     await assert.rejects(db.admin.query('UPDATE wake_runs SET final_record_id = NULL'), /appended once/);
@@ -240,20 +241,20 @@ test('wake queue writes verify the exact session lock and roll back a lost-lock 
   } finally { await db.close(); }
 });
 
-for (const stage of ['input', 'final'] as const) test(`wake ${stage} cancellation before commit rolls back its record and association`, async () => {
+for (const stage of [uuid('input'), uuid('final')] as const) test(`wake ${stage} cancellation before commit rolls back its record and association`, async () => {
   const db = await createTestDatabase();
   try {
     const writer = await db.acquire();
     await writer.receive(event('first'), wake('first'));
     const run = await writer.claimWakeBatch(); assert(run);
-    if (stage === 'final') await writer.appendWakeInput(run.id, 0, record('input'));
+    if (stage === uuid('final')) await writer.appendWakeInput(run.id, 0, record(uuid('input')));
     const before = await writer.load();
     await db.admin.query(`CREATE FUNCTION delay_wake_link() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN PERFORM pg_sleep(0.5); RETURN NEW; END $$;
       CREATE TRIGGER delay_wake_link BEFORE UPDATE ON wake_runs FOR EACH ROW EXECUTE FUNCTION delay_wake_link()`);
     const controller = new AbortController();
-    const candidate = record(stage, stage === 'final' ? 'input' : null);
-    const work = stage === 'input' ? writer.appendWakeInput(run.id, before.version, candidate, controller.signal) : writer.appendWakeFinal(run.id, before.version, candidate, controller.signal);
+    const candidate = record(stage, stage === uuid('final') ? uuid('input') : null);
+    const work = stage === uuid('input') ? writer.appendWakeInput(run.id, before.version, candidate, controller.signal) : writer.appendWakeFinal(run.id, before.version, candidate, controller.signal);
     const rejected = assert.rejects(work, (error: unknown) => error === controller.signal.reason);
     let updating = false;
     const deadline = Date.now() + 3_000;
@@ -267,26 +268,26 @@ for (const stage of ['input', 'final'] as const) test(`wake ${stage} cancellatio
     await rejected;
     assert.equal(writer.signal.aborted, false);
     assert.deepEqual(await writer.load(), before);
-    assert.equal((await writer.loadWakeRun(run.id))[stage === 'input' ? 'inputRecordId' : 'finalRecordId'], null);
+    assert.equal((await writer.loadWakeRun(run.id))[stage === uuid('input') ? 'inputRecordId' : 'finalRecordId'], null);
     await db.admin.query('DROP TRIGGER delay_wake_link ON wake_runs');
-    if (stage === 'input') await writer.appendWakeInput(run.id, before.version, candidate);
+    if (stage === uuid('input')) await writer.appendWakeInput(run.id, before.version, candidate);
     else await writer.appendWakeFinal(run.id, before.version, candidate);
   } finally { await db.close(); }
 });
 
-for (const stage of ['input', 'final', 'complete'] as const) test(`wake ${stage} publication rolls back when its session lock is lost`, async () => {
+for (const stage of [uuid('input'), uuid('final'), 'complete'] as const) test(`wake ${stage} publication rolls back when its session lock is lost`, async () => {
   const db = await createTestDatabase();
   try {
     const writer = await db.acquire();
     await writer.receive(event('first'), wake('first'));
     const run = await writer.claimWakeBatch(); assert(run);
-    if (stage !== 'input') await writer.appendWakeInput(run.id, 0, record('input'));
-    if (stage === 'complete') await writer.appendWakeFinal(run.id, 1, record('final', 'input'));
+    if (stage !== uuid('input')) await writer.appendWakeInput(run.id, 0, record(uuid('input')));
+    if (stage === 'complete') await writer.appendWakeFinal(run.id, 1, record(uuid('final'), uuid('input')));
     const before = await writer.load(); const progress = await writer.loadWakeRun(run.id);
     await db.admin.query(`CREATE FUNCTION lose_wake_update_lock() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN PERFORM pg_advisory_unlock(1296650817, (SELECT lock_key FROM mira_owners WHERE mira_id = NEW.mira_id)); RETURN NEW; END $$;
       CREATE TRIGGER lose_wake_update_lock BEFORE UPDATE ON wake_runs FOR EACH ROW EXECUTE FUNCTION lose_wake_update_lock()`);
-    await assert.rejects(stage === 'input' ? writer.appendWakeInput(run.id, 0, record('input')) : stage === 'final' ? writer.appendWakeFinal(run.id, 1, record('final', 'input')) : writer.completeWakeRun(run.id), code('ownership'));
+    await assert.rejects(stage === uuid('input') ? writer.appendWakeInput(run.id, 0, record(uuid('input'))) : stage === uuid('final') ? writer.appendWakeFinal(run.id, 1, record(uuid('final'), uuid('input'))) : writer.completeWakeRun(run.id), code('ownership'));
     assert.equal(writer.signal.aborted, true);
     await writer.close();
     await db.admin.query('DROP TRIGGER lose_wake_update_lock ON wake_runs');
@@ -309,8 +310,8 @@ test('connection loss permanently fences every wake queue operation on the old w
     assert.equal((await next.claimWakeBatch())?.id, run.id);
     await assert.rejects(writer.claimWakeBatch(), code('ownership'));
     await assert.rejects(writer.loadWakeRun(run.id), code('ownership'));
-    await assert.rejects(writer.appendWakeInput(run.id, 0, record('input')), code('ownership'));
-    await assert.rejects(writer.appendWakeFinal(run.id, 0, record('final')), code('ownership'));
+    await assert.rejects(writer.appendWakeInput(run.id, 0, record(uuid('input'))), code('ownership'));
+    await assert.rejects(writer.appendWakeFinal(run.id, 0, record(uuid('final'))), code('ownership'));
     await assert.rejects(writer.completeWakeRun(run.id), code('ownership'));
   } finally { await writer.close(); await db.close(); }
 });
@@ -321,7 +322,8 @@ test('wake run recovery rejects empty runs and mismatched persisted request enve
     try {
       const writer = await db.acquire();
       if (corrupt === 'empty') {
-        await db.admin.query('INSERT INTO wake_runs(mira_id, run_id, claimed_at, claimed_version) VALUES ($1, $2, $3, 0)', [writer.miraId, 'empty', now]);
+        await db.admin.query("INSERT INTO history_records(id, mira_id, kind) VALUES ($1, $2, 'wake')", [uuid('empty'), writer.miraId]);
+        await db.admin.query('INSERT INTO wake_runs(mira_id, run_id, claimed_at, claimed_version) VALUES ($1, $2, $3, 0)', [writer.miraId, uuid('empty'), now]);
       } else {
         await writer.receive(event('first'), wake('first'));
         await writer.claimWakeBatch();
@@ -335,12 +337,12 @@ test('wake run recovery rejects empty runs and mismatched persisted request enve
   }
 });
 
-test('wake migration down/up preserves legacy receipts and context for a fresh claim', async () => {
+test('wake slice down/up preserves earlier receipts and context for a fresh claim', async () => {
   const db = await createTestDatabase();
   try {
     const first = await db.acquire();
     await first.receive(event('legacy'), wake('legacy'));
-    await first.append(0, record('legacy-record'));
+    await first.append(0, record(uuid('legacy-record')));
     await first.close();
     // Roll back the newer search and Memory migrations before the Wake slice.
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
@@ -351,8 +353,8 @@ test('wake migration down/up preserves legacy receipts and context for a fresh c
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'up' });
     const next = await db.acquire();
     const run = await next.claimWakeBatch(); assert(run);
-    assert.deepEqual(run.requests, [{ event: event('legacy'), wake: wake('legacy') }]);
-    await next.appendWakeInput(run.id, 1, record('new-input', 'legacy-record'));
+    assert.deepEqual(run.requests.map(({ event, wake }) => ({ event, wake })), [{ event: event('legacy'), wake: wake('legacy') }]);
+    await next.appendWakeInput(run.id, 1, record(uuid('new-input'), uuid('legacy-record')));
     assert.equal((await next.load()).version, 2);
   } finally { await db.close(); }
 });

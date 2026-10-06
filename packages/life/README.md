@@ -19,3 +19,5 @@ PostgreSQL 与 Git 不能原子提交。Git 适配器须按 Mira/run 保存可�
 旧版已持久化输入/overflow、尚未生成 final 的活动 Wake 不承诺跨这次布局修改恢复：运行时会拒绝与已存输入不一致的渲染，普通文件也拒绝同一 run 的内容变化。未加入兼容解析、迁移或数据重置；发布前处理方式见 [升级注意](../../docs/development/local-web.md#wake-输入布局升级注意)。
 
 接口见 `src/index.ts` 和 `src/loop.ts`，语义见 [ADR 0002](../../docs/adr/0002-coalesced-wake-loop.md)。验证为根目录 `pnpm check` 及 `pnpm check:all`。
+
+History references use one global canonical UUID across events, context, tools and Wake runs. `HistoryReader.read({id})` returns kind with the original. `WakeRequest.eventId` is the event History UUID; nested `event.id` and `wake.id` keep their external/idempotency meanings. Non-Web input labels both distinctly; the ordinary Web text header stays concise.

@@ -16,8 +16,8 @@ export function mergeTimeline(current: TimelineItem[], incoming: TimelineItem[])
   });
 }
 export function reconcilePending(pending: PendingMessage[], items: TimelineItem[]): PendingMessage[] {
-  const known = new Set(items.map(item => item.id));
-  return pending.filter(message => !known.has(`event:${message.id}`));
+  const known = new Set(items.filter(item => item.role === 'user').map(item => item.externalEventId));
+  return pending.filter(message => !known.has(message.id));
 }
 export function readPending(storage: Pick<Storage, 'getItem'>): PendingMessage[] {
   const raw = storage.getItem(PENDING_KEY);
