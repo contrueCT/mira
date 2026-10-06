@@ -19,7 +19,9 @@ private JSON file outside the repository, for example:
 uses this configuration alongside the existing explicit demo database/spool variables.
 The demo provider is synthetic and does not decide to invoke tools on its own;
 recovery tests inject a deterministic model that enables and calls the new tool in
-one Wake. A product provider/authorization interpreter is still out of scope.
+one Wake. A live product provider is still out of scope. Main-model conversation/
+prompt judgment chooses calls or clarification; there is no injected authorization
+gate or synthetic approval evidence.
 
 No npm installation or package discovery occurs at runtime. `extension.manage`
 can only address configured IDs. Enable/disable/configure changes are saved back to

@@ -1,5 +1,7 @@
 # ADR 0003：普通 Memory/State、通用工具与历史查询
 
+> 后续变更：独立 authorize 回调、执行前授权 gate 及合成授权证据由 [ADR 0007](0007-model-owned-action-decisions.md) 取代。主模型直接依据对话/Prompt 决定调用或澄清；下文保留当时决定与阶段事实，技术校验、持久 intent/outcome、来源及恢复约束不变。
+
 > 后续变更：独立 SemanticState 及其配置/自动引导已由 [ADR 0006](0006-memory-only-system-prompt.md) 取代；下文保留当时决定与阶段事实，不构成旧 State/Prompt 格式的兼容承诺；早期开发仅维护当前设计。普通工具/生成代码的宿主 OS 执行边界、Memory Git、无通知/重注入等未被撤销。
 
 状态：Accepted。2026-10-05 用户确认继续开发，并明确以下边界；原始 v0.4 保留原始字节。此记录修正早期指引中默认变更通知、文件工作目录限制及 State Git 覆盖的建议。

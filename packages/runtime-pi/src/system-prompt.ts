@@ -26,6 +26,7 @@ export interface MiraPromptOptions {
   memoryRoot?: string;
   extensionsRoot?: string;
   environmentContext: string;
+  /** Factual conversation/standing-instruction context for the main model, not a computed permit. */
   authorizationContext: string;
   /** Only an empty version-zero context may call this loader. */
   loadInitialMemory?: (signal: AbortSignal) => Promise<string>;

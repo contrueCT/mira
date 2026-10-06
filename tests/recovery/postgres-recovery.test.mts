@@ -12,7 +12,7 @@ import { createAssistantMessageEventStream, type TranscriptContext } from '@eare
 import { PostgresPersistence } from '@mira/persistence';
 import type { RecoverySnapshot } from '@mira/life';
 import { createTestDatabase } from '../integration/database.mts';
-import { assistant, compactionMessages, deferred, effectTool, input, result, runtime, scripted, seed, streamOf, toolCalls } from './fixtures.mts';
+import { assistant, compactionMessages, deferred, effectTool, input, overrideWriter, result, runtime, scripted, seed, streamOf, toolCalls } from './fixtures.mts';
 
 const exec = promisify(execFile);
 const worker = new URL('./pg-worker.mts', import.meta.url).pathname;
@@ -77,16 +77,19 @@ test('real PostgreSQL: duplicate call ID has one durable execution and one effec
   } finally { await db.close(); }
 });
 
-for (const boundary of ['authorization', 'model', 'effect'] as const) test(`real PostgreSQL: ownership connection loss at ${boundary} boundary stops old runtime`, async () => {
+for (const boundary of ['intent', 'model', 'effect'] as const) test(`real PostgreSQL: ownership connection loss at ${boundary} boundary stops old runtime`, async () => {
   const db = await createTestDatabase(); const app = `mira-runtime-loss-${randomUUID()}`;
   const writer = await new PostgresPersistence({ connectionString: db.connectionString, schema: db.schema, applicationName: app }).acquire('one-mira');
   const entered = deferred(), release = deferred(); let effects = 0, requests = 0;
-  const instance = runtime(writer, async () => {
+  const runtimeWriter = overrideWriter(writer, { beginTool: async (expected, intent) => {
+    if (boundary === 'intent') { entered.resolve(); await release.promise; }
+    await writer.beginTool(expected, intent);
+  } });
+  const instance = runtime(runtimeWriter, async () => {
     requests++;
     if (boundary === 'model') { entered.resolve(); await release.promise; }
     return streamOf(toolCalls('a', 'b'));
   }, {
-    authorize: async () => { if (boundary === 'authorization') { entered.resolve(); await release.promise; } return { allowed: true, evidence: { synthetic: true } }; },
     tools: [effectTool(async () => { effects++; if (boundary === 'effect') { entered.resolve(); await release.promise; } return result; })],
   });
   const work = instance.run(input());
@@ -102,6 +105,11 @@ for (const boundary of ['authorization', 'model', 'effect'] as const) test(`real
     assert.equal(requests, 1); assert.equal(effects, boundary === 'effect' ? 1 : 0);
     await assert.rejects(instance.run(input()), /terminated|connection|Writer|stopped|ownership/i);
     const replacement = await db.acquire('one-mira');
+    if (boundary === 'intent') {
+      const recovered = await runtime(replacement).recover();
+      assert.deepEqual(recovered.recovery.operations.map(operation => operation.status), ['not-started', 'not-started']);
+      assert.deepEqual((await replacement.load()).executions, []);
+    }
     if (boundary === 'effect') {
       const recovered = await runtime(replacement).recover();
       assert.equal(recovered.recovery.operations[0]?.status, 'outcome-unknown');

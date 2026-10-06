@@ -43,7 +43,7 @@ const message = (error: unknown): string => error instanceof Error ? error.messa
 
 /** Ordinary local files, not a sandbox or an integrity boundary against the OS
  * account running extensions. Staging never imports code or runs package scripts.
- * Every load rechecks bytes; callers still authorize testing/import/execution. */
+ * Every load rechecks bytes; the main model chooses testing/import/execution from user intent. */
 export class ArtifactStore {
   readonly root: string;
   constructor(root: string) {

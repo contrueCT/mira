@@ -7,6 +7,7 @@ export interface LifeEvent {
   payload: Json;
 }
 export interface WakeReceipt { id: string; reason: string }
+/** Immutable execution facts linked to the original assistant call, not proof of permission. */
 export interface ToolIntent {
   callId: string;
   assistantRecordId: string;
@@ -15,7 +16,6 @@ export interface ToolIntent {
   requestedArguments: Json;
   /** Validated arguments approved for, and supplied to, execution. */
   arguments: Json;
-  authorization: Json;
   occurredAt: string;
 }
 export interface ToolOutcome {

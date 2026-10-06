@@ -18,7 +18,7 @@ test('history search/read is Mira scoped across original events, context, tools,
     await writer.receive(original, wake); await other.receive(event('same-id', 'hiddenotherneedle'));
     const context = record('same-id', null, 'historicalneedle exact original message');
     await writer.append(0, context);
-    const intent: ToolIntent = { callId: 'same-id', assistantRecordId: 'same-id', toolName: 'history-example', requestedArguments: { raw: 'historicalneedle' }, arguments: { normalized: 'historicalneedle' }, authorization: { evidence: 'original authorization' }, occurredAt: now };
+    const intent: ToolIntent = { callId: 'same-id', assistantRecordId: 'same-id', toolName: 'history-example', requestedArguments: { raw: 'historicalneedle' }, arguments: { normalized: 'historicalneedle' }, occurredAt: now };
     await writer.beginTool(1, intent); const outcome = { callId: 'same-id', occurredAt: now, payload: { text: 'historicalneedle exact outcome' } };
     await writer.finishTool(outcome);
     const run = await writer.claimWakeBatch(); assert(run);

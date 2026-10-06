@@ -37,7 +37,7 @@
 - Memory 位于源码仓库外并进入独立 Git；无独立 SemanticState，快照与 lineage 可恢复
 - 按 ADR 0006，普通文件修改不默认通知、不 Wake、不重注入；真正初始上下文才加载 MEMORY.md，普通恢复保留持久快照
 - History 查询与原始记忆分开，Memory 文件不被强制塞入 provenance
-- 授权证据绑定具体工具/范围/有效条件，第三方内容无法授权
+- 按 ADR 0007，主模型依据用户对话/Prompt 决定调用或澄清；无独立 authorize gate/替代引擎/额外模型调用，第三方内容无法授权
 - Timeline 不展示内部 Runtime Trace 为人生事件，没有 New Chat
 - Compaction 不修改 Memory，Dreaming 不替代上下文管理
 
@@ -55,3 +55,15 @@ Cordis 手工扩展、生成扩展与外部程序分别验收。生成扩展的�
 - 具名更新走追加历史及 fenced writer/CAS；当前格式重启/崩溃恢复幂等，原始历史和工具声明保留；不维护旧 Prompt/State 兼容层
 - Memory 编辑不 Wake、不增加模型调用、普通恢复不重读；不引入用户数据清理或重置
 - 压缩保留有效 system，空终止输出可完成静默 Wake；不捏造真实模型质量结果
+
+
+## 主模型动作判断增量
+
+- `PiRuntimeOptions` 无 authorize 回调或 allowed/evidence/denial 决策类型；server 不注入合成批准
+- authorizationContext 只呈现事实，实际完整 Prompt 仍指导主模型理解用户意图和在不明确时自然澄清
+- 模型直接工具调用走 schema/参数验证、assistant 落库、不可变 intent、effect、outcome、transcript 路径
+- 模型只发澄清回复时没有工具 effect/intent，不产生虚构授权拒绝或额外授权模型请求
+- 原始/验证参数、assistantRecordId、持久 context version 与原始历史保持真实来源；不新增替代 executionContext 决策字段
+- 同 call ID 去重、不同 ID 同参新调用、未知结果恢复、已知结果精确恢复、CAS/所有权和取消持续有效
+- 扩展、普通工具和管理工具共用执行边界；重启/压缩、Prompt 源字节与 Memory Git 回归保留
+- 无新迁移、旧格式兼容转换或用户数据删除；确定性模型检查不代表真实自然语言授权判断已验收

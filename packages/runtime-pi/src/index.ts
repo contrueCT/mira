@@ -2,7 +2,6 @@ import { isDeepStrictEqual } from 'node:util';
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type AgentToolCall, type StreamFn } from '@earendil-works/pi-agent-core';
 import { getCurrentSystemMessage, type Api, type Model, type ToolResultMessage } from '@earendil-works/pi-ai';
 import { buildSessionProjection, convertToLlm, type SessionEntry } from '@earendil-works/pi-coding-agent';
-import type { Json } from '@mira/context';
 import type { DurableWriter, RecoverySnapshot, ToolExecution, WakeWriter } from '@mira/life';
 import type { CognitionRuntime, CognitionTurn } from '@mira/cognition';
 import { observationEntry, sanitizeEntries, validateObservation, withRecoveryAdvisory, type RecoveryOperation } from './observations.ts';
@@ -15,14 +14,11 @@ export { decodeRecords, encodeEntry, jsonValue, messageEntry, PI_RUNTIME_VERSION
 export type { CompactionOptions } from './compactor.ts';
 export type { RecoveryOperation } from './observations.ts';
 
-export type AuthorizationDecision = { allowed: true; evidence: Json } | { allowed: false; reason: string };
 export interface PiRuntimeOptions {
   writer: DurableWriter;
   model: Model<Api>;
   /** Required injection. This adapter never discovers credentials or chooses a live stream. */
   streamFn: StreamFn;
-  /** Required even for a synthetic tool; authorization precedes intent and execution. */
-  authorize: (call: AgentToolCall, args: Json, signal: AbortSignal, context: AuthorizationContext) => Promise<AuthorizationDecision>;
   tools?: AgentTool[];
   /** Complete registry, prepared before the first request and after each settled
    * tool batch that naturally continues. Replaces tools when provided. The source
@@ -32,11 +28,6 @@ export interface PiRuntimeOptions {
    * or failed preparation. Cleanup never schedules an extra model request. */
   finishTools?: () => Promise<void>;
   miraPrompt?: MiraPromptOptions;
-}
-export interface AuthorizationContext {
-  priorOperations: RecoveryOperation[];
-  /** Narrative is evidence for policy review, never permission by itself. */
-  assistantNarrative: string;
 }
 export interface RecoveredContext {
   snapshot: RecoverySnapshot; entries: SessionEntry[]; messages: AgentMessage[];
@@ -57,10 +48,9 @@ export class PiDurableRuntime implements CognitionRuntime {
   private busy = false;
   private agent: Agent | undefined;
   private readonly controller = new AbortController();
-  private readonly deferredReasons = new Map<string, string>();
 
   constructor(options: PiRuntimeOptions) {
-    if (typeof options.authorize !== 'function' || typeof options.streamFn !== 'function') throw new Error('Authorization and injected streamFn are required');
+    if (typeof options.streamFn !== 'function') throw new Error('Injected streamFn is required');
     validateTools(options.tools ?? []);
     this.options = options;
     if (options.writer.signal.aborted) this.stop(options.writer.signal.reason ?? new Error('Writer lost'));
@@ -132,8 +122,7 @@ export class PiDurableRuntime implements CognitionRuntime {
       return { callId: id, assistantRecordId: requested.recordId, toolName: requested.call.name,
         requestedArguments: jsonValue(requested.call.arguments),
         ...(execution ? { arguments: jsonValue(execution.intent.arguments) } : {}),
-        status: execution ? 'outcome-unknown' : 'not-started',
-        ...(!execution && this.deferredReasons.has(id) ? { reason: this.deferredReasons.get(id)! } : {}) };
+        status: execution ? 'outcome-unknown' : 'not-started' };
     };
     for (const [position, entry] of entries.entries()) {
       if (entry.type === 'custom_message') {
@@ -141,7 +130,6 @@ export class PiDurableRuntime implements CognitionRuntime {
         if (unresolved.length !== entry.details!.operations.length || unresolved.some((id, index) => {
           const operation = entry.details!.operations[index]!;
           const expected = operationFor(id);
-          if (operation.reason !== undefined && expected.status === 'not-started') expected.reason = operation.reason;
           return (index > 0 && operation.status !== 'not-started') || !isDeepStrictEqual(expected, operation);
         })) throw new RecoveryBlockedError('Recovery observation does not close the exact incomplete batch');
         operations.push(...structuredClone(entry.details!.operations));
@@ -208,7 +196,6 @@ export class PiDurableRuntime implements CognitionRuntime {
     if (incomplete.length) {
       await append(observationEntry(incomplete, entries.at(-1)?.id ?? null));
       operations.push(...incomplete);
-      for (const operation of incomplete) this.deferredReasons.delete(operation.callId);
     }
     const projectionEntries = projectMiraPrompt(sanitizeEntries(entries, operations));
     const projection = buildSessionProjection(projectionEntries);
@@ -312,7 +299,6 @@ export class PiDurableRuntime implements CognitionRuntime {
         for (const block of entry.message.content) if (block.type === 'toolCall') issued.set(block.id, { call: block, recordId: entry.id });
       }
       const outcomes = new Map<string, ToolResultMessage>();
-      const issuedNarrative = new Map<string, string>();
       let awaitingModelCompletion = false;
       let interruption: ToolInterruptionError | undefined;
       const attemptGate = (): void => { this.gate(); if (interruption) throw interruption; };
@@ -344,8 +330,8 @@ export class PiDurableRuntime implements CognitionRuntime {
                 await this.verified();
                 attemptGate();
                 const execution = executions.get(id);
-                if (!execution || execution.outcome || outcomes.has(id)) throw new Error(`Tool has no fresh authorized intent: ${id}`);
-                if (!isDeepStrictEqual(jsonValue(args), execution.intent.arguments)) throw new Error('Tool execution arguments differ from authorized intent');
+                if (!execution || execution.outcome || outcomes.has(id)) throw new Error(`Tool has no fresh durable intent: ${id}`);
+                if (!isDeepStrictEqual(jsonValue(args), execution.intent.arguments)) throw new Error('Tool execution arguments differ from durable intent');
                 toolSignal?.throwIfAborted();
                 // A throw may happen after a remote effect. Never manufacture a
                 // definitive failure from it: leave durable intent unresolved.
@@ -443,21 +429,7 @@ export class PiDurableRuntime implements CognitionRuntime {
             const issuedCall = issued.get(id);
             if (!issuedCall || !isDeepStrictEqual(jsonValue(context.toolCall), jsonValue(issuedCall.call))) throw new Error('Tool call differs from durably recorded assistant request');
             const args = jsonValue(context.args);
-            const assistantEntry = current.entries.find(entry => entry.id === issuedCall.recordId);
-            const narrative = assistantEntry?.type === 'message' && assistantEntry.message.role === 'assistant'
-              ? assistantEntry.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n') : issuedNarrative.get(issuedCall.recordId) ?? '';
-            const decision = await this.options.authorize(structuredClone(context.toolCall), args, this.controller.signal,
-              { priorOperations: structuredClone(current.recovery.operations), assistantNarrative: narrative });
-            attemptGate();
-            if (!decision.allowed) {
-              if (typeof decision.reason !== 'string' || !decision.reason.trim()) throw new Error('Deferred tool decision must include its reason');
-              this.deferredReasons.set(id, decision.reason);
-              interruption = new ToolInterruptionError(`Agent/application deferred operation: ${decision.reason}`);
-              this.agent?.abort();
-              throw interruption;
-            }
-            if (!isDeepStrictEqual(jsonValue(context.toolCall), jsonValue(issuedCall.call))) throw new Error('Tool call changed during authorization');
-            const intent = { callId: id, assistantRecordId: issuedCall.recordId, toolName: context.toolCall.name, requestedArguments: jsonValue(context.toolCall.arguments), arguments: args, authorization: jsonValue(decision.evidence), occurredAt: new Date().toISOString() };
+            const intent = { callId: id, assistantRecordId: issuedCall.recordId, toolName: context.toolCall.name, requestedArguments: jsonValue(context.toolCall.arguments), arguments: args, occurredAt: new Date().toISOString() };
             await this.options.writer.beginTool(version, intent);
             attemptGate();
             executions.set(id, { intent, outcome: null });
@@ -473,7 +445,7 @@ export class PiDurableRuntime implements CognitionRuntime {
             await this.options.writer.finishTool(outcome);
             attemptGate();
             const execution = executions.get(saved.toolCallId);
-            if (!execution) throw new Error('Outcome without authorized intent');
+            if (!execution) throw new Error('Outcome without durable intent');
             execution.outcome = outcome;
             outcomes.set(saved.toolCallId, saved);
           } catch (error) { throw fail(error); }
@@ -522,7 +494,6 @@ export class PiDurableRuntime implements CognitionRuntime {
           parentId = entry.id;
           if (message.role === 'assistant') {
             if (entry.message.role !== 'assistant') throw new Error('Persisted assistant entry mismatch');
-            issuedNarrative.set(entry.id, entry.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n'));
             for (const block of entry.message.content) if (block.type === 'toolCall') issued.set(block.id, { call: structuredClone(block), recordId: entry.id });
             if (message.stopReason === 'error' || message.stopReason === 'aborted') throw new Error(message.errorMessage ?? `Model ${message.stopReason}`);
           }
@@ -563,7 +534,7 @@ function validateTools(tools: AgentTool[]): void {
   const names = new Set<string>();
   for (const tool of tools) {
     if (names.has(tool.name)) throw new Error(`Duplicate registered tool: ${tool.name}`);
-    if (tool.prepareArguments) throw new Error('Tool prepareArguments is not supported before the authorization boundary');
+    if (tool.prepareArguments) throw new Error('Tool prepareArguments is not supported before durable intent and schema validation');
     names.add(tool.name);
   }
 }

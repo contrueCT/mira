@@ -53,11 +53,11 @@ pnpm check
 
 ## 共享约束
 
-- 先读 [最新设计 v0.5](docs/design/architecture-v0.5.md)、[Prompt 集成 ADR 0006](docs/adr/0006-memory-only-system-prompt.md)、[架构](docs/architecture.md)和 [验收](docs/acceptance/foundation.md)
+- 先读 [最新设计 v0.5](docs/design/architecture-v0.5.md)、[Prompt 集成 ADR 0006](docs/adr/0006-memory-only-system-prompt.md)、[主模型判断 ADR 0007](docs/adr/0007-model-owned-action-decisions.md)、[架构](docs/architecture.md)和 [验收](docs/acceptance/foundation.md)
 - 一个持续 Mira；Wake 继续上下文，Event 不等于 Wake；不加入 New Chat 或会话领域
 - Compaction 与 Dreaming 分开；先验证 Pi 恢复/工具/压缩，再实现主循环
 - 跨进程单写者、版本检查、增量工具记录；未知结果真实呈现给模型，不自动重放、不全局阻断认知
-- 授权依据用户自然语言及上下文，系统辅助判断；不添加批准按钮、硬风险门禁或固定重试阻拦。真实身份、真实 OS 账户权限和数据完整性仍是硬边界
+- 主模型依据用户对话、上下文和自然语言 Prompt 决定调用或澄清；无 authorize 回调、allowed/evidence/denial 决策或替代引擎/额外模型调用。authorizationContext 仅为事实语境；schema、不可变 intent/outcome、来源、去重、真实身份/OS 权限和数据完整性仍是硬边界
 - 超限唤醒保存普通文本文件并告知路径；复用普通文件工具，不构建专用消息读取/分页服务
 - 早期开发只维护当前 v0.5/v0.2 设计，不保留旧 State/Prompt 配置、别名或迁移层；继续保护当前持久上下文、历史、恢复/压缩与 Memory Git 完整性，不引入用户数据清理/重置
 - 重要技术选择与范围变化先向用户确认，状态记录在 `docs/adr/`；不能把建议当批准

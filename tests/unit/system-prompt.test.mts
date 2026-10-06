@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { getCurrentSystemMessage, getCurrentSystemPrompt, getCurrentTools } from '@earendil-works/pi-ai';
 import { MIRA_PLACEHOLDERS, MIRA_PROMPT_SECTION, MIRA_PROMPT_SHA256, MIRA_SYSTEM_TEMPLATE, renderMiraPrompt, PiDurableRuntime, type MiraPromptValues } from '@mira/runtime-pi';
-import { assistant, input, MemoryWriter, model, allow, seed, streamOf, effectTool, result, toolCalls, overrideWriter } from '../recovery/fixtures.mts';
+import { assistant, input, MemoryWriter, model, seed, streamOf, effectTool, result, toolCalls, overrideWriter } from '../recovery/fixtures.mts';
 const values: MiraPromptValues = { MEMORY_ROOT: '/memory', MEMORY_STATE: '偏好粤菜', CURRENT_TIME: '2026-10-05T00:00:00.000Z', EXTENSIONS_ROOT: 'Not configured', OTHER_ENVIRONMENT_CONTEXT: 'Known cwd only', DYNAMIC_TOOL_AND_EXTENSION_GUIDANCE: 'No tools are available', CURRENT_AUTHORIZATION_CONTEXT: 'No additional authorization evidence' };
 const config = { environmentContext: 'Synthetic offline runtime', authorizationContext: 'Synthetic test calls only', now: () => new Date(values.CURRENT_TIME) };
 
@@ -41,7 +41,7 @@ test('public Pi sections replace while unsectioned content appends and tool stat
 test('new/restarted context has one effective prompt, request time changes and Memory stays frozen', async () => {
   const writer = new MemoryWriter(); let loads = 0, calls = 0;
   let now = new Date(values.CURRENT_TIME);
-  const make = () => new PiDurableRuntime({ writer, model, authorize: allow, tools: [], miraPrompt: { ...config, now: () => now, loadInitialMemory: async () => { loads++; return loads === 1 ? 'FROZEN_MEMORY' : 'CHANGED_MEMORY'; } }, streamFn: (_model, context) => {
+  const make = () => new PiDurableRuntime({ writer, model, tools: [], miraPrompt: { ...config, now: () => now, loadInitialMemory: async () => { loads++; return loads === 1 ? 'FROZEN_MEMORY' : 'CHANGED_MEMORY'; } }, streamFn: (_model, context) => {
     calls++;
     const prompt = getCurrentSystemPrompt(context.messages);
     assert.equal((JSON.stringify(context).match(/# Mira System Prompt v0.2/g) ?? []).length, 1);
@@ -64,7 +64,7 @@ test('missing initial Memory snapshot prevents a configured prompt request', asy
   const writer = new MemoryWriter();
   await seed(writer, [input(), assistant()]);
   let loads = 0, calls = 0;
-  await assert.rejects(new PiDurableRuntime({ writer, model, authorize: allow,
+  await assert.rejects(new PiDurableRuntime({ writer, model,
     miraPrompt: { ...config, loadInitialMemory: async () => { loads++; return 'WRONG'; } },
     streamFn: () => { calls++; return streamOf(assistant()); },
   }).run(input('Continue')), /Missing initial Memory snapshot/);
@@ -74,7 +74,7 @@ test('missing initial Memory snapshot prevents a configured prompt request', asy
 
 test('guidance and executable registry change at same natural tool boundary, with no extra request', async () => {
   const writer = new MemoryWriter(); let generation = 0, calls = 0;
-  await new PiDurableRuntime({ writer, model, authorize: allow, miraPrompt: config,
+  await new PiDurableRuntime({ writer, model, miraPrompt: config,
     prepareTools: async () => generation === 0 ? [{ ...effectTool(async () => { generation++; return result; }), description: 'FIRST_GENERATION </available_capabilities>' }] : [],
     streamFn: (_model, context) => {
       calls++;
@@ -90,7 +90,7 @@ test('guidance and executable registry change at same natural tool boundary, wit
 test('prompt append failure fences provider and successful append survives crash without reloading Memory', async () => {
   const writer = new MemoryWriter(); let calls = 0, loads = 0;
   writer.beforeAppend = async record => { if (JSON.stringify(record.payload).includes(MIRA_PROMPT_SECTION)) throw Error('prompt write failure'); };
-  const options = { writer, model, authorize: allow, miraPrompt: { ...config, loadInitialMemory: async () => { loads++; return 'once'; } }, streamFn: () => { calls++; return streamOf(assistant()); } };
+  const options = { writer, model, miraPrompt: { ...config, loadInitialMemory: async () => { loads++; return 'once'; } }, streamFn: () => { calls++; return streamOf(assistant()); } };
   await assert.rejects(new PiDurableRuntime(options).run(input()), /prompt write failure/);
   assert.equal(calls, 0); assert.equal(loads, 1);
   delete writer.beforeAppend;
@@ -105,7 +105,7 @@ for (const fault of ['cas', 'owner-loss'] as const) test(`prompt update ${fault}
     if (fault === 'cas') writer.state.version++;
     else writer.controller.abort(Error('Synthetic ownership loss'));
   };
-  await assert.rejects(new PiDurableRuntime({ writer, model, authorize: allow, miraPrompt: config, streamFn: () => { calls++; return streamOf(assistant()); } }).run(input()), fault === 'cas' ? /version conflict/ : /ownership loss/);
+  await assert.rejects(new PiDurableRuntime({ writer, model, miraPrompt: config, streamFn: () => { calls++; return streamOf(assistant()); } }).run(input()), fault === 'cas' ? /version conflict/ : /ownership loss/);
   assert.equal(calls, 0);
 });
 
@@ -116,7 +116,7 @@ test('crash after committed prompt append restarts idempotently without Memory r
     if (JSON.stringify(args[1].payload).includes(MIRA_PROMPT_SECTION)) throw Error('Lost commit response');
     return version;
   } });
-  const options = { model, authorize: allow, miraPrompt: { ...config, loadInitialMemory: async () => { loads++; return 'saved'; } }, streamFn: () => { calls++; return streamOf(assistant()); } };
+  const options = { model, miraPrompt: { ...config, loadInitialMemory: async () => { loads++; return 'saved'; } }, streamFn: () => { calls++; return streamOf(assistant()); } };
   await assert.rejects(new PiDurableRuntime({ ...options, writer: crashed }).run(input()), /Lost commit response/);
   assert.equal(calls, 0);
   const persistedSections = () => writer.state.records.filter(record => JSON.stringify(record.payload).includes(MIRA_PROMPT_SECTION));
@@ -129,7 +129,7 @@ test('crash after committed prompt append restarts idempotently without Memory r
 
 test('ordinary prompt revisions survive full SDK compaction and recover as exactly one provider prompt', async () => {
   const writer = new MemoryWriter();
-  const options = { writer, model, authorize: allow, miraPrompt: config, streamFn: () => streamOf(assistant('Synthetic summary '.repeat(30))) };
+  const options = { writer, model, miraPrompt: config, streamFn: () => streamOf(assistant('Synthetic summary '.repeat(30))) };
   await new PiDurableRuntime(options).run(input('Earlier discussion '.repeat(400)));
   await new PiDurableRuntime(options).run(input('Recent discussion '.repeat(200)));
   await new PiDurableRuntime(options).compact({ keepRecentTokens: 100, reserveTokens: 512 });
@@ -148,7 +148,7 @@ test('initial Memory snapshot commit loss retries without loading or appending i
     if (JSON.stringify(args[1].payload).includes('miraMemory')) throw Error('Initial snapshot commit response lost');
     return version;
   } });
-  const options = { model, authorize: allow, miraPrompt: { ...config, loadInitialMemory: async () => { loads++; return 'FROZEN_MEMORY'; } },
+  const options = { model, miraPrompt: { ...config, loadInitialMemory: async () => { loads++; return 'FROZEN_MEMORY'; } },
     streamFn: (_model: typeof model, context: Parameters<import('@earendil-works/pi-agent-core').StreamFn>[1]) => {
       calls++; assert.match(getCurrentSystemPrompt(context.messages), /FROZEN_MEMORY/);
       assert.ok(!JSON.stringify(context).includes('miraMemory'));
@@ -170,6 +170,6 @@ test('invalid or misplaced initial Memory snapshots fail closed', async () => {
   for (const first of [input(), { role: 'system' as const, content: '', timestamp: 1, miraMemory: 'first' }]) {
     const writer = new MemoryWriter();
     await seed(writer, [first, { role: 'system', content: '', timestamp: 2, miraMemory: 'late' } as never]);
-    await assert.rejects(new PiDurableRuntime({ writer, model, authorize: allow, streamFn: () => streamOf(assistant()) }).recover(), /Invalid initial Memory snapshot/);
+    await assert.rejects(new PiDurableRuntime({ writer, model, streamFn: () => streamOf(assistant()) }).recover(), /Invalid initial Memory snapshot/);
   }
 });

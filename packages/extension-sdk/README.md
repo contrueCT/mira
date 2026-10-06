@@ -19,9 +19,10 @@ resources that an extension fails to register. Detached work must be canceled or
 joined by the extension's cleanup. This is trusted same-process code, not a sandbox.
 
 See `examples/extensions` for a tool, timer/service source, and dependent consumer.
-Tools use the ordinary runtime authorization and durable intent/outcome boundary.
+Tools use the ordinary runtime schema/parameter checks, durable intent/outcome,
+and provenance boundary. The main model decides whether to call or clarify.
 The SDK exposes no database, direct context mutation, package installation,
-generated-code activation, or authorization override.
+generated-code activation, or independent authorization decision API.
 
 Run `pnpm check` at the repository root. Offline host and runtime suites exercise
 these public contracts with real pinned Cordis/Pi packages and synthetic models.

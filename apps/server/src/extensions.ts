@@ -24,7 +24,7 @@ export function extensionTools(registry: RegisteredTool[]): AgentTool[] {
     },
   }));
 }
-/** These are ordinary tools: authorization + durable intent/outcome stay in Pi. */
+/** Ordinary model-selected tools use the same durable Pi intent/outcome path. */
 export function extensionManagementTools(host: ExtensionHost): AgentTool[] {
   const result = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value) }], details: null });
   return [

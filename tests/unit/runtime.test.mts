@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import { setImmediate } from 'node:timers/promises';
 import { Type, createAssistantMessageEventStream, getCurrentTools, toToolDeclaration, type TranscriptContext } from '@earendil-works/pi-ai';
 import { decodeRecords, encodeEntry, jsonValue, messageEntry, PiDurableRuntime } from '@mira/runtime-pi';
-import { assistant, deferred, effectTool, model, result, scripted, streamOf, toolCalls, MemoryWriter, allow, input, runtime, seed, compactionMessages } from '../recovery/fixtures.mts';
+import { assistant, deferred, effectTool, model, result, scripted, streamOf, toolCalls, MemoryWriter, input, runtime, seed, compactionMessages } from '../recovery/fixtures.mts';
 
 test('structured JSON roundtrip retains system sections, images, tool fields and opaque provider fields', async () => {
   const writer = new MemoryWriter();
@@ -37,24 +37,46 @@ test('unknown envelope/runtime versions and mismatched entry metadata fail close
   }
 });
 
-test('agent authorization deferral records its reason and continues cognition without intent or effect', async () => {
+test('the model asks for clarification without calling a tool or creating a recovery operation', async () => {
   const writer = new MemoryWriter();
-  assert.throws(() => new PiDurableRuntime({ writer, model, streamFn: scripted([]) } as never), /Authorization/);
-  let effects = 0, requests = 0, authorizations = 0;
+  let effects = 0, requests = 0;
   const instance = runtime(writer, (_model, context) => {
     requests++;
-    if (requests === 2) assert.match(JSON.stringify(context), /Please clarify which destination/);
-    return streamOf(requests === 1 ? toolCalls('a', 'b') : assistant('Which destination do you mean?'));
+    assert.match(JSON.stringify(context.messages), /Send it there/);
+    return streamOf(assistant('Which destination do you mean?'));
   }, {
     tools: [effectTool(async () => { effects++; return result; })],
-    authorize: async () => { authorizations++; return { allowed: false, reason: 'Please clarify which destination' }; },
   });
-  const recovered = await instance.run(input());
-  assert.equal(effects, 0); assert.equal(requests, 2); assert.equal(authorizations, 1);
+  const recovered = await instance.run(input('Send it there'));
+  assert.equal(effects, 0); assert.equal(requests, 1);
   assert.equal(writer.state.executions.length, 0);
-  assert.equal(recovered.recovery.operations[0]?.reason, 'Please clarify which destination');
+  assert.deepEqual(recovered.recovery.operations, []);
+  const clarification = recovered.messages.at(-1); assert.ok(clarification?.role === 'assistant');
+  assert.deepEqual(clarification.content, assistant('Which destination do you mean?').content);
   const reloaded = await runtime(writer).recover();
   assert.deepEqual(reloaded.recovery, recovered.recovery);
+  assert.deepEqual(reloaded.messages, recovered.messages);
+});
+
+test('model tool calls execute without a permission callback or per-tool model request', async () => {
+  const writer = new MemoryWriter(); const effects: string[] = []; let requests = 0;
+  const instance = new PiDurableRuntime({ writer, model, tools: [effectTool(async id => { effects.push(id); return result; })],
+    miraPrompt: { environmentContext: 'Synthetic offline test', authorizationContext: 'The user requested both synthetic operations in this turn' },
+    streamFn: (_model, context) => {
+      requests++;
+      assert.match(JSON.stringify(context.messages), /The user requested both synthetic operations in this turn/);
+      if (requests === 1) return streamOf(toolCalls('a', 'b'));
+      assert.equal(requests, 2);
+      assert.equal(context.messages.filter(message => message.role === 'toolResult').length, 2);
+      return streamOf(assistant('Both requested tools completed'));
+    },
+  });
+  const recovered = await instance.run(input('Perform both synthetic operations'));
+  assert.deepEqual(effects, ['a', 'b']); assert.equal(requests, 2);
+  assert.deepEqual(writer.state.executions.map(execution => execution.intent.callId), effects);
+  assert.ok(writer.state.executions.every(execution => execution.outcome));
+  assert.ok(writer.state.executions.every(execution => !('authorization' in execution.intent)));
+  assert.deepEqual(recovered.recovery.operations, []);
 });
 
 test('awaited assistant append and first result append are real sequential execution barriers', async () => {
@@ -148,9 +170,9 @@ test('duplicate call IDs rejected across wakes and within a batch despite replay
 
 test('writer loss and explicit abort gate model/tool paths and latch the runtime', async () => {
   const writer = new MemoryWriter(); const entered = deferred(), release = deferred(); let effects = 0;
+  writer.beforeIntent = async () => { entered.resolve(); await release.promise; };
   const instance = runtime(writer, scripted([toolCalls('a')]), {
     tools: [effectTool(async () => { effects++; return result; })],
-    authorize: async () => { entered.resolve(); await release.promise; return { allowed: true, evidence: {} }; },
   });
   const work = instance.run(input()); await entered.promise;
   writer.controller.abort(Error('writer connection lost')); release.resolve();
@@ -239,15 +261,13 @@ test('prepublication cancellation during awaited append rolls back candidate che
 });
 
 
-test('authorized converted arguments and exact original requested arguments are independently retained', async () => {
-  const writer = new MemoryWriter(); let executed: unknown, authorized: unknown;
+test('validated execution arguments and exact original requested arguments are independently retained', async () => {
+  const writer = new MemoryWriter(); let executed: unknown;
   const call = toolCalls('coerced');
   call.content = [{ type: 'toolCall', id: 'coerced', name: 'effect', arguments: { count: '3', note: null } }];
   const tool = { ...effectTool(async (_id, args) => { executed = args; return result; }), parameters: Type.Object({ count: Type.Number(), note: Type.Optional(Type.String()) }) };
-  await runtime(writer, scripted([call, assistant()]), {
-    tools: [tool], authorize: async (_call, args) => { authorized = structuredClone(args); return { allowed: true, evidence: { synthetic: true } }; },
-  }).run(input());
-  assert.deepEqual(executed, { count: 3 }); assert.deepEqual(authorized, executed);
+  await runtime(writer, scripted([call, assistant()]), { tools: [tool] }).run(input());
+  assert.deepEqual(executed, { count: 3 });
   const execution = writer.state.executions[0]!;
   assert.deepEqual(execution.intent.requestedArguments, { count: '3', note: null });
   assert.deepEqual(execution.intent.arguments, { count: 3 });
@@ -464,21 +484,30 @@ test('partial batch keeps exact resolved pairs and narrative while new read-only
   assert.ok(original?.type === 'message'); assert.deepEqual(original.message, batch);
 });
 
-test('matching uncertain arguments are advisory and deliberate new-ID retry records natural-language rationale', async () => {
-  const writer = new MemoryWriter(); const effects: string[] = []; const contexts: Parameters<import('@mira/runtime-pi').PiRuntimeOptions['authorize']>[3][] = [];
+test('matching uncertain arguments have no hidden veto and a deliberate new-ID retry retains raw user facts and narrative', async () => {
+  const writer = new MemoryWriter(); const effects: string[] = []; const requests: TranscriptContext[] = [];
   const retry = toolCalls('deliberate-retry');
   retry.content.unshift({ type: 'text', text: 'The user asked to try again despite the missing receipt.' });
-  await runtime(writer, scripted([toolCalls('first-attempt'), retry, assistant()]), {
+  const recovered = await runtime(writer, scripted([toolCalls('first-attempt'), retry, assistant()], (_model, context) => {
+    requests.push(structuredClone(context)); return streamOf(assistant());
+  }), {
     tools: [effectTool(async id => { effects.push(id); if (id === 'first-attempt') throw Error('receipt lost'); return result; })],
-    authorize: async (_call, _args, _signal, context) => {
-      contexts.push(structuredClone(context));
-      return { allowed: true, evidence: { rationale: context.assistantNarrative || 'Initial requested operation' } };
-    },
-  }).run(input());
+  }).run(input('Perform the synthetic operation; if its receipt is missing, try again once despite that uncertainty'));
   assert.deepEqual(effects, ['first-attempt', 'deliberate-retry']);
-  assert.equal(contexts[1]?.priorOperations[0]?.callId, 'first-attempt');
-  assert.equal(contexts[1]?.assistantNarrative, 'The user asked to try again despite the missing receipt.');
-  assert.deepEqual(writer.state.executions[1]!.intent.authorization, { rationale: contexts[1]!.assistantNarrative });
+  assert.equal(requests.length, 3);
+  assert.match(JSON.stringify(requests[1]!.messages), /first-attempt/);
+  assert.match(JSON.stringify(requests[1]!.messages), /may already have executed/);
+  assert.match(JSON.stringify(requests[1]!.messages), /try again once despite that uncertainty/);
+  assert.match(JSON.stringify(requests[2]!.messages), /The user asked to try again despite the missing receipt/);
+  const intent = writer.state.executions[1]!.intent;
+  assert.deepEqual(intent.arguments, writer.state.executions[0]!.intent.arguments);
+  assert.deepEqual(intent.requestedArguments, writer.state.executions[0]!.intent.requestedArguments);
+  assert.equal('authorization' in intent, false);
+  const record = writer.state.records.find(record => record.id === intent.assistantRecordId)!;
+  const entry = decodeRecords([record], record.parentId)[0]!;
+  assert.ok(entry.type === 'message');
+  assert.deepEqual(entry.message, retry, 'the raw assistant record retains the actual retry narrative');
+  assert.equal(recovered.recovery.operations[0]?.callId, 'first-attempt');
   assert.equal(writer.state.executions[0]!.outcome, null);
 });
 

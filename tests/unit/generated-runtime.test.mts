@@ -74,7 +74,10 @@ test('generated tools stage, install disabled, activate, update and roll back wi
   const files = await fixture(); const writer = new MemoryWriter(); const builtin = effectTool(async () => result);
   const host = new ExtensionHost({ ...await readExtensionConfiguration(files.configurationFile), receive: extensionReceiver(writer) });
   let prepared: AgentTool[] = []; let requests = 0; let first!: ArtifactManifest; let originalRevision = ''; let originalActivation = '';
-  const evidence = { source: 'synthetic-user', intent: 'stage and exercise generated extension lifecycle' };
+  writer.beforeIntent = async intent => {
+    assert.equal(writer.state.executions.some(execution => execution.intent.callId === intent.callId), false);
+    if (intent.callId === 'old-sibling') assert.deepEqual(intent.arguments, { count: 2 });
+  };
   try {
     await host.start(); const second = await host.stage(files.sources.two, 'entry.mjs');
     assert.deepEqual(await files.lifecycle(), [], 'staging never imports generated code');
@@ -132,11 +135,6 @@ test('generated tools stage, install disabled, activate, update and roll back wi
       return streamOf(assistant('Generated lifecycle completed in the same turn'));
     }, {
       prepareTools: async () => prepared = [builtin, ...management, ...extensionTools(await host.prepare())], finishTools: () => host.finish(),
-      authorize: async (request, args) => {
-        assert.equal(writer.state.executions.some(execution => execution.intent.callId === request.id), false);
-        if (request.id === 'old-sibling') assert.deepEqual(args, { count: 2 });
-        return { allowed: true, evidence };
-      },
     }).run(input('Stage, install, activate, update, roll back and disable the synthetic extension'));
     assert.equal(requests, 8);
     assert.deepEqual(await files.effects(), [
@@ -149,7 +147,7 @@ test('generated tools stage, install disabled, activate, update and roll back wi
     assert.deepEqual(host.changeStatus().map(receipt => [receipt.action, receipt.status, receipt.persistence]),
       ['install', 'activate', 'update', 'rollback', 'disable'].map(action => [action, 'applied', 'saved']));
     for (const execution of writer.state.executions) {
-      assert.deepEqual(execution.intent.authorization, evidence); assert.ok(execution.outcome);
+      assert.equal('authorization' in execution.intent, false); assert.ok(execution.outcome);
       const message = completed.messages.find(message => message.role === 'toolResult' && message.toolCallId === execution.intent.callId);
       assert.ok(message?.role === 'toolResult'); assert.deepEqual(execution.outcome.payload, message);
       assert.equal(execution.outcome.occurredAt, new Date(message.timestamp).toISOString());

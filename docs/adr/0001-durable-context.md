@@ -1,5 +1,7 @@
 # ADR 0001：连续上下文与恢复
 
+> 后续变更：独立 authorize 回调、执行前授权 gate 及合成授权证据由 [ADR 0007](0007-model-owned-action-decisions.md) 取代。主模型直接依据对话/Prompt 决定调用或澄清；下文保留当时决定与阶段事实，技术校验、持久 intent/outcome、来源及恢复约束不变。
+
 状态：Accepted。用户于 2026-10-05 确认。实现与验证结果另见[验收记录](../acceptance/durable-context.md)。
 
 ## 已确认的选择
