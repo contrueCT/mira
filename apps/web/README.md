@@ -18,7 +18,7 @@ React + Vite + 原生 CSS 的本地浏览器界面。只有一个持续 Mira 和
 - 页面刷新重新读取服务端历史。浏览器按 ID 合并最新页，按时间瞬间与细分精度排序；手动读取旧页保留可见消息位置；接近底部时才跟随新消息。断线后的不连续窗口显式提示补齐，长游标使用只读 POST 查询，不因隐藏记录空页重置翻页进度
 - 页面可见时轮询，工作中约 1.2 秒、空闲约 5 秒；不展示未持久化 token streaming
 - 每条提交先把完整 `{id,text,occurredAt}` 信封写入此标签页的 sessionStorage，再 POST；回执仅表示接收，不表示模型完成
-- 中断或不明响应不会自动重发。刷新后保留原始 ID、文本与时间；用户明确点击“核对并重试”才读历史并使用相同信封重试；出现 `event:<UUID>` 后清除暂存
+- 中断或不明响应不会自动重发。刷新后保留原始 ID、文本与时间；用户明确点击“核对并重试”才读历史并使用相同信封重试；确认用户消息的 `externalEventId` 与原始提交 ID 相同后清除暂存（Timeline 的全局 History UUID 是独立展示身份）
 - 发送进行中禁用重复点击和 Enter；回执后可以继续发送待处理消息；中文输入法组合时 Enter 不发送
 - Timeline 只渲染对话文本和必要通知，不显示工具活动、工具名称/状态、原始参数、结果、system prompt 或 thinking。`GET/POST /api/timeline` 仅返回 `items` 与 `nextCursor`，不读取或发送工具展示投影；内部执行和持久工具记录不变。文本使用 React 安全渲染与 `white-space: pre-wrap`
 - 所有 API 请求包含 `X-Mira-Client: web`；不把 token 或密钥写入 HTML、URL、日志或浏览器存储

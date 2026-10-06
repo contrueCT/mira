@@ -157,25 +157,25 @@ test('claim failure rolls back both the run and every membership without consumi
   } finally { await db.close(); }
 });
 
-for (const stage of [uuid('input'), uuid('final')] as const) test(`wake ${stage} association failure rolls back record, CAS and link atomically`, async () => {
+for (const stage of ['input', 'final'] as const) test(`wake ${stage} association failure rolls back record, CAS and link atomically`, async () => {
   const db = await createTestDatabase();
   try {
     const writer = await db.acquire();
     await writer.receive(event('first'), wake('first'));
     const run = await writer.claimWakeBatch(); assert(run);
-    if (stage === uuid('final')) await writer.appendWakeInput(run.id, 0, record(uuid('input')));
+    if (stage === 'final') await writer.appendWakeInput(run.id, 0, record(uuid('input')));
     const before = await writer.load();
     await db.admin.query(`CREATE FUNCTION reject_wake_link() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN IF NEW.${stage}_record_id IS DISTINCT FROM OLD.${stage}_record_id THEN RAISE EXCEPTION 'synthetic link failure'; END IF; RETURN NEW; END $$;
       CREATE TRIGGER reject_wake_link BEFORE UPDATE ON wake_runs FOR EACH ROW EXECUTE FUNCTION reject_wake_link()`);
-    const candidate = record(stage, stage === uuid('final') ? uuid('input') : null);
-    await assert.rejects(stage === uuid('input') ? writer.appendWakeInput(run.id, before.version, candidate) : writer.appendWakeFinal(run.id, before.version, candidate), /synthetic link failure/);
+    const candidate = record(uuid(stage), stage === 'final' ? uuid('input') : null);
+    await assert.rejects(stage === 'input' ? writer.appendWakeInput(run.id, before.version, candidate) : writer.appendWakeFinal(run.id, before.version, candidate), /synthetic link failure/);
     await writer.close();
     await db.admin.query('DROP TRIGGER reject_wake_link ON wake_runs');
     const next = await db.acquire();
     assert.deepEqual(await next.load(), before);
-    assert.equal((await next.loadWakeRun(run.id))[stage === uuid('input') ? 'inputRecordId' : 'finalRecordId'], null);
-    if (stage === uuid('input')) await next.appendWakeInput(run.id, before.version, candidate);
+    assert.equal((await next.loadWakeRun(run.id))[stage === 'input' ? 'inputRecordId' : 'finalRecordId'], null);
+    if (stage === 'input') await next.appendWakeInput(run.id, before.version, candidate);
     else await next.appendWakeFinal(run.id, before.version, candidate);
     assert.equal((await next.load()).version, before.version + 1);
   } finally { await db.close(); }
@@ -241,20 +241,20 @@ test('wake queue writes verify the exact session lock and roll back a lost-lock 
   } finally { await db.close(); }
 });
 
-for (const stage of [uuid('input'), uuid('final')] as const) test(`wake ${stage} cancellation before commit rolls back its record and association`, async () => {
+for (const stage of ['input', 'final'] as const) test(`wake ${stage} cancellation before commit rolls back its record and association`, async () => {
   const db = await createTestDatabase();
   try {
     const writer = await db.acquire();
     await writer.receive(event('first'), wake('first'));
     const run = await writer.claimWakeBatch(); assert(run);
-    if (stage === uuid('final')) await writer.appendWakeInput(run.id, 0, record(uuid('input')));
+    if (stage === 'final') await writer.appendWakeInput(run.id, 0, record(uuid('input')));
     const before = await writer.load();
     await db.admin.query(`CREATE FUNCTION delay_wake_link() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN PERFORM pg_sleep(0.5); RETURN NEW; END $$;
       CREATE TRIGGER delay_wake_link BEFORE UPDATE ON wake_runs FOR EACH ROW EXECUTE FUNCTION delay_wake_link()`);
     const controller = new AbortController();
-    const candidate = record(stage, stage === uuid('final') ? uuid('input') : null);
-    const work = stage === uuid('input') ? writer.appendWakeInput(run.id, before.version, candidate, controller.signal) : writer.appendWakeFinal(run.id, before.version, candidate, controller.signal);
+    const candidate = record(uuid(stage), stage === 'final' ? uuid('input') : null);
+    const work = stage === 'input' ? writer.appendWakeInput(run.id, before.version, candidate, controller.signal) : writer.appendWakeFinal(run.id, before.version, candidate, controller.signal);
     const rejected = assert.rejects(work, (error: unknown) => error === controller.signal.reason);
     let updating = false;
     const deadline = Date.now() + 3_000;
@@ -268,26 +268,26 @@ for (const stage of [uuid('input'), uuid('final')] as const) test(`wake ${stage}
     await rejected;
     assert.equal(writer.signal.aborted, false);
     assert.deepEqual(await writer.load(), before);
-    assert.equal((await writer.loadWakeRun(run.id))[stage === uuid('input') ? 'inputRecordId' : 'finalRecordId'], null);
+    assert.equal((await writer.loadWakeRun(run.id))[stage === 'input' ? 'inputRecordId' : 'finalRecordId'], null);
     await db.admin.query('DROP TRIGGER delay_wake_link ON wake_runs');
-    if (stage === uuid('input')) await writer.appendWakeInput(run.id, before.version, candidate);
+    if (stage === 'input') await writer.appendWakeInput(run.id, before.version, candidate);
     else await writer.appendWakeFinal(run.id, before.version, candidate);
   } finally { await db.close(); }
 });
 
-for (const stage of [uuid('input'), uuid('final'), 'complete'] as const) test(`wake ${stage} publication rolls back when its session lock is lost`, async () => {
+for (const stage of ['input', 'final', 'complete'] as const) test(`wake ${stage} publication rolls back when its session lock is lost`, async () => {
   const db = await createTestDatabase();
   try {
     const writer = await db.acquire();
     await writer.receive(event('first'), wake('first'));
     const run = await writer.claimWakeBatch(); assert(run);
-    if (stage !== uuid('input')) await writer.appendWakeInput(run.id, 0, record(uuid('input')));
+    if (stage !== 'input') await writer.appendWakeInput(run.id, 0, record(uuid('input')));
     if (stage === 'complete') await writer.appendWakeFinal(run.id, 1, record(uuid('final'), uuid('input')));
     const before = await writer.load(); const progress = await writer.loadWakeRun(run.id);
     await db.admin.query(`CREATE FUNCTION lose_wake_update_lock() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN PERFORM pg_advisory_unlock(1296650817, (SELECT lock_key FROM mira_owners WHERE mira_id = NEW.mira_id)); RETURN NEW; END $$;
       CREATE TRIGGER lose_wake_update_lock BEFORE UPDATE ON wake_runs FOR EACH ROW EXECUTE FUNCTION lose_wake_update_lock()`);
-    await assert.rejects(stage === uuid('input') ? writer.appendWakeInput(run.id, 0, record(uuid('input'))) : stage === uuid('final') ? writer.appendWakeFinal(run.id, 1, record(uuid('final'), uuid('input'))) : writer.completeWakeRun(run.id), code('ownership'));
+    await assert.rejects(stage === 'input' ? writer.appendWakeInput(run.id, 0, record(uuid('input'))) : stage === 'final' ? writer.appendWakeFinal(run.id, 1, record(uuid('final'), uuid('input'))) : writer.completeWakeRun(run.id), code('ownership'));
     assert.equal(writer.signal.aborted, true);
     await writer.close();
     await db.admin.query('DROP TRIGGER lose_wake_update_lock ON wake_runs');

@@ -73,6 +73,26 @@ test('uncertain send is never automatically resent after reload or reconnect', a
   await page.getByRole('button', { name: '核对并重试' }).click(); await expect.poll(() => sends).toBe(2);
 });
 
+test('retry preflight acknowledges a global-ID user event without resending its external envelope', async ({ page }) => {
+  const envelope = { id: '50000000-0000-4000-8000-000000000001', text: '已经保存但回执丢失的消息', occurredAt: '2026-10-06T08:00:00.000Z' };
+  let reveal = false; let sends = 0;
+  await page.addInitScript(value => sessionStorage.setItem('mira.pending-messages.v1', JSON.stringify([{ ...value, state: 'uncertain' }])), envelope);
+  await page.route('**/api/status', route => route.fulfill({ json: { state: 'idle', mode: 'synthetic', model: 'Fixture model', error: null } }));
+  await page.route('**/api/timeline', route => route.fulfill({ json: { items: reveal ? [{ id: '60000000-0000-4000-8000-000000000001', externalEventId: envelope.id, role: 'user', text: envelope.text, occurredAt: envelope.occurredAt }] : [], nextCursor: null } }));
+  await page.route('**/api/messages', async route => { sends++; await route.abort('failed'); });
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: '核对并重试' })).toBeVisible();
+  reveal = true;
+  await page.getByRole('button', { name: '核对并重试' }).click();
+  // The retry's finally focuses the composer only after preflight/send settles.
+  await expect(page.getByLabel('给 Mira 发消息', { exact: true })).toBeFocused();
+  await expect(page.getByLabel('你的消息', { exact: true })).toHaveCount(1);
+  await expect(page.getByLabel('待确认的消息', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '核对并重试' })).toHaveCount(0);
+  expect(sends).toBe(0);
+  expect(await page.evaluate(() => sessionStorage.getItem('mira.pending-messages.v1'))).toBeNull();
+});
+
 test('foreign origins and missing client headers cannot read or submit through the local API', async ({ request }) => {
   const read = await request.get('/api/settings'); expect(read.status()).toBe(403);
   const foreign = await request.post('/api/messages', { headers: { origin: 'https://example.org', 'x-mira-client': 'web' }, data: { id: 'foreign', text: 'blocked', occurredAt: new Date().toISOString() } });
