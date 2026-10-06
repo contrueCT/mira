@@ -1,6 +1,6 @@
 # @mira/server
 
-当前仅实现最小组装和 PostgreSQL + 假 provider 的 CLI 演示，没有 HTTP 服务、UI、真实模型认证或费用。
+当前包含 PostgreSQL + 假 provider CLI、Fastify 本地 Web 组装，以及显式模型配置/transport。浏览器前端见 apps/web；真实模型联通与费用尚未验收。
 
 ```sh
 pnpm demo --help
