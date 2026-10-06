@@ -409,7 +409,7 @@ test('real PostgreSQL model removal retires a generated activation but retains s
           accepted.set(previous[0]!, structuredClone(receipt));
         }
         if (requests === 2) {
-          assertCapability(context, null); assert.deepEqual(await fixture.lifecycle(), [], 'staging and disabled install never import or apply');
+          assertCapability(context, null); assert.deepEqual(await fixture.lifecycle(), [], 'staging and disabled install never apply');
           const installed = (await readExtensionConfiguration(configurationFile)).entries[0]!;
           assert.equal(installed.enabled, false); assert.equal(installed.generated!.digest, release.digest); assert.deepEqual(installed.config, config);
           return streamOf(calls(request('activate-generated-removal', 'extension.manage', { id: 'generated', action: 'activate' })));
