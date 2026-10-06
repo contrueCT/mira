@@ -200,4 +200,13 @@ button:disabled { opacity: .48; }
   .model-editor { padding: 13px; }
   .field-grid { gap: 9px; }
 }
+@media (max-height: 600px) {
+  .app-header { min-height: 72px; padding: 10px 56px; }
+  .mira-ring { display: none; }
+  .identity h1 { margin: 0; }
+  .identity-detail { margin-top: 4px; }
+  .settings-button { top: 12px; }
+  .composer textarea { max-height: min(160px, 25dvh); }
+  .connection-notice { flex-shrink: 1; min-height: 32px; max-height: min(28dvh, max(32px, calc(100dvh - 230px))); }
+}
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } }

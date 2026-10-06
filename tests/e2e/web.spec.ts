@@ -421,3 +421,15 @@ test('long diagnostics scroll separately without hiding the composer on a narrow
   await expect.poll(() => notice.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
+
+
+test('a landscape error banner leaves the expanded composer and send button in the viewport', async ({ page }, testInfo) => {
+  await page.route('**/api/status', route => route.fulfill({ json: { state: 'error', mode: 'live', model: 'fixture-model', error: `Model request failed · HTTP 400 · ${'validation detail '.repeat(100)}` } }));
+  await page.setViewportSize({ width: 844, height: 390 }); await page.goto('/');
+  const input = page.getByLabel('给 Mira 发消息', { exact: true });
+  await input.fill('保留第一行草稿\n第二行草稿\n第三行草稿\n第四行草稿\n第五行草稿\n第六行草稿');
+  await expect(page.getByRole('status', { name: '运行状态与错误详情' })).toBeInViewport({ ratio: 1 });
+  await expect(input).toBeInViewport({ ratio: 1 });
+  await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeInViewport({ ratio: 1 });
+  await page.screenshot({ path: testInfo.outputPath('mira-model-error-landscape.png'), fullPage: true });
+});
