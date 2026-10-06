@@ -400,3 +400,35 @@ test('oversized HTTP error bodies are cancelled and never passed through to the 
   const message = await (await transport.streamFn(transport.model, transcript)).result();
   assert.equal(cancelled, true); assert.match(message.errorMessage!, /HTTP 500.*exceeded the diagnostic limit/); assert.doesNotMatch(message.errorMessage!, /private-response/);
 });
+
+test('JSON-wrapped and plain-text HTML fragments never enter diagnostics', async () => {
+  for (const api of ['openai-completions', 'openai-responses', 'anthropic-messages'] as const) {
+    for (const wrapped of [true, false]) {
+      const transport = createModelTransport(config(api), { kind: 'custom', connection: 'openai', model: 'manual-id' }, {
+        env: () => syntheticKey, fetch: async () => wrapped
+          ? Response.json({ error: { message: '<h1>Gateway error</h1><pre>raw-private-response-dump</pre>', code: 'bad_gateway' } }, { status: 502 })
+          : new Response('<section>raw-private-response-dump</section>', { status: 502, headers: { 'content-type': 'text/plain' } }),
+      });
+      const message = await (await transport.streamFn(transport.model, transcript)).result();
+      assert.match(message.errorMessage!, /HTTP 502.*HTML/); assert.doesNotMatch(JSON.stringify(message), /raw-private-response-dump|<h1>|<section>/);
+      if (wrapped) assert.match(message.errorMessage!, /bad_gateway/);
+    }
+  }
+});
+
+test('long provider messages preserve short structured codes, types and body request IDs', async () => {
+  const transport = createModelTransport(config(), { kind: 'custom', connection: 'openai', model: 'manual-id' }, {
+    env: () => syntheticKey, fetch: async () => Response.json({ error: { message: `Invalid tool schema ${'x'.repeat(3000)} ${syntheticKey}`, code: 'invalid_tool_name', type: 'invalid_request_error', request_id: 'body-request-123' } }, { status: 400 }),
+  });
+  const message = await (await transport.streamFn(transport.model, transcript)).result();
+  assert.match(message.errorMessage!, /Invalid tool schema.*truncated.*invalid_tool_name.*invalid_request_error.*body-request-123/);
+  assert.ok(message.errorMessage!.length <= 2061); assert.doesNotMatch(message.errorMessage!, /synthetic-custom-key/);
+});
+
+test('long network messages do not displace available cause codes', async () => {
+  const transport = createModelTransport(config(), { kind: 'custom', connection: 'openai', model: 'manual-id' }, {
+    env: () => syntheticKey, fetch: async () => { throw Object.assign(new Error(`network ${'x'.repeat(3000)} ${syntheticKey}`, { cause: Object.assign(new Error('TLS failed'), { code: 'CERT_HAS_EXPIRED' }) }), { code: 'ECONNRESET' }); },
+  });
+  const message = await (await transport.streamFn(transport.model, transcript)).result();
+  assert.match(message.errorMessage!, /truncated.*ECONNRESET.*CERT_HAS_EXPIRED/); assert.doesNotMatch(message.errorMessage!, /synthetic-custom-key/);
+});
