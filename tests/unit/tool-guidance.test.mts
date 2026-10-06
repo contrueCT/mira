@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { ExtensionHost } from '@mira/extension-host';
 import { extensionManagementTools } from '@mira/server';
 import { createHistoryTools } from '@mira/runtime-pi';
@@ -41,8 +44,29 @@ test('production extension schemas explain each argument and distinguish receipt
     assert.match(stage.description, /neither tests nor activates/);
     assert.match(manage.description, /accepted receipt is NOT proof/);
     assert.match(manage.description, /status=rejected/);
+    assert.match((manage.parameters as GuidanceSchema).properties!['action']!.anyOf!.find(action => action.const === 'rollback')!.description!, /preserving enabled state/);
     for (const action of (manage.parameters as GuidanceSchema).properties!['action']!.anyOf!) {
       assert.ok(action.description, `action ${action.const}`);
     }
   } finally { await host.close(); }
+});
+
+
+test('activate guidance matches generated-only semantics while enable accepts a manual extension', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'mira-manual-guidance-'));
+  const entry = path.join(directory, 'manual.mjs');
+  await writeFile(entry, 'export default { name: "manual", apply() {} };');
+  const host = new ExtensionHost({ entries: [{ id: 'manual', path: entry, enabled: false }], receive: async () => 'inserted' });
+  try {
+    await host.start(); await host.prepare();
+    const manage = extensionManagementTools(host).find(tool => tool.name === 'extension_manage')!;
+    const activate = (manage.parameters as GuidanceSchema).properties!['action']!.anyOf!.find(action => action.const === 'activate')!;
+    assert.match(activate.description!, /generated extension only/);
+    const rejected = await manage.execute('synthetic-activate', { id: 'manual', action: 'activate' });
+    assert.match(JSON.stringify(rejected), /Action requires an installed generated extension/);
+    const accepted = await manage.execute('synthetic-enable', { id: 'manual', action: 'enable' });
+    assert.match(JSON.stringify(accepted), /accepted/);
+    await host.prepare();
+    assert.equal(host.inspect()[0]!.status, 'active');
+  } finally { await host.close(); await rm(directory, { recursive: true, force: true }); }
 });

@@ -158,7 +158,7 @@ prerequisite; this skill does not authorize unrelated core or configuration edit
   restores code and config, preserves enabled state, and may itself fail
 - `reload`: generated entries use a fresh complete copy; manual entries restart
   the currently imported module without cache invalidation
-- `disable`/`enable`: change desired enabled state and lifecycle resources
+- `disable`/`enable`: change desired enabled state and lifecycle resources for manual or generated entries. `activate` is generated-only; use `enable` for a manually configured extension
 - `remove`: drain/unregister and remove desired entry; source, releases and activation
   files remain. No permanent-delete or garbage-collection command is supplied.
   Removed configuration history is no longer an installed revision list; keep an
