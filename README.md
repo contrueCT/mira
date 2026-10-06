@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-当前增量包含 PostgreSQL 持久上下文、合并唤醒、单认知循环、Pi 执行/压缩、普通 Memory、Memory-only Git 快照、通用文件/Shell、只读历史查询、Cordis 手工/生成扩展生命周期与同轮工具更新，以及假 provider CLI 演示。没有 HTTP 服务、Web 页面或真实模型联通验收；未实现目录仍仅代表职责边界。
+当前增量包含 PostgreSQL 持久上下文、合并唤醒、单认知循环、Pi 执行/压缩、普通 Memory、Memory-only Git 快照、通用文件/Shell、只读历史查询、Cordis 手工/生成扩展生命周期与同轮工具更新，以及假 provider CLI 演示、Pi 内置模型目录、显式自定义连接与模型列表发现。没有 HTTP 服务、Web 页面或真实模型联通验收；未实现目录仍仅代表职责边界。
 
 - [最新设计 v0.5](docs/design/architecture-v0.5.md)
 - [System Prompt 设计 v0.1](docs/design/system-prompt-design-v0.1.md)与[实际模板 v0.2](packages/runtime-pi/prompts/mira-system-v0.2.md)
@@ -59,3 +59,5 @@ pnpm check
 ```
 
 这些命令验证工具链、包边界与离线模型测试。真实 PostgreSQL 测试另运行 `pnpm test:integration`，要求显式 `MIRA_TEST_DATABASE_URL`；CI 执行 `pnpm check:all`。具体隔离要求见验收文档。
+
+模型目录与显式 transport：`pnpm models --help`，见 [配置与发现说明](docs/development/models.md)。目录/合成 HTTP 测试不等于真实模型联通，OAuth 与云账号配置仍待后续。

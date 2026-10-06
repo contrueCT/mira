@@ -123,3 +123,8 @@ export function memoryCheckpointHook(writer: MemoryCheckpointWriter, memoryRoot:
     await writer.finishMemoryCheckpoint({ runId: run.id, commit: snapshot.commitId });
   };
 }
+
+export { parseModelConfiguration, readModelConfiguration, emptyModelConfiguration, customProtocols, type ModelConfiguration, type CustomConnection, type CustomModelConfiguration, type CustomProtocol } from './model-config.ts';
+export { listBuiltinCatalog, getBuiltinCatalogModel, protocolDescription } from './model-catalog.ts';
+export { createModelTransport, type ModelTransport, type ModelTransportOptions, type ModelSelection } from './model-transport.ts';
+export { discoverModels, modelDiscoveryLimits, type DiscoveredModel, type ModelDiscoveryOptions, type ModelDiscoveryResult } from './model-discovery.ts';

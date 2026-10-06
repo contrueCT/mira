@@ -6,6 +6,7 @@
 
 - `README.md` 描述职责；`package.json` 是包名和公开 exports 的事实来源
 - `src/index.ts` 组装假 provider、持久化、WakeLoop、Pi 通用文件/search/bash、Mira 固定范围历史查询、可选 Memory 与手工/生成扩展生命周期；`pnpm demo --help` 为 CLI 入口。尚无 HTTP 服务。
+- `src/model-catalog.ts` / `model-config.ts` / `model-discovery.ts` / `model-transport.ts` 负责 Pi 目录、独立显式密钥引用、受限模型发现和注入 runtime 的 transport；`pnpm models --help`，见 [模型说明](../../docs/development/models.md)。目录不是凭据状态，发现不猜 token 限额。
 - `src/extensions.ts` 绑定事件来源、把 SDK 工具映射到普通 Pi schema/intent/outcome 与来源路径，并提供 stage 与批次边界生命周期管理工具
 - 本目录负责API、认证、启动和依赖组装；服务框架尚未选定。
 

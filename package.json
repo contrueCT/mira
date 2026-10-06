@@ -15,7 +15,8 @@
     "build": "tsc -p tsconfig.tools.json",
     "test:integration": "node scripts/run-tests.mts --integration",
     "check:all": "pnpm check && pnpm test:integration",
-    "demo": "node apps/server/src/cli.mts"
+    "demo": "node apps/server/src/cli.mts",
+    "models": "node apps/server/src/models-cli.mts"
   },
   "devDependencies": {
     "@types/node": "24.19.1",
