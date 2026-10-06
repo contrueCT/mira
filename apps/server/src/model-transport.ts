@@ -3,7 +3,7 @@ import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completio
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
 import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messages.lazy';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
-import { ModelRequestFailure, providerFailureReason, secretVariants, transportFailureReason, type ModelFailureContext } from './model-errors.ts';
+import { ModelRequestFailure, containsPercentEncodedSecret, providerFailureReason, secretVariants, transportFailureReason, type ModelFailureContext } from './model-errors.ts';
 import { builtinApiKeySupport, createBuiltinCatalog, protocolDescription } from './model-catalog.ts';
 import { parseModelConfiguration, validateBaseUrl, type CustomProtocol, type ModelConfiguration } from './model-config.ts';
 
@@ -75,9 +75,9 @@ function safeOptions(options: SimpleStreamOptions | undefined, model: Model<Api>
 }
 function containsSecret(value: unknown, secret: string | undefined): boolean {
   if (!secret) return false;
-  if (typeof value === 'string') return secretVariants(secret).some(variant => value.includes(variant));
+  if (typeof value === 'string') return secretVariants(secret).some(variant => value.includes(variant)) || containsPercentEncodedSecret(value, secret);
   if (Array.isArray(value)) return value.some(item => containsSecret(item, secret));
-  return !!value && typeof value === 'object' && Object.entries(value).some(([key, item]) => secretVariants(secret).some(variant => key.includes(variant)) || containsSecret(item, secret));
+  return !!value && typeof value === 'object' && Object.entries(value).some(([key, item]) => secretVariants(secret).some(variant => key.includes(variant)) || containsPercentEncodedSecret(key, secret) || containsSecret(item, secret));
 }
 function sanitizeMessage(message: AssistantMessage, failure: ModelFailureContext, secret: string | undefined): void {
   // Provider error/diagnostic fields may contain raw response text even in an

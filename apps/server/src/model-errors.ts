@@ -2,14 +2,22 @@
 const limit = 2_048;
 const omitted = '[redacted]';
 export function secretVariants(secret: string): string[] {
-  const encoded = [encodeURIComponent(secret), new URLSearchParams({ key: secret }).toString().slice(4)];
+  const uri = encodeURIComponent(secret);
+  const encoded = [uri, uri.replace(/[!'()*]/gu, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`), new URLSearchParams({ key: secret }).toString().slice(4)];
   return [...new Set([secret, ...encoded, ...encoded.map(value => value.replace(/%[A-F0-9]{2}/gu, part => part.toLowerCase())), JSON.stringify(secret).slice(1, -1), Buffer.from(secret).toString('base64'), Buffer.from(secret).toString('base64url')])].sort((a, b) => b.length - a.length);
+}
+export function containsPercentEncodedSecret(value: string, secret: string): boolean {
+  // ASCII credentials can be encoded with any mix of literal characters and
+  // percent-escaped bytes, independently of a particular URL encoder.
+  return value.replace(/%([0-9a-f]{2})/giu, (_match, hex: string) => String.fromCharCode(Number.parseInt(hex, 16))).includes(secret);
 }
 function redact(value: string, secret?: string): string {
   let text = value;
   // Redact before truncation, including common transport/JSON encodings.
   if (secret) {
     for (const variant of secretVariants(secret)) text = text.split(variant).join(omitted);
+    // Do not publish an unrecognized reversible encoding of the selected key.
+    if (containsPercentEncodedSecret(text, secret)) return '[redacted encoded credential echo]';
   }
   return text
     .replace(/(?:https?:\/\/)[^\s<>"']+/giu, '[URL omitted]')
@@ -39,8 +47,7 @@ function fields(value: unknown, secret?: string): string {
 function reason(value: unknown, secret?: string): string {
   if (typeof value !== 'string') return '';
   if (value.length > 65_536) return 'Provider error text exceeded the diagnostic limit';
-  const jsonStart = value.indexOf('{');
-  const json = (jsonStart >= 0 ? value.slice(jsonStart) : value.replace(/^\s*\d{3}:?\s*/u, '')).trim();
+  const json = value.replace(/^\s*(?:\d{3}:?\s*|[^\r\n]{1,256}? API error \(\d{3}\):\s*)/u, '').trim();
   if (json.startsWith('{') || json.startsWith('[')) {
     try { return fields(JSON.parse(json) as unknown, secret) || 'Provider returned an error without a supported message field'; }
     catch { return 'Provider returned malformed error JSON'; }

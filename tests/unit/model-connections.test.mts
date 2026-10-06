@@ -432,3 +432,30 @@ test('long network messages do not displace available cause codes', async () => 
   const message = await (await transport.streamFn(transport.model, transcript)).result();
   assert.match(message.errorMessage!, /truncated.*ECONNRESET.*CERT_HAS_EXPIRED/); assert.doesNotMatch(message.errorMessage!, /synthetic-custom-key/);
 });
+
+test('RFC3986 and mixed percent-escaped credentials cannot enter diagnostics or executable arguments', async () => {
+  const key = 'review~key!';
+  for (const echo of ['review~key%21', 'review%7ekey%21', '%72eview~key%21', '%72eview%7Ekey%21']) {
+    for (const tool of [false, true]) {
+      const transport = createModelTransport(config(), { kind: 'custom', connection: 'openai', model: 'manual-id' }, {
+        env: () => key, fetch: async () => tool
+          ? sse([{ id: 'percent-fixture', choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: 'encoded-call', type: 'function', function: { name: 'effect', arguments: JSON.stringify({ text: echo }) } }] }, finish_reason: 'tool_calls' }] }, '[DONE]'])
+          : new Response(`Invalid credential ${echo}`, { status: 400 }),
+      });
+      const message = await (await transport.streamFn(transport.model, transcript)).result();
+      assert.equal(message.stopReason, 'error'); assert.deepEqual(message.content, []);
+      assert.ok(!JSON.stringify(message).includes(echo)); assert.ok(!JSON.stringify(message).includes(key));
+      if (!tool) assert.match(message.errorMessage!, /HTTP 400/);
+    }
+  }
+});
+
+test('plain validation messages containing braces or regex quantifiers remain useful', async () => {
+  for (const detail of ['Invalid tool schema {type: object}; expected string', 'Tool name must match ^[A-Za-z_][A-Za-z0-9_-]{0,63}$']) {
+    const transport = createModelTransport(config(), { kind: 'custom', connection: 'openai', model: 'manual-id' }, {
+      env: () => syntheticKey, fetch: async () => new Response(detail, { status: 400, headers: { 'content-type': 'text/plain' } }),
+    });
+    const message = await (await transport.streamFn(transport.model, transcript)).result();
+    assert.ok(message.errorMessage!.includes(detail)); assert.doesNotMatch(message.errorMessage!, /malformed error JSON/);
+  }
+});
