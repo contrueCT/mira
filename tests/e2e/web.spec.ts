@@ -28,7 +28,7 @@ test('normal chat shows conversation and working state without tool activity', a
   } }));
   await page.goto('/');
   await expect(page.getByText('我在继续处理这条消息', { exact: true })).toBeVisible();
-  await expect(page.getByText('Mira 正在处理', { exact: true })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Mira 正在处理' })).toBeVisible();
   await expect(page.getByLabel('工具活动')).toHaveCount(0);
   await expect(page.locator('.tool-chip')).toHaveCount(0);
   await expect(page.getByText('INTERNAL_TOOL_SENTINEL')).toHaveCount(0);
