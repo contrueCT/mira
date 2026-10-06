@@ -20,8 +20,6 @@ export function createWorkspaceTools(directory: string): AgentTool[] {
   return [createReadTool(directory), createWriteTool(directory), edit,
     createGrepTool(directory), createFindTool(directory), createLsTool(directory), createBashTool(directory)];
 }
-/** Compatibility name, now using the unrestricted ordinary Pi file reader. */
-export const createReadFileTool = createReadTool;
 
 export const demoModel: Model<Api> = {
   id: 'synthetic-demo', name: 'Synthetic demo', api: 'openai-responses', provider: 'mira-synthetic',

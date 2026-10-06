@@ -21,7 +21,7 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 - [0005 生成扩展生命周期](0005-generated-extension-lifecycle.md)：Accepted，宿主执行边界与普通文件版本，见 [验收](../acceptance/generated-extensions.md)
 
-- [0006 Memory-only 与完整 Mira Prompt](0006-memory-only-system-prompt.md)：Accepted，v0.5、Prompt v0.2、非破坏性迁移及已确认补充边界
+- [0006 Memory-only 与完整 Mira Prompt](0006-memory-only-system-prompt.md)：Accepted，v0.5、Prompt v0.2、当前设计不保留旧兼容层及持久恢复边界
 
 ## 待确认
 

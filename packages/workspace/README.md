@@ -8,7 +8,7 @@
 
 只在缺失时创建空白 `memoryRoot/MEMORY.md`。其余文件和目录由 Mira 用普通文件工具自行组织，不创建 Memory README、预设 taxonomy 或心理状态文件。已有正文原样保留。这些约束只保证数据存储分离，不限制通用 shell 的工作目录、读写范围或命令能力。
 
-`loadMemoryBootstrap({ memoryRoot, signal? })` 返回 `{ memory: { path, content } }`。它只读取 `MEMORY.md`，不扫描目录、不读取旧 State、不自动创建缺失文件。MEMORY.md 缺失时报错。此函数由 runtime 仅在真正首次初始化上下文时调用，正常 Wake、恢复、压缩与文件变化均不重新读取或回注。
+`loadMemoryBootstrap({ memoryRoot, signal? })` 返回 `{ memory: { path, content } }`。它只读取 `MEMORY.md`，不扫描目录、不自动创建缺失文件。MEMORY.md 缺失时报错。此函数由 runtime 仅在真正首次初始化上下文时调用，正常 Wake、恢复、压缩与文件变化均不重新读取或回注。
 
 ## Wake 末尾 Memory 快照
 
@@ -23,7 +23,7 @@
 - PostgreSQL lineage 由调用方另行关联；Git 成功不等于数据库成功，不声称二者原子提交。同一键重试用于恢复 Git 完成、数据库关联未完成的情况
 - 普通文件逐个进入 Git index，不是整个文件系统的原子快照。并发外部修改、Git 锁、权限、损坏或取消等错误真实上抛，不假装成功，不自动移除他人的锁
 
-技术注册信息和回执只在 `.git`，没有额外记忆正文、心理状态架构、文件 watcher 或自动唤醒。Git 是 Memory 历史；PostgreSQL 是运行与 lineage 权威。旧 State 目录保留原样，不迁移或删除，也不自动提升为长期 Memory。
+技术注册信息和回执只在 `.git`，没有额外记忆正文、心理状态架构、文件 watcher 或自动唤醒。Git 是 Memory 历史；PostgreSQL 是运行与 lineage 权威。只维护当前 Memory-only 设计，不提供旧 State 兼容或迁移接口。
 
 ## 超限 Wake 输入
 
@@ -47,4 +47,4 @@
 
 ## 验证
 
-从仓库根运行 `pnpm check`。`tests/unit/wake-spool.test.mts` 覆盖完整溢出输入、普通文件读取、重启/缺失重建、并发不可变发布、冲突保留、路径/链接防护和不自动清理。`tests/unit/memory-workspace.test.mts` 覆盖独立 Memory 配置与旧 State 不触碰、限定 bootstrap、Git 差异与无变更回执、重启恢复、身份范围、异常文件名、路径分离、锁失败和取消。均为独立临时目录离线测试，无数据库或模型调用。
+从仓库根运行 `pnpm check`。`tests/unit/wake-spool.test.mts` 覆盖完整溢出输入、普通文件读取、重启/缺失重建、并发不可变发布、冲突保留、路径/链接防护和不自动清理。`tests/unit/memory-workspace.test.mts` 覆盖独立 Memory 配置、限定 bootstrap、Git 差异与无变更回执、重启恢复、身份范围、异常文件名、路径分离、锁失败和取消。均为独立临时目录离线测试，无数据库或模型调用。

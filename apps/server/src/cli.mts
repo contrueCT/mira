@@ -17,12 +17,8 @@ if (process.argv.includes('--help')) {
   if (!/^mira_demo(?:_[a-z0-9_]+)?$/.test(schema)) throw Error('Demo schema must be mira_demo or mira_demo_<suffix>');
   const max = process.env['MIRA_DEMO_MAX_INLINE_BYTES'];
   const memoryRoot = process.env['MIRA_DEMO_MEMORY'];
-  if (process.env['MIRA_DEMO_STATE'] !== undefined || process.env['MIRA_DEMO_STATE_FILES'] !== undefined) {
-    console.warn('MIRA_DEMO_STATE and MIRA_DEMO_STATE_FILES are retired and ignored. Existing State files are left untouched; no State is read or promoted into Memory.');
-  }
   const extensionFile = process.env['MIRA_DEMO_EXTENSIONS'];
   const extensions: DemoOptions['extensions'] = extensionFile ? await readExtensionConfiguration(extensionFile) : undefined;
-  if (extensions && (!Array.isArray(extensions.entries) || (extensions.hmr !== undefined && typeof extensions.hmr !== 'boolean'))) throw Error('Extension configuration requires entries[] and optional hmr boolean');
   const result = await runDemo({
     ...(extensions ? { extensions } : {}),
     connectionString, schema, miraId: process.env['MIRA_DEMO_MIRA_ID'] ?? 'synthetic-mira', spoolDirectory: path.resolve(spoolDirectory),

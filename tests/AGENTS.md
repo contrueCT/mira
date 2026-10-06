@@ -12,9 +12,9 @@
 
 ## 运行与隔离
 
-从仓库根运行 `pnpm test` 或 `pnpm check`。离线测试不需要服务或模型；`pnpm test:integration` 必须配置本地独立 `mira_test` PostgreSQL。CI 通过 `pnpm check:all` 跑真实数据库。使用独立临时目录，`finally` 清理，不使用用户 Memory 或旧 State 数据 或生产数据库。
+从仓库根运行 `pnpm test` 或 `pnpm check`。离线测试不需要服务或模型；`pnpm test:integration` 必须配置本地独立 `mira_test` PostgreSQL。CI 通过 `pnpm check:all` 跑真实数据库。使用独立临时目录，`finally` 清理，不使用用户 Memory 或生产数据库。
 
-Prompt 测试检查原始模板 hash、单次转义、实际请求上下文、已有流追加迁移与恢复/压缩、能力更新同代一致、静默 Wake，以及 Memory 快照不重读和旧 State 不触碰。
+Prompt 测试检查原始模板 hash、单次转义、实际请求上下文、当前上下文追加更新与恢复/压缩、能力更新同代一致、静默 Wake，以及 Memory 冻结快照不重读。
 
 边界规则必须有允许和拒绝反例。恢复测试覆盖中断、重启、重复事件、并发写入、过期版本和远端结果不明。不要用 mock 宣称模型、数据库或工具副作用真实可用。
 

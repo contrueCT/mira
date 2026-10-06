@@ -17,9 +17,9 @@ pnpm demo first-message 'Hello Mira'
 
 验证：`pnpm check`、`pnpm check:all`；真实数据库要求见 `tests/integration/README.md`。本地 socket 被禁止时不要用 TCP 绕过，使用现有批准 CI 验证。
 
-`runDemo({memory:{memoryRoot}, ...})` 可启用普通记忆功能。Memory 根目录必须在源码外且互不重叠。真正初始上下文一次性读取 MEMORY.md；后续 Wake、恢复、重启和压缩沿用持久快照，不重新读取。每轮最终回复后执行可恢复 Memory 快照。旧 State 文件不读取、不迁移、不删除。`memoryCheckpointHook` 可被其它可信组装复用；传入同一 fenced writer。历史工具由同一 Mira 身份绑定。
+`runDemo({memory:{memoryRoot}, ...})` 可启用普通记忆功能。Memory 根目录必须在源码外且互不重叠。真正初始上下文一次性读取 MEMORY.md；后续 Wake、恢复、重启和压缩沿用持久快照，不重新读取。每轮最终回复后执行可恢复 Memory 快照。`memoryCheckpointHook` 可被其它可信组装复用；传入同一 fenced writer。历史工具由同一 Mira 身份绑定。
 
-CLI 单独设置 `MIRA_DEMO_MEMORY` 即可启用 Memory；不再要求配对 State 配置。旧 `MIRA_DEMO_STATE` / `MIRA_DEMO_STATE_FILES` 发出弃用/忽略提示，不解析、不读取对应目录；迁移时移除这些配置并保留旧目录。未配置 Memory 时仍注入完整 Mira v0.2 Prompt，根目录/Memory 以明确未配置值表示，不伪造路径。
+CLI 设置 `MIRA_DEMO_MEMORY` 即可启用 Memory；只支持当前 Memory 配置，不保留旧 State 配置解析、弃用提示或迁移流程。未配置 Memory 时仍注入完整 Mira v0.2 Prompt，根目录/Memory 以明确未配置值表示，不伪造路径。
 
 完整 [v0.2 模板](../../packages/runtime-pi/prompts/mira-system-v0.2.md)用于初始与已有认知流；身份、示例和自然语言授权原则均原样保留。动态时间、环境、能力与授权语境在请求边界渲染；能力描述与实际工具注册表一致，工具批次结束后可在同一 Wake 下一自然请求更新。不会为 Prompt 更新单独调用模型。见 [ADR 0006](../../docs/adr/0006-memory-only-system-prompt.md)。
 

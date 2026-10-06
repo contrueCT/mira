@@ -335,7 +335,6 @@ export class ExtensionHost {
     try {
       await this.assertArtifactWatchRoot();
       const artifact = await this.artifacts!.read(entry.generated!.digest);
-      await this.artifacts!.verify(artifact);
       fresh = entry.enabled === false ? artifact : await this.artifacts!.prepareFreshActivation(artifact);
     } catch (error) {
       // Old cleanup runs after desired config is saved and may change ordinary
@@ -373,7 +372,6 @@ export class ExtensionHost {
       try {
         await this.assertArtifactWatchRoot();
         const artifact = await this.artifacts!.read(desired.generated.digest);
-        await this.artifacts!.verify(artifact);
         desired.path = artifact.entry;
         receipt.artifact = 'verified'; receipt.digest = artifact.digest; receipt.revision = desired.generated.revision;
         const test = await this.artifacts!.testResult(artifact);

@@ -188,7 +188,12 @@ no live model calls. Detailed limits and test setup are in
 
 ## Ordinary Memory bootstrap and history tools
 
-`initialContext(signal)` is an optional loader invoked only when the authoritative record stream is empty with version zero. It persists one system message before the first input/model call. Recovery, new runtime instances, ordinary wakes, file changes and compaction do not reload it. No automatic memory-change notices or new Wakes exist. An explicit destructive rebuild API is not implemented.
+`miraPrompt.loadInitialMemory(signal)` loads Memory only for a genuinely empty
+version-zero durable stream. Its text is persisted as the frozen `miraMemory`
+snapshot before the first input/model call. Recovery, new runtime instances,
+ordinary wakes, file changes and compaction reuse that snapshot. No automatic
+memory-change notices or new Wakes exist. There is no separate `initialContext`
+entrypoint or destructive rebuild API.
 
 `createHistoryTools(reader)` registers `history.search` and `history.read` against an assembly-bound Mira reader. It returns original record provenance without interpreting Pi inside persistence. Full-text prefix/Chinese limitations and exact-read byte budgets are included in tool descriptions. Expected bounded-query errors become explicit tool results; database faults remain faults. Ordinary Pi file/bash tools are composed by the server without cwd confinement. The existing intent/effect boundary still applies.
 
@@ -200,8 +205,7 @@ The optional runtime configuration has `memoryRoot?`, `extensionsRoot?`, require
 `environmentContext` and `authorizationContext`, plus `loadInitialMemory?` and
 `now?`. The server uses the configured generated-artifact directory for the
 Extensions Workspace field and describes this limited meaning in the environment
-text; it does not invent a universal extension directory. Existing `initialContext`
-remains the generic adapter path when `miraPrompt` is absent.
+text; it does not invent a universal extension directory.
 
 `prompts/mira-system-v0.2.md` is the byte-identical supplied template, checked by
 SHA-256 when loaded. `renderMiraPrompt` validates seven allowlisted keys used in
@@ -220,26 +224,22 @@ natural request; guidance-only changes create neither a Wake nor an extra model
 call. Provider/model/sampling settings are not Prompt fields. Dynamic prose does
 not grant permission: real tool schema validation and `authorize` still apply.
 
-Installation is append-only on both empty and existing streams. A system record
-with `miraPromptState: { version: 1, memory, legacyRecordId }` stores the bootstrap
-snapshot and narrowly versioned projection migration. Only a genuinely empty
-version-zero stream may call `loadInitialMemory`. Existing streams reuse saved
-legacy Memory when the original server bootstrap is recognized; without such a
-bootstrap they use empty Memory, never a restart-time file read. A duplicate or
-unsupported installation is rejected rather than silently reinterpreted.
+The initial system record has `{ role: "system", content: "", timestamp,
+miraMemory: string }` and stores the frozen Memory text. Only a genuinely empty
+version-zero stream calls `loadInitialMemory`; recovery reads the snapshot from
+the first record. Later named-section revisions use ordinary append-only updates,
+with one current prompt in the active projection. Compaction retains the exact
+current system and normal checkpoint consistency checks.
 
-For the exact old server bootstrap, the migration removes its combined
-Memory/State text from the active projection and substitutes the saved Memory in
-the new prompt. Raw records and tool declarations remain unchanged. Historical
-pre-installation checkpoint projections receive the same explicit transform;
-new checkpoints retain the normal exact-system guard. Old unescaped `File`
-delimiters are interpreted conservatively at the first marker to avoid absorbing
-State; ambiguous headers require reconciliation. This is not a broad text filter
-or a rewrite of historical database rows.
+This early-development implementation supports the current v0.5/v0.2 design
+only. It has no old State configuration, bootstrap parser, prompt installation
+migration, historical checkpoint transform, or separate initialization entrypoint.
+Source archives remain provenance, not runtime compatibility contracts. This does
+not introduce a user-data cleanup/reset API or weaken current durable history,
+restart/compaction, tool recovery, or Memory Git integrity.
 
-Ordinary Wake/restart/compaction/file changes never reload the snapshot. Legacy
-State directories are neither read nor modified. Terminal empty assistant output
-can durably finish a silent Wake. This integration is verified with injected fake
-providers; it does not demonstrate live-model personality or natural-language
-consent quality. Current policy and compatibility are in
+Ordinary Wake/restart/compaction/file changes never reload the snapshot. Terminal
+empty assistant output can durably finish a silent Wake. This integration is
+verified with injected fake providers; it does not demonstrate live-model
+personality or natural-language consent quality. Current policy is in
 [ADR 0006](../../docs/adr/0006-memory-only-system-prompt.md).

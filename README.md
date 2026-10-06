@@ -25,6 +25,8 @@
 - [生成扩展验收](docs/acceptance/generated-extensions.md)
 - [最小假模型演示](apps/server/README.md)
 
+项目仍处早期开发，只维护当前 Architecture v0.5 与 Prompt v0.2，不保留旧 State/Prompt 兼容层；原始设计存档仅作来源记录。当前格式的持久上下文、重启/压缩、原始历史和 Memory Git 完整性继续保证。
+
 基础设施优先保证连续性、真实历史、授权和故障恢复。模型负责理解和行为；不建立数值情绪系统、不把每次 Wake 变成新会话。
 
 ## 目录

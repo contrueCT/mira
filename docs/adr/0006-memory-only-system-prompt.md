@@ -1,6 +1,6 @@
 # ADR 0006：Memory-only 与完整 Mira System Prompt
 
-状态：Accepted。2026-10-05 用户要求按 v0.5 移除独立 SemanticState，并集成提供的完整 v0.2 System Prompt；再次确认普通工具与生成代码都不增加产品隔离环境。本文取代 ADR 0003 的 State 配置/引导决定，并补充 ADR 0004/0005，未撤销其它已确认边界。
+状态：Accepted。2026-10-05 用户要求按 v0.5 移除独立 SemanticState，并集成提供的完整 v0.2 System Prompt；再次确认普通工具与生成代码都不增加产品隔离环境。2026-10-06 用户进一步确认项目仍处早期开发，只维护当前 v0.5/v0.2 设计，不保留旧设计兼容层。本文取代 ADR 0003 的 State 配置/引导决定，并补充 ADR 0004/0005，未撤销其它已确认边界。
 
 ## 原文与优先级
 
@@ -23,20 +23,22 @@ v0.5 §17 和 Prompt 中的初始化/重建不等于普通恢复。只有真正�
 
 运行时使用单一规范模板资产。只允许 MEMORY_ROOT、MEMORY_STATE、CURRENT_TIME、EXTENSIONS_ROOT、OTHER_ENVIRONMENT_CONTEXT、DYNAMIC_TOOL_AND_EXTENSION_GUIDANCE、CURRENT_AUTHORIZATION_CONTEXT 七个键、八处替换。仅执行一轮白名单替换；输入中出现的占位符不会再次展开；动态值转义 XML-like 边界字符，不能关闭外层标签。未知模板占位符与缺失必需参数显式失败，不读取环境秘密来填充上下文。未配置根目录如实说明，不虚构路径。
 
-完整文本使用 Pi 公开具名 system section `mira.system.v0.2` 更新语义；不能每个 Wake 再叠加一个完整人格 Prompt。section 创建/变化先经过现有 fenced writer、版本 CAS 和追加持久记录，再发出模型请求。初始流和已有流都安装，不只依赖空上下文 initialContext 回调。
+完整文本使用 Pi 公开具名 system section `mira.system.v0.2` 更新语义；不能每个 Wake 再叠加一个完整人格 Prompt。section 创建/变化先经过现有 fenced writer、版本 CAS 和追加持久记录，再发出模型请求。初始安装和后续请求统一使用 `miraPrompt`，不保留独立的旧初始化入口。
 
 动态 CURRENT_TIME 在真实请求边界取值；能力说明来自该请求同一份已准备工具注册表。工具批次完成后，下一自然请求才发布新的工具/说明；停用或更新不留下过期指导。不为刷新 Prompt 另起 Wake、额外模型调用或不同人格。持久 Memory bootstrap 快照用于后续渲染，普通恢复不重新访问 MEMORY.md；正常工具读取仍可得到用户明确需要的当前文件内容。
 
 动态授权上下文是证据，不授予权限、不代替 authorize hook 或 schema 验证。演示固定合成授权仍只是测试组装，没有通用自然语言 consent resolver。model ID、temperature、thinking、token budget 和凭据保持 Runtime/provider 设置，本次源文未授权改变采样默认值。
 
-## 兼容与迁移
+## 当前设计与持久恢复
 
-不存在需要删除的 SemanticState SQL 表。不改写已应用迁移、不 DROP 数据、不重置上下文版本。旧 State 文件逐字节保留，不移动、不删除、不自动提升到 Memory；旧配置只给出弃用/忽略提示，不访问对应目录。
+项目仍处早期开发，仅实现 Architecture v0.5 与 System Prompt v0.2。删除旧 State 配置、弃用提示、旧工具别名及旧 Prompt/bootstrap 兼容代码；不解析旧 Memory/State 拼接文本，不转换历史 checkpoint，不维护旧格式投影。原始设计和模板归档仅用于来源核验，不构成运行时兼容承诺。
 
-已有流使用追加的 `miraPromptState` version 1 元数据保存安装与迁移证据，复用可识别旧 bootstrap 的 Memory 初始内容；无旧 bootstrap 时为空，不在升级时重新读文件。旧格式分隔符未经转义，迁移保守地在第一个 File 标记前停止 Memory 提取，避免吸收 State；模糊头部需显式核对。旧 bootstrap 中的 State 是历史记录；若不再进入有效投影，必须通过明确版本化、追加式投影迁移记录完成，原始记录、工具声明、工具配对及原始历史继续保留。已有流不得因安装 Prompt 再读 Memory 文件。追加后崩溃重启与重复安装必须幂等；不得重放工具副作用。压缩保留确切有效 system，沿用既有 checkpoint 一致性检查。
+真正空的 version-zero 上下文才调用 Memory loader，并将初始 Memory 内容保存为首条 system 记录的 `miraMemory` 冻结快照。后续请求、重启和压缩沿用该快照，不重新读文件。普通具名 system 更新仍走追加记录、fenced writer 与版本 CAS；崩溃恢复不得重复工具副作用，压缩继续校验确切有效 system 和合法工具配对。
+
+本决定不引入清理、删除或重置用户数据的脚本或 API，也不削弱当前格式的持久上下文、原始历史、Continuation State、队列、恢复记录及 Memory Git 的 repositoryId/checkpoint/ref/receipt/lineage 完整性约束。数据库迁移与故障恢复机制继续服务当前实现，不承担旧 Prompt/State 格式升级。
 
 ## 验证与范围
 
-[验收目标](../acceptance/foundation.md)要求检查源字节、单次转义替换、真实 streamFn 请求上下文、已有流/重启/压缩、能力更新、CAS/崩溃窗口、Memory 不重读、旧 State 不触碰及静默 Wake。
+[验收目标](../acceptance/foundation.md)要求检查源字节、单次转义替换、真实 streamFn 请求上下文、连续上下文/重启/压缩、能力更新、CAS/崩溃窗口、Memory 不重读及静默 Wake。
 
 所有模型验证仍是确定性假 provider；真实 PostgreSQL 验证与离线测试分开报告。本决定和历史阶段 CI 成功不等于本次增量验证已完成。对话自然度、人格连续性和主动性 A/B 属于后续真实模型评估；本次不宣称 live-provider 成功。没有 HTTP/UI、真实模型凭据、自主生成质量或部署承诺。

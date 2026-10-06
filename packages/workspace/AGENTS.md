@@ -6,7 +6,7 @@
 
 - `README.md` 描述职责；`package.json` 是包名和公开 exports 的事实来源
 - `src/index.ts` 保留 `writeWakeInput` 普通溢出文本接口；`src/memory.ts` 实现 `setupMemoryWorkspace`、`loadMemoryBootstrap` 与 `snapshotMemory`
-- 只强制 `MEMORY.md`；其余 Memory 是自由组织的普通文件；不配置、创建或自动读取独立 State，旧数据保留
+- 只强制 `MEMORY.md`；其余 Memory 是自由组织的普通文件；只维护当前 Memory-only 设计，不提供 State 配置或迁移兼容层
 - 只在首次上下文初始化读取 `MEMORY.md`；不实现变更通知、自动回注、autoWake 或固定 taxonomy/FSM
 - 测试使用源码及 HOME 外的独立临时目录，测试夹具结束后清理；生产写入函数不自动删除文件
 
@@ -26,4 +26,4 @@
 
 ## 验证
 
-从仓库根运行 `pnpm check`。`tests/unit/wake-spool.test.mts` 覆盖溢出输入、恢复、并发、冲突及路径安全；`tests/unit/memory-workspace.test.mts` 覆盖 Memory-only、旧 State 不触碰、bootstrap、Git 快照与失败恢复，无服务或模型调用。依赖或 exports 改动必须同时检查 `scripts/boundaries.json`，并添加允许/拒绝反例；本包不依赖其他 Mira 包或第三方库。
+从仓库根运行 `pnpm check`。`tests/unit/wake-spool.test.mts` 覆盖溢出输入、恢复、并发、冲突及路径安全；`tests/unit/memory-workspace.test.mts` 覆盖 Memory-only、bootstrap、Git 快照与失败恢复，无服务或模型调用。依赖或 exports 改动必须同时检查 `scripts/boundaries.json`，并添加允许/拒绝反例；本包不依赖其他 Mira 包或第三方库。

@@ -13,34 +13,30 @@ async function git(root: string, ...args: string[]): Promise<string> {
     GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@localhost',
     GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@localhost' } })).stdout.trim();
 }
-interface Fixture { base: string; memoryRoot: string; legacyStateRoot: string; sourceDirectory: string }
+interface Fixture { base: string; memoryRoot: string; sourceDirectory: string }
 async function withWorkspace(run: (fixture: Fixture) => Promise<void>): Promise<void> {
   const base = await mkdtemp('/tmp/mira-memory-workspace-');
-  const fixture = { base, memoryRoot: path.join(base, 'Memory'), legacyStateRoot: path.join(base, 'State'), sourceDirectory: path.join(base, 'source') };
+  const fixture = { base, memoryRoot: path.join(base, 'Memory'), sourceDirectory: path.join(base, 'source') };
   try { await mkdir(fixture.sourceDirectory); await run(fixture); }
   finally { await rm(base, { recursive: true, force: true }); }
 }
 const snapshot = (memoryRoot: string, runId: string, miraId = 'mira-test') => snapshotMemory({ memoryRoot, miraId, runId });
 const refFor = (runId: string, miraId = 'mira-test') => `refs/mira/wake-snapshots/${createHash('sha256').update(JSON.stringify([miraId, runId])).digest('hex')}`;
 
-test('setup requires only Memory, preserves legacy files byte-for-byte, and retains repository identity', async () => {
+test('setup preserves existing Memory and retains repository identity', async () => {
   await withWorkspace(async (options) => {
     await mkdir(options.memoryRoot); await writeFile(path.join(options.memoryRoot, 'MEMORY.md'), 'A remembered fact.\n');
-    await mkdir(options.legacyStateRoot); await writeFile(path.join(options.legacyStateRoot, 'anything.txt'), 'Unstructured current state.');
     const workspace = await setupMemoryWorkspace(options);
     assert.deepEqual(workspace, { memoryRoot: options.memoryRoot, repositoryId: workspace.repositoryId });
     assert.match(workspace.repositoryId, /^[0-9a-f-]{36}$/);
     assert.deepEqual(await setupMemoryWorkspace(options), workspace);
     assert.deepEqual((await readdir(options.memoryRoot)).sort(), ['.git', 'MEMORY.md']);
-    assert.deepEqual(await readdir(options.legacyStateRoot), ['anything.txt']);
-    assert.equal(await readFile(path.join(options.legacyStateRoot, 'anything.txt'), 'utf8'), 'Unstructured current state.');
     assert.equal(await readFile(path.join(options.memoryRoot, 'MEMORY.md'), 'utf8'), 'A remembered fact.\n');
     assert.equal(await git(options.memoryRoot, 'rev-parse', '--show-toplevel'), options.memoryRoot);
-    await assert.rejects(git(options.legacyStateRoot, 'rev-parse', '--show-toplevel'), /not a git repository/);
   });
 });
 
-test('Memory-only setup and bootstrap never create a legacy State directory', async () => {
+test('Memory-only setup and bootstrap create only the expected workspace', async () => {
   await withWorkspace(async (options) => {
     const workspace = await setupMemoryWorkspace({ memoryRoot: options.memoryRoot, sourceDirectory: options.sourceDirectory });
     assert.equal(workspace.memoryRoot, options.memoryRoot);
@@ -52,26 +48,14 @@ test('Memory-only setup and bootstrap never create a legacy State directory', as
   });
 });
 
-test('bootstrap reads only MEMORY.md and ignores even inaccessible legacy State configuration', async () => {
+test('bootstrap reads only MEMORY.md', async () => {
   await withWorkspace(async (options) => {
-    // Old JavaScript callers may still supply removed options. Neither setup nor
-    // bootstrap may consult them, inspect that directory, or promote its text.
-    const legacyOptions = {
-      ...options,
-      get stateRoot(): string { throw new Error('Legacy State must never be accessed'); },
-      get stateFiles(): string[] { throw new Error('Legacy State files must never be accessed'); },
-    };
-    await setupMemoryWorkspace(legacyOptions);
+    await setupMemoryWorkspace(options);
     await writeFile(path.join(options.memoryRoot, 'MEMORY.md'), 'Memory contents');
     await writeFile(path.join(options.memoryRoot, 'not-bootstrap.md'), 'Never loaded');
-    await mkdir(options.legacyStateRoot);
-    const legacyPath = path.join(options.legacyStateRoot, 'current.md');
-    const legacyBytes = Buffer.from('Legacy temporary feeling\0\n');
-    await writeFile(legacyPath, legacyBytes);
-    assert.deepEqual(await loadMemoryBootstrap(legacyOptions), {
+    assert.deepEqual(await loadMemoryBootstrap(options), {
       memory: { path: path.join(options.memoryRoot, 'MEMORY.md'), content: 'Memory contents' },
     });
-    assert.deepEqual(await readFile(legacyPath), legacyBytes);
     assert.equal(await readFile(path.join(options.memoryRoot, 'MEMORY.md'), 'utf8'), 'Memory contents');
     assert.deepEqual((await readdir(options.memoryRoot)).sort(), ['.git', 'MEMORY.md', 'not-bootstrap.md']);
   });
@@ -102,22 +86,18 @@ test('Memory cannot overlap source, including canonical symlink aliases', async 
   });
 });
 
-test('Memory cannot silently inherit an ancestor repository and legacy State Git is irrelevant', async () => {
+test('Memory cannot silently inherit an ancestor repository', async () => {
   await withWorkspace(async (options) => {
-    await mkdir(options.legacyStateRoot); await git(options.legacyStateRoot, 'init', '--quiet');
     await setupMemoryWorkspace(options);
-    assert.equal(await git(options.legacyStateRoot, 'rev-parse', '--show-toplevel'), options.legacyStateRoot);
     const enclosing = path.join(options.base, 'data-repo'); await mkdir(enclosing); await git(enclosing, 'init', '--quiet');
     await assert.rejects(setupMemoryWorkspace({ ...options, memoryRoot: path.join(enclosing, 'memory') }), /independent Git/);
   });
 });
 
-test('snapshot commits only changed Memory and leaves State, source and prose metadata untouched', async () => {
+test('snapshot commits only changed Memory and leaves source and prose metadata untouched', async () => {
   await withWorkspace(async (options) => {
     await setupMemoryWorkspace(options);
     await writeFile(path.join(options.memoryRoot, 'MEMORY.md'), 'User prefers tea.\n');
-    await mkdir(options.legacyStateRoot);
-    await writeFile(path.join(options.legacyStateRoot, 'CURRENT.md'), 'Ordinary current state.');
     await writeFile(path.join(options.sourceDirectory, 'source.ts'), 'Source is not data');
     const first = await snapshot(options.memoryRoot, 'wake-1');
     assert.equal(first.changed, true); assert.equal(first.recovered, false);
@@ -126,7 +106,7 @@ test('snapshot commits only changed Memory and leaves State, source and prose me
     assert.equal(await git(options.memoryRoot, 'status', '--porcelain'), '');
     assert.match(await git(options.memoryRoot, 'log', '-1', '--format=%B'), /Mira-Run-Key:/);
     assert.equal(await readFile(path.join(options.memoryRoot, 'MEMORY.md'), 'utf8'), 'User prefers tea.\n');
-    await writeFile(path.join(options.legacyStateRoot, 'CURRENT.md'), 'Changed State alone');
+    await writeFile(path.join(options.sourceDirectory, 'source.ts'), 'Changed source alone');
     const unchanged = await snapshot(options.memoryRoot, 'wake-2');
     assert.equal(unchanged.changed, false); assert.equal(unchanged.commitId, null); assert.deepEqual(unchanged.changedPaths, []);
     assert.equal(await git(options.memoryRoot, 'rev-list', '--count', 'HEAD'), '1');

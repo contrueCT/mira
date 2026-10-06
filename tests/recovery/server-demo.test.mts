@@ -82,27 +82,23 @@ test('overflow is one run and the model can read the ordinary file through the o
 });
 
 
-test('Memory-only bootstrap survives restart, legacy State stays untouched and file edits stay silent', { timeout: 30_000 }, async () => {
+test('Memory-only bootstrap survives restart and file edits stay silent', { timeout: 30_000 }, async () => {
   const db = await createTestDatabase(); const data = await mkdtemp('/tmp/mira-memory-demo-');
   try {
-    const memoryRoot = path.join(data, 'memory'), stateRoot = path.join(data, 'state');
-    await mkdir(memoryRoot); await mkdir(stateRoot);
+    const memoryRoot = path.join(data, 'memory');
+    await mkdir(memoryRoot);
     await writeFile(path.join(memoryRoot, 'MEMORY.md'), 'Original remembered preference');
-    await writeFile(path.join(stateRoot, 'current.md'), 'Original semantic state');
     const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'memory-mira', sourceDirectory: process.cwd(), spoolDirectory: path.join(data, 'spool'), memory: { memoryRoot } };
     const wake = (id: string) => [{ event: event(id), wake: { id: `wake-${id}`, reason: 'synthetic' } }];
     const first = await runDemo({ ...options, events: wake('one'), streamFn: (_model, context) => {
       assert.match(JSON.stringify(context), /Original remembered preference/);
       assertMira(context);
-      assert.doesNotMatch(JSON.stringify(context), /Original semantic state/);
       return streamOf(assistant());
     } });
     assert.equal(first.completedRuns, 1);
     const head = execFileSync('git', ['-C', memoryRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-    assert.equal(await readFile(path.join(stateRoot, 'current.md'), 'utf8'), 'Original semantic state');
     const second = await runDemo({ ...options, events: wake('two'), streamFn: (_model, context) => {
       assertMira(context);
-      assert.doesNotMatch(JSON.stringify(context), /Original semantic state/);
       assert.match(JSON.stringify(context), /Original remembered preference/);
       return streamOf(assistant());
     } });
@@ -114,10 +110,9 @@ test('Memory-only bootstrap survives restart, legacy State stays untouched and f
     await runDemo({ ...options, events: wake('three'), streamFn: (_model, context) => {
       assertMira(context);
       assert.match(JSON.stringify(context), /Original remembered preference/);
-      assert.doesNotMatch(JSON.stringify(context), /Original semantic state|External memory edit stays silent/);
+      assert.doesNotMatch(JSON.stringify(context), /External memory edit stays silent/);
       return streamOf(assistant());
     } });
-    assert.equal(await readFile(path.join(stateRoot, 'current.md'), 'utf8'), 'Original semantic state');
     assert.notEqual(execFileSync('git', ['-C', memoryRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), head);
     assert.equal(execFileSync('git', ['-C', memoryRoot, 'ls-files'], { encoding: 'utf8' }).trim(), 'MEMORY.md');
     const receipts = await db.admin.query('SELECT commit_id FROM wake_memory_receipts WHERE mira_id = $1', [options.miraId]);
@@ -138,7 +133,10 @@ for (const replaceRepository of [false, true]) test(`Git-before-PG crash ${repla
     let models = 0;
     const loop = new WakeLoop({ writer, writeOverflowInput: async () => { throw Error('unexpected overflow'); },
       createRuntime: () => new PiDurableRuntime({ writer: writer!, model: demoModel,
-        streamFn: () => { models++; return streamOf(assistant()); }, authorize: async () => ({ allowed: true, evidence: { synthetic: true } }) }),
+        miraPrompt: { memoryRoot: memory.memoryRoot, extensionsRoot: path.join(data, 'extensions'),
+          environmentContext: 'Synthetic isolated checkpoint recovery test', authorizationContext: 'Synthetic test authorization only',
+          loadInitialMemory: () => readFile(path.join(memory.memoryRoot, 'MEMORY.md'), 'utf8') },
+        streamFn: (_model, context) => { models++; assert.match(assertMira(context), /Before checkpoint interruption/); return streamOf(assistant()); }, authorize: async () => ({ allowed: true, evidence: { synthetic: true } }) }),
       beforeComplete: memoryCheckpointHook(writer, memory.memoryRoot, memory.repositoryId),
     });
     await assert.rejects(loop.drain(), /receipt publication failure/);

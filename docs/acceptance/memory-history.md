@@ -4,7 +4,7 @@
 
 ## 覆盖
 
-- 只有 MEMORY.md 必需，无独立 SemanticState、stateRoot 或 stateFiles；旧 State 保留原样，不预设分类/状态机
+- 只有 MEMORY.md 必需，无独立 SemanticState、stateRoot 或 stateFiles；只维护当前 Memory-only 设计，不预设分类/状态机
 - 初始语义上下文保存一次；新 Runtime、重启、普通 Wake、文件编辑不重注入、不默认通知、不自动 Wake
 - Pi 原生 read/write/edit/grep/find/ls/bash，默认 cwd 不限制绝对路径/外部目录；合成 shell 命令不扫描真实秘密
 - Memory 改变才产生 commit；无变化记录技术 receipt，不创建 commit；包含外部/预先已有编辑且不错误声称作者

@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
-import { createReadFileTool, createWorkspaceTools } from '@mira/server';
+import { createWorkspaceTools } from '@mira/server';
 import { MemoryWriter, runtime, scripted, assistant, input } from '../recovery/fixtures.mts';
 
 test('ordinary read accepts absolute paths and symlinks outside its default cwd', async () => {
@@ -11,7 +11,7 @@ test('ordinary read accepts absolute paths and symlinks outside its default cwd'
   const outside = await mkdtemp('/tmp/mira-demo-outside-');
   try {
     const file = path.join(root, 'ordinary.txt'); await writeFile(file, 'ordinary UTF-8 text 😀\nsecond line');
-    const tool = createReadFileTool(root);
+    const tool = createWorkspaceTools(root).find(tool => tool.name === 'read')!;
     const value = await tool.execute('read-1', { path: file });
     assert.deepEqual(value.content, [{ type: 'text', text: await readFile(file, 'utf8') }]);
     const secret = path.join(outside, 'outside.txt'); await writeFile(secret, 'synthetic outside cwd');
@@ -29,7 +29,6 @@ test('CLI help works without database/model credentials', () => {
   assert.match(result.stdout, /synthetic PostgreSQL demo/);
   assert.match(result.stdout, /No real model or credentials/);
   assert.match(result.stdout, /MIRA_DEMO_MEMORY \(optional Memory root\)/);
-  assert.doesNotMatch(result.stdout, /paired roots|MIRA_DEMO_STATE/);
 });
 
 

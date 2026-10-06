@@ -57,12 +57,12 @@ Cordis 处理依赖、生命周期与资源清理，不是安全边界。用户�
 
 ## 普通记忆与历史阶段
 
-最新已确认约束见 [ADR 0006](adr/0006-memory-only-system-prompt.md)。移除 stateRoot/stateFiles 和自动 State 引导，不删除既有文件或历史；没有默认文件变更通知、自动 Wake 或重注入。Pi 原生通用文件和 shell 工具由组装层注册，历史查询固定 Mira 范围。Memory checkpoint、Git ref、PG receipt、Wake completion 分别可恢复，不宣称跨系统原子性。
+最新已确认约束见 [ADR 0006](adr/0006-memory-only-system-prompt.md)。只维护当前 v0.5/v0.2，移除 State 配置和自动引导，不保留旧格式解析或投影迁移；没有默认文件变更通知、自动 Wake 或重注入。Pi 原生通用文件和 shell 工具由组装层注册，历史查询固定 Mira 范围。Memory checkpoint、Git ref、PG receipt、Wake completion 分别可恢复，不宣称跨系统原子性。
 
 
 ## Mira Prompt 与动态请求边界
 
-实际完整 v0.2 模板作为一个具名 Pi system section 进入真实请求上下文；未配置 Memory 也使用同一 Mira 身份。具名 section 更新会在 fenced writer/CAS 下先持久化，已有流也能幂等安装，不按 Wake 叠加完整 Prompt。渲染只单次替换白名单占位符，转义动态文本边界，不递归解释 Memory/工具文字。
+实际完整 v0.2 模板作为一个具名 Pi system section 进入真实请求上下文；未配置 Memory 也使用同一 Mira 身份。具名 section 更新会在 fenced writer/CAS 下先持久化，当前格式重启后延续同一 section，不按 Wake 叠加完整 Prompt。渲染只单次替换白名单占位符，转义动态文本边界，不递归解释 Memory/工具文字。
 
 当前时间和可用能力在实际请求边界更新，工具说明来自该请求已准备的同一注册表；停用/更新不保留过时说明，不为说明刷新另起 Wake 或模型调用。Memory 部分始终使用该持续上下文保存的 bootstrap 快照，普通重启、Wake、压缩或文件编辑不重新读取 MEMORY.md。授权语境只是证据，不能由 Prompt 文本替代真实 authorize hook。模型、采样、思考与 token 配置仍属于 Runtime/provider。
 
