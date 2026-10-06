@@ -35,6 +35,30 @@ skipped/pass result. Check the current CI evidence before claiming a real-DB pas
   history and paired tool tails, then supports continuation
 - Real-DB stale-version CAS and compaction cancellation reject publication
 
+## Mira-owned tool chains
+
+`history-runtime.test.mts` connects a scripted provider to the actual Pi runtime,
+history tool registration and real PostgreSQL history reader. It checks search
+and exact-ID reads of original event/context/tool/Wake records, Chinese substring
+search, Mira isolation, missing records and explicit read-size limits. Assertions
+cover the results delivered back to the provider, original records remaining
+unchanged, and durable tool arguments/outcomes/transcript order.
+
+`extensions.test.mts` uses the server composition and Wake loop with the real
+Cordis host, ordinary configuration files and PostgreSQL writer. Management calls
+come from the scripted provider rather than direct host requests. Configure,
+reload and remove are checked across tool-batch boundaries, cleanup, the next
+request's declarations, saved configuration and restart. Invalid targets return
+truthful rejection results. Removal retains ordinary source and generated release
+files. Manual reload checks a fresh activation of the same imported module;
+source-code HMR is a separate test and is not inferred from reload success.
+
+These checks require the same PostgreSQL gate above. They do not introduce new
+tool implementations, replace the seven native Pi tools, or add an authorization
+boolean. Scripted model output proves protocol/execution/persistence contracts,
+not a real model's tool selection or natural-language judgment. Exact test counts
+and pass/fail status must come from the CI run for the tested commit.
+
 The persistence integration suite separately exercises lock contention, epochs,
 migration reversibility, writer fencing, event/Wake atomicity, and cancellation
 while an INSERT is blocked before COMMIT. The runtime offline suite additionally
