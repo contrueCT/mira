@@ -4,7 +4,9 @@ import type { ExtensionContext, ExtensionTool } from '@mira/extension-sdk';
 import extension, { greet } from '../src/index.ts';
 
 const unexpected = (): never => { throw new Error('The greeting uses no other host capabilities'); };
-async function registeredTool(): Promise<ExtensionTool> {
+// Derive the host input type instead of casting another extension's config.
+type HostConfig = Parameters<typeof extension.apply>[1];
+async function registeredTool(config: HostConfig = null): Promise<ExtensionTool> {
   const tools: ExtensionTool[] = [];
   const context: ExtensionContext = {
     id: 'local-template-test', registerTool: tool => { tools.push(tool); },
@@ -12,7 +14,7 @@ async function registeredTool(): Promise<ExtensionTool> {
     service: unexpected, onCleanup: unexpected, onEvent: unexpected,
     publish: unexpected, interval: unexpected,
   };
-  await extension.apply({ mira: context }, null);
+  await extension.apply({ mira: context }, config);
   assert.equal(tools.length, 1);
   return tools[0]!;
 }

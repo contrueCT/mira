@@ -51,3 +51,10 @@ code with the current OS account's permissions. Use the user's natural-language
 authorization and actual OS permissions. Inspect, test, and stage reviewed code
 before explicitly requesting its activation. The helper neither stages nor
 activates the extension and does not change Mira's host configuration.
+
+The template test helper derives its host configuration type from
+`Parameters<typeof extension.apply>[1]` and forwards that JSON value directly.
+When adding configuration to an extension, pass the real valid object in its tests;
+do not retain a config-free `null` cast. Invalid JSON-shaped config can likewise
+be tested directly. The plugin's author callback still owns validation of its
+declared configuration shape.

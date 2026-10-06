@@ -16,8 +16,9 @@ work; SDK access is an interface convention, not process isolation.
 - `ExtensionDefinition<C extends Json>`: `name`, optional `requires: string[]`, and
   `apply(context: ExtensionContext, config: C): void | Promise<void>`
 - `defineExtension(definition)`: return this as the default export. It creates the
-  structural plugin with `name`, mapped `inject` dependencies, and `apply`. Missing
-  config is passed as `null`; a TypeScript type is not runtime config validation
+  structural plugin with `name`, mapped `inject` dependencies, and `apply`. Its host
+  entry accepts raw `Json`; the author callback retains `C`. Missing config is
+  passed as `null`; a TypeScript type is not runtime config validation
 - `serviceKey(name)`: validates `^[a-zA-Z][\w.-]*$` and returns
   `mira.extension.${name}`. Normally use the original name with `requires`,
   `provideService`, and `service`; the helper is public but does not grant access
@@ -73,7 +74,14 @@ function numericValues(arguments_: Json): number[] {
 ```
 
 Adapt validation to the actual schema rather than bypassing it with `as number[]`.
-The returned plugin's `apply` type is `void | Promise<void>` even when your own
+The template tests derive `HostConfig = Parameters<typeof extension.apply>[1]`
+from the returned plugin. Pass your valid configuration directly to that helper.
+Its host-input type is `Json`, so deliberately malformed JSON configurations can
+also be passed directly in negative tests; no `as null`, `as any`, or `as never`
+cast is needed. The author callback still receives its declared `C` type and must
+validate at runtime before using it.
+
+The returned plugin's `apply` result type is `void | Promise<void>` even when your own
 implementation is synchronous. A test for rejected/invalid configuration must
 turn either case into a Promise before giving it to `assert.rejects`:
 
