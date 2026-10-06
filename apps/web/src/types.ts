@@ -5,8 +5,7 @@ export interface TimelineItem {
   text: string;
   occurredAt: string;
 }
-export interface ToolActivity { id: string; name: string; status: 'running' | 'completed' | 'failed' | 'unknown' }
-export interface TimelinePage { items: TimelineItem[]; nextCursor: string | null; tools: ToolActivity[] }
+export interface TimelinePage { items: TimelineItem[]; nextCursor: string | null }
 export interface ServerStatus { state: 'idle' | 'working' | 'error' | 'stopped'; mode: 'synthetic' | 'live'; model: string | null; error: string | null }
 export interface MessageEnvelope { id: string; text: string; occurredAt: string }
 export interface PendingMessage extends MessageEnvelope { state: 'sending' | 'uncertain' | 'queued'; error?: string }

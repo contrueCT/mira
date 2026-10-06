@@ -4,7 +4,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { createLocalHttp, LocalWebService, WebHttpError, WebSettingsStore, listBuiltinCatalog, type WebSettings } from '@mira/server';
-import { createAssistantMessageEventStream } from '@earendil-works/pi-ai';
+import { createAssistantMessageEventStream, type TranscriptContext } from '@earendil-works/pi-ai';
 import { createTestDatabase } from '../integration/database.mts';
 import { assistant, streamOf } from './fixtures.mts';
 
@@ -43,6 +43,64 @@ test('local web composition persists one timeline, hides system/thinking, dedupl
   } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('tool activity stays out of both timeline routes while durable execution and protocol pairs survive restart', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-hidden-tools-');
+  let service: LocalWebService | undefined; let app: ReturnType<typeof createLocalHttp> | undefined;
+  let calls = 0; const contexts: TranscriptContext[] = [];
+  try {
+    const file = path.join(root, 'PRIVATE_TOOL_PATH_SENTINEL.txt');
+    await writeFile(file, 'PRIVATE_TOOL_RESULT_SENTINEL');
+    const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'hidden-tools', sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true,
+      syntheticStream: (_model: unknown, context: TranscriptContext) => {
+        contexts.push(structuredClone(context)); calls++;
+        return streamOf(calls === 1 ? { ...assistant(), stopReason: 'toolUse', content: [
+          { type: 'thinking', thinking: 'PRIVATE_THINKING_SENTINEL' },
+          { type: 'toolCall', id: 'PRIVATE_TOOL_CALL_SENTINEL', name: 'read', arguments: { path: file } },
+        ] } : assistant(`Visible reply ${calls}`));
+      } };
+    service = await LocalWebService.open(options); await settled(service);
+    await service.submit({ id: 'tool-request', text: 'Read the synthetic fixture', occurredAt: '2026-10-06T08:00:00.000Z' });
+    await settled(service); assert.equal(calls, 2); assert.equal((await service.status()).state, 'idle');
+    const executed = await db.admin.query('SELECT intent, outcome FROM tool_executions');
+    assert.equal(executed.rowCount, 1);
+    assert.match(JSON.stringify(executed.rows), /PRIVATE_TOOL_PATH_SENTINEL/);
+    assert.match(JSON.stringify(executed.rows), /PRIVATE_TOOL_RESULT_SENTINEL/);
+    const originalRecords = (await db.admin.query('SELECT envelope FROM context_records ORDER BY version')).rows;
+    assert.match(JSON.stringify(originalRecords), /PRIVATE_TOOL_CALL_SENTINEL/);
+    assert.match(JSON.stringify(originalRecords), /PRIVATE_TOOL_RESULT_SENTINEL/);
+    const timeline = await service.timeline();
+    assert.deepEqual(Object.keys(timeline).sort(), ['items', 'nextCursor']);
+    assert.doesNotMatch(JSON.stringify(timeline), /PRIVATE_TOOL_|PRIVATE_THINKING/);
+    assert.match(JSON.stringify(timeline), /Visible reply 2/);
+    // The ordinary opaque cursor can request an empty older page; both HTTP
+    // response paths must omit all tool-display fields.
+    const cursor = (await db.store.history('hidden-tools').page({ kinds: ['event', 'context'], limit: 1 })).nextCursor;
+    assert.ok(cursor);
+    const http = createLocalHttp({ backend: service, port: httpPort }); app = http;
+    for (const request of [
+      { url: '/api/timeline', headers: readHeaders },
+      { method: 'POST' as const, url: '/api/timeline', headers: writeHeaders, payload: { before: cursor } },
+    ]) {
+      const response = await http.inject(request); assert.equal(response.statusCode, 200);
+      assert.deepEqual(Object.keys(response.json()).sort(), ['items', 'nextCursor']);
+      assert.doesNotMatch(response.body, /PRIVATE_TOOL_|PRIVATE_THINKING/);
+    }
+    await app.close(); app = undefined; await service.close(); service = undefined;
+    service = await LocalWebService.open(options); await settled(service); assert.equal(calls, 2);
+    assert.deepEqual(await service.timeline(), timeline);
+    assert.deepEqual((await db.admin.query('SELECT intent, outcome FROM tool_executions')).rows, executed.rows);
+    assert.deepEqual((await db.admin.query('SELECT envelope FROM context_records ORDER BY version')).rows, originalRecords);
+    await service.submit({ id: 'after-hidden-tool', text: 'Continue after the read', occurredAt: '2026-10-06T08:01:00.000Z' });
+    await settled(service); assert.equal(calls, 3);
+    for (const context of contexts.slice(1)) {
+      const call = context.messages.find(message => message.role === 'assistant' && message.content.some(block => block.type === 'toolCall' && block.id === 'PRIVATE_TOOL_CALL_SENTINEL'));
+      const result = context.messages.find(message => message.role === 'toolResult' && message.toolCallId === 'PRIVATE_TOOL_CALL_SENTINEL');
+      assert.ok(call); assert.ok(result); assert.match(JSON.stringify(result), /PRIVATE_TOOL_RESULT_SENTINEL/);
+    }
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM tool_executions')).rows[0].n, 1);
+  } finally { await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('missing live model is a setup state and cannot enqueue or call a model', { timeout: 30_000 }, async () => {
   const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-unconfigured-');
   let service: LocalWebService | undefined;
@@ -57,9 +115,13 @@ test('missing live model is a setup state and cannot enqueue or call a model', {
 test('shutdown cancels an active model run, retains user receipt and resumes the same wake on restart', { timeout: 30_000 }, async () => {
   const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-shutdown-');
   let service: LocalWebService | undefined; let entered!: () => void; const started = new Promise<void>(resolve => { entered = resolve; });
+  let originalInput: TranscriptContext['messages'][number] | undefined;
   try {
     const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'cancelled', sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true };
-    service = await LocalWebService.open({ ...options, syntheticStream: (_model, _context, streamOptions) => {
+    service = await LocalWebService.open({ ...options, syntheticStream: (_model, context, streamOptions) => {
+      originalInput = structuredClone(context.messages.find(message => message.role === 'user'));
+      assert.ok(originalInput?.role === 'user'); assert.match(String(originalInput.content), /\[user \| "2026-10-06T08:00:00.000Z"\]\nKeep my receipt$/);
+      assert.doesNotMatch(String(originalInput.content), /cancel-input|web.message|Wake reason|"payload"|"event"/);
       const stream = createAssistantMessageEventStream(); entered();
       const abort = () => { stream.push({ type: 'error', reason: 'aborted', error: { ...assistant(), stopReason: 'aborted', errorMessage: 'Cancelled fixture' } }); };
       streamOptions?.signal?.addEventListener('abort', abort, { once: true });
@@ -69,7 +131,10 @@ test('shutdown cancels an active model run, retains user receipt and resumes the
     await service.submit({ id: 'cancel-input', text: 'Keep my receipt', occurredAt: '2026-10-06T08:00:00.000Z' }); await started;
     await assert.rejects(service.saveSettings(await service.settings()), WebHttpError);
     await service.close(); service = undefined;
-    service = await LocalWebService.open({ ...options, syntheticStream: () => streamOf(assistant('Resumed after restart')) }); await settled(service);
+    service = await LocalWebService.open({ ...options, syntheticStream: (_model, context) => {
+      assert.deepEqual(context.messages.filter(message => message.role === 'user'), [originalInput]);
+      return streamOf(assistant('Resumed after restart'));
+    } }); await settled(service);
     assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_runs')).rows[0].n, 1);
     assert.match(JSON.stringify(await service.timeline()), /Keep my receipt/);
     assert.match(JSON.stringify(await service.timeline()), /Resumed after restart/);

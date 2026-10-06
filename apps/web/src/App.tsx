@@ -5,9 +5,8 @@ import { ArrowUp, ChevronDown, SettingsIcon } from './icons.tsx';
 import { SettingsDialog } from './SettingsDialog.tsx';
 import { latestPagination, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
 import type { HistoryPagination, HistoryRequest } from './timeline.ts';
-import type { MessageEnvelope, PendingMessage, ServerStatus, TimelineItem, TimelinePage, ToolActivity } from './types.ts';
+import type { MessageEnvelope, PendingMessage, ServerStatus, TimelineItem, TimelinePage } from './types.ts';
 
-const toolLabels: Record<ToolActivity['status'], string> = { running: '进行中', completed: '已完成', failed: '未完成', unknown: '结果待核对' };
 const timeFormat = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' });
 function timeLabel(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? '' : timeFormat.format(date); }
 function dateLabel(value: string): string {
@@ -27,7 +26,6 @@ export function App() {
   const [items, setItems] = useState<TimelineItem[]>([]);
   const [pending, setPending] = useState<PendingMessage[]>(recovered.messages);
   const [status, setStatus] = useState<ServerStatus | null>(null);
-  const [tools, setTools] = useState<ToolActivity[]>([]);
   const [loading, setLoading] = useState(true);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [storageError, setStorageError] = useState<string | null>(recovered.error);
@@ -83,7 +81,6 @@ export function App() {
     itemsRef.current = merged;
     setItems(merged);
     updatePending(current => reconcilePending(current, merged));
-    if (!request) setTools(page.tools);
     setNextCursor(nextHistoryRequest(paginationRef.current)?.cursor ?? null);
     setHasHistoryGap(paginationRef.current.gaps.length > 0);
     initializedRef.current = true;
@@ -149,7 +146,7 @@ export function App() {
       container.scrollTop = anchor.element?.isConnected ? container.scrollTop + anchor.element.getBoundingClientRect().top - container.getBoundingClientRect().top - anchor.offset : anchor.top + container.scrollHeight - anchor.height;
       prependAnchorRef.current = null;
     } else if (nearBottomRef.current) container.scrollTop = container.scrollHeight;
-  }, [items, pending, tools, loading]);
+  }, [items, pending, loading]);
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -269,7 +266,6 @@ export function App() {
               {message.state === 'uncertain' && <p className="pending-help">{message.error ?? '刷新前的发送尚未确认'}。不会自动重发</p>}
             </article>)}
           </div>
-          {tools.length > 0 && <div className="tool-activity" aria-label="工具活动"><span className="activity-label">活动</span>{tools.map(tool => <span className={`tool-chip ${tool.status}`} key={tool.id}><span className="activity-dot" />{tool.name}<span className="tool-state">{toolLabels[tool.status]}</span></span>)}</div>}
           {status?.state === 'working' && !connectionError && <div className="working-indicator" role="status"><span className="working-dots" aria-hidden="true">•••</span>Mira 正在处理</div>}
         </div>
       </main>

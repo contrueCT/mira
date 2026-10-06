@@ -15,7 +15,7 @@ const connection = { id: 'custom', baseUrl: 'https://models.example.test/v1', ap
 function backend(overrides: Partial<WebBackend> = {}): WebBackend {
   return {
     status: async () => ({ state: 'idle', mode: 'synthetic', model: null, error: null }),
-    timeline: async () => ({ items: [{ id: 'user-1', role: 'user', text: 'Hello Mira', occurredAt: message.occurredAt }], nextCursor: null, tools: [] }),
+    timeline: async () => ({ items: [{ id: 'user-1', role: 'user', text: 'Hello Mira', occurredAt: message.occurredAt }], nextCursor: null }),
     submit: async input => ({ id: input.id, receipt: 'inserted' }),
     settings: async () => settings(), saveSettings: async value => value as WebSettings,
     discover: async () => ({ endpoint: `${connection.baseUrl}/models`, models: [{ id: 'example', name: 'Example' }] }),
@@ -121,6 +121,13 @@ test('responses omit internal fields and sanitize backend errors, status diagnos
     discover: async () => ({ endpoint: `${connection.baseUrl}/models`, models: [{ id: 'safe-model', raw: secret }], headers: { authorization: secret } }),
   }), port }); t.after(() => app.close());
   for (const url of ['/api/status', '/api/timeline?before=cursor_1']) { const response = await app.inject({ url, headers: readHeaders }); assert.equal(response.statusCode, 200); assert.ok(!response.body.includes(secret)); assert.ok(!response.body.includes('"raw"')); }
+  for (const request of [
+    { url: '/api/timeline?before=cursor_1', headers: readHeaders },
+    { method: 'POST' as const, url: '/api/timeline', headers: writeHeaders, payload: { before: 'cursor_1' } },
+  ]) {
+    const response = await app.inject(request); assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), { items: [{ id: '1', role: 'assistant', text: 'Visible answer', occurredAt: message.occurredAt }], nextCursor: null });
+  }
   const failed = await app.inject({ method: 'POST', url: '/api/messages', headers: writeHeaders, payload: message }); assert.equal(failed.statusCode, 500); assert.ok(!failed.body.includes(secret)); assert.ok(!failed.body.includes('stack'));
   const conflict = await app.inject({ method: 'PUT', url: '/api/settings', headers: writeHeaders, payload: settings() }); assert.equal(conflict.statusCode, 409); assert.match(conflict.json().error, /reload/u);
   const discovered = await app.inject({ method: 'POST', url: '/api/models/discover', headers: writeHeaders, payload: { connection } }); assert.equal(discovered.statusCode, 200); assert.ok(!discovered.body.includes(secret));
@@ -187,7 +194,7 @@ test('router-level malformed URL errors also enforce Host and omit raw request d
 
 test('read-only timeline POST carries the full history cursor without request-line truncation', async t => {
   const before = 'a'.repeat(200_000); let received: string | undefined;
-  const app = createLocalHttp({ backend: backend({ timeline: async cursor => { received = cursor; return { items: [], nextCursor: null, tools: [] }; } }), port });
+  const app = createLocalHttp({ backend: backend({ timeline: async cursor => { received = cursor; return { items: [], nextCursor: null }; } }), port });
   t.after(() => app.close());
   const response = await app.inject({ method: 'POST', url: '/api/timeline', headers: writeHeaders, payload: { before } });
   assert.equal(response.statusCode, 200); assert.equal(received, before);

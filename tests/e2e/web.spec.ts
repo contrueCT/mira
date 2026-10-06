@@ -18,6 +18,26 @@ test('desktop and narrow layouts render the single Mira timeline without console
   expect(errors).toEqual([]);
 });
 
+test('normal chat shows conversation and working state without tool activity', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await page.route('**/api/status', route => route.fulfill({ json: { state: 'working', mode: 'synthetic', model: 'Fixture model', error: null } }));
+  await page.route('**/api/timeline', route => route.fulfill({ json: {
+    items: [{ id: 'visible-message', role: 'assistant', text: '我在继续处理这条消息', occurredAt: '2026-10-06T08:00:00.000Z' }], nextCursor: null,
+    // Unexpected backend fields must not become a visible debug panel.
+    tools: [{ id: 'hidden-call', name: 'INTERNAL_TOOL_SENTINEL', status: 'running' }],
+  } }));
+  await page.goto('/');
+  await expect(page.getByText('我在继续处理这条消息', { exact: true })).toBeVisible();
+  await expect(page.getByText('Mira 正在处理', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('工具活动')).toHaveCount(0);
+  await expect(page.locator('.tool-chip')).toHaveCount(0);
+  await expect(page.getByText('INTERNAL_TOOL_SENTINEL')).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByText('我在继续处理这条消息', { exact: true })).toBeVisible();
+  await expect(page.getByText('INTERNAL_TOOL_SENTINEL')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test('double Enter submits once and refresh restores the fixture server receipt', async ({ page }) => {
   await page.goto('/'); const input = page.getByLabel('给 Mira 发消息', { exact: true });
   const text = '重复发送与刷新验证'; let sends = 0;
@@ -389,7 +409,7 @@ test('model diagnostics stay visible as text on narrow screens, through settings
   let failed = false;
   const detail = 'Model request failed · HTTP 400 · request ID: req-fixture · message: invalid tool name <script>window.injected=true</script> · code: invalid_request_error · credential [redacted]';
   await page.route('**/api/status', route => route.fulfill({ json: { state: failed ? 'error' : 'idle', mode: 'live', model: 'fixture-model', error: failed ? detail : null } }));
-  await page.route('**/api/timeline', route => route.fulfill({ json: { items: Array.from({ length: 20 }, (_, index) => ({ id: `error-fixture-${index}`, role: index % 2 ? 'assistant' : 'user', text: `历史消息 ${index}`, occurredAt: new Date(1_791_273_600_000 + index * 1000).toISOString() })), nextCursor: null, tools: [] } }));
+  await page.route('**/api/timeline', route => route.fulfill({ json: { items: Array.from({ length: 20 }, (_, index) => ({ id: `error-fixture-${index}`, role: index % 2 ? 'assistant' : 'user', text: `历史消息 ${index}`, occurredAt: new Date(1_791_273_600_000 + index * 1000).toISOString() })), nextCursor: null } }));
   await page.setViewportSize({ width: 390, height: 844 }); await page.goto('/');
   await expect(page.getByText('历史消息 19', { exact: true })).toBeInViewport();
   failed = true;

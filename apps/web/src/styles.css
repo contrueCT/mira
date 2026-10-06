@@ -70,13 +70,6 @@ button:disabled { opacity: .48; }
 .history-controls .text-button { font-size: 11px; color: #8e96a2; }
 .text-button { border: none; padding: 4px 0; background: none; color: var(--blue-dark); font-size: 12px; line-height: 1.6; text-underline-offset: 3px; }
 .text-button:hover:not(:disabled) { text-decoration: underline; }
-.tool-activity { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; margin: 15px 2px 16px; }
-.activity-label { font-size: 10px; color: #adb0b7; margin-right: 3px; }
-.tool-chip { display: inline-flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #f0f0f2; padding: 5px 9px; font-size: 11px; border-radius: 8px; color: #858995; max-width: 100%; overflow-wrap: anywhere; }
-.activity-dot { width: 4px; height: 4px; flex: 0 0 4px; border-radius: 50%; background: #b3bbbc; }
-.tool-chip.running .activity-dot { background: #91a9c7; }
-.tool-chip.failed .activity-dot, .tool-chip.unknown .activity-dot { background: #c5a476; }
-.tool-state { color: #a5a8af; font-size: 10px; }
 .working-indicator { margin: 16px 9px; display: flex; align-items: center; gap: 10px; font-size: 11px; color: #9e9fa8; }
 .working-dots { font-size: 16px; letter-spacing: 2px; color: #b2b5c7; }
 .composer-section { width: min(100% - 72px, 1000px); margin: 0 auto; flex-shrink: 0; position: relative; padding: 15px 0 max(12px, env(safe-area-inset-bottom)); background: #fff; }

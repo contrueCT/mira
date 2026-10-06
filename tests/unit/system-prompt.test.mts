@@ -9,9 +9,9 @@ const values: MiraPromptValues = { MEMORY_ROOT: '/memory', MEMORY_STATE: '偏好
 const config = { environmentContext: 'Synthetic offline runtime', authorizationContext: 'Synthetic test calls only', now: () => new Date(values.CURRENT_TIME) };
 
 
-test('canonical v0.2 exact bytes, eight occurrences, static text and examples remain intact', async () => {
+test('user-approved v0.2 revision exact bytes, eight occurrences, static text and examples remain intact', async () => {
   const bytes = await readFile(new URL('../../packages/runtime-pi/prompts/mira-system-v0.2.md', import.meta.url));
-  assert.equal(bytes.byteLength, 17095);
+  assert.equal(bytes.byteLength, 17464);
   assert.equal(createHash('sha256').update(bytes).digest('hex'), MIRA_PROMPT_SHA256);
   assert.equal(bytes.toString(), MIRA_SYSTEM_TEMPLATE);
   assert.equal([...MIRA_SYSTEM_TEMPLATE.matchAll(/\{\{[^{}]+\}\}/g)].length, 8);
@@ -172,4 +172,11 @@ test('invalid or misplaced initial Memory snapshots fail closed', async () => {
     await seed(writer, [first, { role: 'system', content: '', timestamp: 2, miraMemory: 'late' } as never]);
     await assert.rejects(new PiDurableRuntime({ writer, model, streamFn: () => streamOf(assistant()) }).recover(), /Invalid initial Memory snapshot/);
   }
+});
+
+
+test('normal chat is plain text while files remain unrestricted', () => {
+  const prompt = renderMiraPrompt(values);
+  assert.match(prompt, /Use plain text in normal conversation/);
+  assert.match(prompt, /not to files, documents, code, skills/);
 });

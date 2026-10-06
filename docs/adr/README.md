@@ -31,6 +31,8 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 - [0010 Web 直接填写 API Key](0010-web-api-key-storage.md)：Accepted，2026-10-06，密码式输入、后端本地明文权限保护、严格脱敏响应与目标绑定
 
+- [0011 简洁对话上下文与普通文件 Skills](0011-conversation-context-and-skills.md)：Accepted，2026-10-06，隐藏工具活动、精简 Wake、Pi 元数据目录与按需读取、扩展作者技能、普通聊天纯文本
+
 ## 后续范围
 
 不提前引入部署、付费模型调用、第三方账户、新凭据或不必要的框架。阶段临近时给出具体方案、取舍和验证结果。
