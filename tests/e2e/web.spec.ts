@@ -386,16 +386,38 @@ test('repeated save submits once and an interrupted save is not replayed on reop
 });
 
 test('model diagnostics stay visible as text on narrow screens, through settings dismissal and refresh', async ({ page }, testInfo) => {
-  let failed = true;
+  let failed = false;
   const detail = 'Model request failed · HTTP 400 · request ID: req-fixture · message: invalid tool name <script>window.injected=true</script> · code: invalid_request_error · credential [redacted]';
   await page.route('**/api/status', route => route.fulfill({ json: { state: failed ? 'error' : 'idle', mode: 'live', model: 'fixture-model', error: failed ? detail : null } }));
+  await page.route('**/api/timeline', route => route.fulfill({ json: { items: Array.from({ length: 20 }, (_, index) => ({ id: `error-fixture-${index}`, role: index % 2 ? 'assistant' : 'user', text: `历史消息 ${index}`, occurredAt: new Date(1_791_273_600_000 + index * 1000).toISOString() })), nextCursor: null, tools: [] } }));
   await page.setViewportSize({ width: 390, height: 844 }); await page.goto('/');
+  await expect(page.getByText('历史消息 19', { exact: true })).toBeInViewport();
+  failed = true;
   const notice = page.locator('.connection-notice');
-  await expect(notice).toContainText('运行错误'); await expect(notice).toContainText(detail);
+  await expect(notice).toContainText('运行错误', { timeout: 10_000 }); await expect(notice).toContainText(detail);
+  await expect(notice).toBeInViewport({ ratio: 1 });
+  await expect(page.getByLabel('给 Mira 发消息', { exact: true })).toBeInViewport();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(await page.evaluate(() => Reflect.get(window, 'injected'))).toBeUndefined();
   await page.screenshot({ path: testInfo.outputPath('mira-model-error-narrow.png'), fullPage: true });
   await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.keyboard.press('Escape');
-  await expect(notice).toContainText(detail); await page.reload(); await expect(notice).toContainText(detail);
+  await expect(notice).toContainText(detail); await expect(notice).toBeInViewport({ ratio: 1 });
+  await page.reload(); await expect(notice).toContainText(detail); await expect(notice).toBeInViewport({ ratio: 1 });
+  await page.locator('.timeline-scroll').evaluate(element => { element.scrollTop = 0; });
+  await expect(notice).toBeInViewport({ ratio: 1 });
   failed = false; await expect(notice).toHaveCount(0, { timeout: 10_000 });
+});
+
+
+test('long diagnostics scroll separately without hiding the composer on a narrow screen', async ({ page }) => {
+  const detail = `Model request failed · HTTP 400 · ${'validation detail '.repeat(100)} · request ID: visible-tail`;
+  await page.route('**/api/status', route => route.fulfill({ json: { state: 'error', mode: 'live', model: 'fixture-model', error: detail } }));
+  await page.setViewportSize({ width: 390, height: 844 }); await page.goto('/');
+  const notice = page.getByRole('status', { name: '运行状态与错误详情' });
+  await expect(notice).toBeInViewport({ ratio: 1 });
+  await expect(page.getByLabel('给 Mira 发消息', { exact: true })).toBeInViewport();
+  expect(await notice.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+  await notice.focus(); await page.keyboard.press('End');
+  await expect.poll(() => notice.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
