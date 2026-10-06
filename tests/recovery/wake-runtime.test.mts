@@ -40,19 +40,23 @@ test('real PostgreSQL: one Wake continues through unknown effect and read-only v
   } finally { await db.close(); }
 });
 
-test('real PostgreSQL: natural-language deferral preserves a reason and finishes Wake by asking the user', async () => {
+test('real PostgreSQL: model clarification finishes Wake without a tool intent or recovery operation', async () => {
   const db = await createTestDatabase();
   try {
     const writer = await db.acquire();
     await writer.receive({ id: 'request', type: 'user.message', source: 'user', occurredAt: '2026-10-05T08:00:00Z', payload: { text: 'Send it there' } }, { id: 'wake', reason: 'User request needs clarification' });
-    const run = await writer.claimWakeBatch(); assert.ok(run); let effects = 0;
-    await runtime(writer, scripted([toolCalls('deferred'), assistant('Which destination did you mean?')]), {
+    const run = await writer.claimWakeBatch(); assert.ok(run); let effects = 0, requests = 0;
+    await runtime(writer, (_model, context) => {
+      requests++; assert.match(JSON.stringify(context.messages), /Send it there/);
+      return streamOf(assistant('Which destination did you mean?'));
+    }, {
       tools: [effectTool(async () => { effects++; return result; })],
-      authorize: async () => ({ allowed: false, reason: 'The destination is ambiguous in the user’s natural-language request' }),
     }).continueTurn({ id: run.id, input: renderWakeBatch(run), occurredAt: run.claimedAt, inputRecordId: null, finalRecordId: null });
     const recovered = await runtime(writer).recover();
-    assert.equal(effects, 0); assert.equal(recovered.snapshot.executions.length, 0);
-    assert.match(recovered.recovery.operations[0]!.reason!, /destination is ambiguous/);
+    assert.equal(effects, 0); assert.equal(requests, 1); assert.equal(recovered.snapshot.executions.length, 0);
+    assert.deepEqual(recovered.recovery.operations, []);
+    const clarification = recovered.messages.at(-1); assert.ok(clarification?.role === 'assistant');
+    assert.deepEqual(clarification.content, assistant('Which destination did you mean?').content);
     assert.ok((await writer.loadWakeRun(run.id)).finalRecordId);
   } finally { await db.close(); }
 });

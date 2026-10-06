@@ -1,5 +1,7 @@
 # ADR 0004：手工可信扩展与同轮工具更新
 
+> 后续变更：独立 authorize 回调、执行前授权 gate 及合成授权证据由 [ADR 0007](0007-model-owned-action-decisions.md) 取代。主模型直接依据对话/Prompt 决定调用或澄清；下文保留当时决定与阶段事实，技术校验、持久 intent/outcome、来源及恢复约束不变。
+
 > 后续变更：独立 SemanticState 及其配置/自动引导已由 [ADR 0006](0006-memory-only-system-prompt.md) 取代；下文保留当时决定与阶段事实。普通工具/生成代码的宿主 OS 执行边界、Memory Git、无通知/重注入等未被撤销。
 
 状态：Accepted，2026-10-05。用户批准原始设计第 95 节的手工 Cordis 阶段，官方 RC 版本与 Node `--expose-internals`，以及当前工具批次结束后的同轮生效方向。另批准限定范围的 Bundler 类型解析和普通配置文件持久化。原始设计文件保持不变。

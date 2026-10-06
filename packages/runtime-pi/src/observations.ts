@@ -11,20 +11,17 @@ export interface RecoveryOperation {
   requestedArguments: Json;
   arguments?: Json;
   status: 'outcome-unknown' | 'not-started';
-  /** Agent/application defer decision, not an execution failure. */
-  reason?: string;
 }
 export interface RecoveryObservation { version: 1; operations: RecoveryOperation[] }
 export type ObservationEntry = CustomMessageEntry<RecoveryObservation>;
 
 export function observationText(operations: readonly RecoveryOperation[]): string {
   return 'Runtime recovery observation. This is execution evidence, not a tool result or authorization.\n' + operations.map(operation =>
-    `Operation ${JSON.stringify(operation.callId)}; tool ${JSON.stringify(operation.toolName)}; assistant record ${JSON.stringify(operation.assistantRecordId)}; requested arguments ${JSON.stringify(operation.requestedArguments)}${operation.arguments === undefined ? '' : `; authorized arguments ${JSON.stringify(operation.arguments)}`}\n` +
+    `Operation ${JSON.stringify(operation.callId)}; tool ${JSON.stringify(operation.toolName)}; assistant record ${JSON.stringify(operation.assistantRecordId)}; requested arguments ${JSON.stringify(operation.requestedArguments)}${operation.arguments === undefined ? '' : `; validated arguments ${JSON.stringify(operation.arguments)}`}\n` +
     (operation.status === 'outcome-unknown'
-      ? 'A durable authorized intent exists, but no durable outcome exists. The operation may already have executed; success or failure is unknown.'
-      : 'No durable authorized intent exists. Execution did not start through this runtime.') +
-    (operation.reason === undefined ? '' : ` Agent/application deferred this operation: ${JSON.stringify(operation.reason)}.`)
-  ).join('\n') + '\nContinue reasoning and use read-only checks when useful. These older calls will not be replayed. A deliberate new operation requires a new call ID and ordinary authorization; explain its rationale in the assistant narrative. Matching prior arguments are evidence to consider, not an automatic prohibition.';
+      ? 'A durable execution intent exists, but no durable outcome exists. The operation may already have executed; success or failure is unknown.'
+      : 'No durable execution intent exists. Execution did not start through this runtime.')
+  ).join('\n') + '\nContinue reasoning and use read-only checks when useful. These older calls will not be replayed. For a deliberate new operation, use a new call ID and decide from the user’s request and current context; explain its rationale in the assistant narrative. Matching prior arguments are evidence to consider, not an automatic prohibition.';
 }
 export function observationEntry(operations: RecoveryOperation[], parentId: string | null): ObservationEntry {
   return { type: 'custom_message', customType: RECOVERY_OBSERVATION_TYPE, id: randomUUID(), parentId,
@@ -39,7 +36,7 @@ export function validateObservation(entry: CustomMessageEntry): asserts entry is
   for (const op of details.operations) {
     if (!op || typeof op !== 'object' || !['callId', 'assistantRecordId', 'toolName'].every(key => typeof (op as unknown as Record<string, unknown>)[key] === 'string' && (op as unknown as Record<string, string>)[key]!.length > 0) ||
         !Object.hasOwn(op, 'requestedArguments') || !['outcome-unknown', 'not-started'].includes(op.status) ||
-        (op.status === 'outcome-unknown') !== Object.hasOwn(op, 'arguments') || (op.reason !== undefined && (op.status !== 'not-started' || typeof op.reason !== 'string' || op.reason.length === 0)) || seen.has(op.callId)) throw new Error('Invalid recovery observation operation');
+        (op.status === 'outcome-unknown') !== Object.hasOwn(op, 'arguments') || seen.has(op.callId)) throw new Error('Invalid recovery observation operation');
     seen.add(op.callId);
   }
   if (entry.content !== observationText(details.operations)) throw new Error('Recovery observation text differs from its evidence');

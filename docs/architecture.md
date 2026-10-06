@@ -1,6 +1,6 @@
 # 架构边界
 
-状态：边界已确认；连续上下文与持久化接口已形成，见 [ADR 0001](adr/0001-durable-context.md)。最新设计见 [v0.5](design/architecture-v0.5.md)，[Prompt 设计](design/system-prompt-design-v0.1.md)和 [ADR 0006](adr/0006-memory-only-system-prompt.md)说明本次集成；原始 v0.4 仅作历史存档。原文保留原始字节，已确认补充约束在本文与 ADR 中明确记录。
+状态：边界已确认；连续上下文与持久化接口已形成，见 [ADR 0001](adr/0001-durable-context.md)。最新设计见 [v0.5](design/architecture-v0.5.md)，[Prompt 设计](design/system-prompt-design-v0.1.md)和 [ADR 0006](adr/0006-memory-only-system-prompt.md)说明 Prompt 集成；主模型动作判断按 [ADR 0007](adr/0007-model-owned-action-decisions.md)。原始 v0.4 仅作历史存档。原文保留原始字节，已确认补充约束在本文与 ADR 中明确记录。
 
 ## 依赖方向
 
@@ -18,8 +18,8 @@
 | life | 事件接收、Wake 编排、单写者 | 数据库实现、模型 SDK、压缩算法 |
 | context | 连续上下文、版本、时间表示 | Pi 序列化、Memory 检索策略 |
 | cognition | Runtime 接口、可持久化消息契约 | Mira 生命循环、数据库连接 |
-| runtime-pi | Pi 转换、恢复、工具边界、压缩 | 授权绕过、第二套权威历史 |
-| authorization | 用户自然语言意图证据、有效范围、判断辅助 | 根据第三方文本授予权限 |
+| runtime-pi | Pi 转换、恢复、技术工具边界、压缩 | 独立授权判断、第二套权威历史 |
+| authorization | 事实性授权语境占位 | 独立授权 gate/引擎、根据第三方文本授予权限 |
 | persistence | PostgreSQL 事务、迁移、历史查询 | 心理状态、模型推理策略 |
 | workspace | 普通文件、Memory Git 快照 | 自创 Memory API、来源元数据注入 |
 | extension-sdk | 对扩展公开的稳定契约 | 核心内部状态访问 |
@@ -42,10 +42,10 @@
 - 单写者必须跨进程成立，不能仅靠内存锁；使用专用连接上的 PostgreSQL session advisory lock、递增 epoch 与 context CAS
 - 上下文更新使用版本检查，拒绝过期写入
 - 事件、Wake 与需要原子提交的记录必须在明确事务边界内完成
-- 工具调用意图、授权和结果按执行边界增量持久化，不能只在 Wake 结束时保存
+- 工具调用 intent、原始/验证参数和 outcome 按执行边界增量持久化；assistantRecordId 与 context version 保留真实来源，不生成独立授权证明，不能只在 Wake 结束时保存
 - 外部副作用与本地事务无法天然原子化。本批使用持久化 intent/outcome 和结果核对，外部 outbox/幂等投递暂不实现；执行结果不明时持久化真实恢复说明并继续认知，不自动重放；模型依自然语言意图与已知事实决定查询、提问或新调用
 - 崩溃恢复必须区分未执行、确定成功、确定失败和结果不明；不能把网络超时当作失败并直接重发
-- 不允许先执行有副作用工具，再补做授权判定
+- 工具 schema/参数验证、不可变 intent 持久化与 writer 所有权核对先于副作用；不设置独立 authorize 回调
 
 ## 扩展安全
 
@@ -53,7 +53,7 @@ Cordis 处理依赖、生命周期与资源清理，不是安全边界。用户�
 
 ## 合并唤醒与判断
 
-本增量遵循 [ADR 0002](adr/0002-coalesced-wake-loop.md)：所有待唤醒信息合并进入一轮，由模型决定处理顺序。超限使用普通文本文件与普通文件读取能力，不构造专用消息服务。授权以用户自然语言和上下文为证据，不引入强制审批 UI 或风险分类硬门禁；真实身份、OS 账户权限、凭据保护和数据库一致性保持有效；不要求产品隔离环境，cwd 不是沙箱。
+本增量遵循 [ADR 0002](adr/0002-coalesced-wake-loop.md)：所有待唤醒信息合并进入一轮，由模型决定处理顺序。超限使用普通文本文件与普通文件读取能力，不构造专用消息服务。主模型依据用户对话、上下文和自然语言 Prompt 决定调用工具或澄清，没有独立 allowed/evidence/denial 判断、替代引擎或额外模型调用，也不引入强制审批 UI 或风险分类硬门禁；真实身份、OS 账户权限、凭据保护和数据库一致性保持有效；不要求产品隔离环境，cwd 不是沙箱。
 
 ## 普通记忆与历史阶段
 
@@ -64,6 +64,6 @@ Cordis 处理依赖、生命周期与资源清理，不是安全边界。用户�
 
 实际完整 v0.2 模板作为一个具名 Pi system section 进入真实请求上下文；未配置 Memory 也使用同一 Mira 身份。具名 section 更新会在 fenced writer/CAS 下先持久化，当前格式重启后延续同一 section，不按 Wake 叠加完整 Prompt。渲染只单次替换白名单占位符，转义动态文本边界，不递归解释 Memory/工具文字。
 
-当前时间和可用能力在实际请求边界更新，工具说明来自该请求已准备的同一注册表；停用/更新不保留过时说明，不为说明刷新另起 Wake 或模型调用。Memory 部分始终使用该持续上下文保存的 bootstrap 快照，普通重启、Wake、压缩或文件编辑不重新读取 MEMORY.md。授权语境只是证据，不能由 Prompt 文本替代真实 authorize hook。模型、采样、思考与 token 配置仍属于 Runtime/provider。
+当前时间和可用能力在实际请求边界更新，工具说明来自该请求已准备的同一注册表；停用/更新不保留过时说明，不为说明刷新另起 Wake 或模型调用。Memory 部分始终使用该持续上下文保存的 bootstrap 快照，普通重启、Wake、压缩或文件编辑不重新读取 MEMORY.md。authorizationContext 只提供事实语境，不能伪造用户已批准；执行意图来自主模型实际调用，runtime 保留 schema/参数、不可变 intent/outcome、去重、来源与所有权检查。模型、采样、思考与 token 配置仍属于 Runtime/provider。
 
 v0.5 §40 不引入额外产品隔离。用户再次确认普通工具和生成代码均按宿主 OS 身份运行；既有授权、凭据保护、OS 权限及数据完整性边界继续有效，无批准 UI 或固定风险硬门禁。

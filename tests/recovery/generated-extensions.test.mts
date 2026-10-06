@@ -145,7 +145,7 @@ test('real PostgreSQL generated extension activates in one Wake and restores sav
     assert.deepEqual(saved.executions.map(execution => execution.intent.callId), ['stage-one', 'install-one', 'activate-one', 'update-two', 'same-wake-effect', 'disable-two', 'updated-sibling']);
     const raw = await db.admin.query<{ intent: ToolExecution['intent']; outcome: ToolExecution['outcome'] }>('SELECT intent, outcome FROM tool_executions WHERE mira_id = $1 ORDER BY context_version', [miraId]);
     assert.deepEqual(raw.rows, saved.executions);
-    for (const execution of saved.executions) assert.deepEqual(execution.intent.authorization, { source: 'synthetic-demo', intent: 'execute the explicitly configured synthetic demo tool calls' });
+    for (const execution of saved.executions) assert.equal('authorization' in execution.intent, false);
     const normalized = saved.executions.find(execution => execution.intent.callId === 'same-wake-effect')!;
     assert.deepEqual(normalized.intent.requestedArguments, { count: '7' }); assert.deepEqual(normalized.intent.arguments, { count: 7 });
     assert.deepEqual(await files.effects(), [

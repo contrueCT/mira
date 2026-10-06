@@ -20,13 +20,15 @@ function assertDeclarations(writer: MemoryWriter, context: TranscriptContext, pr
   assert.deepEqual(getCurrentTools(persisted), expected, 'declarations are durable before the request');
 }
 
-test('real extension host enables a configured module within one runtime turn and persists exact authorization and outcomes', { timeout: 15_000 }, async () => {
+test('real extension host enables a configured module within one runtime turn and persists exact intent and outcomes', { timeout: 15_000 }, async () => {
   const fixture = await createExtensionFixture(); const writer = new MemoryWriter();
   const builtIn = effectTool(async () => result);
   const host = new ExtensionHost({ entries: [{ id: 'manual', path: fixture.modulePath, enabled: false, config: fixture.config }],
     reservedToolNames: [builtIn.name, 'extension.manage', 'extension.inspect'], receive: extensionReceiver(writer) });
-  const evidence = { source: 'synthetic user request', purpose: 'enable manual and execute its test tool' };
-  const authorized: Array<{ id: string; args: unknown }> = [];
+  writer.beforeIntent = async intent => {
+    assert.equal(writer.state.executions.some(execution => execution.intent.callId === intent.callId), false);
+    if (intent.toolName === 'fixture.echo') assert.deepEqual(await fixture.effects(), [], 'durable intent precedes the effect');
+  };
   let prepared: AgentTool[] = []; let requests = 0;
   try {
     await host.start(); assert.equal(host.inspect()[0]!.status, 'disabled');
@@ -51,20 +53,15 @@ test('real extension host enables a configured module within one runtime turn an
       tools: [builtIn],
       prepareTools: async () => prepared = [builtIn, ...management, ...extensionTools(await host.prepare())],
       finishTools: () => host.finish(),
-      authorize: async (request, args) => {
-        assert.equal(writer.state.executions.some(execution => execution.intent.callId === request.id), false);
-        if (request.name === 'fixture.echo') assert.deepEqual(await fixture.effects(), [], 'authorization precedes the effect');
-        authorized.push({ id: request.id, args }); return { allowed: true, evidence };
-      },
     });
     const recovered = await instance.run(input('Enable the configured manual extension and use it'));
     assert.equal(requests, 3);
-    assert.deepEqual(authorized, [
+    assert.deepEqual(writer.state.executions.map(execution => ({ id: execution.intent.callId, args: execution.intent.arguments })), [
       { id: 'enable-manual', args: { id: 'manual', action: 'enable' } },
       { id: 'echo-manual', args: { count: 7, label: 'synthetic' } },
     ]);
     assert.deepEqual(await fixture.effects(), [{ extensionId: 'manual', revision: 1, callId: 'echo-manual', arguments: { count: 7, label: 'synthetic' } }]);
-    assert.deepEqual(writer.state.executions.map(execution => execution.intent.authorization), [evidence, evidence]);
+    assert.ok(writer.state.executions.every(execution => !('authorization' in execution.intent)));
     assert.deepEqual(writer.state.executions[1]!.intent.requestedArguments, { count: '7', label: 'synthetic' });
     assert.deepEqual(writer.state.executions[1]!.intent.arguments, { count: 7, label: 'synthetic' });
     for (const execution of writer.state.executions) {
@@ -177,31 +174,25 @@ test('real host configuration and disable preserve every sibling executable unti
   } finally { await host.close(); await writer.close(); await rm(fixture.root, { recursive: true, force: true }); }
 });
 
-for (const managementCall of [true, false]) test(`real extension ${managementCall ? 'management' : 'execution'} deferral retains the natural-language reason without an intent or effect`, { timeout: 15_000 }, async () => {
+for (const managementCall of [true, false]) test(`the model asks before extension ${managementCall ? 'management' : 'execution'} without producing a tool call`, { timeout: 15_000 }, async () => {
   const fixture = await createExtensionFixture(); const writer = new MemoryWriter();
   const host = new ExtensionHost({ entries: [{ id: 'manual', path: fixture.modulePath, enabled: !managementCall, config: fixture.config }], receive: extensionReceiver(writer) });
-  let requests = 0; let decisions = 0; let prepared: AgentTool[] = [];
+  let requests = 0; let prepared: AgentTool[] = [];
   try {
     await host.start(); const management = extensionManagementTools(host);
     const recovered = await runtime(writer, (_model, context) => {
       requests++; assertDeclarations(writer, context, prepared);
-      if (requests === 1) return streamOf(managementCall
-        ? call('deferred-extension', 'extension.manage', { id: 'manual', action: 'enable' })
-        : call('deferred-extension', 'fixture.echo', { count: '1', label: 'synthetic' }));
-      assert.equal(requests, 2); assert.match(JSON.stringify(context.messages), /Need a destination from the user/);
+      assert.equal(requests, 1);
+      assert.ok(prepared.some(tool => tool.name === (managementCall ? 'extension.manage' : 'fixture.echo')));
       return streamOf(assistant('Which destination did you mean?'));
     }, {
       prepareTools: async () => prepared = [...management, ...extensionTools(await host.prepare())], finishTools: () => host.finish(),
-      authorize: async (_request, args) => {
-        decisions++;
-        assert.deepEqual(args, managementCall ? { id: 'manual', action: 'enable' } : { count: 1, label: 'synthetic' });
-        return { allowed: false, reason: 'Need a destination from the user' };
-      },
     }).run(input('Synthetic request requires clarification'));
-    assert.equal(decisions, 1); assert.deepEqual(writer.state.executions, []); assert.deepEqual(await fixture.effects(), []);
+    assert.equal(requests, 1); assert.deepEqual(writer.state.executions, []); assert.deepEqual(await fixture.effects(), []);
     assert.deepEqual(host.changeStatus(), []);
     assert.equal(host.inspect()[0]!.status, managementCall ? 'disabled' : 'active');
-    assert.equal(recovered.recovery.operations[0]!.status, 'not-started');
-    assert.equal(recovered.recovery.operations[0]!.reason, 'Need a destination from the user');
+    assert.deepEqual(recovered.recovery.operations, []);
+    const clarification = recovered.messages.at(-1); assert.ok(clarification?.role === 'assistant');
+    assert.deepEqual(clarification.content, assistant('Which destination did you mean?').content);
   } finally { await host.close(); await writer.close(); await rm(fixture.root, { recursive: true, force: true }); }
 });

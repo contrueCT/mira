@@ -51,22 +51,22 @@ test('native Pi tools write, edit, search and run harmless shell outside cwd wit
 });
 
 
-test('the guarded runtime accepts native registry and authorizes canonical edit before executing it', async () => {
+test('the durable runtime accepts native registry and records canonical edit before executing it', async () => {
   const root = await mkdtemp('/tmp/mira-native-registry-');
   try {
     const target = path.join(root, 'synthetic.txt'); await writeFile(target, 'before');
     const writer = new MemoryWriter(); const tools = createWorkspaceTools(root);
     assert.ok(tools.every(tool => !tool.prepareArguments));
     const args = { path: target, edits: [{ oldText: 'before', newText: 'after' }] };
-    let decisions = 0;
+    let intents = 0;
+    writer.beforeIntent = async intent => {
+      intents++; assert.deepEqual(intent.arguments, args); assert.equal(await readFile(target, 'utf8'), 'before');
+    };
     const instance = runtime(writer, scripted([
       { ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'native-edit', name: 'edit', arguments: args }] }, assistant(),
-    ]), { tools, authorize: async (_call, actual) => {
-      decisions++; assert.deepEqual(actual, args); assert.equal(await readFile(target, 'utf8'), 'before');
-      return { allowed: true, evidence: { source: 'synthetic direct intent' } };
-    } });
+    ]), { tools });
     await instance.run(input());
-    assert.equal(decisions, 1); assert.equal(await readFile(target, 'utf8'), 'after');
+    assert.equal(intents, 1); assert.equal(await readFile(target, 'utf8'), 'after');
     assert.deepEqual(writer.state.executions[0]?.intent.arguments, args);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

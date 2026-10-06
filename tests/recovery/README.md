@@ -27,10 +27,10 @@ skipped/pass result. Check the current CI evidence before claiming a real-DB pas
 - A process terminates after outcome commit but before tool-result append; recovery
   materializes exact saved JSON and continues without repeating the counter effect
 - Same-Wake uncertainty continues into a read-only check and atomic final reply;
-  an application deferral becomes a natural-language question with no tool intent
+  a main-model clarification response creates no tool call or intent
 - Duplicate call IDs do not repeat effects across runtime instances
 - Terminating the actual owning PostgreSQL connection during model response,
-  authorization or an effect stops the old runtime's later model/tool paths
+  intent persistence or an effect stops the old runtime's later model/tool paths
 - Full public SDK compaction repeats after a system update, retains original raw
   history and paired tool tails, then supports continuation
 - Real-DB stale-version CAS and compaction cancellation reject publication
@@ -40,7 +40,8 @@ migration reversibility, writer fencing, event/Wake atomicity, and cancellation
 while an INSERT is blocked before COMMIT. The runtime offline suite additionally
 injects assistant/intent/outcome/result append failures and exercises Pi's swallowed
 hook-error behavior, invalid checkpoints and provider-facing structure, model
-failure latching, argument coercion, and authorization denial.
+failure latching, argument coercion, immutable intent-before-effect, and clarification
+without a separate authorization gate. See [ADR 0007](../../docs/adr/0007-model-owned-action-decisions.md).
 
 `ambient-auth-worker.mts` is an offline subprocess fixture discovered through
 `tests/unit/runtime.test.mts`. It supplies only synthetic environment credentials

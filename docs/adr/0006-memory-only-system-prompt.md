@@ -1,5 +1,7 @@
 # ADR 0006：Memory-only 与完整 Mira System Prompt
 
+> 后续变更：独立 authorize 回调、执行前授权 gate 及合成授权证据由 [ADR 0007](0007-model-owned-action-decisions.md) 取代。主模型直接依据对话/Prompt 决定调用或澄清；下文保留当时决定与阶段事实，技术校验、持久 intent/outcome、来源及恢复约束不变。
+
 状态：Accepted。2026-10-05 用户要求按 v0.5 移除独立 SemanticState，并集成提供的完整 v0.2 System Prompt；再次确认普通工具与生成代码都不增加产品隔离环境。2026-10-06 用户进一步确认项目仍处早期开发，只维护当前 v0.5/v0.2 设计，不保留旧设计兼容层。本文取代 ADR 0003 的 State 配置/引导决定，并补充 ADR 0004/0005，未撤销其它已确认边界。
 
 ## 原文与优先级

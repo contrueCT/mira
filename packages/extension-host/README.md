@@ -16,7 +16,9 @@ previous entire model/tool batch, awaits queued operations and known Cordis work
 then captures a complete immutable registry and holds its resources. `finish()`
 releases the terminal/error batch without reopening cognition. Never await a queued
 change from a tool that belongs to the batch being retired. Server management tools
-use the same authorization/intent/outcome path as every other tool.
+use the same schema/parameter, immutable intent/outcome, and provenance path as
+every other tool. The main model decides to call or clarify; there is no separate
+authorize callback (see [ADR 0007](../../docs/adr/0007-model-owned-action-decisions.md)).
 
 Native service/timer disposers are collected into ordered Cordis effects, with the
 batch wait disposed first. Registering an independent async cleanup is insufficient:

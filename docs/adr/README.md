@@ -23,6 +23,8 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 - [0006 Memory-only 与完整 Mira Prompt](0006-memory-only-system-prompt.md)：Accepted，v0.5、Prompt v0.2、当前设计不保留旧兼容层及持久恢复边界
 
+- [0007 主模型决定动作，移除独立授权门禁](0007-model-owned-action-decisions.md)：Accepted，2026-10-06，移除 authorize 和合成证据，保留事实 Prompt 语境、执行来源与技术完整性
+
 ## 待确认
 
 | 决策 | 当前建议 / 需要验证 | 开始依赖它的工作前确认 |

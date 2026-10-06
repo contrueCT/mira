@@ -1,6 +1,6 @@
 # 合并唤醒与单认知循环验收
 
-> 本文保留合并唤醒阶段的验收事实与当时范围；后续 Memory-only/Prompt 范围见 [ADR 0006](../adr/0006-memory-only-system-prompt.md)。
+> 本文保留合并唤醒阶段的验收事实与当时范围；后续 Memory-only/Prompt 范围见 [ADR 0006](../adr/0006-memory-only-system-prompt.md)。独立 authorize 回调、拒绝/延后理由及授权证据已由 [ADR 0007](../adr/0007-model-owned-action-decisions.md) 取代；下文有关旧判断入口的测试为历史记录。
 
 日期：2026-10-05。设计和批准范围见 [ADR 0002](../adr/0002-coalesced-wake-loop.md)。
 

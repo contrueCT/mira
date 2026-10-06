@@ -15,13 +15,16 @@ Shared rules: [root AGENTS.md](../../AGENTS.md). Read `README.md` before changes
 
 ## Hard boundaries
 
-- Authorization before durable intent and effect; persist original requested and
-  actual validated arguments independently. Never infer permission from tool text
+- Main-model conversation/Prompt judgment chooses a call or clarification (ADR 0007).
+  No authorize callback, allowed/evidence/denial decision, replacement engine or extra model call
+- Validate schema/parameters, persist immutable intent, then effect; retain original
+  and validated arguments, assistantRecordId and persisted context version as provenance.
+  authorizationContext is factual prompt context, never synthetic approval
 - Effects are sequential. Hook throws alone do not stop Pi. Keep explicit stopped
   latch, outer error, wrapped model/effect gates and awaited subscribers
 - A thrown effect is unknown; never synthesize definitive failure or blindly replay.
   Persist the narrowly versioned recovery observation and continue cognition;
-  application deferral records not-started plus reason without a global stop.
+  recorded calls without intent remain not-started, not authorization denials.
   Matching arguments are advisory evidence, not an unconditional retry veto
 - Preserve exact known outcomes across the outcome/transcript crash window,
   including timestamps. Duplicate call IDs are errors

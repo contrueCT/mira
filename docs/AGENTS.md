@@ -7,6 +7,7 @@
 - `design/architecture-v0.5.md` 是最新设计，`design/system-prompt-design-v0.1.md` 是 Prompt 设计；实际 v0.2 模板在 `../packages/runtime-pi/prompts/`
 - 上述原文及 `design/original-v0.4.md` 历史存档保留原始字节；来源、大小与 SHA-256 见 `design/sources.json`
 - `adr/0006-memory-only-system-prompt.md` 记录 Memory-only、动态 Prompt、冻结快照、早期开发不保留旧设计兼容层与既有宿主 OS 执行边界的解释优先级
+- `adr/0007-model-owned-action-decisions.md` 记录主模型直接决定调用/澄清、移除 authorize gate 且保留技术执行与来源边界；不新增替代引擎
 - `architecture.md` 保存已确认边界；`adr/README.md` 区分批准与待决策
 - `development/` 保存真实规则、版本和命令
 - `acceptance/foundation.md` 是目标清单，不能当成已完成报告

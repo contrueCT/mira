@@ -68,7 +68,7 @@ test('real PostgreSQL server enables and invokes a manual extension in one Wake,
     const reader = await db.acquire(miraId); const saved = await reader.load(); await reader.close();
     assertExactOutcomes(saved);
     assert.deepEqual(saved.executions.map(execution => execution.intent.callId), ['enable-manual', 'builtin-ls', 'extension-effect']);
-    assert.ok(saved.executions.every(execution => JSON.stringify(execution.intent.authorization) === JSON.stringify({ source: 'synthetic-demo', intent: 'execute the explicitly configured synthetic demo tool calls' })));
+    assert.ok(saved.executions.every(execution => !('authorization' in execution.intent)));
     const execution = saved.executions.find(execution => execution.intent.callId === 'extension-effect')!;
     assert.deepEqual(execution.intent.requestedArguments, { count: '7', label: 'synthetic' });
     assert.deepEqual(execution.intent.arguments, { count: 7, label: 'synthetic' });

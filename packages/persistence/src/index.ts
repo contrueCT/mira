@@ -62,7 +62,7 @@ function copy<T>(value: T): T {
 }
 function validateIntent(intent: ToolIntent): void {
   text(intent.callId, 'tool call ID'); text(intent.assistantRecordId, 'assistant record ID');
-  text(intent.toolName, 'tool name'); date(intent.occurredAt); assertJson(intent.requestedArguments); assertJson(intent.arguments); assertJson(intent.authorization);
+  text(intent.toolName, 'tool name'); date(intent.occurredAt); assertJson(intent.requestedArguments); assertJson(intent.arguments);
 }
 function validateOutcome(outcome: ToolOutcome): void {
   text(outcome.callId, 'tool call ID'); date(outcome.occurredAt); assertJson(outcome.payload);

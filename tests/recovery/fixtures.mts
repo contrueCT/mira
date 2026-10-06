@@ -59,10 +59,9 @@ export class MemoryWriter implements DurableWriter {
   async close() { this.controller.abort(Error('Writer closed')); }
 }
 
-export const allow: PiRuntimeOptions['authorize'] = async () => ({ allowed: true, evidence: { user: 'synthetic-test', scope: 'synthetic-counter' } });
 export const input = (text = 'synthetic request'): AgentMessage => ({ role: 'user', content: text, timestamp: 1000 });
 export function runtime(writer: DurableWriter, streamFn: StreamFn = scripted([assistant()]), overrides: Partial<PiRuntimeOptions> = {}) {
-  return new PiDurableRuntime({ writer, model, streamFn, authorize: allow, ...overrides });
+  return new PiDurableRuntime({ writer, model, streamFn, ...overrides });
 }
 export async function seed(writer: DurableWriter, messages: AgentMessage[]) {
   let state = await writer.load();
@@ -82,7 +81,7 @@ export async function seed(writer: DurableWriter, messages: AgentMessage[]) {
     state.version = await writer.append(state.version, record);
     state.records.push(record);
     if (message.role === 'assistant') for (const block of message.content) if (block.type === 'toolCall') {
-      pending.set(block.id, { callId: block.id, assistantRecordId: entry.id, toolName: block.name, requestedArguments: jsonValue(block.arguments), arguments: jsonValue(block.arguments), authorization: { synthetic: true }, occurredAt: entry.timestamp });
+      pending.set(block.id, { callId: block.id, assistantRecordId: entry.id, toolName: block.name, requestedArguments: jsonValue(block.arguments), arguments: jsonValue(block.arguments), occurredAt: entry.timestamp });
     }
   }
 }

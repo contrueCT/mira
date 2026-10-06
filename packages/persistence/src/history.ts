@@ -82,7 +82,7 @@ function validateEntry(entry: HistoryEntry, miraId: string, request: HistoryRead
     } else if (entry.kind === 'tool') {
       if (entry.intent.callId !== entry.id || entry.intent.occurredAt !== entry.occurredAt || (entry.outcome !== null && entry.outcome.callId !== entry.id)) throw Error();
       string(entry.intent.assistantRecordId, 'assistant record ID'); string(entry.intent.toolName, 'tool name');
-      for (const field of ['requestedArguments', 'arguments', 'authorization']) if (!Object.hasOwn(entry.intent, field)) throw Error();
+      for (const field of ['requestedArguments', 'arguments']) if (!Object.hasOwn(entry.intent, field)) throw Error();
       if (entry.outcome !== null && (!Number.isFinite(Date.parse(entry.outcome.occurredAt)) || !Object.hasOwn(entry.outcome, 'payload'))) throw Error();
       integer(entry.contextVersion, 1, Number.MAX_SAFE_INTEGER, 'version');
     } else {

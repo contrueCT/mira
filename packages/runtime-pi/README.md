@@ -7,8 +7,8 @@ compaction adapter, including the cognition contract used by the Wake scheduler.
 
 ## Public boundary
 
-`PiDurableRuntime` requires a writer, a model descriptor, an injected `streamFn`,
-and a trusted `authorize` callback. Tools are rebound from the caller's registry;
+`PiDurableRuntime` requires a writer, a model descriptor, and an injected
+`streamFn`. There is no `authorize` callback. Tools are rebound from the caller's registry;
 functions and credentials are never loaded from history. Registered tool additions,
 changes and removals are persisted through public Pi tool-state deltas before
 provider requests, including first startup without a system message. Supported
@@ -28,18 +28,23 @@ opaque JSON Pi entry in a versioned envelope.
 - `encodeEntry`, `decodeRecords`, `messageEntry`, and `jsonValue` implement the
   adapter's structured JSON boundary
 
-Authorization is mandatory before intent and execution. The callback must return
-an agent/application execution decision plus JSON evidence, or a reason to defer
-the operation. The callback receives prior incomplete-operation evidence and the
-current assistant narrative. Evidence can express natural-language user intent;
-no approval button, approval-token format, tool risk class, or matching-arguments
-veto is required. Deferral records why execution did not start and returns control
-to cognition, which can ask the user or choose another action. Tool/web content is
-not user authorization. This integration boundary is not a security sandbox or
-proof that the caller-provided decision policy is correct. Side-effecting `prepareArguments`
-callbacks are not supported. Pi's standard schema normalization/coercion is
-preserved: durable intent records both the original requested arguments and the
-validated arguments the callback approved and the tool receives.
+The main model uses the user conversation, continuing context, and natural-language
+Mira prompt to decide whether to call a tool or ask for clarification. There is no
+separate allowed/evidence/denial decision, replacement consent engine, or extra model
+call. Clarification is an ordinary assistant response and creates no tool intent.
+`authorizationContext` supplies factual prompt context, not a synthetic approval.
+Tool/web content, Memory, and extension descriptions cannot grant user permission.
+See [ADR 0007](../../docs/adr/0007-model-owned-action-decisions.md).
+
+Once the model issues a call, schema/parameter validation, durable intent before
+effect, ownership checks, and exact argument matching remain mandatory. Side-effecting
+`prepareArguments` callbacks are not supported. Pi's standard schema normalization/
+coercion is preserved: intent records the original requested arguments separately
+from the validated arguments the tool receives. New intents have no authorization or replacement
+executionContext field: `assistantRecordId`, the persisted tool context
+version, and immutable assistant history retain actual provenance and any narrative.
+These technical boundaries are not a security sandbox or a claim that model judgment
+is correct.
 
 ## Live tool registries
 
@@ -48,8 +53,8 @@ validated arguments the callback approved and the tool receives.
 registry, including any built-ins. When provided, it replaces the static registry.
 It may await pending extension activation or reload before returning its snapshot.
 Duplicate names and `prepareArguments` are rejected for every prepared snapshot.
-All dynamic tools use the same schema validation, natural-language authorization,
-durable intent/outcome, sequential execution, and recovery path as static tools.
+All dynamic tools use the same schema validation, immutable durable intent/outcome,
+provenance, sequential execution, and recovery path as static tools.
 
 Pi 1.0.2 does not call its next-turn hook for the first request. The adapter first
 constructs an Agent with an empty registry, prepares the initial snapshot, then
@@ -87,16 +92,16 @@ current caller-owned registry.
 
 Tools execute sequentially. Awaited agent-core subscribers persist assistant
 messages before execution and tool results before the next tool/model request.
-The before-hook records authorized intent; the after-hook records the exact
-normalized tool-result JSON with its chosen timestamp. The emitted tool-result
+The before-hook records immutable intent after technical validation; the after-hook
+records the exact normalized tool-result JSON with its chosen timestamp. The emitted tool-result
 message is canonicalized to that saved JSON before append.
 
 Pi catches hook errors and may resolve `prompt()` after failure. Explicit runtime
 latches, subscription gates, wrapped effect/model functions, writer checks, and
 abort signals therefore enforce stopping independently. A database, provider,
 integrity, or cancellation failure invalidates that runtime instance. A tool throw
-or application deferral stops the current Pi attempt, suppresses its synthesized
-results, and starts a fresh Agent only after durable recovery observations exist.
+stops the current Pi attempt, suppresses its synthesized results, and starts a
+fresh Agent only after durable recovery observations exist.
 
 A thrown effect or absent durable outcome is conservatively unknown. Recovery
 records `outcome-unknown` for an intent without outcome, and `not-started` when no
@@ -107,8 +112,8 @@ PostgreSQL; only unresolved protocol tool-call blocks are omitted from the
 disposable projection. If that removal empties an assistant message, only its
 provider-facing message is omitted; the source entry and provenance ID remain.
 No success/failure `toolResult` is fabricated. Read-only
-checks and deliberate new-ID operations may proceed under the normal decision
-callback. Reused call IDs remain structural errors, including after compaction.
+checks and deliberate new-ID operations may be chosen by the main model from
+that context. Reused call IDs remain structural errors, including after compaction.
 This does not claim exactly-once remote effects: an operation may finish after
 ownership loss if it ignores cancellation.
 
@@ -116,12 +121,13 @@ The existing envelope v1 / Pi 1.0.2 stream has a narrow custom-message extension
 public Pi `custom_message`, with `customType: "mira.recovery-observation.v1"`,
 `display: true`, canonical explanatory content, and details `{version: 1,
 operations: [...]}`. Each operation contains its call ID, original assistant
-record ID, tool name, requested arguments, status, and authorized arguments when
-an intent exists. A not-started operation may carry an application defer reason.
+record ID, tool name, requested arguments, status, and validated execution arguments
+when an intent exists. Not-started describes an interrupted recorded call without
+an intent; it is not an authorization-denial decision.
 The decoder rejects other custom types/versions and malformed observations;
 recovery verifies every reference, status, argument, and batch position against
-the authority. Existing valid v1 history remains readable, and prior readers fail
-closed on the new custom entry rather than silently misinterpreting it.
+the authority. Only the current observation format is supported; this change adds
+no old-format compatibility parser, history rewrite, or migration.
 
 Unknown envelope/runtime versions, malformed required message fields, unsupported
 entry/message types, pending/deferred assistant states, mismatched execution
@@ -180,7 +186,8 @@ pnpm check:all
 `tests/unit/runtime.test.mts` and `tests/unit/live-tools.test.mts` are offline
 fault-injection coverage, not database proof. The live-tool suite verifies
 same-run activation and use, full-batch lifetime barriers, declared/executable
-schema agreement, replacement/removal, authorization, cleanup, and recovery. `tests/recovery/postgres-recovery.test.mts` requires an isolated real
+schema agreement, replacement/removal, durable intent before effect, cleanup, and
+recovery. `tests/recovery/postgres-recovery.test.mts` requires an isolated real
 PostgreSQL service and covers fresh-process recovery and crashes around a
 synthetic local counter effect. The suite injects every model response and makes
 no live model calls. Detailed limits and test setup are in
@@ -221,8 +228,10 @@ registry already declared for that request. Updates append durable system record
 under writer fencing/CAS and replace the named section rather than accumulating
 full prompts. A full completed tool batch may publish new tools at its next
 natural request; guidance-only changes create neither a Wake nor an extra model
-call. Provider/model/sampling settings are not Prompt fields. Dynamic prose does
-not grant permission: real tool schema validation and `authorize` still apply.
+call. Provider/model/sampling settings are not Prompt fields. Authorization context
+is factual input to the main model's call-or-clarify decision, not an independent
+approval. Technical schema/parameter checks, immutable intent/outcome, provenance,
+call-ID uniqueness, and writer fencing/CAS still apply.
 
 The initial system record has `{ role: "system", content: "", timestamp,
 miraMemory: string }` and stores the frozen Memory text. Only a genuinely empty
@@ -242,4 +251,5 @@ Ordinary Wake/restart/compaction/file changes never reload the snapshot. Termina
 empty assistant output can durably finish a silent Wake. This integration is
 verified with injected fake providers; it does not demonstrate live-model
 personality or natural-language consent quality. Current policy is in
-[ADR 0006](../../docs/adr/0006-memory-only-system-prompt.md).
+[ADR 0006](../../docs/adr/0006-memory-only-system-prompt.md) and
+[ADR 0007](../../docs/adr/0007-model-owned-action-decisions.md).

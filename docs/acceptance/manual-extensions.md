@@ -8,7 +8,7 @@
 - `pnpm check:all`：额外执行显式独立 PostgreSQL 服务上的完整恢复测试
 - `tests/unit/extension-host.test.mts`：SDK/host、依赖消失恢复、失败、异步清理、真实 HMR 批次租约
 - `tests/unit/official-hmr.test.mts`：固定官方包的源码、传递依赖、CJS 限制和不同失败阶段
-- `tests/unit/live-tools.test.mts`：Pi 同轮发布、完整批次、schema/dispatcher、授权、取消和失败
+- `tests/unit/live-tools.test.mts`：Pi 同轮发布、完整批次、schema/dispatcher、intent 先于执行、取消和失败
 - `tests/unit/extension-runtime.test.mts`：真实 host/server/Pi 组装的同轮激活与调用
 - `tests/unit/extension-configuration.test.mts`：同文件保存、失败/外部编辑、重启、null 配置
 - `tests/recovery/extensions.test.mts`：真实 PostgreSQL 的同 Wake 激活、精确证据、重启无重放、来源绑定、显式 Wake 合并去重

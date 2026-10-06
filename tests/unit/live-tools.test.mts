@@ -4,7 +4,7 @@ import { setImmediate } from 'node:timers/promises';
 import type { AgentTool, AgentToolCall } from '@earendil-works/pi-agent-core';
 import { Type, getCurrentTools, toToolDeclaration, type AssistantMessage, type TranscriptContext } from '@earendil-works/pi-ai';
 import { decodeRecords, PiDurableRuntime } from '@mira/runtime-pi';
-import { allow, assistant, deferred, input, MemoryWriter, model, result, runtime, streamOf } from '../recovery/fixtures.mts';
+import { assistant, deferred, input, MemoryWriter, model, result, runtime, streamOf } from '../recovery/fixtures.mts';
 
 function tool(name: string, execute: AgentTool['execute'], parameters = Type.Object({})): AgentTool {
   return { name, label: name, description: `${name} synthetic tool`, parameters, execute };
@@ -24,7 +24,6 @@ test('same run loads a tool at the settled-batch boundary and the next model cal
   const atLastResult = deferred(), releaseLastResult = deferred(), atPreparation = deferred(), activate = deferred();
   let pending = false, disposed = false, prepared = 0, requests = 0;
   const effects: string[] = [];
-  const authorizations: Array<{ call: AgentToolCall; args: unknown }> = [];
   const added = { ...tool('new_tool', async (_id, args) => {
     assert.deepEqual(args, { count: 7 }); effects.push('new'); return result;
   }, Type.Object({ count: Type.Number() })), constrainedSampling: { type: 'json_schema' as const, strict: 'require' as const } };
@@ -55,7 +54,6 @@ test('same run loads a tool at the settled-batch boundary and the next model cal
       signal.throwIfAborted(); disposed = true;
       return [added];
     },
-    authorize: async (call, args) => { authorizations.push({ call, args }); return { allowed: true, evidence: { synthetic: 'same user authorization path' } }; },
   });
   const work = instance.run(input());
   await atLastResult.promise; await setImmediate();
@@ -66,11 +64,11 @@ test('same run loads a tool at the settled-batch boundary and the next model cal
   activate.resolve();
   const recovered = await work;
   assert.deepEqual(effects, ['load', 'old', 'new']); assert.equal(requests, 3); assert.equal(prepared, 3);
-  assert.deepEqual(authorizations.map(item => [item.call.id, item.args]), [['load-call', {}], ['old-call', {}], ['new-call', { count: 7 }]]);
+  assert.deepEqual(writer.state.executions.map(item => [item.intent.callId, item.intent.arguments]), [['load-call', {}], ['old-call', {}], ['new-call', { count: 7 }]]);
   const execution = writer.state.executions.find(item => item.intent.callId === 'new-call')!;
   assert.deepEqual(execution.intent.requestedArguments, { count: '7' });
   assert.deepEqual(execution.intent.arguments, { count: 7 });
-  assert.deepEqual(execution.intent.authorization, { synthetic: 'same user authorization path' });
+  assert.equal('authorization' in execution.intent, false);
   assert.ok(execution.outcome);
   assert.equal(recovered.messages.at(-1)?.role, 'assistant');
   assert.ok(recovered.entries.every(entry => entry.type === 'message'), 'uses existing Pi declaration history only');
@@ -172,7 +170,7 @@ test('a removed tool cannot dispatch through a stale dynamic registry and recove
 
 test('cancellation while activation is pending prevents declarations and inference', async () => {
   const writer = new MemoryWriter(); const entered = deferred(), release = deferred(); const controller = new AbortController(); let requests = 0;
-  const instance = new PiDurableRuntime({ writer, model, authorize: allow,
+  const instance = new PiDurableRuntime({ writer, model,
     streamFn: () => { requests++; return streamOf(assistant()); },
     prepareTools: async signal => { entered.resolve(); await release.promise; assert.equal(signal.aborted, true); return [tool('never', async () => result)]; },
   });
@@ -218,7 +216,7 @@ test('interrupted dynamic attempts release their own generation before recovery 
   assert.deepEqual(trace, ['prepare', 'unknown-effect', 'finish', 'prepare', 'finish']);
 });
 
-test('newly loaded tool authorization deferral creates no intent/effect and retains its reason', async () => {
+test('the model can ask for clarification after loading a tool without calling it', async () => {
   const writer = new MemoryWriter(); let loaded = false, requests = 0, effects = 0;
   const added = tool('requires_decision', async () => { effects++; return result; });
   const load = tool('load_extension', async () => { loaded = true; return result; });
@@ -226,17 +224,16 @@ test('newly loaded tool authorization deferral creates no intent/effect and reta
     requests++;
     if (requests === 1) return streamOf(calls(['load', load.name]));
     declarations(writer, context, [added]);
-    if (requests === 2) return streamOf(calls(['deferred', added.name]));
-    assert.match(JSON.stringify(context), /Need a destination from the user/);
+    assert.equal(requests, 2);
     return streamOf(assistant('Which destination?'));
   }, {
     prepareTools: async () => loaded ? [added] : [load],
-    authorize: async call => call.name === added.name ? { allowed: false, reason: 'Need a destination from the user' } : { allowed: true, evidence: { synthetic: true } },
   }).run(input());
-  assert.equal(requests, 3); assert.equal(effects, 0);
+  assert.equal(requests, 2); assert.equal(effects, 0);
   assert.deepEqual(writer.state.executions.map(execution => execution.intent.callId), ['load']);
-  assert.equal(recovered.recovery.operations[0]!.status, 'not-started');
-  assert.equal(recovered.recovery.operations[0]!.reason, 'Need a destination from the user');
+  assert.deepEqual(recovered.recovery.operations, []);
+  const clarification = recovered.messages.at(-1); assert.ok(clarification?.role === 'assistant');
+  assert.deepEqual(clarification.content, assistant('Which destination?').content);
 });
 
 test('mutating the source schema after declaration cannot change validation in the published batch', async () => {

@@ -15,7 +15,7 @@ const record = (id = 'r1', parentId: string | null = null): RuntimeRecord => ({
   kind: 'message', occurredAt: now, payload: { role: 'assistant', content: [{ type: 'text', text: 'synthetic only' }], provider: { opaque: ['retained', 42] } },
 });
 const event = (id = 'e1'): LifeEvent => ({ id, type: 'synthetic.observed', source: 'external', occurredAt: now, payload: { exact: [1, true, null] } });
-const intent = (callId = 'tool-1'): ToolIntent => ({ callId, assistantRecordId: 'r1', toolName: 'synthetic-counter', requestedArguments: { amount: 1 }, arguments: { amount: 1 }, authorization: { evidence: 'synthetic approval' }, occurredAt: now });
+const intent = (callId = 'tool-1'): ToolIntent => ({ callId, assistantRecordId: 'r1', toolName: 'synthetic-counter', requestedArguments: { amount: 1 }, arguments: { amount: 1 }, occurredAt: now });
 const code = (expected: PersistenceError['code']) => (error: unknown) => error instanceof PersistenceError && error.code === expected;
 
 // Calling the integration suite without its explicit isolated service is an error, never a pass/skip.
