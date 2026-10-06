@@ -74,6 +74,7 @@ async function openSession(directory: string) {
   if (state.marker !== marker) throw new Error('Not a tool-usability fixture directory');
   const host = new ExtensionHost({ ...await readExtensionConfiguration(path.join(root, 'extensions.json')), reservedToolNames: canonicalNames,
     receive: async () => { throw new Error('This tool-only fixture does not persist extension events'); } });
+  try {
   const history = createHistoryTools(new FixtureHistoryReader(JSON.parse(await readFile(path.join(root, 'history.json'), 'utf8'))));
   const management = extensionManagementTools(host);
   await host.start();
@@ -133,6 +134,13 @@ async function openSession(directory: string) {
     },
     async close() { if (closed) return; await host.close(); closed = true; await log({ type: 'host_closed', at: new Date().toISOString(), pid: process.pid }); },
   };
+  } catch (error) {
+    // The caller cannot close a session that was never returned. Startup and
+    // evidence failures must still dispose resources acquired by real plugins.
+    try { await host.close(); }
+    catch (cleanup) { throw new AggregateError([error, cleanup], 'Tool session startup and cleanup failed'); }
+    throw error;
+  }
 }
 async function main() {
   const [directory, action, ...args] = process.argv.slice(2);

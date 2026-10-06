@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { access, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import test from 'node:test';
@@ -151,5 +151,23 @@ export default { name: 'slow-cleanup', apply({ mira }) { mira.onCleanup(async ()
     assert.ok(closedSawMarker); await closedSawMarker;
     const evidence = (await readFile(path.join(session, 'evidence.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     assert.equal(evidence.filter(row => row.type === 'host_closed').length, 1);
+  } finally { await rm(session, { recursive: true, force: true }); }
+});
+
+
+test('startup evidence failure closes live plugin resources before reporting an error', async () => {
+  const { session } = await cli('init');
+  try {
+    const marker = path.join(session, 'startup-failure-cleanup');
+    const entry = path.join(session, 'cleanup-on-failure.mjs');
+    await writeFile(entry, `import { writeFileSync } from 'node:fs';
+export default { name: 'cleanup-on-failure', apply({ mira }) { mira.interval(() => {}, 1000); mira.onCleanup(() => writeFileSync(${JSON.stringify(marker)}, 'done')); } };`);
+    await writeFile(path.join(session, 'extensions.json'), JSON.stringify({ entries: [{ id: 'cleanup-on-failure', path: entry }], artifactsDirectory: path.join(session, 'artifacts') }));
+    const evidence = path.join(session, 'evidence.jsonl'); await rm(evidence); await mkdir(evidence);
+    await assert.rejects(execute(process.execPath, [script, session, 'list'], { timeout: 5000 }), (error: unknown) => {
+      const failure = error as Error & { code?: number; signal?: string; stderr?: string };
+      return failure.code === 1 && !failure.signal && /EISDIR/.test(String(failure.stderr));
+    });
+    assert.equal(await readFile(marker, 'utf8'), 'done');
   } finally { await rm(session, { recursive: true, force: true }); }
 });
