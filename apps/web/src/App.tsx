@@ -186,7 +186,7 @@ export function App() {
         const page = await api<TimelinePage>('/api/timeline', { signal: controller.signal });
         if (!activeRef.current) return;
         acceptPage(page);
-        if (itemsRef.current.some(item => item.id === `event:${envelope.id}`)) return;
+        if (itemsRef.current.some(item => item.role === 'user' && item.externalEventId === envelope.id)) return;
       }
       if (!updatePending(current => [...current.filter(message => message.id !== envelope.id), { ...envelope, state: 'sending' }], true)) return;
       if (!retry) setComposer('');

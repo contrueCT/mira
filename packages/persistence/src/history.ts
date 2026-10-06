@@ -15,7 +15,7 @@ interface Source { table: string; id: string; timestamp: string; document: strin
  * migration 0003; it must not make large original records impossible to write. */
 const sources: Record<HistoryKind, Source> = {
   event: {
-    table: 'life_events', id: 'event_id', timestamp: "event->>'occurredAt'",
+    table: 'life_events', id: 'history_id', timestamp: "event->>'occurredAt'",
     document: "event::text || E'\\n' || coalesce(requested_wake::text, '')",
     body: "'event', event, 'requestedWake', requested_wake",
     integrity: "event->>'id' = event_id",
@@ -23,22 +23,23 @@ const sources: Record<HistoryKind, Source> = {
   context: {
     table: 'context_records', id: 'record_id', timestamp: "envelope->>'occurredAt'", document: 'envelope::text',
     body: "'version', version, 'record', envelope",
-    integrity: "envelope->>'id' = record_id AND (envelope->>'parentId') IS NOT DISTINCT FROM parent_id",
+    integrity: "envelope->>'id' = record_id::text AND (envelope->>'parentId') IS NOT DISTINCT FROM parent_id::text",
   },
   tool: {
-    table: 'tool_executions', id: 'call_id', timestamp: "intent->>'occurredAt'",
+    table: 'tool_executions', id: 'history_id', timestamp: "intent->>'occurredAt'",
     document: "intent::text || E'\\n' || coalesce(outcome::text, '')",
     body: "'contextVersion', context_version, 'intent', intent, 'outcome', outcome",
-    integrity: "intent->>'callId' = call_id AND intent->>'assistantRecordId' = assistant_record_id AND (outcome IS NULL OR outcome->>'callId' = call_id)",
+    integrity: "intent->>'callId' = call_id AND intent->>'assistantRecordId' = assistant_record_id::text AND (outcome IS NULL OR outcome->>'callId' = call_id)",
   },
   wake: {
     table: 'wake_runs', id: 'run_id', timestamp: 'claimed_at',
-    document: "run_id || E'\\n' || claimed_at || E'\\n' || coalesce(input_record_id, '') || E'\\n' || coalesce(final_record_id, '') || E'\\n' || CASE WHEN completed THEN 'completed' ELSE 'running' END",
+    document: "run_id::text || E'\\n' || claimed_at || E'\\n' || coalesce(input_record_id::text, '') || E'\\n' || coalesce(final_record_id::text, '') || E'\\n' || CASE WHEN completed THEN 'completed' ELSE 'running' END",
     body: `'claimedVersion', claimed_version, 'inputRecordId', input_record_id, 'finalRecordId', final_record_id,
       'status', CASE WHEN completed THEN 'completed' ELSE 'running' END,
-      'requests', (SELECT coalesce(json_agg(json_build_object('wakeId', w.wake_id, 'eventId', w.event_id,
+      'requests', (SELECT coalesce(json_agg(json_build_object('wakeReceiptId', w.wake_id, 'eventId', e.history_id, 'externalEventId', w.event_id,
         'receiptOrder', w.receipt_order::text) ORDER BY w.receipt_order), '[]'::json)
         FROM wake_run_requests AS r JOIN wake_requests AS w ON w.mira_id = r.mira_id AND w.wake_id = r.wake_id
+        JOIN life_events AS e ON e.mira_id = w.mira_id AND e.event_id = w.event_id
         WHERE r.mira_id = s.mira_id AND r.run_id = s.run_id)`,
     integrity: 'true',
   },
@@ -46,6 +47,9 @@ const sources: Record<HistoryKind, Source> = {
 function invalid(message: string): never { throw new HistoryError('invalid', message); }
 function string(value: unknown, name: string, maxBytes?: number): asserts value is string {
   if (typeof value !== 'string' || !value.length || value.includes('\0') || (maxBytes !== undefined && Buffer.byteLength(value, 'utf8') > maxBytes)) invalid(`Invalid history ${name}`);
+}
+function historyId(value: unknown): asserts value is string {
+  if (typeof value !== 'string' || value.length !== 36 || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)) invalid('History ID must be a canonical UUID');
 }
 function integer(value: unknown, min: number, max: number, name: string): asserts value is number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) invalid(`Invalid history ${name}`);
@@ -85,7 +89,7 @@ function decodeCursor(value: unknown, scope: string, selected: HistoryKind[]): P
   try { fields = JSON.parse(json); } catch { invalid('Invalid history cursor'); }
   if (!Array.isArray(fields) || fields.length !== 7 || fields[0] !== 1 || fields[1] !== scope) invalid('History cursor does not match this Mira and kinds');
   const [, , group, timestamp, rawTimestamp, sourceKind, id] = fields;
-  timestampKey(timestamp); kind(sourceKind); string(id, 'cursor ID', 65_536);
+  timestampKey(timestamp); kind(sourceKind); historyId(id);
   if (!id.isWellFormed()) invalid('Invalid history cursor ID');
   if (group !== 0 && group !== 1) invalid('Invalid history cursor timestamp group');
   if (group === 0) {
@@ -117,18 +121,19 @@ function response<T>(row: BoundedRow | undefined): T | null {
 }
 function validateEntry(entry: HistoryEntry, miraId: string, request: HistoryReadRequest): void {
   try {
-    if (entry.miraId !== miraId || entry.kind !== request.kind || entry.id !== request.id || typeof entry.occurredAt !== 'string' || !Number.isFinite(Date.parse(entry.occurredAt))) throw Error();
+    kind(entry.kind); historyId(entry.id);
+    if (entry.miraId !== miraId || entry.id !== request.id || typeof entry.occurredAt !== 'string' || !Number.isFinite(Date.parse(entry.occurredAt))) throw Error();
     if (entry.kind === 'context') {
       assertRecord(entry.record);
       if (entry.record.id !== entry.id || entry.record.occurredAt !== entry.occurredAt) throw Error();
       integer(entry.version, 1, Number.MAX_SAFE_INTEGER, 'version');
     } else if (entry.kind === 'event') {
-      if (entry.event.id !== entry.id || entry.event.occurredAt !== entry.occurredAt || (entry.requestedWake !== null && (!entry.requestedWake.id || !entry.requestedWake.reason))) throw Error();
-      string(entry.event.type, 'event type');
+      if (entry.event.occurredAt !== entry.occurredAt || (entry.requestedWake !== null && (!entry.requestedWake.id || !entry.requestedWake.reason))) throw Error();
+      string(entry.event.id, 'external event ID'); string(entry.event.type, 'event type');
       if (!['user', 'mira', 'system', 'extension', 'external'].includes(entry.event.source) || !Object.hasOwn(entry.event, 'payload')) throw Error();
     } else if (entry.kind === 'tool') {
-      if (entry.intent.callId !== entry.id || entry.intent.occurredAt !== entry.occurredAt || (entry.outcome !== null && entry.outcome.callId !== entry.id)) throw Error();
-      string(entry.intent.assistantRecordId, 'assistant record ID'); string(entry.intent.toolName, 'tool name');
+      if (entry.intent.occurredAt !== entry.occurredAt || (entry.outcome !== null && entry.outcome.callId !== entry.intent.callId)) throw Error();
+      historyId(entry.intent.assistantRecordId); string(entry.intent.callId, 'provider tool call ID'); string(entry.intent.toolName, 'tool name');
       for (const field of ['requestedArguments', 'arguments']) if (!Object.hasOwn(entry.intent, field)) throw Error();
       if (entry.outcome !== null && (!Number.isFinite(Date.parse(entry.outcome.occurredAt)) || !Object.hasOwn(entry.outcome, 'payload'))) throw Error();
       integer(entry.contextVersion, 1, Number.MAX_SAFE_INTEGER, 'version');
@@ -137,7 +142,7 @@ function validateEntry(entry: HistoryEntry, miraId: string, request: HistoryRead
       if (!['running', 'completed'].includes(entry.status) || !Array.isArray(entry.requests) || !entry.requests.length) throw Error();
       let previous = 0n;
       for (const request of entry.requests) {
-        string(request.wakeId, 'wake ID'); string(request.eventId, 'event ID');
+        string(request.wakeReceiptId, 'wake receipt ID'); string(request.externalEventId, 'external event ID'); historyId(request.eventId);
         if (!/^\d+$/.test(request.receiptOrder) || BigInt(request.receiptOrder) <= previous) throw Error();
         previous = BigInt(request.receiptOrder);
       }
@@ -192,7 +197,7 @@ export class PostgresHistoryReader implements HistoryReader {
       const query = "plainto_tsquery('simple'::regconfig, $2)";
       const predicate = mode === 'full_text' ? `${vector} @@ ${query}` : `strpos(lower(${source.document}), lower($2)) > 0`;
       const rank = mode === 'full_text' ? `ts_rank(${vector}, ${query})` : 'NULL::real';
-      return `SELECT '${sourceKind}'::text AS kind, ${source.id} AS id, ${source.timestamp} AS occurred_at,
+      return `SELECT '${sourceKind}'::text AS kind, ${source.id}::text AS id, ${source.timestamp} AS occurred_at,
         ${source.document} AS document, ${rank} AS rank FROM ${source.table} WHERE mira_id = $1 AND ${predicate}`;
     }).join('\nUNION ALL\n');
     const snippet = mode === 'full_text'
@@ -222,7 +227,7 @@ export class PostgresHistoryReader implements HistoryReader {
       // Project only immutable reference metadata. Even a multi-megabyte private
       // system/runtime payload must not consume the history page's byte budget.
       const normalizable = `pg_input_is_valid(${source.timestamp}, 'timestamp with time zone')`;
-      return `SELECT '${sourceKind}'::text AS kind, ${source.id} AS id, ${source.timestamp} AS occurred_at,
+      return `SELECT '${sourceKind}'::text AS kind, ${source.id}::text AS id, ${source.timestamp} AS occurred_at,
         CASE WHEN ${normalizable} THEN 1 ELSE 0 END AS time_group,
         CASE WHEN ${normalizable} THEN extract(epoch FROM (${source.timestamp})::timestamptz) ELSE 0 END AS occurred_time,
         CASE WHEN ${normalizable} THEN '' ELSE ${source.timestamp} END AS raw_timestamp,
@@ -263,11 +268,21 @@ export class PostgresHistoryReader implements HistoryReader {
     };
   }
   async read(request: HistoryReadRequest): Promise<HistoryEntry | null> {
-    object(request); kind(request.kind); string(request.id, 'ID', 65_536);
+    object(request); historyId(request.id);
+    if (Object.keys(request).some(key => key !== 'id' && key !== 'maxBytes')) invalid('History read accepts only id and maxBytes');
     const maxBytes = request.maxBytes ?? 65_536; integer(maxBytes, 1, 1_048_576, 'read budget');
-    const source = sources[request.kind];
-    const sql = `SELECT json_build_object('kind', '${request.kind}', 'id', ${source.id}, 'miraId', mira_id,
-      'occurredAt', ${source.timestamp}, ${source.body}) AS body, (${source.integrity}) AS valid FROM ${source.table} AS s WHERE mira_id = $1 AND ${source.id} = $2`;
+    // The registry owns kind selection. A single read-only statement sees the
+    // identity and its original detail in one database snapshot.
+    const detail = kinds.map(sourceKind => {
+      const source = sources[sourceKind];
+      return `SELECT json_build_object('kind', h.kind, 'id', h.id, 'miraId', h.mira_id,
+        'occurredAt', ${source.timestamp}, ${source.body}) AS body,
+        (s.${source.id} IS NOT NULL AND (${source.integrity})) AS valid
+        FROM history_records AS h LEFT JOIN ${source.table} AS s ON
+          s.${source.id} = h.id AND s.mira_id = h.mira_id
+        WHERE h.mira_id = $1 AND h.id = $2::uuid AND h.kind = '${sourceKind}'`;
+    }).join('\nUNION ALL\n');
+    const sql = detail;
     const entry = response<HistoryEntry>(await this.#query(bound(sql, '$3'), [this.miraId, request.id, maxBytes]));
     if (entry) validateEntry(entry, this.miraId, request);
     return entry;

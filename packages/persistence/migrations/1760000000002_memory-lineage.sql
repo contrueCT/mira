@@ -5,8 +5,8 @@
     -- boundaries. State files never participate in these Memory snapshots.
     CREATE TABLE wake_memory_checkpoints (
       mira_id text NOT NULL,
-      run_id text NOT NULL,
-      final_record_id text NOT NULL,
+      run_id uuid NOT NULL,
+      final_record_id uuid NOT NULL,
       prepared_at text NOT NULL,
       payload json NOT NULL,
       PRIMARY KEY (mira_id, run_id),
@@ -18,7 +18,7 @@
 
     CREATE TABLE wake_memory_receipts (
       mira_id text NOT NULL,
-      run_id text NOT NULL,
+      run_id uuid NOT NULL,
       commit_id text CHECK (commit_id IS NULL OR commit_id ~ '^([0-9a-f]{40}|[0-9a-f]{64})$'),
       PRIMARY KEY (mira_id, run_id),
       FOREIGN KEY (mira_id, run_id) REFERENCES wake_memory_checkpoints(mira_id, run_id)

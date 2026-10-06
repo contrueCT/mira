@@ -84,7 +84,10 @@ export async function compactSnapshot(
     const candidate = manager.getEntries().at(-1);
     if (!candidate || candidate.type !== 'compaction' || manager.getEntries().length !== entries.length + 1) throw new Error('SDK did not produce one checkpoint');
     if (JSON.stringify(candidate).includes(isolatedProvider)) throw new Error('Compaction checkpoint contains disposable provider identity');
-    return structuredClone(candidate);
+    // Pi allocates short session-local IDs. Only this newly created candidate
+    // receives a History UUID; all parent/first-kept references still address
+    // the untouched durable entries supplied above. The manager is disposable.
+    return { ...structuredClone(candidate), id: randomUUID() };
   } finally {
     options.signal?.removeEventListener('abort', abort);
     session.dispose();

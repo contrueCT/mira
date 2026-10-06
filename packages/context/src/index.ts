@@ -4,6 +4,7 @@ export interface RuntimeRecord {
   formatVersion: 1;
   runtime: string;
   runtimeVersion: string;
+  /** Canonical UUID in the shared global History identity space. */
   id: string;
   parentId: string | null;
   kind: 'message' | 'checkpoint';

@@ -279,3 +279,21 @@ test('status exposes only transport-minted model diagnostics and preserves usefu
   assert.equal(response.statusCode, 200); assert.equal(response.json().error, diagnostic.message);
   assert.match(response.json().error, /HTTP 403.*req-1.*invalid tool name/); assert.doesNotMatch(response.body, /synthetic-key/);
 });
+
+
+test('timeline exposes separate event receipt identity only for user items on both read routes', async t => {
+  const original = 'external-request-id'; const id = '10000000-0000-4000-8000-000000000001';
+  const app = createLocalHttp({ backend: backend({ timeline: async () => ({ items: [
+    { id, role: 'user', text: 'pending receipt', occurredAt: message.occurredAt, externalEventId: original },
+    { id: '10000000-0000-4000-8000-000000000002', role: 'assistant', text: 'answer', occurredAt: message.occurredAt, externalEventId: 'do-not-project' },
+  ], nextCursor: null }) }), port });
+  t.after(() => app.close());
+  for (const request of [
+    { url: '/api/timeline', headers: readHeaders },
+    { method: 'POST' as const, url: '/api/timeline', headers: writeHeaders, payload: { before: 'cursor_1' } },
+  ]) {
+    const response = await app.inject(request); assert.equal(response.statusCode, 200);
+    assert.equal(response.json().items[0].id, id); assert.equal(response.json().items[0].externalEventId, original);
+    assert.equal(response.json().items[1].externalEventId, undefined);
+  }
+});

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 import { migrate, PostgresPersistence } from '@mira/persistence';
 import type { DurableWriter } from '@mira/life';
@@ -41,4 +41,10 @@ export async function createTestDatabase() {
       try { await admin.query(`DROP SCHEMA "${schema}" CASCADE`); } finally { await admin.end(); }
     },
   };
+}
+
+/** Stable canonical UUIDs for synthetic record labels; never an application ID resolver. */
+export function testHistoryId(label: string): string {
+  const hash = createHash('sha256').update(label).digest('hex');
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
 }

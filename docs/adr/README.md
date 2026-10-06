@@ -33,6 +33,8 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 - [0011 简洁对话上下文与普通文件 Skills](0011-conversation-context-and-skills.md)：Accepted，2026-10-06，隐藏工具活动、精简 Wake、Pi 元数据目录与按需读取、扩展作者技能、普通聊天纯文本
 
+- [0012 全局 History UUID](0012-global-history-identities.md)：Accepted，2026-10-06，统一身份薄表、ID-only 读取、原始来源标识分离、Memory 明文引用与新空数据环境
+
 ## 后续范围
 
 不提前引入部署、付费模型调用、第三方账户、新凭据或不必要的框架。阶段临近时给出具体方案、取舍和验证结果。

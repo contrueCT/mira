@@ -77,6 +77,11 @@ Testing/importing still runs with the current OS account and can have effects.
 
 ## 4. Stage immutable content and test that digest
 
+Before staging an existing or supplied workspace, inspect its actual files and
+entry module. `src/index.ts` is the generated template's default, not a universal
+entry path. Do not try that example path on an unrelated workspace without checking.
+For newly authored code, use the entry you actually wrote.
+
 ```sh
 node "$MIRA_CHECKOUT/scripts/extension-artifact.mts" stage \
   "$EXTENSION_ARTIFACTS" "$EXTENSION_WORKSPACE" src/index.ts

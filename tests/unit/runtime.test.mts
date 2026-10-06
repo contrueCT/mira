@@ -197,7 +197,12 @@ test('disposable full SDK compaction preserves raw history and tool tail, then r
   const requests: TranscriptContext[] = [];
   const firstRaw = structuredClone(writer.state.records);
   const first = await runtime(writer, (_m, c) => { requests.push(structuredClone(c)); return streamOf(assistant('First checkpoint')); }).compact({ keepRecentTokens: 1 });
-  assert.equal(first.entries.at(-1)?.type, 'compaction');
+  const checkpoint = first.entries.at(-1)!;
+  assert.equal(checkpoint.type, 'compaction');
+  assert.match(checkpoint.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.equal(checkpoint.parentId, firstRaw.at(-1)!.id);
+  assert(checkpoint.type === 'compaction');
+  assert(firstRaw.some(record => record.id === checkpoint.firstKeptEntryId));
   assert.deepEqual(writer.state.records.slice(0, firstRaw.length), firstRaw);
   assert.deepEqual(first.messages.slice(2), compactionMessages().slice(4));
   await seed(writer, compactionMessages('second'));
@@ -749,8 +754,8 @@ test('history tools expose exact reader scope and honest errors without turning 
   assert.doesNotMatch(JSON.stringify(tools[0]!.parameters), /miraId/);
   const response = await tools[0]!.execute('history-search', { query: '中文', mode: 'substring' });
   assert.match(JSON.stringify(response), /substring/);
-  const error = await tools[1]!.execute('history-read', { kind: 'event', id: 'exact-id' });
+  const error = await tools[1]!.execute('history-read', { id: '10000000-0000-4000-8000-000000000001' });
   assert.match(JSON.stringify(error), /too_large/);
   assert.match(JSON.stringify(error), /70000/);
-  assert.deepEqual(seen, [{ query: '中文', mode: 'substring' }, { kind: 'event', id: 'exact-id' }]);
+  assert.deepEqual(seen, [{ query: '中文', mode: 'substring' }, { id: '10000000-0000-4000-8000-000000000001' }]);
 });

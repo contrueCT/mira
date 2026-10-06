@@ -11,7 +11,7 @@ const config = { environmentContext: 'Synthetic offline runtime', authorizationC
 
 test('user-approved v0.2 revision exact bytes, eight occurrences, static text and examples remain intact', async () => {
   const bytes = await readFile(new URL('../../packages/runtime-pi/prompts/mira-system-v0.2.md', import.meta.url));
-  assert.equal(bytes.byteLength, 17464);
+  assert.equal(bytes.byteLength, 20134);
   assert.equal(createHash('sha256').update(bytes).digest('hex'), MIRA_PROMPT_SHA256);
   assert.equal(bytes.toString(), MIRA_SYSTEM_TEMPLATE);
   assert.equal([...MIRA_SYSTEM_TEMPLATE.matchAll(/\{\{[^{}]+\}\}/g)].length, 8);
@@ -179,4 +179,16 @@ test('normal chat is plain text while files remain unrestricted', () => {
   const prompt = renderMiraPrompt(values);
   assert.match(prompt, /Use plain text in normal conversation/);
   assert.match(prompt, /not to files, documents, code, skills/);
+});
+
+
+test('History guidance gives executable UUID-only Memory provenance and source-ID distinctions', () => {
+  const prompt = renderMiraPrompt(values);
+  assert.match(prompt, /History-Id: 7cda8528-99ac-49c9-8a7e-1b9c96c8e7c3/);
+  assert.match(prompt, /history_read with \{"id":"7cda8528-99ac-49c9-8a7e-1b9c96c8e7c3"\}/);
+  assert.match(prompt, /do not pass kind/);
+  assert.match(prompt, /No Base64 decoding/);
+  assert.match(prompt, /externalEventId and wakeReceiptId retain external/);
+  assert.match(prompt, /tool outcome of null means there is no durable outcome/);
+  assert.match(prompt, /"query":"顺德菜","mode":"substring"/);
 });

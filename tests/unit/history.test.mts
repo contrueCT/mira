@@ -23,8 +23,11 @@ function mockDatabase(t: TestContext, body: unknown, options: { bytes?: number; 
   return { queries, connected: () => connected, closed: () => closed };
 }
 const now = '2026-10-05T00:00:00.000Z';
+const id = '11111111-1111-4111-8111-111111111111';
+const contextId = '22222222-2222-4222-8222-222222222222';
+const secondId = '33333333-3333-4333-8333-333333333333';
 const eventEntry = {
-  kind: 'event', id: 'same-id', miraId: 'mira-a', occurredAt: now,
+  kind: 'event', id, miraId: 'mira-a', occurredAt: now,
   event: { id: 'same-id', type: 'synthetic', source: 'external', occurredAt: now, payload: { Chinese: '顺德菜', opaque: [null, 1, true] } }, requestedWake: null,
 };
 
@@ -34,7 +37,7 @@ test('history rejects invalid scope and bounded requests before opening a connec
   for (const request of [null, {}, { query: '' }, { query: '\0' }, { query: '  ' }, { query: '中'.repeat(342) }, { query: 'x', mode: 'semantic' }, { query: 'x', limit: 0 }, { query: 'x', limit: 101 }, { query: 'x', limit: 1.5 }, { query: 'x', kinds: [] }, { query: 'x', kinds: ['event', 'event'] }, { query: 'x', kinds: ['event; DROP TABLE life_events'] }]) {
     await assert.rejects(history.search(request as unknown as HistorySearchRequest), (error: unknown) => error instanceof HistoryError && error.code === 'invalid');
   }
-  for (const request of [null, {}, { kind: 'event', id: '' }, { kind: 'event', id: 'x', maxBytes: 0 }, { kind: 'event', id: 'x', maxBytes: 1_048_577 }, { kind: 'unknown', id: 'x' }]) {
+  for (const request of [null, {}, { kind: 'event', id: '' }, { id, maxBytes: 0 }, { id, maxBytes: 1_048_577 }, { id: 'not-a-uuid' }, { kind: 'event', id }, { id, extra: true }]) {
     await assert.rejects(history.read(request as unknown as HistoryReadRequest), HistoryError);
   }
   assert.equal(mock.connected(), 0);
@@ -68,35 +71,35 @@ test('substring mode is explicit, literal, and scans the full selected original 
 
 test('read returns exact opaque originals and read-only provenance without executing or decoding them', async (t) => {
   const mock = mockDatabase(t, eventEntry);
-  assert.deepEqual(await store().history('mira-a').read({ kind: 'event', id: 'same-id' }), eventEntry);
+  assert.deepEqual(await store().history('mira-a').read({ id }), eventEntry);
   const query = mock.queries.find(item => item.parameters)!;
-  assert(query.sql.includes('WHERE mira_id = $1 AND event_id = $2'));
-  assert.deepEqual(query.parameters, ['mira-a', 'same-id', 65_536]);
+  assert(query.sql.includes('WHERE h.mira_id = $1 AND h.id = $2::uuid'));
+  assert.deepEqual(query.parameters, ['mira-a', id, 65_536]);
   assert.equal(mock.closed(), 1);
 });
 
 test('read preserves unknown runtime payload fields and rejects mismatched metadata', async (t) => {
-  const entry = { kind: 'context', id: 'r1', miraId: 'mira-a', occurredAt: now, version: 1,
-    record: { formatVersion: 1, runtime: 'completely-unrecognized', runtimeVersion: '999', kind: 'checkpoint', id: 'r1', parentId: null, occurredAt: now, payload: { secretFormat: { nested: [null, 'exact'] } } } };
+  const entry = { kind: 'context', id: contextId, miraId: 'mira-a', occurredAt: now, version: 1,
+    record: { formatVersion: 1, runtime: 'completely-unrecognized', runtimeVersion: '999', kind: 'checkpoint', id: contextId, parentId: null, occurredAt: now, payload: { secretFormat: { nested: [null, 'exact'] } } } };
   mockDatabase(t, entry);
-  assert.deepEqual(await store().history('mira-a').read({ kind: 'context', id: 'r1' }), entry);
-  await assert.rejects(store().history('mira-b').read({ kind: 'context', id: 'r1' }), (error: unknown) => error instanceof HistoryError && error.code === 'corrupt');
+  assert.deepEqual(await store().history('mira-a').read({ id: contextId }), entry);
+  await assert.rejects(store().history('mira-b').read({ id: contextId }), (error: unknown) => error instanceof HistoryError && error.code === 'corrupt');
 });
 
 test('an absent exact ID is null, while oversized records fail explicitly before payload transfer', async (t) => {
   const mock = mockDatabase(t, null, { bytes: 70_000 });
-  await assert.rejects(store().history('mira-a').read({ kind: 'event', id: 'large' }), (error: unknown) => error instanceof HistoryError && error.code === 'too_large' && error.requiredBytes === 70_000);
+  await assert.rejects(store().history('mira-a').read({ id }), (error: unknown) => error instanceof HistoryError && error.code === 'too_large' && error.requiredBytes === 70_000);
   assert(mock.queries.find(item => item.parameters)!.sql.includes('CASE WHEN bytes <= $3 THEN body ELSE NULL END'));
 });
 
 test('missing rows return null and source corruption is never returned as evidence', async (t) => {
   await t.test('absent', async (child) => {
     mockDatabase(child, null, { absent: true });
-    assert.equal(await store().history('mira-a').read({ kind: 'event', id: 'missing' }), null);
+    assert.equal(await store().history('mira-a').read({ id }), null);
   });
   await t.test('corrupt', async (child) => {
     mockDatabase(child, eventEntry, { valid: false });
-    await assert.rejects(store().history('mira-a').read({ kind: 'event', id: 'same-id' }), (error: unknown) => error instanceof HistoryError && error.code === 'corrupt');
+    await assert.rejects(store().history('mira-a').read({ id }), (error: unknown) => error instanceof HistoryError && error.code === 'corrupt');
   });
 });
 
@@ -142,19 +145,19 @@ test('chronological page SQL is read-only, scoped, bounded, and projects referen
 
 test('chronological cursors preserve timestamp precision, bind scope and kinds, and use the oldest displayed reference', async (t) => {
   const rows = [
-    { kind: 'context', id: "a' OR true --", miraId: 'mira-a', occurredAt: '2026-10-05T00:00:00.000001Z', cursorGroup: 1, cursorTimestamp: '1791158400.000001', cursorRawTimestamp: '' },
-    { kind: 'event', id: 'same-instant', miraId: 'mira-a', occurredAt: '2026-10-05T08:00:00.000001+08:00', cursorGroup: 1, cursorTimestamp: '1791158400.000001', cursorRawTimestamp: '' },
+    { kind: 'context', id: contextId, miraId: 'mira-a', occurredAt: '2026-10-05T00:00:00.000001Z', cursorGroup: 1, cursorTimestamp: '1791158400.000001', cursorRawTimestamp: '' },
+    { kind: 'event', id: secondId, miraId: 'mira-a', occurredAt: '2026-10-05T08:00:00.000001+08:00', cursorGroup: 1, cursorTimestamp: '1791158400.000001', cursorRawTimestamp: '' },
   ];
   const mock = mockDatabase(t, { hits: rows, hasMore: true }); const reader = store().history('mira-a');
   const first = await reader.page({ kinds: ['context', 'event'], limit: 2 });
   assert.deepEqual(first.hits, rows.map(({ cursorGroup: _group, cursorTimestamp: _time, cursorRawTimestamp: _raw, ...hit }) => hit));
   assert(first.nextCursor); assert(!JSON.stringify(first.hits).includes('cursorTimestamp'));
   const fields = JSON.parse(Buffer.from(first.nextCursor, 'base64url').toString('utf8')) as unknown[];
-  assert.deepEqual(fields.slice(2), [1, '1791158400.000001', '', 'context', "a' OR true --"]);
+  assert.deepEqual(fields.slice(2), [1, '1791158400.000001', '', 'context', contextId]);
   const second = await reader.page({ kinds: ['event', 'context'], limit: 2, before: first.nextCursor });
   assert.deepEqual(second, first, 'reordered kinds have the same cursor scope');
   const queries = mock.queries.filter(item => item.parameters); const query = queries[1]!;
-  assert.deepEqual(query.parameters, ['mira-a', 2, 1, '1791158400.000001', '', 'context', "a' OR true --", 262_144]);
+  assert.deepEqual(query.parameters, ['mira-a', 2, 1, '1791158400.000001', '', 'context', contextId, 262_144]);
   assert(!query.sql.includes("a' OR true --"));
   assert(query.sql.includes('(time_group, occurred_time, raw_timestamp COLLATE "C", kind COLLATE "C", id COLLATE "C") <'));
   assert(query.sql.includes('($3::integer, $4::numeric, $5::text COLLATE "C", $6::text COLLATE "C", $7::text COLLATE "C")'));
@@ -200,11 +203,11 @@ test('chronological pages report oversized or corrupt metadata and clean up fail
 test('writer-accepted timestamps PostgreSQL cannot normalize remain pageable with the complete fallback cursor', async (t) => {
   const occurredAt = '2026-02-30T00:00:00Z';
   assert(Number.isFinite(Date.parse(occurredAt)));
-  const hit = { kind: 'event', id: 'overflow-date', miraId: 'mira-a', occurredAt };
+  const hit = { kind: 'event', id: secondId, miraId: 'mira-a', occurredAt };
   const mock = mockDatabase(t, { hits: [{ ...hit, cursorGroup: 0, cursorTimestamp: '0', cursorRawTimestamp: occurredAt }], hasMore: true });
   const reader = store().history('mira-a');
   const page = await reader.page({ kinds: ['event'], limit: 1 });
   assert.deepEqual(page.hits, [{ ...hit, timestampWarning: 'timestamp_not_normalized' }]); assert(page.nextCursor);
   await reader.page({ kinds: ['event'], limit: 1, before: page.nextCursor });
-  assert.deepEqual(mock.queries.filter(query => query.parameters)[1]!.parameters, ['mira-a', 1, 0, '0', occurredAt, 'event', 'overflow-date', 262_144]);
+  assert.deepEqual(mock.queries.filter(query => query.parameters)[1]!.parameters, ['mira-a', 1, 0, '0', occurredAt, 'event', secondId, 262_144]);
 });

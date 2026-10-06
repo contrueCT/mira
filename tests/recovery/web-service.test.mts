@@ -28,6 +28,13 @@ test('local web composition persists one timeline, hides system/thinking, dedupl
     await settled(service); assert.equal(calls, 1);
     const timeline = await service.timeline();
     assert.equal(timeline.items.filter(item => item.role === 'user').length, 1);
+    const userItem = timeline.items.find(item => item.role === 'user')!;
+    assert.equal(userItem.externalEventId, input.id);
+    assert.notEqual(userItem.id, input.id);
+    assert.match(userItem.id, /^[0-9a-f-]{36}$/);
+    const source = await db.store.history('web-mira').read({ id: userItem.id });
+    assert.equal(source?.kind, 'event');
+    assert(timeline.items.every(item => /^[0-9a-f-]{36}$/.test(item.id)));
     assert.equal(timeline.items.filter(item => item.role === 'assistant').length, 1);
     assert.match(JSON.stringify(timeline), /Visible persistent reply/);
     assert.doesNotMatch(JSON.stringify(timeline), /PRIVATE_REASONING_TEST_SENTINEL|Mira System Prompt|authorizationContext|requestedArguments/);

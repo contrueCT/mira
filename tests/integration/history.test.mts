@@ -1,13 +1,18 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { RuntimeRecord } from '@mira/context';
+import { PersistenceError } from '@mira/persistence';
 import { HistoryError } from '@mira/life';
 import type { HistoryPageHit, LifeEvent, ToolIntent } from '@mira/life';
-import { createTestDatabase, testDatabaseUrl } from './database.mts';
+import { createTestDatabase, testDatabaseUrl, testHistoryId as uuid } from './database.mts';
 
 const now = '2026-10-05T00:00:00.000Z';
 const event = (id: string, text: string): LifeEvent => ({ id, type: 'synthetic.observed', source: 'external', occurredAt: now, payload: { text, untouched: [null, 42, true] } });
-const record = (id: string, parentId: string | null, text: string): RuntimeRecord => ({ formatVersion: 1, runtime: 'opaque-test-runtime', runtimeVersion: 'not-Pi', id, parentId, kind: 'message', occurredAt: now, payload: { text, providerData: { unchanged: true } } });
+const record = (label: string, parentLabel: string | null, text: string): RuntimeRecord => ({ formatVersion: 1, runtime: 'opaque-test-runtime', runtimeVersion: 'not-Pi', id: uuid(label), parentId: parentLabel === null ? null : uuid(parentLabel), kind: 'message', occurredAt: now, payload: { text, providerData: { unchanged: true } } });
+async function eventId(db: Awaited<ReturnType<typeof createTestDatabase>>, externalId: string, miraId = 'synthetic-mira'): Promise<string> {
+  const row = (await db.admin.query<{ history_id: string }>('SELECT history_id FROM life_events WHERE mira_id = $1 AND event_id = $2', [miraId, externalId])).rows[0];
+  assert(row); return row.history_id;
+}
 testDatabaseUrl();
 
 test('history search/read is Mira scoped across original events, context, tools, and wake links without taking ownership', async () => {
@@ -18,7 +23,7 @@ test('history search/read is Mira scoped across original events, context, tools,
     await writer.receive(original, wake); await other.receive(event('same-id', 'hiddenotherneedle'));
     const context = record('same-id', null, 'historicalneedle exact original message');
     await writer.append(0, context);
-    const intent: ToolIntent = { callId: 'same-id', assistantRecordId: 'same-id', toolName: 'history-example', requestedArguments: { raw: 'historicalneedle' }, arguments: { normalized: 'historicalneedle' }, occurredAt: now };
+    const intent: ToolIntent = { callId: 'same-id', assistantRecordId: uuid('same-id'), toolName: 'history-example', requestedArguments: { raw: 'historicalneedle' }, arguments: { normalized: 'historicalneedle' }, occurredAt: now };
     await writer.beginTool(1, intent); const outcome = { callId: 'same-id', occurredAt: now, payload: { text: 'historicalneedle exact outcome' } };
     await writer.finishTool(outcome);
     const run = await writer.claimWakeBatch(); assert(run);
@@ -26,21 +31,24 @@ test('history search/read is Mira scoped across original events, context, tools,
     await writer.appendWakeFinal(run.id, 2, record('final', 'input', 'wake final')); await writer.completeWakeRun(run.id);
     const before = await writer.load(); const epoch = writer.epoch;
     const reader = db.store.history('mira-a'); const found = await reader.search({ query: 'historicalneedle' });
-    assert.deepEqual(found.hits.map(hit => [hit.kind, hit.id]).sort(), [['context', 'same-id'], ['event', 'same-id'], ['tool', 'same-id']]);
+    const externalHistoryId = await eventId(db, 'same-id', 'mira-a');
+    const toolHistoryId = found.hits.find(hit => hit.kind === 'tool')!.id;
+    assert.equal(new Set(found.hits.map(hit => hit.id)).size, 3);
+    assert.deepEqual(found.hits.map(hit => [hit.kind, hit.id]).sort(), [['context', uuid('same-id')], ['event', externalHistoryId], ['tool', toolHistoryId]]);
     assert.equal(found.mode, 'full_text'); assert.equal(found.fullTextPrefixChars, 65_536); assert.equal(found.hasMore, false);
     assert(found.hits.every(hit => hit.miraId === 'mira-a' && hit.snippet.length <= 512 && hit.rank !== null));
     assert.equal((await reader.search({ query: 'hiddenotherneedle' })).hits.length, 0);
-    assert.deepEqual(await reader.read({ kind: 'event', id: 'same-id' }), { kind: 'event', id: 'same-id', miraId: 'mira-a', occurredAt: now, event: original, requestedWake: wake });
-    assert.deepEqual(await reader.read({ kind: 'context', id: 'same-id' }), { kind: 'context', id: 'same-id', miraId: 'mira-a', occurredAt: now, version: 1, record: context });
-    assert.deepEqual(await reader.read({ kind: 'tool', id: 'same-id' }), { kind: 'tool', id: 'same-id', miraId: 'mira-a', occurredAt: now, contextVersion: 1, intent, outcome });
-    const savedRun = await reader.read({ kind: 'wake', id: run.id }); assert(savedRun?.kind === 'wake');
-    assert.equal(savedRun.claimedVersion, 1); assert.equal(savedRun.inputRecordId, 'input'); assert.equal(savedRun.finalRecordId, 'final'); assert.equal(savedRun.status, 'completed');
-    assert.deepEqual(savedRun.requests.map(({ wakeId, eventId }) => ({ wakeId, eventId })), [{ wakeId: 'wake-id', eventId: 'same-id' }]);
+    assert.deepEqual(await reader.read({ id: externalHistoryId }), { kind: 'event', id: externalHistoryId, miraId: 'mira-a', occurredAt: now, event: original, requestedWake: wake });
+    assert.deepEqual(await reader.read({ id: uuid('same-id') }), { kind: 'context', id: uuid('same-id'), miraId: 'mira-a', occurredAt: now, version: 1, record: context });
+    assert.deepEqual(await reader.read({ id: toolHistoryId }), { kind: 'tool', id: toolHistoryId, miraId: 'mira-a', occurredAt: now, contextVersion: 1, intent, outcome });
+    const savedRun = await reader.read({ id: run.id }); assert(savedRun?.kind === 'wake');
+    assert.equal(savedRun.claimedVersion, 1); assert.equal(savedRun.inputRecordId, uuid('input')); assert.equal(savedRun.finalRecordId, uuid('final')); assert.equal(savedRun.status, 'completed');
+    assert.deepEqual(savedRun.requests.map(({ wakeReceiptId, eventId, externalEventId }) => ({ wakeReceiptId, eventId, externalEventId })), [{ wakeReceiptId: 'wake-id', eventId: externalHistoryId, externalEventId: 'same-id' }]);
     assert.equal((await reader.search({ query: run.id, mode: 'substring', kinds: ['wake'] })).hits[0]!.id, run.id);
-    assert.equal(await db.store.history('mira-b').read({ kind: 'context', id: 'same-id' }), null);
-    assert.equal(await reader.read({ kind: 'event', id: 'missing' }), null);
+    assert.equal(await db.store.history('mira-b').read({ id: uuid('same-id') }), null);
+    assert.equal(await reader.read({ id: uuid('missing') }), null);
     const timeline = await reader.page({ limit: 100 });
-    assert.deepEqual(timeline.hits.map(hit => [hit.kind, hit.id]).sort(), [['context', 'same-id'], ['context', 'input'], ['context', 'final'], ['event', 'same-id'], ['tool', 'same-id'], ['wake', run.id]].sort());
+    assert.deepEqual(timeline.hits.map(hit => [hit.kind, hit.id]).sort(), [['context', uuid('same-id')], ['context', uuid('input')], ['context', uuid('final')], ['event', externalHistoryId], ['tool', toolHistoryId], ['wake', run.id]].sort());
     assert.equal(timeline.nextCursor, null);
     assert.deepEqual(await writer.load(), before); assert.equal(writer.epoch, epoch); await writer.verifyActive();
   } finally { await db.close(); }
@@ -53,8 +61,8 @@ test('simple full text has no Chinese word segmentation; literal substring recov
     await writer.receive(event('literal', 'a%_b'));
     const reader = db.store.history(writer.miraId);
     assert.equal((await reader.search({ query: '顺德菜' })).hits.length, 0, 'simple dictionary does not split a contiguous Chinese phrase');
-    assert.deepEqual((await reader.search({ query: '顺德菜', mode: 'substring' })).hits.map(hit => hit.id), ['chinese']);
-    assert.deepEqual((await reader.search({ query: '%_', mode: 'substring' })).hits.map(hit => hit.id), ['literal']);
+    assert.deepEqual((await reader.search({ query: '顺德菜', mode: 'substring' })).hits.map(hit => hit.id), [await eventId(db, 'chinese')]);
+    assert.deepEqual((await reader.search({ query: '%_', mode: 'substring' })).hits.map(hit => hit.id), [await eventId(db, 'literal')]);
     assert.equal((await reader.search({ query: "' OR true --", mode: 'substring' })).hits.length, 0);
   } finally { await db.close(); }
 });
@@ -71,9 +79,9 @@ test('search counts and excerpts are bounded and deterministic, and large reads 
     const original = event('large', `${'padding '.repeat(12_000)} uniquetailneedle`); await writer.receive(original);
     assert.equal((await reader.search({ query: 'uniquetailneedle' })).hits.length, 0, 'full-text prefix boundary is explicit');
     const fallback = await reader.search({ query: 'uniquetailneedle', mode: 'substring' });
-    assert.equal(fallback.fullTextPrefixChars, null); assert.deepEqual(fallback.hits.map(hit => hit.id), ['large']);
-    await assert.rejects(reader.read({ kind: 'event', id: 'large' }), (error: unknown) => error instanceof HistoryError && error.code === 'too_large' && error.requiredBytes! > 65_536);
-    const complete = await reader.read({ kind: 'event', id: 'large', maxBytes: 200_000 }); assert(complete?.kind === 'event'); assert.deepEqual(complete.event, original);
+    assert.equal(fallback.fullTextPrefixChars, null); assert.deepEqual(fallback.hits.map(hit => hit.id), [await eventId(db, 'large')]);
+    await assert.rejects(reader.read({ id: await eventId(db, 'large') }), (error: unknown) => error instanceof HistoryError && error.code === 'too_large' && error.requiredBytes! > 65_536);
+    const complete = await reader.read({ id: await eventId(db, 'large'), maxBytes: 200_000 }); assert(complete?.kind === 'event'); assert.deepEqual(complete.event, original);
   } finally { await db.close(); }
 });
 
@@ -82,7 +90,7 @@ test('history works for an unregistered Mira without creating an owner or a wake
   try {
     const reader = db.store.history('nonexistent');
     assert.equal((await reader.search({ query: 'nothing' })).hits.length, 0);
-    assert.equal(await reader.read({ kind: 'wake', id: 'nothing' }), null);
+    assert.equal(await reader.read({ id: uuid('nothing') }), null);
     assert.deepEqual(await reader.page(), { hits: [], nextCursor: null });
     assert.equal((await db.admin.query('SELECT count(*)::integer AS n FROM mira_owners')).rows[0].n, 0);
   } finally { await db.close(); }
@@ -96,9 +104,9 @@ test('bounded full-text indexes preserve large originals and history readers do 
     const original = record('large-runtime', null, text); await writer.append(0, original);
     assert((await writer.load()).records[0]!.payload);
     const reader = db.store.history(writer.miraId);
-    assert.deepEqual((await reader.search({ query: 'uniqueword99999', mode: 'substring' })).hits.map(hit => hit.id), ['large-runtime']);
-    assert.deepEqual(await reader.page({ kinds: ['context'] }), { hits: [{ kind: 'context', id: 'large-runtime', miraId: writer.miraId, occurredAt: now }], nextCursor: null });
-    await assert.rejects(reader.read({ kind: 'context', id: 'large-runtime', maxBytes: 1_048_576 }), (error: unknown) => error instanceof HistoryError && error.code === 'too_large');
+    assert.deepEqual((await reader.search({ query: 'uniqueword99999', mode: 'substring' })).hits.map(hit => hit.id), [uuid('large-runtime')]);
+    assert.deepEqual(await reader.page({ kinds: ['context'] }), { hits: [{ kind: 'context', id: uuid('large-runtime'), miraId: writer.miraId, occurredAt: now }], nextCursor: null });
+    await assert.rejects(reader.read({ id: uuid('large-runtime'), maxBytes: 1_048_576 }), (error: unknown) => error instanceof HistoryError && error.code === 'too_large');
   } finally { await db.close(); }
 });
 
@@ -113,13 +121,14 @@ test('chronological pages traverse timestamp/kind/ID ties without gaps, remain s
     await writer.receive({ ...event('micros-older', 'precision'), occurredAt: '2026-10-05T00:00:00.000001Z' });
     await writer.receive({ ...event('micros-newer', 'precision'), occurredAt: '2026-10-05T00:00:00.000002Z' });
     await writer.append(0, record('same-id', null, 'original before checkpoint'));
-    await writer.beginTool(1, { callId: 'same-id', assistantRecordId: 'same-id', toolName: 'synthetic', requestedArguments: {}, arguments: {}, occurredAt: now });
+    await writer.beginTool(1, { callId: 'same-id', assistantRecordId: uuid('same-id'), toolName: 'synthetic', requestedArguments: {}, arguments: {}, occurredAt: now });
     await writer.finishTool({ callId: 'same-id', occurredAt: now, payload: null });
     await other.receive(event('foreign', 'never in mira-a'));
     const reader = db.store.history('mira-a');
     const kinds = ['event', 'context', 'tool'] as const;
+    const originalTimeline = await reader.page({ kinds: [...kinds], limit: 100 });
     const first = await reader.page({ kinds: [...kinds], limit: 2 });
-    assert.deepEqual(first.hits.map(hit => hit.id), ['micros-newer', 'offset-latest']);
+    assert.deepEqual(first.hits.map(hit => hit.id), [await eventId(db, 'micros-newer', 'mira-a'), await eventId(db, 'offset-latest', 'mira-a')]);
     assert(first.nextCursor);
     assert.deepEqual(await reader.page({ kinds: [...kinds], limit: 2 }), first, 'refresh is deterministic');
     await assert.rejects(db.store.history('mira-b').page({ kinds: [...kinds], before: first.nextCursor }), HistoryError);
@@ -135,13 +144,11 @@ test('chronological pages traverse timestamp/kind/ID ties without gaps, remain s
       const page = await db.store.history('mira-a').page({ kinds: [...kinds].reverse(), limit: 1, before: beforeCursor });
       assert.equal(page.hits.length, 1); older.unshift(...page.hits); beforeCursor = page.nextCursor;
     }
-    assert.deepEqual([...older, ...first.hits].map(hit => [hit.kind, hit.id]), [
-      ['event', 'old'], ['context', 'same-id'], ['event', 'a'], ['event', 'same-id'], ['event', 'z'], ['tool', 'same-id'],
-      ['event', 'micros-older'], ['event', 'micros-newer'], ['event', 'offset-latest'],
-    ]);
+    assert.deepEqual([...older, ...first.hits], originalTimeline.hits);
+    assert.equal(new Set(originalTimeline.hits.map(hit => hit.id)).size, originalTimeline.hits.length);
     const refreshed = await reader.page({ kinds: [...kinds], limit: 2 });
-    assert.deepEqual(refreshed.hits.map(hit => hit.id), ['checkpoint', 'new-latest']);
-    assert.deepEqual((await reader.page({ kinds: ['context'], limit: 100 })).hits.map(hit => hit.id), ['same-id', 'checkpoint']);
+    assert.deepEqual(refreshed.hits.map(hit => hit.id), [uuid('checkpoint'), await eventId(db, 'new-latest', 'mira-a')]);
+    assert.deepEqual((await reader.page({ kinds: ['context'], limit: 100 })).hits.map(hit => hit.id), [uuid('same-id'), uuid('checkpoint')]);
     assert.deepEqual(await writer.load(), before); assert.equal(writer.epoch, epoch); await writer.verifyActive();
   } finally { await db.close(); }
 });
@@ -161,15 +168,92 @@ test('writer-accepted non-PostgreSQL dates never block paging or disappear from 
     }
     await writer.receive(event('normal-date', 'canonical timestamp'));
     const latest = await reader.page({ kinds: ['event'], limit: 1 });
-    assert.deepEqual(latest.hits.map(hit => hit.id), ['normal-date']); assert(latest.nextCursor);
+    assert.deepEqual(latest.hits.map(hit => hit.id), [await eventId(db, 'normal-date')]); assert(latest.nextCursor);
     const fallback = await reader.page({ kinds: ['event'], limit: 1, before: latest.nextCursor });
-    assert.deepEqual(fallback.hits, [{ kind: 'event', id: 'overflow-date', miraId: writer.miraId, occurredAt: originals[1]!.occurredAt, timestampWarning: 'timestamp_not_normalized' }]);
+    assert.deepEqual(fallback.hits, [{ kind: 'event', id: await eventId(db, 'overflow-date'), miraId: writer.miraId, occurredAt: originals[1]!.occurredAt, timestampWarning: 'timestamp_not_normalized' }]);
     assert(fallback.nextCursor);
     const oldest = await reader.page({ kinds: ['event'], limit: 1, before: fallback.nextCursor });
-    assert.deepEqual(oldest.hits, [{ kind: 'event', id: 'abbreviated-date', miraId: writer.miraId, occurredAt: '1', timestampWarning: 'timestamp_not_normalized' }]);
+    assert.deepEqual(oldest.hits, [{ kind: 'event', id: await eventId(db, 'abbreviated-date'), miraId: writer.miraId, occurredAt: '1', timestampWarning: 'timestamp_not_normalized' }]);
     assert.equal(oldest.nextCursor, null);
     for (const original of originals) {
-      const saved = await reader.read({ kind: 'event', id: original.id }); assert(saved?.kind === 'event'); assert.deepEqual(saved.event, original);
+      const saved = await reader.read({ id: await eventId(db, original.id) }); assert(saved?.kind === 'event'); assert.deepEqual(saved.event, original);
     }
+  } finally { await db.close(); }
+});
+
+
+test('one global UUID namespace rejects cross-kind and cross-Mira reuse while original IDs remain distinct', async () => {
+  const db = await createTestDatabase();
+  try {
+    const writer = await db.acquire('a'); const other = await db.acquire('b');
+    const externalId = uuid('external-id-that-is-also-a-context-id');
+    const original = event(externalId, 'global identity evidence');
+    await writer.receive(original, { id: 'external-receipt', reason: 'identity test' });
+    const id = await eventId(db, externalId, 'a');
+    assert.notEqual(id, externalId);
+    await writer.append(0, { ...record('global-context', null, 'context'), id: externalId });
+    assert.equal((await db.store.history('a').read({ id: externalId }))?.kind, 'context');
+    assert.equal((await db.store.history('a').read({ id }))?.kind, 'event');
+    assert.equal(await db.store.history('b').read({ id }), null);
+    const collision = (error: unknown) => error instanceof PersistenceError && error.code === 'duplicate';
+    await assert.rejects(writer.append(1, { ...record('collision', null, 'wrong kind'), id, parentId: externalId }), collision);
+    await assert.rejects(other.append(0, { ...record('collision', null, 'wrong Mira'), id }), collision);
+    assert.equal((await writer.load()).version, 1); assert.equal((await other.load()).version, 0);
+    assert.equal(writer.signal.aborted, false); assert.equal(other.signal.aborted, false);
+    const count = Number((await db.admin.query('SELECT count(*) AS n FROM history_records')).rows[0].n);
+    assert.equal(await writer.receive(original, { id: 'external-receipt', reason: 'identity test' }), 'duplicate');
+    await assert.rejects(writer.receive(event('another-event', 'must roll back'), { id: 'external-receipt', reason: 'identity test' }), collision);
+    assert.equal(Number((await db.admin.query('SELECT count(*) AS n FROM history_records')).rows[0].n), count);
+    assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM life_events WHERE event_id = 'another-event'")).rows[0].n, 0);
+    await assert.rejects(db.admin.query("INSERT INTO history_records(id,mira_id,kind) VALUES ($1,'b','tool')", [id]), /unique/);
+    await assert.rejects(db.admin.query("INSERT INTO tool_executions(mira_id, history_id, call_id, assistant_record_id, context_version, intent) VALUES ('a',$1,'external-call',$2,1,'{}')", [id, externalId]), /foreign key/);
+    await assert.rejects(db.admin.query("INSERT INTO context_records(mira_id,record_id,version,envelope) VALUES ('b',$1,1,'{}')", [id]), /foreign key/);
+    await assert.rejects(db.admin.query('UPDATE history_records SET kind = kind'), /append-only/);
+    await assert.rejects(db.admin.query('DELETE FROM history_records'), /append-only/);
+    assert.equal(Number((await db.admin.query('SELECT count(*) AS n FROM history_records')).rows[0].n), count);
+  } finally { await db.close(); }
+});
+
+test('identity reservation rolls back with context CAS failure and generated event receipt failure', async () => {
+  for (const stage of ['context', 'event'] as const) {
+    const db = await createTestDatabase();
+    try {
+      const writer = await db.acquire();
+      const table = stage === 'context' ? 'mira_owners' : 'wake_requests';
+      const operation = stage === 'context' ? 'UPDATE' : 'INSERT';
+      await db.admin.query(`CREATE FUNCTION reject_history_detail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic history transaction failure'; END $$;
+        CREATE TRIGGER reject_history_detail BEFORE ${operation} ON ${table} FOR EACH ROW EXECUTE FUNCTION reject_history_detail()`);
+      if (stage === 'context') await assert.rejects(writer.append(0, record('rolled-back', null, 'no orphan identity')), /synthetic history transaction failure/);
+      else await assert.rejects(writer.receive(event('rolled-back', 'no orphan identity'), { id: 'receipt', reason: 'failure' }), /synthetic history transaction failure/);
+      assert.equal((await db.admin.query('SELECT count(*)::integer AS n FROM history_records')).rows[0].n, 0);
+      assert.equal((await db.admin.query('SELECT count(*)::integer AS n FROM context_records')).rows[0].n, 0);
+      assert.equal((await db.admin.query('SELECT count(*)::integer AS n FROM life_events')).rows[0].n, 0);
+      assert.equal((await db.admin.query('SELECT context_version FROM mira_owners')).rows[0].context_version, '0');
+    } finally { await db.close(); }
+  }
+});
+
+test('two Mira writer sessions racing one global UUID commit exactly one context and preserve the loser', { timeout: 15_000 }, async () => {
+  const db = await createTestDatabase();
+  try {
+    const writers = [await db.acquire('race-a'), await db.acquire('race-b')];
+    const candidate = record('global-race', null, 'one global identity');
+    const outcomes = await Promise.allSettled(writers.map(writer => writer.append(0, candidate)));
+    assert.deepEqual(outcomes.map(outcome => outcome.status).sort(), ['fulfilled', 'rejected']);
+    const winner = outcomes.findIndex(outcome => outcome.status === 'fulfilled');
+    const loser = winner === 0 ? 1 : 0;
+    const rejected = outcomes[loser]; assert.ok(rejected?.status === 'rejected');
+    assert.ok(rejected.reason instanceof PersistenceError && rejected.reason.code === 'duplicate');
+    assert.equal((await writers[winner]!.load()).version, 1);
+    assert.deepEqual((await writers[loser]!.load()).records, []);
+    assert.equal((await writers[loser]!.load()).version, 0);
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM history_records')).rows[0].n, 1);
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM context_records')).rows[0].n, 1);
+    assert.equal((await db.store.history(writers[winner]!.miraId).read({ id: candidate.id }))?.kind, 'context');
+    assert.equal(await db.store.history(writers[loser]!.miraId).read({ id: candidate.id }), null);
+    await Promise.all(writers.map(writer => writer.verifyActive()));
+    await writers[loser]!.append(0, record('global-race-loser-retry', null, 'a fresh identity after conflict'));
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM history_records')).rows[0].n, 2);
+    assert.equal((await writers[loser]!.load()).version, 1);
   } finally { await db.close(); }
 });

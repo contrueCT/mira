@@ -1,19 +1,20 @@
 -- Up Migration
 
-    -- New receipts have a durable insertion order. Existing receipts had no
-    -- arrival-order field; their assigned migration order cannot recover it.
+    -- Receipts have durable insertion order independent of their event timestamp.
     ALTER TABLE wake_requests ADD COLUMN receipt_order bigint GENERATED ALWAYS AS IDENTITY;
     ALTER TABLE wake_requests ADD CONSTRAINT wake_receipt_order_unique UNIQUE (receipt_order);
 
     CREATE TABLE wake_runs (
       mira_id text NOT NULL REFERENCES mira_owners(mira_id),
-      run_id text NOT NULL,
+      run_id uuid NOT NULL,
+      history_kind text GENERATED ALWAYS AS ('wake'::text) STORED,
       claimed_at text NOT NULL,
       claimed_version bigint NOT NULL CHECK (claimed_version >= 0),
-      input_record_id text,
-      final_record_id text,
+      input_record_id uuid,
+      final_record_id uuid,
       completed boolean NOT NULL DEFAULT false,
       PRIMARY KEY (mira_id, run_id),
+      FOREIGN KEY (run_id, mira_id, history_kind) REFERENCES history_records(id, mira_id, kind),
       UNIQUE (mira_id, input_record_id),
       UNIQUE (mira_id, final_record_id),
       FOREIGN KEY (mira_id, input_record_id) REFERENCES context_records(mira_id, record_id),
@@ -27,7 +28,7 @@
     CREATE TABLE wake_run_requests (
       mira_id text NOT NULL,
       wake_id text NOT NULL,
-      run_id text NOT NULL,
+      run_id uuid NOT NULL,
       PRIMARY KEY (mira_id, wake_id),
       FOREIGN KEY (mira_id, wake_id) REFERENCES wake_requests(mira_id, wake_id),
       FOREIGN KEY (mira_id, run_id) REFERENCES wake_runs(mira_id, run_id)

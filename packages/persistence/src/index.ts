@@ -36,7 +36,7 @@ interface WakeRunRow {
   final_record_id: string | null;
   completed: boolean;
 }
-interface WakeRequestRow { event_id: string; event: LifeEvent; requested_wake: WakeReceipt | null; wake_id: string; wake: WakeReceipt }
+interface WakeRequestRow { history_id: string; event_id: string; event: LifeEvent; requested_wake: WakeReceipt | null; wake_id: string; wake: WakeReceipt }
 interface MemoryCheckpointRow {
   run_id: string;
   final_record_id: string;
@@ -48,6 +48,9 @@ interface MemoryCheckpointRow {
 function fail(code: PersistenceError['code'], message: string): never { throw new PersistenceError(code, message); }
 function text(value: unknown, label: string): asserts value is string {
   if (typeof value !== 'string' || value.length === 0) fail('invalid', `Invalid ${label}`);
+}
+function historyId(value: unknown, label = 'History ID'): asserts value is string {
+  if (typeof value !== 'string' || value.length !== 36 || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)) fail('invalid', `Invalid ${label}: canonical UUID required`);
 }
 function date(value: unknown): void {
   text(value, 'timestamp');
@@ -61,7 +64,7 @@ function copy<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 function validateIntent(intent: ToolIntent): void {
-  text(intent.callId, 'tool call ID'); text(intent.assistantRecordId, 'assistant record ID');
+  text(intent.callId, 'tool call ID'); historyId(intent.assistantRecordId, 'assistant record ID');
   text(intent.toolName, 'tool name'); date(intent.occurredAt); assertJson(intent.requestedArguments); assertJson(intent.arguments);
 }
 function validateOutcome(outcome: ToolOutcome): void {
@@ -73,10 +76,10 @@ function validateEvent(event: LifeEvent): void {
 }
 function validateWake(wake: WakeReceipt): void { text(wake.id, 'wake ID'); text(wake.reason, 'wake reason'); }
 function validateMemoryCheckpoint(checkpoint: MemoryCheckpoint): void {
-  text(checkpoint.runId, 'run ID'); text(checkpoint.finalRecordId, 'final record ID'); date(checkpoint.preparedAt); assertJson(checkpoint.payload);
+  historyId(checkpoint.runId, 'run ID'); historyId(checkpoint.finalRecordId, 'final record ID'); date(checkpoint.preparedAt); assertJson(checkpoint.payload);
 }
 function validateMemoryReceipt(receipt: MemorySnapshotReceipt): void {
-  text(receipt.runId, 'run ID');
+  historyId(receipt.runId, 'run ID');
   if (receipt.commit !== null && (typeof receipt.commit !== 'string' || !/^([0-9a-f]{40}|[0-9a-f]{64})$/.test(receipt.commit))) fail('invalid', 'Invalid Memory Git commit ID');
 }
 
@@ -231,25 +234,25 @@ class PostgresWriter implements MemoryCheckpointWriter {
   }
   async #readWakeRun(row: WakeRunRow, owner: OwnerRow): Promise<WakeRun> {
     try {
-      text(row.run_id, 'run ID'); date(row.claimed_at);
-      if (row.input_record_id !== null) text(row.input_record_id, 'input record ID');
-      if (row.final_record_id !== null) text(row.final_record_id, 'final record ID');
+      historyId(row.run_id, 'run ID'); date(row.claimed_at);
+      if (row.input_record_id !== null) historyId(row.input_record_id, 'input record ID');
+      if (row.final_record_id !== null) historyId(row.final_record_id, 'final record ID');
     } catch { fail('corrupt', 'Invalid persisted wake run metadata'); }
     if (BigInt(row.claimed_version) > BigInt(owner.context_version) ||
       (row.final_record_id !== null && row.input_record_id === null) || (row.completed && row.final_record_id === null)) fail('corrupt', 'Invalid wake run progress');
     const requests = await this.#client.query<WakeRequestRow>(
-      `SELECT w.event_id, e.event, e.requested_wake, w.wake_id, w.wake FROM wake_run_requests AS r
+      `SELECT e.history_id, w.event_id, e.event, e.requested_wake, w.wake_id, w.wake FROM wake_run_requests AS r
        JOIN wake_requests AS w ON w.mira_id = r.mira_id AND w.wake_id = r.wake_id
        JOIN life_events AS e ON e.mira_id = w.mira_id AND e.event_id = w.event_id
        WHERE r.mira_id = $1 AND r.run_id = $2 ORDER BY w.receipt_order`, [this.miraId, row.run_id]);
     if (!requests.rows.length) fail('corrupt', 'Wake run has no claimed requests');
     for (const request of requests.rows) {
-      try { validateEvent(request.event); validateWake(request.wake); } catch { fail('corrupt', 'Invalid persisted wake request'); }
+      try { historyId(request.history_id); validateEvent(request.event); validateWake(request.wake); } catch { fail('corrupt', 'Invalid persisted wake request'); }
       if (request.event.id !== request.event_id || request.wake.id !== request.wake_id ||
         !isDeepStrictEqual(request.requested_wake, request.wake)) fail('corrupt', 'Wake request does not match its event receipt');
     }
     const links = await this.#client.query<{ record_id: string; version: string; envelope: RuntimeRecord }>(
-      'SELECT record_id, version, envelope FROM context_records WHERE mira_id = $1 AND record_id = ANY($2::text[])',
+      'SELECT record_id, version, envelope FROM context_records WHERE mira_id = $1 AND record_id = ANY($2::uuid[])',
       [this.miraId, [row.input_record_id, row.final_record_id].filter(id => id !== null)]);
     const input = links.rows.find(record => record.record_id === row.input_record_id);
     const final = links.rows.find(record => record.record_id === row.final_record_id);
@@ -263,12 +266,12 @@ class PostgresWriter implements MemoryCheckpointWriter {
     await this.#readMemoryCheckpoint(row);
     return {
       id: row.run_id, claimedAt: row.claimed_at, status: row.completed ? 'completed' : 'running',
-      requests: requests.rows.map(({ event, wake }) => ({ event, wake })),
+      requests: requests.rows.map(({ history_id, event, wake }) => ({ eventId: history_id, event, wake })),
       inputRecordId: row.input_record_id, finalRecordId: row.final_record_id,
     };
   }
   loadWakeRun(runId: string): Promise<WakeRun> {
-    text(runId, 'run ID');
+    historyId(runId, 'run ID');
     return this.#transaction(async owner => this.#readWakeRun(await this.#wakeRun(runId), owner));
   }
   claimWakeBatch(): Promise<WakeRun | null> {
@@ -281,6 +284,7 @@ class PostgresWriter implements MemoryCheckpointWriter {
          ORDER BY w.receipt_order`, [this.miraId]);
       if (!pending.rows.length) return null;
       const id = randomUUID();
+      await this.#reserveHistoryId(id, 'wake');
       await this.#client.query('INSERT INTO wake_runs(mira_id, run_id, claimed_at, claimed_version) VALUES ($1, $2, $3, $4)',
         [this.miraId, id, new Date().toISOString(), owner.context_version]);
       await this.#client.query('INSERT INTO wake_run_requests(mira_id, run_id, wake_id) SELECT $1, $2, unnest($3::text[])',
@@ -321,7 +325,14 @@ class PostgresWriter implements MemoryCheckpointWriter {
     assertRecord(record);
     return this.#transaction(owner => this.#appendRecord(owner, expectedVersion, record, signal), signal);
   }
+  async #reserveHistoryId(id: string, kind: 'event' | 'context' | 'tool' | 'wake'): Promise<void> {
+    historyId(id);
+    const result = await this.#client.query('INSERT INTO history_records(id, mira_id, kind) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING', [id, this.miraId, kind]);
+    if (result.rowCount !== 1) fail('duplicate', 'History ID already belongs to a record');
+  }
   async #appendRecord(owner: OwnerRow, expectedVersion: number, record: RuntimeRecord, signal?: AbortSignal): Promise<number> {
+    historyId(record.id);
+    if (record.parentId !== null) historyId(record.parentId);
     this.#checkVersion(owner, expectedVersion);
     if ((await this.#activeWakeRun())?.final_record_id) fail('invalid', 'Complete the finalized wake run before appending more context');
     if (record.parentId !== owner.head_record_id) fail('invalid', 'Record parent must be the current history head');
@@ -330,6 +341,7 @@ class PostgresWriter implements MemoryCheckpointWriter {
     if (duplicate.rowCount) fail('duplicate', 'Runtime record ID already exists');
     const next = expectedVersion + 1;
     signal?.throwIfAborted();
+    await this.#reserveHistoryId(record.id, 'context');
     await this.#client.query('INSERT INTO context_records(mira_id, record_id, version, parent_id, envelope) VALUES ($1, $2, $3, $4, $5::json)',
       [this.miraId, record.id, next, record.parentId, JSON.stringify(record)]);
     signal?.throwIfAborted();
@@ -345,7 +357,7 @@ class PostgresWriter implements MemoryCheckpointWriter {
     return this.#appendWakeRecord('final_record_id', runId, expectedVersion, input, signal);
   }
   #appendWakeRecord(field: 'input_record_id' | 'final_record_id', runId: string, expectedVersion: number, input: RuntimeRecord, signal?: AbortSignal): Promise<number> {
-    text(runId, 'run ID'); version(expectedVersion);
+    historyId(runId, 'run ID'); version(expectedVersion);
     if (expectedVersion === Number.MAX_SAFE_INTEGER) fail('invalid', 'Context version exhausted');
     const record = copy(input); assertRecord(record);
     if (record.kind !== 'message') fail('invalid', 'Wake evidence must be a message record');
@@ -370,7 +382,7 @@ class PostgresWriter implements MemoryCheckpointWriter {
     }, signal);
   }
   completeWakeRun(runId: string): Promise<void> {
-    text(runId, 'run ID');
+    historyId(runId, 'run ID');
     return this.#transaction(async owner => {
       const run = await this.#wakeRun(runId);
       await this.#readWakeRun(run, owner);
@@ -401,7 +413,7 @@ class PostgresWriter implements MemoryCheckpointWriter {
     return { checkpoint, receipt };
   }
   loadMemoryCheckpoint(runId: string): Promise<MemoryCheckpointState | null> {
-    text(runId, 'run ID');
+    historyId(runId, 'run ID');
     return this.#transaction(async owner => {
       const run = await this.#wakeRun(runId);
       await this.#readWakeRun(run, owner);
@@ -453,8 +465,10 @@ class PostgresWriter implements MemoryCheckpointWriter {
         if (wake === null ? receipts.rows.length !== 0 : receipts.rows.length !== 1 || receipts.rows[0]?.wake_id !== wake.id || !isDeepStrictEqual(receipts.rows[0]?.wake, wake)) fail('corrupt', 'Event and wake receipt disagree');
         return 'duplicate';
       }
-      await this.#client.query('INSERT INTO life_events(mira_id, event_id, event, requested_wake) VALUES ($1, $2, $3::json, $4::json)',
-        [this.miraId, event.id, JSON.stringify(event), wake === null ? null : JSON.stringify(wake)]);
+      const id = randomUUID();
+      await this.#reserveHistoryId(id, 'event');
+      await this.#client.query('INSERT INTO life_events(mira_id, event_id, event, requested_wake, history_id) VALUES ($1, $2, $3::json, $4::json, $5)',
+        [this.miraId, event.id, JSON.stringify(event), wake === null ? null : JSON.stringify(wake), id]);
       if (wake) {
         const existing = await this.#client.query('SELECT 1 FROM wake_requests WHERE mira_id = $1 AND wake_id = $2', [this.miraId, wake.id]);
         if (existing.rowCount) fail('duplicate', 'Wake ID already belongs to another event');
@@ -475,8 +489,10 @@ class PostgresWriter implements MemoryCheckpointWriter {
       const record = reference.rows[0]?.envelope;
       if (!record || record.kind !== 'message') fail('invalid', 'Tool intent must reference a persisted message');
       assertRecord(record);
-      await this.#client.query('INSERT INTO tool_executions(mira_id, call_id, assistant_record_id, context_version, intent) VALUES ($1, $2, $3, $4, $5::json)',
-        [this.miraId, intent.callId, intent.assistantRecordId, expectedVersion, JSON.stringify(intent)]);
+      const id = randomUUID();
+      await this.#reserveHistoryId(id, 'tool');
+      await this.#client.query('INSERT INTO tool_executions(mira_id, call_id, assistant_record_id, context_version, intent, history_id) VALUES ($1, $2, $3, $4, $5::json, $6)',
+        [this.miraId, intent.callId, intent.assistantRecordId, expectedVersion, JSON.stringify(intent), id]);
     });
   }
   finishTool(input: ToolOutcome): Promise<void> {

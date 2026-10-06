@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import type { RuntimeRecord } from '@mira/context';
 import type { MemoryCheckpoint, MemoryCheckpointWriter } from '@mira/life';
 import { PersistenceError } from '@mira/persistence';
-import { createTestDatabase, testDatabaseUrl } from './database.mts';
+import { createTestDatabase, testDatabaseUrl, testHistoryId as uuid } from './database.mts';
 
 const now = '2026-10-05T00:00:00.000Z';
 const record = (id: string, parentId: string | null = null): RuntimeRecord => ({
@@ -14,9 +14,9 @@ const code = (expected: PersistenceError['code']) => (error: unknown) => error i
 async function finalized(writer: MemoryCheckpointWriter): Promise<MemoryCheckpoint> {
   await writer.receive({ id: 'event', type: 'synthetic.request', source: 'user', occurredAt: now, payload: 'synthetic' }, { id: 'wake', reason: 'synthetic' });
   const run = await writer.claimWakeBatch(); assert(run);
-  await writer.appendWakeInput(run.id, 0, record('input'));
-  await writer.appendWakeFinal(run.id, 1, record('final', 'input'));
-  return { runId: run.id, finalRecordId: 'final', preparedAt: now, payload: { memoryRoot: '/synthetic/memory', miraId: writer.miraId } };
+  await writer.appendWakeInput(run.id, 0, record(uuid('input')));
+  await writer.appendWakeFinal(run.id, 1, record(uuid('final'), uuid('input')));
+  return { runId: run.id, finalRecordId: uuid('final'), preparedAt: now, payload: { memoryRoot: '/synthetic/memory', miraId: writer.miraId } };
 }
 
 testDatabaseUrl();
@@ -32,7 +32,7 @@ for (const commit of [null, 'a'.repeat(40), 'b'.repeat(64)]) test(`Memory checkp
     await assert.rejects(writer.completeWakeRun(checkpoint.runId), code('invalid'));
     await assert.rejects(db.admin.query('UPDATE wake_runs SET completed = true'), /Pending Memory checkpoint/);
     await writer.close(); writer = await db.acquire();
-    assert.equal((await writer.claimWakeBatch())?.finalRecordId, 'final');
+    assert.equal((await writer.claimWakeBatch())?.finalRecordId, uuid('final'));
     assert.deepEqual(await writer.loadMemoryCheckpoint(checkpoint.runId), { checkpoint, receipt: null });
     await writer.prepareMemoryCheckpoint(checkpoint);
     const receipt = { runId: checkpoint.runId, commit };
@@ -59,7 +59,7 @@ test('Memory recovery inputs and first receipt are immutable and conflicting ret
     const checkpoint = await finalized(writer);
     const receipt = { runId: checkpoint.runId, commit: 'c'.repeat(40) };
     await assert.rejects(writer.finishMemoryCheckpoint(receipt), code('invalid'));
-    await assert.rejects(writer.prepareMemoryCheckpoint({ ...checkpoint, finalRecordId: 'input' }), code('invalid'));
+    await assert.rejects(writer.prepareMemoryCheckpoint({ ...checkpoint, finalRecordId: uuid('input') }), code('invalid'));
     await writer.prepareMemoryCheckpoint(checkpoint);
     for (const modified of [
       { ...checkpoint, preparedAt: '2026-10-05T01:00:00.000Z' },
@@ -88,11 +88,11 @@ test('Memory checkpoint requires a persisted final and cannot be added retrospec
     const writer = await db.acquire();
     await writer.receive({ id: 'event', type: 'synthetic', source: 'user', occurredAt: now, payload: null }, { id: 'wake', reason: 'synthetic' });
     const run = await writer.claimWakeBatch(); assert(run);
-    const checkpoint = { runId: run.id, finalRecordId: 'final', preparedAt: now, payload: null };
+    const checkpoint = { runId: run.id, finalRecordId: uuid('final'), preparedAt: now, payload: null };
     await assert.rejects(writer.prepareMemoryCheckpoint(checkpoint), code('invalid'));
-    await writer.appendWakeInput(run.id, 0, record('input'));
+    await writer.appendWakeInput(run.id, 0, record(uuid('input')));
     await assert.rejects(writer.prepareMemoryCheckpoint(checkpoint), code('invalid'));
-    await writer.appendWakeFinal(run.id, 1, record('final', 'input'));
+    await writer.appendWakeFinal(run.id, 1, record(uuid('final'), uuid('input')));
     await writer.completeWakeRun(run.id);
     await assert.rejects(writer.prepareMemoryCheckpoint(checkpoint), code('invalid'));
     assert.equal(await writer.loadMemoryCheckpoint(run.id), null);
@@ -137,7 +137,8 @@ for (const corrupt of ['final-link', 'timestamp', 'premature-completion'] as con
       await db.admin.query('ALTER TABLE wake_runs ENABLE TRIGGER wake_memory_completion');
     } else {
       await db.admin.query('ALTER TABLE wake_memory_checkpoints DISABLE TRIGGER memory_checkpoint_append_only');
-      await db.admin.query(corrupt === 'final-link' ? "UPDATE wake_memory_checkpoints SET final_record_id = 'input'" : "UPDATE wake_memory_checkpoints SET prepared_at = 'invalid-timestamp'");
+      if (corrupt === 'final-link') await db.admin.query('UPDATE wake_memory_checkpoints SET final_record_id = $1', [uuid('input')]);
+      else await db.admin.query("UPDATE wake_memory_checkpoints SET prepared_at = 'invalid-timestamp'");
       await db.admin.query('ALTER TABLE wake_memory_checkpoints ENABLE TRIGGER memory_checkpoint_append_only');
     }
     await assert.rejects(writer.load(), code('corrupt'));

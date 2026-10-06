@@ -2,7 +2,10 @@
 
 Run `node scripts/tool-usability.mts init` from the source checkout. The command
 creates a fresh disposable directory outside the checkout (and rejects a TMPDIR inside it) and prints its path,
-exercise goals, and production prompt/skill references. It does not use a model,
+exercise goals, a `paths.memory` directory, and production prompt/skill references.
+It creates an independent disposable Memory Git repository using the production
+`setupMemoryWorkspace` and `snapshotMemory` functions, with synthetic notes and
+a genuine commit carrying a `History-Id` trailer. It does not use a model,
 network connection, credential, existing Mira home, or database.
 
 Give an independent evaluator only the resulting task brief, this command entry
@@ -39,12 +42,29 @@ the real artifact store and Cordis host against disposable local files.
 
 History uses a clearly labeled synthetic `HistoryReader` adapter. Exact reads and
 substring searches use the fixture's original records and enforce bounded queries
-and reads. Full-text search is only a Unicode-word approximation over the same
+and reads. Every History record has a canonical globally unique UUID; reads accept
+only `{id, maxBytes?}` and return the record kind. Event originals retain their
+external IDs, tool records retain their provider call IDs, and wake membership
+separately exposes `eventId`, `externalEventId`, and `wakeReceiptId`. These source
+keys are not History IDs. Reads and searches enforce the fixture Mira scope,
+including a negative-control record belonging to another Mira. Wake input/final
+references, context parent chains, event membership and tool assistant references
+resolve to complete fixture originals. Full-text search is only a Unicode-word approximation over the same
 65,536-character prefix; it does not reproduce PostgreSQL parsing, JSON spacing,
 lexical rank, or snippets. Pagination is not exposed by these model tools and is
 not implemented in this fixture. Database correctness belongs to the separate
-PostgreSQL integration suite. Commit references in the history are synthetic.
-This exercise also does not verify Pi durable intent/outcome persistence, remote
+PostgreSQL integration suite.
+
+The Memory commit is a real Git object produced during `init`, not an invented
+commit hash or simulated snapshot tool. Its `History-Id` identifies the completed
+fixture wake. The historical conversation and write-tool evidence are synthetic,
+and an explicit fixture annotation links the final record to the separately
+generated commit. This does not mean a real Pi wake produced the synthetic
+history or that a historical tool invocation executed. The later verification
+intent deliberately has no recorded outcome. The evaluator can inspect ordinary
+Memory files and Git history, then use the production History tools to establish
+the original evidence without access to fixture source/data or supplied answer
+IDs. This exercise also does not verify Pi durable intent/outcome persistence, remote
 model transport, or live-account behavior.
 
 `evidence.jsonl` contains actual displayed declarations, prompt, call start/result
@@ -61,7 +81,9 @@ session directory you created after retaining any desired evidence.
 ## Harness regression check
 
 `node --test tests/unit/tool-usability.test.mts` covers live declarations and
-prompt references, history read limits, file-only staging, genuine rejections,
+prompt references, id-only schemas and canonical UUID validation, complete
+provenance links and Mira scoping, history read limits, a real production Memory
+commit-to-History round trip, file-only staging, genuine rejections,
 and actual template install/activate/invoke/disable with persisted config. These
 checks are included in the ordinary offline test discovery. The CLI source is
 checked by `tsconfig.pi.json` because Pi/Cordis declarations require the same

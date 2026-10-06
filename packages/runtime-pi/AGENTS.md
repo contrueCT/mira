@@ -38,6 +38,8 @@ Shared rules: [root AGENTS.md](../../AGENTS.md). Read `README.md` before changes
 - `loadSkills` refreshes Pi metadata at natural requests only; append the public formatter after rendering in that same section. Bodies use ordinary read; no scanner during recover/compact, watcher, extra Wake or Memory reload
 - Maintain current v0.5/v0.2 only: no old initialization entrypoint, bootstrap parser or checkpoint migration; preserve current raw history, tool recovery and exact-system compaction checks
 - Renderer substitutions are allowlisted, escaped and single-pass; tool guidance uses the same declared registry, never a stale separate snapshot
+- New compaction candidates receive full History UUIDs; never rewrite existing parent/first-kept references or provider call IDs
+- `history_read` takes only the global UUID and optional byte budget, obtains kind from persistence, and accepts Memory `History-Id` directly
 - `history-tools.ts` returns Mira-bound original history; generic persistence never parses Pi
 - All streams are injected; no credentials or live provider fallback. Runtime
   compaction never modifies Memory

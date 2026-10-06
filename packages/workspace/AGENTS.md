@@ -21,6 +21,7 @@
 - 不监控文件变化，也不为文件变化自动重建上下文；新决定覆盖原始设计的通知设想。快照与 lineage 不污染记忆正文
 - Memory 快照包含当前普通工作树差异，也包括 Wake 前已有改动；不能把这些差异描述成 agent 作者证据
 - `.git` 注册保存稳定随机仓库身份；待完成 checkpoint 必须持久化该身份并在快照恢复时校验，防止 Git 丢失或替换后把新内容归入旧运行
+- Memory commit 直接保存 `History-Id: <WakeRun UUID>`；内部 `Mira-Run-Key` 仅负责恢复身份，不对外当作 History 引用，不保留 Base64/旧 trailer 解析
 - 同 Mira/run 的 Git 回执可恢复变更与无变更结果；HEAD/trailer 恢复须校验完整身份；回执先落盘时只从精确父 HEAD 做 CAS 补齐，历史分叉报错。Git 与 PostgreSQL 分开提交，不宣称跨系统原子性
 - 普通 Git index 与工作树语义保持一致；宿主单写者负责串行，保留外部锁并真实呈现 Git 错误/取消。目录分离不是 shell 工作目录沙箱
 

@@ -26,7 +26,7 @@ configuration unless the user requests implementation.
    installed state, then read the SDK contract and relevant references below.
    Read lifecycle guidance before choosing asynchronous work or services
 3. Create an ordinary workspace with the existing template. Write the extension,
-   validate its configuration, typecheck and test offline. Stage the complete
+   validate its configuration (see the SDK reference for Json narrowing and sync/async test patterns), typecheck and test offline. Stage the complete
    workspace, then test the exact staged digest using the documented artifact CLI
 4. When the user's request authorizes execution, install the staged release as
    disabled and activate it. Read the management receipt, then inspect the applied

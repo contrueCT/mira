@@ -5,7 +5,9 @@ export type HistoryKind = 'event' | 'context' | 'tool' | 'wake';
 /** Full text is PostgreSQL's simple dictionary, not semantic/Chinese search.
  * Substring is an explicit, literal case-insensitive fallback, never automatic. */
 export type HistorySearchMode = 'full_text' | 'substring';
-export interface HistoryReference { kind: HistoryKind; id: string }
+/** One canonical UUID identifies a record across every kind and Mira. */
+export interface HistoryReference { id: string }
+export interface HistoryMetadata extends HistoryReference { kind: HistoryKind }
 export interface HistorySearchRequest {
   query: string;
   mode?: HistorySearchMode;
@@ -13,7 +15,7 @@ export interface HistorySearchRequest {
   /** Default 20, maximum 100. */
   limit?: number;
 }
-export interface HistoryHit extends HistoryReference {
+export interface HistoryHit extends HistoryMetadata {
   miraId: string;
   occurredAt: string;
   /** Display-only excerpt of original serialized data; use read for evidence. */
@@ -40,7 +42,7 @@ export interface HistoryPageRequest {
   before?: HistoryPageCursor;
 }
 /** Metadata only. Fetch an original separately with read and its byte budget. */
-export interface HistoryPageHit extends HistoryReference {
+export interface HistoryPageHit extends HistoryMetadata {
   miraId: string;
   occurredAt: string;
   /** Unnormalizable original timestamps sort before normalized timestamps,
@@ -59,7 +61,7 @@ export interface HistoryReadRequest extends HistoryReference {
    * Oversized records fail explicitly instead of silently losing evidence. */
   maxBytes?: number;
 }
-interface HistoryBase extends HistoryReference { miraId: string; occurredAt: string }
+interface HistoryBase extends HistoryMetadata { miraId: string; occurredAt: string }
 export interface HistoryEvent extends HistoryBase {
   kind: 'event';
   event: LifeEvent;
@@ -85,7 +87,7 @@ export interface HistoryWake extends HistoryBase {
   status: 'running' | 'completed';
   /** Exact immutable membership, in persisted receipt order. Event originals
    * (including wake reasons) are available through their event references. */
-  requests: { wakeId: string; eventId: string; receiptOrder: string }[];
+  requests: { eventId: string; externalEventId: string; wakeReceiptId: string; receiptOrder: string }[];
 }
 export type HistoryEntry = HistoryEvent | HistoryContext | HistoryTool | HistoryWake;
 /** Mira scope is fixed by trusted assembly, never supplied by model arguments.
@@ -96,7 +98,7 @@ export interface HistoryReader {
   /** Read original append-only history, including records outside compacted
    * working context. Pagination never copies runtime payloads into its result. */
   page(request?: HistoryPageRequest): Promise<HistoryPageResult>;
-  /** Null means this exact kind/ID was not found in this Mira. */
+  /** Null means this global ID was not found in this Mira. The result supplies its kind. */
   read(request: HistoryReadRequest): Promise<HistoryEntry | null>;
 }
 export class HistoryError extends Error {

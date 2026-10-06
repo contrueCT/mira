@@ -103,7 +103,7 @@ for (const api of ['openai-completions', 'openai-responses', 'anthropic-messages
     // Nine alphanumeric characters also satisfy Mistral's native call-ID contract.
     const firstCalls: Call[] = [
       { id: 'search001', name: 'history_search', arguments: { query: 'synthetic history', mode: 'substring' } },
-      { id: 'read00001', name: 'history_read', arguments: { kind: 'event', id: 'synthetic-event' } },
+      { id: 'read00001', name: 'history_read', arguments: { id: '10000000-0000-4000-8000-000000000001' } },
       { id: 'inspect01', name: 'extension_inspect', arguments: {} },
       { id: 'stage0001', name: 'extension_stage', arguments: { sourceRoot: fixture.root, entryRelative: 'fixture.mjs' } },
       { id: 'enable001', name: 'extension_manage', arguments: { id: 'manual', action: 'enable' } },

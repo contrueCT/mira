@@ -1,5 +1,6 @@
 import type { ContextSnapshot, Json, RuntimeRecord } from '@mira/context';
 export interface LifeEvent {
+  /** External event identity/idempotency key, distinct from its History UUID. */
   id: string;
   type: string;
   source: 'user' | 'mira' | 'system' | 'extension' | 'external';
@@ -9,6 +10,7 @@ export interface LifeEvent {
 export interface WakeReceipt { id: string; reason: string }
 /** Immutable execution facts linked to the original assistant call, not proof of permission. */
 export interface ToolIntent {
+  /** Original provider tool-call identity; never rewritten to a History UUID. */
   callId: string;
   assistantRecordId: string;
   toolName: string;
@@ -42,7 +44,12 @@ export interface DurableWriter {
   close(): Promise<void>;
 }
 
-export interface WakeRequest { event: LifeEvent; wake: WakeReceipt }
+export interface WakeRequest {
+  /** Global History UUID of the event; event.id remains its external dedupe key. */
+  eventId: string;
+  event: LifeEvent;
+  wake: WakeReceipt;
+}
 export interface WakeRun {
   id: string;
   claimedAt: string;
@@ -67,4 +74,4 @@ export { WakeLoop, prepareWakeTurn, renderWakeBatch } from './loop.ts';
 export type { WakeLoopOptions } from './loop.ts';
 export type { MemoryCheckpoint, MemoryCheckpointState, MemoryCheckpointWriter, MemorySnapshotReceipt } from './memory-lifecycle.ts';
 export { HistoryError } from './history.ts';
-export type { HistoryKind, HistorySearchMode, HistoryReference, HistorySearchRequest, HistoryHit, HistorySearchResult, HistoryPageCursor, HistoryPageRequest, HistoryPageHit, HistoryPageResult, HistoryReadRequest, HistoryEvent, HistoryContext, HistoryTool, HistoryWake, HistoryEntry, HistoryReader } from './history.ts';
+export type { HistoryKind, HistorySearchMode, HistoryReference, HistoryMetadata, HistorySearchRequest, HistoryHit, HistorySearchResult, HistoryPageCursor, HistoryPageRequest, HistoryPageHit, HistoryPageResult, HistoryReadRequest, HistoryEvent, HistoryContext, HistoryTool, HistoryWake, HistoryEntry, HistoryReader } from './history.ts';

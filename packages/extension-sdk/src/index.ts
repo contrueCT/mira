@@ -33,9 +33,10 @@ const serviceKey = (name: string): string => {
   return `mira.extension.${name}`;
 };
 export { serviceKey };
-/** Structurally a Cordis plugin, without exposing Cordis to extension authors. */
+/** Structurally a Cordis plugin. The host supplies raw JSON, not validated C.
+ * The author callback keeps its C contract and must validate incoming config. */
 export function defineExtension<C extends Json>(definition: ExtensionDefinition<C>): {
-  name: string; inject: string[]; apply(environment: { mira: ExtensionContext }, config: C): void | Promise<void>;
+  name: string; inject: string[]; apply(environment: { mira: ExtensionContext }, config: Json): void | Promise<void>;
 } {
   return { name: definition.name, inject: (definition.requires ?? []).map(serviceKey),
     apply: (environment, config) => definition.apply(environment.mira, (config ?? null) as C) };

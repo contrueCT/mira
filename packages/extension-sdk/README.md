@@ -38,3 +38,18 @@ links this private SDK and existing local TypeScript/Node types; it does not fet
 registry package or run install scripts. Node resolves the SDK's real path outside
 node_modules, where TypeScript stripping is supported. Staging materializes the
 local dependency tree into private sibling directories and preserves that property.
+
+## Host configuration boundary
+
+`ExtensionDefinition<C>.apply` retains the author's configuration type `C`. The
+plugin returned by `defineExtension` accepts raw `Json` at its host-facing
+`apply({ mira }, config)` entry, matching the actual configuration/host contract.
+This does not parse or approve configuration: the author must validate it before
+creating resources. Runtime forwarding is unchanged.
+
+Tests can derive `Parameters<typeof extension.apply>[1]` and pass ordinary valid
+or deliberately invalid JSON directly, without casts to a config-free template's
+`null` type. For either synchronous or asynchronous validation failure use
+`await assert.rejects(async () => { await extension.apply({ mira: context }, value); })`.
+The ordinary template demonstrates the derived input type. This change does not
+widen tool arguments, author callbacks, or any unrelated public interface.

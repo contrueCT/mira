@@ -1,5 +1,7 @@
 /** Read DTOs contain no runtime trace, raw tool data or stored credentials. */
 export interface TimelineItem {
+  /** Original request identity for pending-message acknowledgement only. */
+  externalEventId?: string;
   id: string;
   role: 'user' | 'assistant' | 'notice';
   text: string;

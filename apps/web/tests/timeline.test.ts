@@ -34,7 +34,7 @@ test('a receipt stays queued across refresh and does not imply a completed model
 test('only the exact durable event ID clears the pending message', () => {
   const pending: PendingMessage[] = [{ ...envelope, state: 'uncertain' }];
   assert.equal(reconcilePending(pending, [item(envelope.id, envelope.occurredAt)]).length, 1);
-  assert.equal(reconcilePending(pending, [item(`event:${envelope.id}`, envelope.occurredAt)]).length, 0);
+  assert.equal(reconcilePending(pending, [{ ...item('10000000-0000-4000-8000-000000000001', envelope.occurredAt), role: 'user', externalEventId: envelope.id }]).length, 0);
 });
 
 test('confirmed envelopes are removed from this tab storage', () => {
@@ -145,4 +145,12 @@ test('finishing an older gap keeps a newer gap added during the outstanding requ
   assert.equal(pagination.oldestCursor, null);
   assert.equal(pagination.gaps.length, 1);
   assert.equal(nextHistoryRequest(pagination)?.cursor, 'before-250');
+});
+
+
+test('pending acknowledgement uses original request identity, never a History UUID or assistant reference', () => {
+  const pending: PendingMessage[] = [{ ...envelope, state: 'uncertain' }];
+  assert.deepEqual(reconcilePending(pending, [{ ...item(envelope.id, envelope.occurredAt), role: 'user' }]), pending);
+  assert.deepEqual(reconcilePending(pending, [{ ...item('other-history-id', envelope.occurredAt), role: 'assistant', externalEventId: envelope.id }]), pending);
+  assert.deepEqual(reconcilePending(pending, [{ ...item('other-history-id', envelope.occurredAt), role: 'user', externalEventId: envelope.id }]), []);
 });

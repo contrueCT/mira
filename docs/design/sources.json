@@ -28,11 +28,11 @@
       "file_id": "file_000000008ea081f5b31f8562af2fe5c1",
       "current_version_number": 0,
       "version_id": null,
-      "bytes": 17464,
-      "sha256": "312d40c39fb233af7bb5f1fcb56b975d1a05e2ef809e3ae34863ab039b5b09f8",
+      "bytes": 20134,
+      "sha256": "3e0e1ea9a70f134d158ce77c6e242c909aedb5a871b299d2065dac51aec2d7e0",
       "original_bytes": 17095,
       "original_sha256": "ea1d1286ec4de9c875b3a1ce6455fcc8a4b9b0a5f5d202ddd5044793dfc205ee",
-      "revision_note": "User-approved 2026-10-06: plain-text normal conversation; unrelated supplied prompt text unchanged"
+      "revision_note": "User-approved 2026-10-06: plain-text normal conversation and concrete global-ID History/Memory provenance usage; unrelated supplied prompt text unchanged"
     },
     {
       "path": "original-v0.4.md",
