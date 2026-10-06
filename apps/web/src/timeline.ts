@@ -37,17 +37,18 @@ export function writePending(storage: Pick<Storage, 'setItem' | 'removeItem'>, m
 }
 
 export interface HistoryGap { id: string; cursor: string; boundaryIds: string[] }
-export interface HistoryPagination { oldestCursor: string | null; gaps: HistoryGap[] }
+export interface HistoryPagination { latestCursor: string | null; oldestCursor: string | null; gaps: HistoryGap[] }
 export interface HistoryRequest { cursor: string; gapId: string | null }
 /** Track disconnected latest windows without losing the older-history frontier. */
 export function latestPagination(current: HistoryPagination, known: TimelineItem[], page: { items: TimelineItem[]; nextCursor: string | null }, initialized: boolean): HistoryPagination {
-  if (!initialized) return { oldestCursor: page.nextCursor, gaps: [] };
-  // Hidden runtime records can occupy whole pages. Polling their empty visible
-  // projection must not rewind a user's already-advanced history frontier.
-  if (known.length === 0 && page.items.length === 0) return current;
+  if (!initialized) return { latestCursor: page.nextCursor, oldestCursor: page.nextCursor, gaps: [] };
+  // The same hidden-only latest window must not rewind a partially read gap.
+  // A changed window still needs a gap, even before any visible item is found.
+  if (current.latestCursor === page.nextCursor) return current;
+  const updated = { ...current, latestCursor: page.nextCursor };
   const ids = new Set(known.map(item => item.id));
-  if (page.items.some(item => ids.has(item.id)) || page.nextCursor === null || current.gaps.some(gap => gap.cursor === page.nextCursor)) return current;
-  return { ...current, gaps: [{ id: page.nextCursor, cursor: page.nextCursor, boundaryIds: [...ids] }, ...current.gaps] };
+  if (page.items.some(item => ids.has(item.id)) || page.nextCursor === null || current.gaps.some(gap => gap.id === page.nextCursor || gap.cursor === page.nextCursor)) return updated;
+  return { ...updated, gaps: [{ id: page.nextCursor, cursor: page.nextCursor, boundaryIds: [...ids] }, ...current.gaps] };
 }
 export function nextHistoryRequest(pagination: HistoryPagination): HistoryRequest | null {
   const gap = pagination.gaps[0];
@@ -55,9 +56,14 @@ export function nextHistoryRequest(pagination: HistoryPagination): HistoryReques
 }
 export function olderPagination(current: HistoryPagination, request: HistoryRequest, page: { items: TimelineItem[]; nextCursor: string | null }): HistoryPagination {
   if (request.gapId === null) return { ...current, oldestCursor: page.nextCursor };
+  const gapIndex = current.gaps.findIndex(gap => gap.id === request.gapId);
+  if (gapIndex < 0) return current;
+  // Reaching the beginning covers this gap and every older frontier. A newer
+  // gap added while this request was outstanding remains independently unread.
+  if (page.nextCursor === null) return { ...current, oldestCursor: null, gaps: current.gaps.slice(0, gapIndex) };
   return { ...current, gaps: current.gaps.flatMap(gap => {
     if (gap.id !== request.gapId) return [gap];
     const reachedBoundary = page.items.some(item => gap.boundaryIds.includes(item.id));
-    return reachedBoundary || !page.nextCursor ? [] : [{ ...gap, cursor: page.nextCursor }];
+    return reachedBoundary ? [] : [{ ...gap, cursor: page.nextCursor! }];
   }) };
 }

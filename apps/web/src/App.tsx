@@ -49,7 +49,7 @@ export function App() {
   const nearBottomRef = useRef(true);
   const sendingRef = useRef(false);
   const initializedRef = useRef(false);
-  const paginationRef = useRef<HistoryPagination>({ oldestCursor: null, gaps: [] });
+  const paginationRef = useRef<HistoryPagination>({ latestCursor: null, oldestCursor: null, gaps: [] });
   const activeRef = useRef(true);
   const olderBusyRef = useRef(false);
   const closingSettingsRef = useRef(false);

@@ -23,7 +23,7 @@ MIRA_DATABASE_URL=postgres://localhost/mira pnpm start --synthetic
 
 固定 Mira ID 为 `mira`。不要让两个进程抢占同一实例；数据库单写者会拒绝第二个。Memory bootstrap、持久 Prompt、历史、工具结果不因刷新/重启被清空。
 
-模型设置保存在 `MIRA_HOME/models.json`，内容为 `{configuration, selection}`。`configuration` 复用 [现有模型配置](models.md)，`selection` 为内置或自定义模型选择。网页使用 revision 防止覆盖另一窗口或外部编辑；冲突需重载。设置写入不验证真实模型联通。正在运行的 Wake 不允许改配置；live 空闲保存后下一条消息生效，synthetic 模式仍需重启才能切到 live。
+模型设置保存在 `MIRA_HOME/models.json`，内容为 `{configuration, selection}`。`configuration` 复用 [现有模型配置](models.md)，`selection` 为内置或自定义模型选择。网页使用 revision 防止覆盖另一窗口或外部编辑；冲突需重载。空闲时读取设置会采用磁盘上的新版本；处理中仍显示并保留当前运行配置。设置写入不验证真实模型联通。正在运行的 Wake 不允许改配置；live 空闲保存后下一条消息生效，synthetic 模式仍需重启才能切到 live。
 
 ## HTTP 与展示
 

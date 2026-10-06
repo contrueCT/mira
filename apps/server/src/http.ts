@@ -68,7 +68,8 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   app.addHook('onRequest', async (request, reply) => {
     reply.headers(securityHeaders);
     const pathname = request.url.split('?', 1)[0] ?? '';
-    const api = pathname === '/api' || pathname.startsWith('/api/');
+    const route = request.routeOptions.url;
+    const api = pathname === '/api' || pathname.startsWith('/api/') || (typeof route === 'string' && route.startsWith('/api/'));
     // Check raw Host, not forwarded host or a URL-normalized hostname. IPv6,
     // localhost aliases, rebinding domains, duplicate values and other ports fail.
     if (request.headers.host !== host) return reply.code(403).send({ error: 'Untrusted local host' });
@@ -76,6 +77,9 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     if (requestOrigin !== undefined && requestOrigin !== origin) return reply.code(403).send({ error: 'Untrusted origin' });
     const site = request.headers['sec-fetch-site'];
     if (site !== undefined && site !== 'same-origin' && site !== 'none') return reply.code(403).send({ error: 'Cross-site requests are not allowed' });
+    // Fastify decodes static route segments before matching. Reject encoded
+    // aliases before any handler so raw-path classification cannot bypass API guards.
+    if (pathname.includes('%')) return reply.code(400).send({ error: 'Use canonical local paths' });
     if (!api) return;
     if (request.headers['x-mira-client'] !== 'web') return reply.code(403).send({ error: 'The local web client header is required' });
     const mode = request.headers['sec-fetch-mode']; const destination = request.headers['sec-fetch-dest'];

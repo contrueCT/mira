@@ -4,6 +4,7 @@ import { mkdir, realpath } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { browserLaunchEnvironment } from './browser-launch.ts';
+import { localDatabaseUrl } from './web-config.ts';
 import { readExtensionConfiguration } from '@mira/extension-host';
 import { createLocalHttp } from './http.ts';
 import { LocalWebService } from './web-service.ts';
@@ -24,10 +25,7 @@ if (args.includes('--help')) {
       port = Number(value);
     } else throw Error('Unknown option; run pnpm start --help');
   }
-  const connectionString = process.env['MIRA_DATABASE_URL'];
-  if (!connectionString) throw Error('Set MIRA_DATABASE_URL to an existing local PostgreSQL database; run pnpm start --help');
-  const database = new URL(connectionString);
-  if (!['postgres:', 'postgresql:'].includes(database.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(database.hostname) || database.search || database.hash || database.pathname === '/') throw Error('MIRA_DATABASE_URL must select an explicit local PostgreSQL database without URL options');
+  const connectionString = localDatabaseUrl(process.env['MIRA_DATABASE_URL']);
   const schema = process.env['MIRA_SCHEMA'] ?? 'mira';
   if (!/^[a-z_][a-z0-9_]{0,62}$/.test(schema)) throw Error('Invalid MIRA_SCHEMA');
   const sourceDirectory = await realpath(fileURLToPath(new URL('../../../', import.meta.url)));

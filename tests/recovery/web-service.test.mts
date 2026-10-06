@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
-import { LocalWebService, WebHttpError, WebSettingsStore } from '@mira/server';
+import { LocalWebService, WebHttpError, WebSettingsStore, listBuiltinCatalog } from '@mira/server';
 import { createAssistantMessageEventStream } from '@earendil-works/pi-ai';
 import { createTestDatabase } from '../integration/database.mts';
 import { assistant, streamOf } from './fixtures.mts';
@@ -106,11 +106,34 @@ test('settings reload sees an external revision instead of trapping the UI in a 
   let service: LocalWebService | undefined;
   try {
     const settingsFile = path.join(root, 'models.json');
-    service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'external-settings', sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile, synthetic: true });
+    service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'external-settings', sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile });
     await settled(service); const initial = await service.settings();
-    await writeFile(settingsFile, JSON.stringify({ configuration: { builtinCredentials: { openai: { apiKeyEnv: 'EXTERNAL_REFERENCE' } }, customConnections: [] }, selection: null }));
+    const model = listBuiltinCatalog('openai').providers[0]!.models[0]!.id;
+    await writeFile(settingsFile, JSON.stringify({ configuration: { builtinCredentials: { openai: { apiKeyEnv: 'EXTERNAL_REFERENCE' } }, customConnections: [] }, selection: { kind: 'builtin', provider: 'openai', model } }));
     const reloaded = await service.settings(); assert.notEqual(reloaded.revision, initial.revision);
     assert.equal(reloaded.configuration.builtinCredentials['openai']?.apiKeyEnv, 'EXTERNAL_REFERENCE');
+    await settled(service);
+    assert.equal((await service.status()).model, model, 'displayed disk selection and next-Wake runtime agree');
     await service.saveSettings(reloaded);
   } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('a stale settings read cannot replace a successfully saved model selection', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-settings-race-');
+  const originalGet = WebSettingsStore.prototype.get; let service: LocalWebService | undefined;
+  let release!: () => void; let entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }); const started = new Promise<void>(resolve => { entered = resolve; });
+  try {
+    const models = listBuiltinCatalog('openai').providers[0]!.models;
+    const settingsFile = path.join(root, 'models.json');
+    await writeFile(settingsFile, JSON.stringify({ configuration: { builtinCredentials: { openai: { apiKeyEnv: 'SYNTHETIC_MISSING_KEY' } }, customConnections: [] }, selection: { kind: 'builtin', provider: 'openai', model: models[0]!.id } }));
+    service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'settings-race', sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile });
+    await settled(service); const current = await service.settings(); let delay = true;
+    WebSettingsStore.prototype.get = async function() { const result = await originalGet.call(this); if (delay) { delay = false; entered(); await gate; } return result; };
+    const oldRead = service.settings(); await started;
+    const saved = await service.saveSettings({ ...current, selection: { kind: 'builtin', provider: 'openai', model: models[1]!.id } });
+    release(); await oldRead;
+    assert.equal((await service.status()).model, models[1]!.id);
+    assert.deepEqual((await service.settings()).selection, saved.selection);
+  } finally { release(); WebSettingsStore.prototype.get = originalGet; await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });

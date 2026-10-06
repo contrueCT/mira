@@ -61,6 +61,7 @@ export class LocalWebService implements WebBackend {
   #closed = false;
   #settingsValue: WebSettings;
   #configurationWrite = false;
+  #settingsGeneration = 0;
   #kickRequested = false;
   readonly #cache = new Map<string, Timeline['items'][number] | null>();
   private constructor(options: WebServiceOptions, writer: MemoryCheckpointWriter, history: HistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, host?: ExtensionHost) {
@@ -133,13 +134,23 @@ export class LocalWebService implements WebBackend {
     return { state: this.#closed || this.#writer.signal.aborted ? 'stopped' : this.#error ? 'error' : this.#drain ? 'working' : 'idle',
       mode: this.#options.synthetic ? 'synthetic' : 'live', model: this.#options.synthetic ? '模拟模型' : selection?.model ?? null, error: this.#error };
   }
-  async settings(): Promise<WebSettings> { return this.#settings.get(); }
+  async settings(): Promise<WebSettings> {
+    const generation = ++this.#settingsGeneration;
+    const saved = await this.#settings.get();
+    // Adopt external edits only at an idle boundary. A concurrent Wake keeps
+    // its active configuration, so the UI never advertises an unapplied model.
+    if (generation === this.#settingsGeneration && !this.#closed && !this.#drain && !this.#configurationWrite) {
+      this.#settingsValue = saved;
+      if (this.#kickRequested && !this.#error) this.#kick();
+    }
+    return structuredClone(this.#settingsValue);
+  }
   async saveSettings(value: unknown): Promise<WebSettings> {
     if (this.#closed || this.#drain || this.#configurationWrite) throw new WebHttpError('busy');
-    this.#configurationWrite = true;
-    try { const saved = await this.#settings.save(value); this.#settingsValue = saved; return structuredClone(saved); }
+    this.#configurationWrite = true; this.#settingsGeneration++;
+    try { const saved = await this.#settings.save(value); this.#settingsGeneration++; this.#settingsValue = saved; return structuredClone(saved); }
     finally {
-      this.#configurationWrite = false;
+      this.#configurationWrite = false; this.#settingsGeneration++;
       if (this.#kickRequested && !this.#error) this.#kick();
     }
   }

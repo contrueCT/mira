@@ -31,7 +31,6 @@ jobs:
           --health-timeout 5s
           --health-retries 12
     env:
-      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/mira-playwright
       MIRA_TEST_DATABASE_URL: postgres://mira_test:synthetic-ci-only@127.0.0.1:5432/mira_test
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -44,6 +43,8 @@ jobs:
         run: npm install --global pnpm@11.28.4
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm check:all
+      - name: Select isolated browser cache
+        run: echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/mira-playwright" >> "$GITHUB_ENV"
       - name: Install Chromium for local UI verification
         run: pnpm exec playwright install --with-deps chromium
       - name: Verify browser interactions and render screenshots

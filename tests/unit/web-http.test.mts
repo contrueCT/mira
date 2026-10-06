@@ -203,3 +203,27 @@ test('browser opener environment cannot inherit server credentials or code-injec
   assert.deepEqual(browserLaunchEnvironment(original), { PATH: '/usr/bin', HOME: '/tmp/synthetic', DISPLAY: ':1', SystemRoot: 'C:\\Windows' });
   assert.equal(original.OPENAI_API_KEY, 'secret-sentinel');
 });
+
+test('local database URL requires an explicit database and never echoes credentials', async () => {
+  const { localDatabaseUrl } = await import('@mira/server');
+  for (const value of [undefined, '', 'postgres://localhost', 'postgres://localhost/', 'postgres://127.0.0.1', 'postgres://[::1]/', 'postgres://remote.example/mira', 'postgres://localhost/mira?options=x', 'not-a-url-secret-sentinel']) {
+    assert.throws(() => localDatabaseUrl(value), error => error instanceof Error && !error.message.includes('secret-sentinel'));
+  }
+  assert.equal(localDatabaseUrl('postgres://user:synthetic@127.0.0.1/mira'), 'postgres://user:synthetic@127.0.0.1/mira');
+});
+
+test('encoded API aliases cannot bypass client, origin or resource guards', async t => {
+  let calls = 0;
+  const app = createLocalHttp({ backend: backend({ status: async () => { calls++; return { state: 'idle', mode: 'synthetic', model: null, error: null }; }, submit: async value => { calls++; return { id: value.id, receipt: 'inserted' }; } }), port });
+  t.after(() => app.close());
+  for (const url of ['/%61pi/status', '/api/%73tatus', '/%61%70%69/status']) {
+    assert.equal((await app.inject({ url, headers: { host: readHeaders.host } })).statusCode, 400);
+    assert.equal((await app.inject({ url, headers: readHeaders })).statusCode, 400);
+  }
+  for (const url of ['/%61pi/messages', '/api/%6dessages']) {
+    const response = await app.inject({ method: 'POST', url, headers: { host: readHeaders.host, 'content-type': 'application/json' }, payload: message });
+    assert.equal(response.statusCode, 400);
+    assert.equal((await app.inject({ method: 'POST', url, headers: writeHeaders, payload: message })).statusCode, 400);
+  }
+  assert.equal(calls, 0);
+});

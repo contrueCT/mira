@@ -63,7 +63,7 @@ test('ordering uses timestamp instants and retains sub-millisecond precision', (
 
 test('disconnected latest pages expose missing history before the existing older frontier', () => {
   const original = [item('10', '2026-10-06T01:00:00Z'), item('59', '2026-10-06T02:00:00Z')];
-  const initial = latestPagination({ oldestCursor: null, gaps: [] }, [], { items: original, nextCursor: 'before-10' }, false);
+  const initial = latestPagination({ latestCursor: null, oldestCursor: null, gaps: [] }, [], { items: original, nextCursor: 'before-10' }, false);
   const gap = latestPagination(initial, original, { items: [item('80', '2026-10-06T03:00:00Z'), item('129', '2026-10-06T04:00:00Z')], nextCursor: 'before-80' }, true);
   assert.deepEqual(nextHistoryRequest(gap), { cursor: 'before-80', gapId: 'before-80' });
   const middle = olderPagination(gap, nextHistoryRequest(gap)!, { items: [item('60', '2026-10-06T02:01:00Z')], nextCursor: 'before-60' });
@@ -74,7 +74,7 @@ test('disconnected latest pages expose missing history before the existing older
 
 test('history grown after an initially exhausted page still creates a reachable gap', () => {
   const original = [item('one', '2026-10-06T01:00:00Z')];
-  const gap = latestPagination({ oldestCursor: null, gaps: [] }, original, { items: [item('newest', '2026-10-06T03:00:00Z')], nextCursor: 'before-newest' }, true);
+  const gap = latestPagination({ latestCursor: null, oldestCursor: null, gaps: [] }, original, { items: [item('newest', '2026-10-06T03:00:00Z')], nextCursor: 'before-newest' }, true);
   assert.equal(nextHistoryRequest(gap)?.cursor, 'before-newest');
   const filled = olderPagination(gap, nextHistoryRequest(gap)!, { items: original, nextCursor: null });
   assert.equal(nextHistoryRequest(filled), null);
@@ -82,13 +82,13 @@ test('history grown after an initially exhausted page still creates a reachable 
 
 test('overlapping latest windows retain the already loaded older-history frontier', () => {
   const original = [item('known', '2026-10-06T01:00:00Z')];
-  const pagination = { oldestCursor: 'oldest-unread', gaps: [] };
-  assert.deepEqual(latestPagination(pagination, original, { items: original, nextCursor: 'duplicate-page' }, true), pagination);
+  const pagination = { latestCursor: null, oldestCursor: 'oldest-unread', gaps: [] };
+  assert.deepEqual(latestPagination(pagination, original, { items: original, nextCursor: 'duplicate-page' }, true), { ...pagination, latestCursor: 'duplicate-page' });
 });
 
 test('multiple disconnected windows keep independent gap frontiers', () => {
   const first = item('first', '2026-10-06T01:00:00Z'); const second = item('second', '2026-10-06T03:00:00Z'); const third = item('third', '2026-10-06T05:00:00Z');
-  const gapA = latestPagination({ oldestCursor: 'oldest', gaps: [] }, [first], { items: [second], nextCursor: 'gap-a' }, true);
+  const gapA = latestPagination({ latestCursor: null, oldestCursor: 'oldest', gaps: [] }, [first], { items: [second], nextCursor: 'gap-a' }, true);
   const gapB = latestPagination(gapA, [first, second], { items: [third], nextCursor: 'gap-b' }, true);
   const fillB = olderPagination(gapB, nextHistoryRequest(gapB)!, { items: [second], nextCursor: 'ignored' });
   assert.equal(nextHistoryRequest(fillB)?.cursor, 'gap-a');
@@ -99,7 +99,7 @@ test('multiple disconnected windows keep independent gap frontiers', () => {
 
 test('empty visible pages keep pagination progress across repeated latest polls', () => {
   const latest = { items: [], nextCursor: 'before-150' };
-  let pagination = latestPagination({ oldestCursor: null, gaps: [] }, [], latest, false);
+  let pagination = latestPagination({ latestCursor: null, oldestCursor: null, gaps: [] }, [], latest, false);
   pagination = olderPagination(pagination, nextHistoryRequest(pagination)!, { items: [], nextCursor: 'before-100' });
   pagination = latestPagination(pagination, [], latest, true);
   assert.equal(nextHistoryRequest(pagination)?.cursor, 'before-100');
@@ -108,4 +108,41 @@ test('empty visible pages keep pagination progress across repeated latest polls'
   assert.equal(nextHistoryRequest(pagination)?.cursor, 'before-50');
   pagination = olderPagination(pagination, nextHistoryRequest(pagination)!, { items: [item('old-message', '2026-10-06T01:00:00Z')], nextCursor: null });
   assert.equal(nextHistoryRequest(pagination), null);
+});
+
+
+test('an unchanged hidden-only latest window cannot recreate or rewind its advanced gap', () => {
+  const known = [item('known', '2026-10-06T01:00:00Z')];
+  let pagination = latestPagination({ latestCursor: 'before-50', oldestCursor: 'before-50', gaps: [] }, known, { items: [], nextCursor: 'before-150' }, true);
+  pagination = olderPagination(pagination, nextHistoryRequest(pagination)!, { items: [], nextCursor: 'before-100' });
+  const unchanged = latestPagination(pagination, known, { items: [], nextCursor: 'before-150' }, true);
+  assert.equal(unchanged.gaps.length, 1);
+  assert.equal(unchanged.gaps[0]?.id, 'before-150');
+  assert.equal(nextHistoryRequest(unchanged)?.cursor, 'before-100');
+});
+
+test('a changed hidden-only latest window opens a gap even before visible history is found', () => {
+  let pagination = latestPagination({ latestCursor: null, oldestCursor: null, gaps: [] }, [], { items: [], nextCursor: 'before-100' }, false);
+  pagination = olderPagination(pagination, nextHistoryRequest(pagination)!, { items: [], nextCursor: 'before-50' });
+  pagination = latestPagination(pagination, [], { items: [], nextCursor: 'before-200' }, true);
+  assert.equal(pagination.oldestCursor, 'before-50');
+  assert.equal(nextHistoryRequest(pagination)?.cursor, 'before-200');
+  // This newly reachable page includes a message which aged out of the latest
+  // raw-record window before the client ever saw a visible message.
+  pagination = olderPagination(pagination, nextHistoryRequest(pagination)!, { items: [item('missed-150', '2026-10-06T02:00:00Z')], nextCursor: 'before-100' });
+  assert.equal(nextHistoryRequest(pagination)?.cursor, 'before-100');
+  pagination = olderPagination(pagination, nextHistoryRequest(pagination)!, { items: [], nextCursor: null });
+  assert.equal(nextHistoryRequest(pagination), null);
+  assert.equal(pagination.oldestCursor, null);
+});
+
+test('finishing an older gap keeps a newer gap added during the outstanding request', () => {
+  const first = item('first', '2026-10-06T01:00:00Z');
+  let pagination = latestPagination({ latestCursor: 'before-50', oldestCursor: 'before-50', gaps: [] }, [first], { items: [], nextCursor: 'before-150' }, true);
+  const outstanding = nextHistoryRequest(pagination)!;
+  pagination = latestPagination(pagination, [first], { items: [], nextCursor: 'before-250' }, true);
+  pagination = olderPagination(pagination, outstanding, { items: [], nextCursor: null });
+  assert.equal(pagination.oldestCursor, null);
+  assert.equal(pagination.gaps.length, 1);
+  assert.equal(nextHistoryRequest(pagination)?.cursor, 'before-250');
 });

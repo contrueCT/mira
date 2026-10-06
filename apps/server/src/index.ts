@@ -132,3 +132,4 @@ export { createLocalHttp, WebHttpError, type WebBackend } from './http.ts';
 export { WebSettingsStore, WebSettingsError, parseWebSettings, webSettingsMaxBytes, type WebSettings } from './web-settings.ts';
 export { LocalWebService, type WebServiceOptions } from './web-service.ts';
 export { browserLaunchEnvironment } from './browser-launch.ts';
+export { localDatabaseUrl } from './web-config.ts';
