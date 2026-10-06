@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { isDeepStrictEqual } from 'node:util';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { CustomMessageEntry, SessionEntry } from '@earendil-works/pi-coding-agent';
 import type { Json } from '@mira/context';
@@ -70,4 +69,3 @@ export function withRecoveryAdvisory(messages: AgentMessage[], operations: Recov
   return [...messages, { role: 'custom', customType: RECOVERY_OBSERVATION_TYPE, display: true,
     content: observationText(missing), details: { version: 1, operations: missing }, timestamp }];
 }
-export function sameOperation(left: RecoveryOperation, right: RecoveryOperation): boolean { return isDeepStrictEqual(left, right); }

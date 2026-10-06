@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { assertJson, assertRecord, type Json, type RuntimeRecord } from '@mira/context';
+import { assertRecord, type Json, type RuntimeRecord } from '@mira/context';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { validateObservation } from './observations.ts';
 import type { SessionEntry, SessionMessageEntry } from '@earendil-works/pi-coding-agent';
@@ -47,7 +47,6 @@ export function decodeRecords(records: readonly RuntimeRecord[], initialParent: 
   for (const record of records) {
     assertRecord(record);
     if (record.runtime !== 'pi' || record.runtimeVersion !== PI_RUNTIME_VERSION) throw new Error('Unsupported Pi runtime version: migration required');
-    assertJson(record.payload);
     const entry = structuredClone(record.payload) as unknown as SessionEntry;
     if (!entry || typeof entry !== 'object' || !['message', 'compaction', 'custom_message'].includes(entry.type)) throw new Error('Unsupported Pi entry');
     if (seen.has(record.id) || record.parentId !== parentId || entry.id !== record.id || entry.parentId !== record.parentId || entry.timestamp !== record.occurredAt) throw new Error('Broken Pi record chain');
@@ -96,6 +95,7 @@ export function validateMessage(value: unknown): asserts value is AgentMessage {
     }
   }
   if (role === 'system') {
+    if (value['miraMemory'] !== undefined && typeof value['miraMemory'] !== 'string') throw new Error('Invalid initial Memory snapshot');
     if (value['sections'] !== undefined && (!object(value['sections']) || !Object.values(value['sections']).every(section => section === null || typeof section === 'string'))) throw new Error('Invalid system sections');
     if (value['toolsAdded'] !== undefined && (!Array.isArray(value['toolsAdded']) || !value['toolsAdded'].every(tool => object(tool) && nonempty(tool['name']) && typeof tool['description'] === 'string' && object(tool['parameters'])))) throw new Error('Invalid system tools');
     if (value['toolsRemoved'] !== undefined && (!Array.isArray(value['toolsRemoved']) || !value['toolsRemoved'].every(tool => object(tool) && nonempty(tool['name'])))) throw new Error('Invalid removed tools');

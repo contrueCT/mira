@@ -576,6 +576,25 @@ for (const boundary of ['input', 'final'] as const) test(`cognition recovers ${b
   assert.equal(writer.state.records.filter(record => (record.payload as { message?: { role: string } }).message?.role === 'user').length, 1);
 });
 
+test('finalized current-format Wake awaiting completion does not reload Memory or touch context', async () => {
+  const writer = new AtomicWakeWriter();
+  await runtime(writer, scripted([assistant()]), { miraPrompt: { environmentContext: 'Synthetic test', authorizationContext: 'Synthetic test only', loadInitialMemory: async () => 'Frozen Memory' } }).continueTurn(turn(writer));
+  assert.equal(writer.wake.status, 'running');
+  assert.ok(writer.wake.finalRecordId);
+  const before = structuredClone(writer.state);
+  let writes = 0, loads = 0, requests = 0;
+  writer.beforeAppend = async () => { writes++; throw Error('Finalized Wake cannot append'); };
+  await runtime(writer, () => { requests++; return streamOf(assistant()); }, {
+    miraPrompt: {
+      environmentContext: 'Synthetic test', authorizationContext: 'Synthetic test only',
+      loadInitialMemory: async () => { loads++; return 'must not load Memory'; },
+    },
+  }).continueTurn(turn(writer));
+  assert.equal(writes, 0); assert.equal(loads, 0); assert.equal(requests, 0);
+  assert.deepEqual(writer.state, before);
+  assert.equal(writer.wake.status, 'running');
+});
+
 test('cognition resumes saved provider error without duplicate Wake input or false final association', async () => {
   const writer = new AtomicWakeWriter();
   await assert.rejects(runtime(writer, scripted([{ ...assistant(), stopReason: 'error', errorMessage: 'synthetic provider failure' }])).continueTurn(turn(writer)), /synthetic provider failure/);
@@ -658,32 +677,32 @@ test('late outcome cannot rewrite observed uncertainty or poison continued cogni
 });
 
 
-test('ordinary restart and file changes do not reload initial semantic context', async () => {
+test('ordinary restart and file changes do not reload initial Memory', async () => {
   const writer = new MemoryWriter();
   let loads = 0;
-  let content = 'Initial ordinary MEMORY.md and configured State';
-  const initialContext = async () => { loads++; return content; };
-  await runtime(writer, scripted([assistant()]), { initialContext }).run(input());
+  let content = 'Initial ordinary MEMORY.md';
+  const miraPrompt = { environmentContext: 'Synthetic test', authorizationContext: 'Synthetic test only', loadInitialMemory: async () => { loads++; return content; } };
+  await runtime(writer, scripted([assistant()]), { miraPrompt }).run(input());
   const before = writer.state.records.length;
   content = 'Changed files are available via normal tools';
-  await runtime(writer, scripted([]), { initialContext }).recover();
+  await runtime(writer, scripted([]), { miraPrompt }).recover();
   assert.equal(writer.state.records.length, before);
-  await runtime(writer, scripted([assistant()]), { initialContext }).run(input('Next wake'));
+  await runtime(writer, scripted([assistant()]), { miraPrompt }).run(input('Next wake'));
   assert.equal(loads, 1);
   const restored = await runtime(writer).recover();
   assert.match(JSON.stringify(restored.messages), /Initial ordinary/);
   assert.doesNotMatch(JSON.stringify(restored.messages), /Changed files/);
 });
 
-test('crash after durable initial context does not reload bootstrap on recovery', async () => {
+test('crash after durable initial Memory does not reload snapshot on recovery', async () => {
   const writer = new MemoryWriter();
   let loads = 0;
-  const initialContext = async () => { loads++; return 'Semantic bootstrap'; };
-  await assert.rejects(runtime(writer, () => { throw Error('synthetic provider interruption'); }, { initialContext }).run(input()), /synthetic provider interruption/);
-  await runtime(writer, scripted([assistant()]), { initialContext }).run();
+  const miraPrompt = { environmentContext: 'Synthetic test', authorizationContext: 'Synthetic test only', now: () => new Date(1000), loadInitialMemory: async () => { loads++; return 'Frozen Memory'; } };
+  await assert.rejects(runtime(writer, () => { throw Error('synthetic provider interruption'); }, { miraPrompt }).run(input()), /synthetic provider interruption/);
+  await runtime(writer, scripted([assistant()]), { miraPrompt }).run();
   assert.equal(loads, 1);
   const entries = decodeRecords(writer.state.records);
-  assert.equal(entries.filter(entry => entry.type === 'message' && entry.message.role === 'system' && JSON.stringify(entry.message.content).includes('Semantic bootstrap')).length, 1);
+  assert.equal(entries.filter(entry => entry.type === 'message' && entry.message.role === 'system' && (entry.message as { miraMemory?: string }).miraMemory === 'Frozen Memory').length, 1);
 });
 
 test('history tools expose exact reader scope and honest errors without turning history into permission', async () => {

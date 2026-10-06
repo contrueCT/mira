@@ -6,7 +6,7 @@
 
 - `README.md` 描述职责；`package.json` 是包名和公开 exports 的事实来源
 - `src/index.ts` 定义 Event/Wake receipt、工具 intent/outcome 与 DurableWriter 契约。`src/loop.ts` 实现持久批次的串行 drain；全部积累 Wake 合并一轮，新增 Wake 留到下一轮。
-- `src/memory-lifecycle.ts` 定义可选 Memory checkpoint/receipt 扩展；`beforeComplete` 在已验证 final 后执行，失败后保持原 run 恢复，不重调模型。State 不入 Git，PG/Git 不宣称原子事务。
+- `src/memory-lifecycle.ts` 定义可选 Memory checkpoint/receipt 扩展；`beforeComplete` 在已验证 final 后执行，失败后保持原 run 恢复，不重调模型。PG/Git 不宣称原子事务。
 - 本目录负责事件、Wake 队列与唯一主认知循环。
 
 ## 本地约束与跨包陷阱

@@ -8,7 +8,7 @@
 
 ## 当前状态与关系
 
-当前实现包含连续上下文、合并 Wake、普通 Memory/State、通用 Pi 工具、Memory Git、只读历史查询与 Cordis 手工/生成扩展生命周期，见 [ADR 0005](docs/adr/0005-generated-extension-lifecycle.md) 和 [扩展宿主](packages/extension-host/README.md)。Server 仅有假 provider CLI 组装，没有 HTTP/UI 或完整产品。
+当前实现包含连续上下文、合并 Wake、普通 Memory 与完整 Mira v0.2 Prompt、通用 Pi 工具、Memory Git、只读历史查询与 Cordis 手工/生成扩展生命周期，见 [ADR 0005](docs/adr/0005-generated-extension-lifecycle.md) 和 [扩展宿主](packages/extension-host/README.md)。Server 仅有假 provider CLI 组装，没有 HTTP/UI 或完整产品。
 
 - `apps/server` 组装核心与适配器；`apps/web` 提供单条 Timeline
 - `life` / `context` 保持独立，不导入 Pi、Cordis、数据库或 Web 框架
@@ -16,8 +16,8 @@
 - 扩展只使用 `extension-sdk`；Cordis 处理生命周期，不是安全沙箱
 - 生成扩展测试/导入/执行按已确认的宿主 OS 身份运行，无产品隔离；默认生成流程不修改核心/授权/历史/security，目录只是约定
 - stage 不执行代码，内容 SHA 包含本地依赖；版本/config 先保存后 apply，rollback 是显式新激活，不是原子撤销
-- 用户数据、Memory 的独立 Git、State 普通文件、日志、凭据均在源码仓库之外；State 不做 Git 版本化
-- 普通文件变化不通知上下文、不 Wake、不重注入；仅真正初始上下文加载 MEMORY.md 和配置的 State
+- 用户数据、Memory 的独立 Git、生成扩展、日志、凭据均在源码仓库之外；不再配置、创建或自动读取独立 SemanticState
+- 普通文件变化不通知上下文、不 Wake、不重注入；仅真正初始上下文加载 MEMORY.md；正常恢复/重启沿用持久 bootstrap 快照
 - Pi 通用文件/search/bash 工具无应用工作目录限制，无产品隔离环境要求；cwd 不是沙箱，OS 权限与自然语言意图判断仍有效
 - 实际允许依赖和出口以 `scripts/boundaries.json` 与各包 `package.json` 为准；新增时最小开放
 
@@ -53,12 +53,13 @@ pnpm check
 
 ## 共享约束
 
-- 先读 [原始设计](docs/design/original-v0.4.md)、[架构](docs/architecture.md)和 [验收](docs/acceptance/foundation.md)
+- 先读 [最新设计 v0.5](docs/design/architecture-v0.5.md)、[Prompt 集成 ADR 0006](docs/adr/0006-memory-only-system-prompt.md)、[架构](docs/architecture.md)和 [验收](docs/acceptance/foundation.md)
 - 一个持续 Mira；Wake 继续上下文，Event 不等于 Wake；不加入 New Chat 或会话领域
 - Compaction 与 Dreaming 分开；先验证 Pi 恢复/工具/压缩，再实现主循环
 - 跨进程单写者、版本检查、增量工具记录；未知结果真实呈现给模型，不自动重放、不全局阻断认知
 - 授权依据用户自然语言及上下文，系统辅助判断；不添加批准按钮、硬风险门禁或固定重试阻拦。真实身份、真实 OS 账户权限和数据完整性仍是硬边界
 - 超限唤醒保存普通文本文件并告知路径；复用普通文件工具，不构建专用消息读取/分页服务
+- 早期开发只维护当前 v0.5/v0.2 设计，不保留旧 State/Prompt 配置、别名或迁移层；继续保护当前持久上下文、历史、恢复/压缩与 Memory Git 完整性，不引入用户数据清理/重置
 - 重要技术选择与范围变化先向用户确认，状态记录在 `docs/adr/`；不能把建议当批准
 - 每轮实现及修复都使用全新、独立 `gpt-6.1-sol` / `max` 审查，不继承实现对话
 - 提交前执行适用检查，区分通过、失败、阻塞、未执行；模拟通过不代表真实联通

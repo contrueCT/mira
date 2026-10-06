@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, mkdir, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { test } from 'node:test';
+import { getCurrentSystemMessage, getSystemMessageText, type TranscriptContext } from '@earendil-works/pi-ai';
 import { runDemo, memoryCheckpointHook, demoModel } from '@mira/server';
 import { createTestDatabase } from '../integration/database.mts';
 import { assistant, streamOf } from './fixtures.mts';
@@ -11,6 +13,25 @@ import { PostgresPersistence } from '@mira/persistence';
 import { PiDurableRuntime } from '@mira/runtime-pi';
 import { setupMemoryWorkspace } from '@mira/workspace';
 
+const suppliedTemplate = readFileSync(new URL('../../packages/runtime-pi/prompts/mira-system-v0.2.md', import.meta.url), 'utf8');
+function assertMira(context: TranscriptContext): string {
+  assert.equal(JSON.stringify(context.messages).split('# Mira System Prompt v0.2').length - 1, 1, 'provider transcript must not contain obsolete full prompt copies');
+  const system = getCurrentSystemMessage(context.messages);
+  assert.ok(system);
+  const text = getSystemMessageText(system);
+  assert.equal(text.split('# Mira System Prompt v0.2').length - 1, 1);
+  let position = 0;
+  for (const literal of suppliedTemplate.split(/\{\{[A-Z_]+\}\}/)) {
+    const next = text.indexOf(literal, position);
+    assert.ok(next >= position, 'full supplied template reaches provider');
+    position = next + literal.length;
+  }
+  assert.match(text, /You are Mira\./);
+  assert.match(text, /Example: remembering the fact without faking provenance/);
+  assert.match(text, /Do not assume that every wake requires a user-visible response/);
+  return text;
+}
+
 const event = (id: string): LifeEvent => ({ id, type: 'synthetic-message', source: 'user', occurredAt: '2026-10-05T00:00:00.000Z', payload: { text: `Synthetic message ${id}` } });
 
 test('server composition coalesces, restarts same Mira, deduplicates and leaves event-only history asleep', { timeout: 30_000 }, async () => {
@@ -18,13 +39,13 @@ test('server composition coalesces, restarts same Mira, deduplicates and leaves 
   try {
     const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'demo-mira', sourceDirectory: process.cwd(), spoolDirectory: spool };
     const events = ['a', 'b', 'c'].map(id => ({ event: event(id), wake: { id: `wake-${id}`, reason: 'message' } }));
-    const first = await runDemo({ ...options, events });
+    const first = await runDemo({ ...options, events, streamFn: (_model, context) => { assertMira(context); return streamOf(assistant()); } });
     assert.equal(first.completedRuns, 1); assert.equal(first.modelCalls, 1);
     const duplicate = await runDemo({ ...options, events });
     assert.equal(duplicate.completedRuns, 0); assert.equal(duplicate.modelCalls, 0); assert.equal(duplicate.version, first.version);
     const historyOnly = await runDemo({ ...options, events: [{ event: event('history') }] });
     assert.equal(historyOnly.modelCalls, 0); assert.equal(historyOnly.version, first.version);
-    const second = await runDemo({ ...options, events: [{ event: event('d'), wake: { id: 'wake-d', reason: 'next message' } }] });
+    const second = await runDemo({ ...options, events: [{ event: event('d'), wake: { id: 'wake-d', reason: 'next message' } }], streamFn: (_model, context) => { assertMira(context); return streamOf(assistant()); } });
     assert.equal(second.miraId, first.miraId); assert.equal(second.completedRuns, 1); assert.ok(second.version > first.version);
     const runs = await db.admin.query('SELECT completed FROM wake_runs WHERE mira_id = $1', [first.miraId]);
     assert.equal(runs.rows.length, 2); assert.ok(runs.rows.every(row => row.completed));
@@ -61,26 +82,24 @@ test('overflow is one run and the model can read the ordinary file through the o
 });
 
 
-test('Memory bootstrap survives process-style restart, State is unversioned and changes stay silent', { timeout: 30_000 }, async () => {
+test('Memory-only bootstrap survives restart and file edits stay silent', { timeout: 30_000 }, async () => {
   const db = await createTestDatabase(); const data = await mkdtemp('/tmp/mira-memory-demo-');
   try {
-    const memoryRoot = path.join(data, 'memory'), stateRoot = path.join(data, 'state');
-    await mkdir(memoryRoot); await mkdir(stateRoot);
+    const memoryRoot = path.join(data, 'memory');
+    await mkdir(memoryRoot);
     await writeFile(path.join(memoryRoot, 'MEMORY.md'), 'Original remembered preference');
-    await writeFile(path.join(stateRoot, 'current.md'), 'Original semantic state');
-    const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'memory-mira', sourceDirectory: process.cwd(), spoolDirectory: path.join(data, 'spool'), memory: { memoryRoot, stateRoot, stateFiles: ['current.md'] } };
+    const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'memory-mira', sourceDirectory: process.cwd(), spoolDirectory: path.join(data, 'spool'), memory: { memoryRoot } };
     const wake = (id: string) => [{ event: event(id), wake: { id: `wake-${id}`, reason: 'synthetic' } }];
     const first = await runDemo({ ...options, events: wake('one'), streamFn: (_model, context) => {
       assert.match(JSON.stringify(context), /Original remembered preference/);
-      assert.match(JSON.stringify(context), /Original semantic state/);
+      assertMira(context);
       return streamOf(assistant());
     } });
     assert.equal(first.completedRuns, 1);
     const head = execFileSync('git', ['-C', memoryRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-    await writeFile(path.join(stateRoot, 'current.md'), 'New state that is not injected');
     const second = await runDemo({ ...options, events: wake('two'), streamFn: (_model, context) => {
-      assert.match(JSON.stringify(context), /Original semantic state/);
-      assert.doesNotMatch(JSON.stringify(context), /New state that is not injected/);
+      assertMira(context);
+      assert.match(JSON.stringify(context), /Original remembered preference/);
       return streamOf(assistant());
     } });
     assert.equal(second.modelCalls, 1);
@@ -89,6 +108,8 @@ test('Memory bootstrap survives process-style restart, State is unversioned and 
     const noWake = await runDemo({ ...options, events: [] });
     assert.equal(noWake.modelCalls, 0); assert.equal(noWake.version, second.version);
     await runDemo({ ...options, events: wake('three'), streamFn: (_model, context) => {
+      assertMira(context);
+      assert.match(JSON.stringify(context), /Original remembered preference/);
       assert.doesNotMatch(JSON.stringify(context), /External memory edit stays silent/);
       return streamOf(assistant());
     } });
@@ -104,7 +125,7 @@ for (const replaceRepository of [false, true]) test(`Git-before-PG crash ${repla
   const db = await createTestDatabase(); const data = await mkdtemp('/tmp/mira-memory-crash-');
   let writer: Awaited<ReturnType<PostgresPersistence['acquire']>> | undefined;
   try {
-    const memory = await setupMemoryWorkspace({ memoryRoot: path.join(data, 'memory'), stateRoot: path.join(data, 'state'), sourceDirectory: process.cwd() });
+    const memory = await setupMemoryWorkspace({ memoryRoot: path.join(data, 'memory'), sourceDirectory: process.cwd() });
     await writeFile(path.join(memory.memoryRoot, 'MEMORY.md'), 'Before checkpoint interruption');
     writer = await new PostgresPersistence({ connectionString: db.connectionString, schema: db.schema }).acquire('checkpoint-crash');
     await writer.receive(event('crash'), { id: 'wake-crash', reason: 'synthetic' });
@@ -112,7 +133,10 @@ for (const replaceRepository of [false, true]) test(`Git-before-PG crash ${repla
     let models = 0;
     const loop = new WakeLoop({ writer, writeOverflowInput: async () => { throw Error('unexpected overflow'); },
       createRuntime: () => new PiDurableRuntime({ writer: writer!, model: demoModel,
-        streamFn: () => { models++; return streamOf(assistant()); }, authorize: async () => ({ allowed: true, evidence: { synthetic: true } }) }),
+        miraPrompt: { memoryRoot: memory.memoryRoot, extensionsRoot: path.join(data, 'extensions'),
+          environmentContext: 'Synthetic isolated checkpoint recovery test', authorizationContext: 'Synthetic test authorization only',
+          loadInitialMemory: () => readFile(path.join(memory.memoryRoot, 'MEMORY.md'), 'utf8') },
+        streamFn: (_model, context) => { models++; assert.match(assertMira(context), /Before checkpoint interruption/); return streamOf(assistant()); }, authorize: async () => ({ allowed: true, evidence: { synthetic: true } }) }),
       beforeComplete: memoryCheckpointHook(writer, memory.memoryRoot, memory.repositoryId),
     });
     await assert.rejects(loop.drain(), /receipt publication failure/);
@@ -153,4 +177,24 @@ test('inline wake uses an existing ordinary cwd and native shell without needing
     });
     assert.equal(result.completedRuns, 1); assert.equal(calls, 2);
   } finally { await db.close(); await rm(data, { recursive: true, force: true }); }
+});
+
+
+test('empty terminal assistant output durably completes a silent wake and is not replayed', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase(); const spool = await mkdtemp('/tmp/mira-silent-wake-');
+  try {
+    const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'silent-mira', sourceDirectory: process.cwd(), spoolDirectory: spool };
+    const events = [{ event: event('silent'), wake: { id: 'wake-silent', reason: 'nothing worth saying' } }];
+    const first = await runDemo({ ...options, events, streamFn: (_model, context) => {
+      assertMira(context);
+      return streamOf({ ...assistant(), content: [] });
+    } });
+    assert.equal(first.completedRuns, 1); assert.equal(first.modelCalls, 1);
+    const rows = await db.admin.query('SELECT completed, final_record_id FROM wake_runs WHERE mira_id = $1', [options.miraId]);
+    assert.equal(rows.rows.length, 1); assert.equal(rows.rows[0].completed, true); assert.ok(rows.rows[0].final_record_id);
+    const final = await db.admin.query('SELECT envelope FROM context_records WHERE mira_id = $1 AND record_id = $2', [options.miraId, rows.rows[0].final_record_id]);
+    assert.deepEqual(final.rows[0].envelope.payload.message.content, []);
+    const resumed = await runDemo({ ...options, events, streamFn: () => { throw Error('silent final must not replay'); } });
+    assert.equal(resumed.completedRuns, 0); assert.equal(resumed.modelCalls, 0); assert.equal(resumed.version, first.version);
+  } finally { await db.close(); await rm(spool, { recursive: true, force: true }); }
 });

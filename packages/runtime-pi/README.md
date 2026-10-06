@@ -112,7 +112,7 @@ callback. Reused call IDs remain structural errors, including after compaction.
 This does not claim exactly-once remote effects: an operation may finish after
 ownership loss if it ignores cancellation.
 
-The existing envelope v1 / Pi 1.0.2 stream has one narrow additive extension:
+The existing envelope v1 / Pi 1.0.2 stream has a narrow custom-message extension:
 public Pi `custom_message`, with `customType: "mira.recovery-observation.v1"`,
 `display: true`, canonical explanatory content, and details `{version: 1,
 operations: [...]}`. Each operation contains its call ID, original assistant
@@ -127,7 +127,7 @@ Unknown envelope/runtime versions, malformed required message fields, unsupporte
 entry/message types, pending/deferred assistant states, mismatched execution
 references, broken tool pairs, or invalid checkpoint boundaries fail closed and
 need explicit migration/reconciliation. This version publishes only a linear
-message/checkpoint/recovery-observation stream; importing unproven tool history is unsupported.
+message/checkpoint/recovery-observation stream, with the versioned system metadata described below; importing unproven tool history is unsupported.
 Unknown *defined JSON fields* are retained rather than whitelisted. Pi's optional
 undefined object properties have no JSON representation and are omitted;
 nonfinite numbers, functions, class instances, sparse arrays and cycles are rejected.
@@ -139,7 +139,7 @@ each split-turn response. This is a structural safety check, not a summary-quali
 guarantee. The SDK owns preparation, repeated summary handling, system-state preservation,
 cut selection and projection. No private compaction code is copied. The compactor
 has no tools, external resources, credential discovery, or model-network fallback.
-It cannot modify Memory or State. A stale context version rejects publication.
+It cannot modify Memory. A stale context version rejects publication.
 The SDK receives the sanitized snapshot with stable authoritative entry IDs. Exact
 outstanding-operation evidence also accompanies summary requests, and is
 rehydrated into later model projections if summary/tail selection omits its
@@ -188,6 +188,58 @@ no live model calls. Detailed limits and test setup are in
 
 ## Ordinary Memory bootstrap and history tools
 
-`initialContext(signal)` is an optional loader invoked only when the authoritative record stream is empty with version zero. It persists one system message before the first input/model call. Recovery, new runtime instances, ordinary wakes, file changes and compaction do not reload it. No automatic memory-change notices or new Wakes exist. An explicit destructive rebuild API is not implemented.
+`miraPrompt.loadInitialMemory(signal)` loads Memory only for a genuinely empty
+version-zero durable stream. Its text is persisted as the frozen `miraMemory`
+snapshot before the first input/model call. Recovery, new runtime instances,
+ordinary wakes, file changes and compaction reuse that snapshot. No automatic
+memory-change notices or new Wakes exist. There is no separate `initialContext`
+entrypoint or destructive rebuild API.
 
 `createHistoryTools(reader)` registers `history.search` and `history.read` against an assembly-bound Mira reader. It returns original record provenance without interpreting Pi inside persistence. Full-text prefix/Chinese limitations and exact-read byte budgets are included in tool descriptions. Expected bounded-query errors become explicit tool results; database faults remain faults. Ordinary Pi file/bash tools are composed by the server without cwd confinement. The existing intent/effect boundary still applies.
+
+
+## Complete Mira system prompt
+
+The server always provides `miraPrompt`, including when Memory is unconfigured.
+The optional runtime configuration has `memoryRoot?`, `extensionsRoot?`, required
+`environmentContext` and `authorizationContext`, plus `loadInitialMemory?` and
+`now?`. The server uses the configured generated-artifact directory for the
+Extensions Workspace field and describes this limited meaning in the environment
+text; it does not invent a universal extension directory.
+
+`prompts/mira-system-v0.2.md` is the byte-identical supplied template, checked by
+SHA-256 when loaded. `renderMiraPrompt` validates seven allowlisted keys used in
+eight locations, replaces them once and escapes `&`, `<` and `>` in runtime data.
+Template-looking text inside values stays literal. Required values and unknown or
+missing template placeholders fail explicitly. Unconfigured roots are represented
+as `Not configured`. See [source manifest](../../docs/design/sources.json).
+
+Before the actual provider request, public Pi system section `mira.system.v0.2`
+is rendered from current time, the persisted Memory bootstrap snapshot, explicit
+environment/authorization context, and the names/descriptions of exactly the
+registry already declared for that request. Updates append durable system records
+under writer fencing/CAS and replace the named section rather than accumulating
+full prompts. A full completed tool batch may publish new tools at its next
+natural request; guidance-only changes create neither a Wake nor an extra model
+call. Provider/model/sampling settings are not Prompt fields. Dynamic prose does
+not grant permission: real tool schema validation and `authorize` still apply.
+
+The initial system record has `{ role: "system", content: "", timestamp,
+miraMemory: string }` and stores the frozen Memory text. Only a genuinely empty
+version-zero stream calls `loadInitialMemory`; recovery reads the snapshot from
+the first record. Later named-section revisions use ordinary append-only updates,
+with one current prompt in the active projection. Compaction retains the exact
+current system and normal checkpoint consistency checks.
+
+This early-development implementation supports the current v0.5/v0.2 design
+only. It has no old State configuration, bootstrap parser, prompt installation
+migration, historical checkpoint transform, or separate initialization entrypoint.
+Source archives remain provenance, not runtime compatibility contracts. This does
+not introduce a user-data cleanup/reset API or weaken current durable history,
+restart/compaction, tool recovery, or Memory Git integrity.
+
+Ordinary Wake/restart/compaction/file changes never reload the snapshot. Terminal
+empty assistant output can durably finish a silent Wake. This integration is
+verified with injected fake providers; it does not demonstrate live-model
+personality or natural-language consent quality. Current policy is in
+[ADR 0006](../../docs/adr/0006-memory-only-system-prompt.md).

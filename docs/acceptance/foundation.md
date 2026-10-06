@@ -34,8 +34,8 @@
 
 ## F3 工作空间、授权与 Timeline
 
-- Memory 与 State 位于源码仓库外；只有 Memory 进入独立 Git，快照与 lineage 可恢复
-- 按 ADR 0003，普通文件修改不默认通知、不 Wake、不重注入；真正初始上下文才加载 MEMORY.md 和配置的 State
+- Memory 位于源码仓库外并进入独立 Git；无独立 SemanticState，快照与 lineage 可恢复
+- 按 ADR 0006，普通文件修改不默认通知、不 Wake、不重注入；真正初始上下文才加载 MEMORY.md，普通恢复保留持久快照
 - History 查询与原始记忆分开，Memory 文件不被强制塞入 provenance
 - 授权证据绑定具体工具/范围/有效条件，第三方内容无法授权
 - Timeline 不展示内部 Runtime Trace 为人生事件，没有 New Chat
@@ -44,3 +44,14 @@
 ## 后续阶段
 
 Cordis 手工扩展、生成扩展与外部程序分别验收。生成扩展的实际验收见 [§96 生命周期](generated-extensions.md)；不引入产品隔离环境要求或真实模型质量承诺。
+
+
+## 完整 Mira Prompt 与 v0.5 增量
+
+- v0.5 与 Prompt 设计 v0.1、实际模板 v0.2 原始字节/hash 匹配，v0.4 存档不变
+- 无 Memory 时、初始流和恢复后连续上下文的实际 provider 请求均收到完整身份、行为与 13 个示例
+- 一个有效具名 Prompt，动态时间/能力来自实际请求边界，普通工具批次后的新能力说明与执行注册表一致
+- 白名单单次替换、动态文本转义、未知/缺少占位符、Unicode 和对抗性标签均有测试
+- 具名更新走追加历史及 fenced writer/CAS；当前格式重启/崩溃恢复幂等，原始历史和工具声明保留；不维护旧 Prompt/State 兼容层
+- Memory 编辑不 Wake、不增加模型调用、普通恢复不重读；不引入用户数据清理或重置
+- 压缩保留有效 system，空终止输出可完成静默 Wake；不捏造真实模型质量结果

@@ -13,69 +13,72 @@ async function git(root: string, ...args: string[]): Promise<string> {
     GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@localhost',
     GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@localhost' } })).stdout.trim();
 }
-interface Fixture { base: string; memoryRoot: string; stateRoot: string; sourceDirectory: string }
+interface Fixture { base: string; memoryRoot: string; sourceDirectory: string }
 async function withWorkspace(run: (fixture: Fixture) => Promise<void>): Promise<void> {
   const base = await mkdtemp('/tmp/mira-memory-workspace-');
-  const fixture = { base, memoryRoot: path.join(base, 'Memory'), stateRoot: path.join(base, 'State'), sourceDirectory: path.join(base, 'source') };
+  const fixture = { base, memoryRoot: path.join(base, 'Memory'), sourceDirectory: path.join(base, 'source') };
   try { await mkdir(fixture.sourceDirectory); await run(fixture); }
   finally { await rm(base, { recursive: true, force: true }); }
 }
 const snapshot = (memoryRoot: string, runId: string, miraId = 'mira-test') => snapshotMemory({ memoryRoot, miraId, runId });
 const refFor = (runId: string, miraId = 'mira-test') => `refs/mira/wake-snapshots/${createHash('sha256').update(JSON.stringify([miraId, runId])).digest('hex')}`;
 
-test('setup requires only MEMORY.md, creates no State files or taxonomy, and preserves existing text', async () => {
+test('setup preserves existing Memory and retains repository identity', async () => {
   await withWorkspace(async (options) => {
     await mkdir(options.memoryRoot); await writeFile(path.join(options.memoryRoot, 'MEMORY.md'), 'A remembered fact.\n');
-    await mkdir(options.stateRoot); await writeFile(path.join(options.stateRoot, 'anything.txt'), 'Unstructured current state.');
     const workspace = await setupMemoryWorkspace(options);
-    assert.deepEqual(workspace, { memoryRoot: options.memoryRoot, stateRoot: options.stateRoot, repositoryId: workspace.repositoryId });
+    assert.deepEqual(workspace, { memoryRoot: options.memoryRoot, repositoryId: workspace.repositoryId });
     assert.match(workspace.repositoryId, /^[0-9a-f-]{36}$/);
     assert.deepEqual(await setupMemoryWorkspace(options), workspace);
     assert.deepEqual((await readdir(options.memoryRoot)).sort(), ['.git', 'MEMORY.md']);
-    assert.deepEqual(await readdir(options.stateRoot), ['anything.txt']);
     assert.equal(await readFile(path.join(options.memoryRoot, 'MEMORY.md'), 'utf8'), 'A remembered fact.\n');
     assert.equal(await git(options.memoryRoot, 'rev-parse', '--show-toplevel'), options.memoryRoot);
-    await assert.rejects(git(options.stateRoot, 'rev-parse', '--show-toplevel'), /not a git repository/);
   });
 });
 
-test('bootstrap reads MEMORY.md and only explicit State files, with no reinjection or write', async () => {
+test('Memory-only setup and bootstrap create only the expected workspace', async () => {
+  await withWorkspace(async (options) => {
+    const workspace = await setupMemoryWorkspace({ memoryRoot: options.memoryRoot, sourceDirectory: options.sourceDirectory });
+    assert.equal(workspace.memoryRoot, options.memoryRoot);
+    assert.deepEqual((await readdir(options.base)).sort(), ['Memory', 'source']);
+    assert.deepEqual(await loadMemoryBootstrap({ memoryRoot: options.memoryRoot }), {
+      memory: { path: path.join(options.memoryRoot, 'MEMORY.md'), content: '' },
+    });
+    assert.deepEqual((await readdir(options.base)).sort(), ['Memory', 'source']);
+  });
+});
+
+test('bootstrap reads only MEMORY.md', async () => {
   await withWorkspace(async (options) => {
     await setupMemoryWorkspace(options);
     await writeFile(path.join(options.memoryRoot, 'MEMORY.md'), 'Memory contents');
     await writeFile(path.join(options.memoryRoot, 'not-bootstrap.md'), 'Never loaded');
-    await writeFile(path.join(options.stateRoot, 'unlisted.md'), 'Never loaded');
-    await mkdir(path.join(options.stateRoot, 'free-form'));
-    await writeFile(path.join(options.stateRoot, 'free-form', 'current.md'), 'Current state');
-    const loaded = await loadMemoryBootstrap({ ...options, stateFiles: ['free-form/current.md'] });
-    assert.deepEqual(loaded, { memory: { path: path.join(options.memoryRoot, 'MEMORY.md'), content: 'Memory contents' },
-      state: [{ path: path.join(options.stateRoot, 'free-form/current.md'), content: 'Current state' }] });
-    assert.deepEqual((await loadMemoryBootstrap(options)).state, []);
-    await assert.rejects(loadMemoryBootstrap({ ...options, stateFiles: ['missing.md'] }), /ENOENT/);
+    assert.deepEqual(await loadMemoryBootstrap(options), {
+      memory: { path: path.join(options.memoryRoot, 'MEMORY.md'), content: 'Memory contents' },
+    });
     assert.equal(await readFile(path.join(options.memoryRoot, 'MEMORY.md'), 'utf8'), 'Memory contents');
+    assert.deepEqual((await readdir(options.memoryRoot)).sort(), ['.git', 'MEMORY.md', 'not-bootstrap.md']);
   });
 });
 
-test('bootstrap rejects escaping State paths and symlinks while supporting explicit nested text', async () => {
+test('bootstrap rejects a symlink or directory in place of MEMORY.md', async () => {
   await withWorkspace(async (options) => {
     await setupMemoryWorkspace(options);
     await writeFile(path.join(options.base, 'outside.txt'), 'Outside');
-    await symlink(path.join(options.base, 'outside.txt'), path.join(options.stateRoot, 'linked.txt'));
-    for (const stateFiles of [['../outside.txt'], ['linked.txt'], [path.join(options.base, 'outside.txt')]]) {
-      await assert.rejects(loadMemoryBootstrap({ ...options, stateFiles }), /within stateRoot/);
-    }
     await unlink(path.join(options.memoryRoot, 'MEMORY.md'));
     await symlink(path.join(options.base, 'outside.txt'), path.join(options.memoryRoot, 'MEMORY.md'));
     await assert.rejects(loadMemoryBootstrap(options), /ELOOP/);
+    await unlink(path.join(options.memoryRoot, 'MEMORY.md'));
+    await mkdir(path.join(options.memoryRoot, 'MEMORY.md'));
+    await assert.rejects(loadMemoryBootstrap(options), /ordinary files/);
   });
 });
 
-test('data roots cannot overlap each other/source, including canonical symlink aliases', async () => {
+test('Memory cannot overlap source, including canonical symlink aliases', async () => {
   await withWorkspace(async (options) => {
     for (const override of [
       { memoryRoot: options.sourceDirectory }, { memoryRoot: path.join(options.sourceDirectory, 'data') },
-      { memoryRoot: options.base }, { stateRoot: options.memoryRoot }, { stateRoot: path.join(options.memoryRoot, 'state') },
-      { memoryRoot: path.join(options.stateRoot, 'memory') },
+      { memoryRoot: options.base },
     ]) await assert.rejects(setupMemoryWorkspace({ ...options, ...override }), /separate and non-overlapping/);
     const alias = path.join(options.base, 'source-alias'); await symlink(options.sourceDirectory, alias);
     await assert.rejects(setupMemoryWorkspace({ ...options, memoryRoot: path.join(alias, 'memory') }), /separate and non-overlapping/);
@@ -83,22 +86,18 @@ test('data roots cannot overlap each other/source, including canonical symlink a
   });
 });
 
-test('State stays outside Git and Memory cannot silently inherit an ancestor repository', async () => {
+test('Memory cannot silently inherit an ancestor repository', async () => {
   await withWorkspace(async (options) => {
-    await mkdir(options.stateRoot); await git(options.stateRoot, 'init', '--quiet');
-    await assert.rejects(setupMemoryWorkspace(options), /State must stay outside/);
-    await rm(path.join(options.stateRoot, '.git'), { recursive: true });
+    await setupMemoryWorkspace(options);
     const enclosing = path.join(options.base, 'data-repo'); await mkdir(enclosing); await git(enclosing, 'init', '--quiet');
     await assert.rejects(setupMemoryWorkspace({ ...options, memoryRoot: path.join(enclosing, 'memory') }), /independent Git/);
-    await assert.rejects(setupMemoryWorkspace({ ...options, stateRoot: path.join(enclosing, 'state') }), /State must stay outside/);
   });
 });
 
-test('snapshot commits only changed Memory and leaves State, source and prose metadata untouched', async () => {
+test('snapshot commits only changed Memory and leaves source and prose metadata untouched', async () => {
   await withWorkspace(async (options) => {
     await setupMemoryWorkspace(options);
     await writeFile(path.join(options.memoryRoot, 'MEMORY.md'), 'User prefers tea.\n');
-    await writeFile(path.join(options.stateRoot, 'CURRENT.md'), 'Ordinary current state.');
     await writeFile(path.join(options.sourceDirectory, 'source.ts'), 'Source is not data');
     const first = await snapshot(options.memoryRoot, 'wake-1');
     assert.equal(first.changed, true); assert.equal(first.recovered, false);
@@ -107,7 +106,7 @@ test('snapshot commits only changed Memory and leaves State, source and prose me
     assert.equal(await git(options.memoryRoot, 'status', '--porcelain'), '');
     assert.match(await git(options.memoryRoot, 'log', '-1', '--format=%B'), /Mira-Run-Key:/);
     assert.equal(await readFile(path.join(options.memoryRoot, 'MEMORY.md'), 'utf8'), 'User prefers tea.\n');
-    await writeFile(path.join(options.stateRoot, 'CURRENT.md'), 'Changed State alone');
+    await writeFile(path.join(options.sourceDirectory, 'source.ts'), 'Changed source alone');
     const unchanged = await snapshot(options.memoryRoot, 'wake-2');
     assert.equal(unchanged.changed, false); assert.equal(unchanged.commitId, null); assert.deepEqual(unchanged.changedPaths, []);
     assert.equal(await git(options.memoryRoot, 'rev-list', '--count', 'HEAD'), '1');
@@ -371,6 +370,6 @@ test('repository identity is stable and expected identity accepts a normal same-
     const first = await snapshotMemory(request);
     assert.equal((await setupMemoryWorkspace(options)).repositoryId, original.repositoryId);
     assert.deepEqual(await snapshotMemory(request), { ...first, recovered: true });
-    assert.equal((await loadMemoryBootstrap({ memoryRoot: options.memoryRoot, stateRoot: options.stateRoot })).memory.content, '');
+    assert.equal((await loadMemoryBootstrap({ memoryRoot: options.memoryRoot })).memory.content, '');
   });
 });

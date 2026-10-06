@@ -1,0 +1,41 @@
+{
+  "path_base": "docs/design",
+  "sources": [
+    {
+      "path": "architecture-v0.5.md",
+      "source_name": "MiraMate v2 — Persistent Self-Extensible Agent Architecture v0.5.md",
+      "library_file_id": "libfile_449527d9a408819182625d9517a2cd48",
+      "file_id": "file_0000000030e8820bad7758a2ef790353",
+      "current_version_number": 0,
+      "version_id": null,
+      "bytes": 27340,
+      "sha256": "711bd94f56d26362aea03d336cadb33b59dd15775323c6434e2fea4eb49d2662"
+    },
+    {
+      "path": "system-prompt-design-v0.1.md",
+      "source_name": "Mira System Prompt Design v0.1.md",
+      "library_file_id": "libfile_4f3cf97378dc81918c978fd51d5e267a",
+      "file_id": "file_0000000099ec81f5ab8ec5b57321ae2e",
+      "current_version_number": 0,
+      "version_id": null,
+      "bytes": 17134,
+      "sha256": "3a12562a9a885ce87fce2ca87cf7c935815353689fa8dfd3f3b76b1dbafbb7e3"
+    },
+    {
+      "path": "../../packages/runtime-pi/prompts/mira-system-v0.2.md",
+      "source_name": "Mira System Prompt v0.2.md",
+      "library_file_id": "libfile_8843bedd5cc081919fb24c86e4dcf507",
+      "file_id": "file_000000008ea081f5b31f8562af2fe5c1",
+      "current_version_number": 0,
+      "version_id": null,
+      "bytes": 17095,
+      "sha256": "ea1d1286ec4de9c875b3a1ce6455fcc8a4b9b0a5f5d202ddd5044793dfc205ee"
+    },
+    {
+      "path": "original-v0.4.md",
+      "role": "historical archive, unchanged",
+      "bytes": 49155,
+      "sha256": "fbd116b05b50c3e604a36da96e21d6d5e254e5b67ec689b3a80d7750872c6e15"
+    }
+  ]
+}

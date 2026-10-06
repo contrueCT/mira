@@ -15,11 +15,13 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 - [ADR 0002：合并唤醒与持续判断](0002-coalesced-wake-loop.md)：原子批次、恢复证据、模型可见不确定性、自然语言意图、普通文本溢出
 
-- [0003 普通 Memory/State 与历史查询](0003-ordinary-memory-history.md)：Accepted，实现与验证见 [本批验收](../acceptance/memory-history.md)
+- [0003 普通 Memory/State 与历史查询](0003-ordinary-memory-history.md)：Accepted，SemanticState 部分由 0006 取代；早期验证见 [历史阶段验收](../acceptance/memory-history.md)
 
 - [0004 手工可信扩展与同轮更新](0004-manual-trusted-extensions.md)：Accepted，范围与限制见 [验收](../acceptance/manual-extensions.md)
 
 - [0005 生成扩展生命周期](0005-generated-extension-lifecycle.md)：Accepted，宿主执行边界与普通文件版本，见 [验收](../acceptance/generated-extensions.md)
+
+- [0006 Memory-only 与完整 Mira Prompt](0006-memory-only-system-prompt.md)：Accepted，v0.5、Prompt v0.2、当前设计不保留旧兼容层及持久恢复边界
 
 ## 待确认
 

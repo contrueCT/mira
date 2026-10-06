@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { rm } from 'node:fs/promises';
 import test from 'node:test';
 import type { AgentTool, AgentToolCall } from '@earendil-works/pi-agent-core';
-import { getCurrentTools, toToolDeclaration, type AssistantMessage, type TranscriptContext } from '@earendil-works/pi-ai';
+import { getCurrentSystemPrompt, getCurrentTools, toToolDeclaration, type AssistantMessage, type TranscriptContext } from '@earendil-works/pi-ai';
 import { ExtensionHost } from '@mira/extension-host';
 import { extensionManagementTools, extensionReceiver, extensionTools } from '@mira/server';
 import { decodeRecords } from '@mira/runtime-pi';
@@ -132,8 +132,12 @@ test('real host configuration and disable preserve every sibling executable unti
       requests++; assertDeclarations(writer, context, prepared);
       assert.ok(prepared.some(tool => tool.name === builtin.name));
       const declaration = getCurrentTools(context.messages).find(tool => tool.name === 'fixture.echo');
+      const promptText = getCurrentSystemPrompt(context.messages);
+      const guidance = promptText.split('<available_capabilities>')[1]!.split('</available_capabilities>')[0]!;
+      assert.equal((JSON.stringify(context.messages).match(/You are Mira\./g) ?? []).length, 1);
       if (requests === 1) {
         assert.deepEqual(declaration?.parameters, fixtureParameters);
+        assert.match(guidance, /fixture.echo/); assert.match(guidance, /revision 1/); assert.doesNotMatch(guidance, /revision 2/);
         return streamOf({ ...assistant(), stopReason: 'toolUse', content: [
           { type: 'toolCall', id: 'configure-manual', name: 'extension.manage', arguments: { id: 'manual', action: 'configure', config: { ...fixture.config, revision: 2, parameters: changedParameters } } },
           { type: 'toolCall', id: 'old-sibling', name: 'fixture.echo', arguments: { count: '2', label: 'synthetic' } },
@@ -143,15 +147,18 @@ test('real host configuration and disable preserve every sibling executable unti
         assert.ok(declaration); assert.deepEqual(declaration.parameters, changedParameters);
         assert.notEqual(host.inspect()[0]!.activation, originalActivation);
         assert.match(declaration.description, /revision 2/);
+        assert.match(guidance, /revision 2/); assert.doesNotMatch(guidance, /revision 1/);
         return streamOf({ ...assistant(), stopReason: 'toolUse', content: [
           { type: 'toolCall', id: 'disable-manual', name: 'extension.manage', arguments: { id: 'manual', action: 'disable' } },
           { type: 'toolCall', id: 'new-sibling', name: 'fixture.echo', arguments: { text: 'replacement' } },
         ] });
       }
       assert.equal(requests, 3); assert.equal(declaration, undefined);
+      assert.doesNotMatch(guidance, /fixture.echo|revision 2/);
       assert.equal(host.inspect()[0]!.status, 'disabled');
       return streamOf(assistant('Both complete batches settled before replacement and removal'));
     }, {
+      miraPrompt: { environmentContext: 'Synthetic real Cordis test', authorizationContext: 'Synthetic test intent', now: () => new Date('2026-10-05T12:00:00Z') },
       prepareTools: async () => prepared = [builtin, ...management, ...extensionTools(await host.prepare())], finishTools: () => host.finish(),
     }).run(input('Reconfigure then disable the synthetic extension'));
     assert.deepEqual(await fixture.effects(), [
@@ -161,7 +168,7 @@ test('real host configuration and disable preserve every sibling executable unti
     assert.deepEqual(host.changeStatus().map(receipt => [receipt.action, receipt.status]), [['configure', 'applied'], ['disable', 'applied']]);
     assert.deepEqual(writer.state.executions.map(execution => execution.intent.callId), ['configure-manual', 'old-sibling', 'disable-manual', 'new-sibling']);
     assert.ok(writer.state.executions.every(execution => execution.outcome));
-    const changes = decodeRecords(writer.state.records).flatMap(entry => entry.type === 'message' && entry.message.role === 'system' ? [entry.message] : []);
+    const changes = decodeRecords(writer.state.records).flatMap(entry => entry.type === 'message' && entry.message.role === 'system' && (entry.message.toolsAdded || entry.message.toolsRemoved) ? [entry.message] : []);
     assert.equal(changes.length, 3);
     assert.deepEqual(changes[1]!.toolsRemoved, [{ name: 'fixture.echo' }]);
     assert.deepEqual(changes[1]!.toolsAdded?.[0]?.parameters, changedParameters);

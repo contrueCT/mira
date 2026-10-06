@@ -6,7 +6,7 @@
 
 可选 `beforeComplete(run, signal)` 在 Runtime 验证已保存的最终回复后、完成标记之前执行，收到重新加载的完整 run。回调失败保留活动 run；恢复再次验证最终回复并重试回调，不再调用模型或追加同一输入。回调前后均核对 writer 所有权和调用方取消。
 
-`MemoryCheckpointWriter` 是独立的可选 `WakeWriter` 扩展，契约在 `src/memory-lifecycle.ts`。组装层按 `prepareMemoryCheckpoint` → Memory Git 幂等快照 → `finishMemoryCheckpoint` → Wake 完成执行。待处理 checkpoint 与最终 `commit | null` receipt 各自不可变；`null` 表示已确认无变化，缺少 receipt 才表示仍待恢复。恢复 payload 只保存适配器输入，不把 Memory 内容再存成第二份数据库权威。`preparedAt` 是意图时间，不是文件捕获时间。State 不参与 Git；观察到的快照变更不等于全部由该 Wake 或 agent 创作，不能虚构逐文件来源。
+`MemoryCheckpointWriter` 是独立的可选 `WakeWriter` 扩展，契约在 `src/memory-lifecycle.ts`。组装层按 `prepareMemoryCheckpoint` → Memory Git 幂等快照 → `finishMemoryCheckpoint` → Wake 完成执行。待处理 checkpoint 与最终 `commit | null` receipt 各自不可变；`null` 表示已确认无变化，缺少 receipt 才表示仍待恢复。恢复 payload 只保存适配器输入，不把 Memory 内容再存成第二份数据库权威。`preparedAt` 是意图时间，不是文件捕获时间。观察到的快照变更不等于全部由该 Wake 或 agent 创作，不能虚构逐文件来源。
 
 PostgreSQL 与 Git 不能原子提交。Git 适配器须按 Mira/run 保存可恢复的确定结果，receipt 写入失败后才能重取同一结果，而不捕获后来文件变化或产生第二个提交；已有待处理 checkpoint 时持久化适配器禁止先完成 Wake。
 
