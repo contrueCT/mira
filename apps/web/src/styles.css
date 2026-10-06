@@ -125,6 +125,9 @@ button:disabled { opacity: .48; }
 .catalog-note { font-size: 10px; color: #afb1bb; line-height: 1.8; margin: 22px 0 0; }
 .field-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 19px 0 8px; }
 .field-heading .field-label { margin: 0; }
+.api-key-field { margin-top: 19px; }
+.credential-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px 12px; }
+.credential-actions .text-button { font-size: 11px; }
 .field-heading:first-child { margin-top: 0; }
 .field-heading h3 { font-size: 13px; color: #737b8c; font-weight: 550; margin: 0; }
 .optional { color: #afb1bb; font-size: 10px; font-weight: 400; margin-left: 4px; }

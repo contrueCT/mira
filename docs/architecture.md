@@ -75,4 +75,4 @@ v0.5 §40 不引入额外产品隔离。用户再次确认普通工具和生成�
 
 ## 本地 Web
 
-按 [ADR 0009](adr/0009-local-web-client.md)，Fastify 组装同源 localhost API，React/Vite 显示单 Timeline 与模型设置。前端无核心/Pi/数据库依赖；历史只是既有事件/上下文的只读显示投影。技术来源校验、credential references、revision 与幂等提交保护真实执行边界，不引入工具批准 UI 或第二个认知循环。
+按 [ADR 0009](adr/0009-local-web-client.md)，Fastify 组装同源 localhost API，React/Vite 显示单 Timeline 与模型设置。前端无核心/Pi/数据库依赖；历史只是既有事件/上下文的只读显示投影。技术来源校验、后端私有凭据与脱敏投影、revision 与幂等提交保护真实执行边界，不引入工具批准 UI 或第二个认知循环。

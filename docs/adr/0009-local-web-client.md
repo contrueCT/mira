@@ -2,6 +2,8 @@
 
 状态：Accepted，2026-10-06。用户批准在真实模型验收前实现参考截图风格的初步图形界面，CLI 式一条命令启动后打开浏览器；批准 React + Vite + 原生 CSS，并明确要求 HTTP 框架，最终选择 Fastify。
 
+> 后续 Web API Key 输入与存储行为见 [ADR 0010](0010-web-api-key-storage.md)，取代本文的环境变量名输入方式，其余本地边界不变。
+
 ## 范围与依赖
 
 前端 React/ReactDOM 19.3.0、Vite 8.3.3；后端 Fastify 5.12.5 与官方 @fastify/static 10.1.5；浏览器测试 Playwright 1.63.0。版本来自 npm 官方发布记录，Fastify static 发布元数据明确支持 Fastify 5.x。Vite 8 支持既有 Node 24，不使用 Next、额外路由器、UI 库或新状态数据库。
