@@ -45,7 +45,7 @@ import { version, parameters, next } from './helper.mjs';
 await appendFile(${JSON.stringify(lifecyclePath)}, JSON.stringify({ phase: 'import', version }) + '\\n');
 export default defineExtension({ name: 'synthetic-generated', async apply(context, config) {
   await appendFile(config.lifecyclePath, JSON.stringify({ phase: 'apply', version, label: config.label }) + '\\n');
-  context.registerTool({ name: 'generated.echo', description: 'Synthetic generated echo ' + version, parameters,
+  context.registerTool({ name: 'generated_echo', description: 'Synthetic generated echo ' + version, parameters,
     async execute(args, execution) {
       execution.signal.throwIfAborted();
       const witness = { extensionId: context.id, version, label: config.label, callId: execution.callId, serial: next(), arguments: args };
@@ -67,7 +67,7 @@ function toolResult<T>(context: TranscriptContext, callId: string): T {
   return JSON.parse(message.content[0].text) as T;
 }
 const event = (id: string) => ({ id, type: 'synthetic.generated-request', source: 'user' as const, occurredAt: '2026-10-05T08:00:00.000Z', payload: { text: `Synthetic generated lifecycle ${id}` } });
-const builtinNames = ['read', 'write', 'edit', 'grep', 'find', 'ls', 'bash', 'history.search', 'history.read', 'extension.inspect', 'extension.stage', 'extension.manage'];
+const builtinNames = ['read', 'write', 'edit', 'grep', 'find', 'ls', 'bash', 'history_search', 'history_read', 'extension_inspect', 'extension_stage', 'extension_manage'];
 function messages(snapshot: RecoverySnapshot) {
   return decodeRecords(snapshot.records).flatMap(entry => entry.type === 'message' ? [entry.message] : []);
 }
@@ -78,7 +78,7 @@ function assertExactOutcomes(snapshot: RecoverySnapshot) {
     const result = transcript.find(message => message.role === 'toolResult' && message.toolCallId === execution.intent.callId);
     assert.ok(result?.role === 'toolResult'); assert.deepEqual(execution.outcome.payload, result);
     assert.equal(execution.outcome.occurredAt, new Date(result.timestamp).toISOString());
-    if (execution.intent.toolName === 'extension.manage') {
+    if (execution.intent.toolName === 'extension_manage') {
       assert.ok(result.content[0]?.type === 'text'); assert.equal(JSON.parse(result.content[0].text).status, 'accepted');
     }
   }
@@ -89,7 +89,7 @@ async function assertDurableDeclarations(db: Awaited<ReturnType<typeof createTes
   const current = getCurrentTools(context.messages);
   assert.deepEqual(getCurrentTools(stored), current, 'real PostgreSQL commits exact declarations before the provider request');
   if (prepared) assert.deepEqual(current, prepared.map(toToolDeclaration), 'declarations match the actual executable registry');
-  else assert.deepEqual(current.filter(tool => tool.name !== 'generated.echo').map(tool => tool.name).sort(), [...builtinNames].sort());
+  else assert.deepEqual(current.filter(tool => tool.name !== 'generated_echo').map(tool => tool.name).sort(), [...builtinNames].sort());
 }
 
 // Uses the existing isolated localhost mira_test harness. No model credentials,
@@ -105,35 +105,35 @@ test('real PostgreSQL generated extension activates in one Wake and restores sav
       events: [{ event: event('install'), wake: { id: 'generated-install', reason: 'Stage, activate and use a synthetic generated extension' } }],
       streamFn: async (_model, context) => {
         requests++; await assertDurableDeclarations(db, miraId, context);
-        const declaration = getCurrentTools(context.messages).find(tool => tool.name === 'generated.echo');
+        const declaration = getCurrentTools(context.messages).find(tool => tool.name === 'generated_echo');
         if (requests === 1) {
           assert.equal(declaration, undefined);
-          return streamOf(calls(request('stage-one', 'extension.stage', { sourceRoot: files.sources.one, entryRelative: 'entry.mjs' })));
+          return streamOf(calls(request('stage-one', 'extension_stage', { sourceRoot: files.sources.one, entryRelative: 'entry.mjs' })));
         }
         if (requests === 2) {
           first = toolResult<ArtifactManifest>(context, 'stage-one');
           assert.match(first.digest, /^[a-f0-9]{64}$/); assert.notEqual(first.digest, second.digest);
           assert.deepEqual(await files.lifecycle(), []);
-          return streamOf(calls(request('install-one', 'extension.manage', { id: 'generated', action: 'install', digest: first.digest, config: files.config('original') })));
+          return streamOf(calls(request('install-one', 'extension_manage', { id: 'generated', action: 'install', digest: first.digest, config: files.config('original') })));
         }
         if (requests === 3) {
           assert.equal(declaration, undefined); assert.deepEqual(await files.lifecycle(), [], 'disabled install is import-free');
           const saved = (await readExtensionConfiguration(files.configurationFile)).entries[0]!;
           assert.equal(saved.enabled, false); originalRevision = saved.generated!.revision;
           assert.equal(toolResult<{ status: string }>(context, 'install-one').status, 'accepted');
-          return streamOf(calls(request('activate-one', 'extension.manage', { id: 'generated', action: 'activate' })));
+          return streamOf(calls(request('activate-one', 'extension_manage', { id: 'generated', action: 'activate' })));
         }
         if (requests === 4) {
           assert.ok(declaration); assert.deepEqual(declaration.parameters, parameters.one); assert.match(declaration.description, new RegExp(first.digest));
           return streamOf(calls(
-            request('update-two', 'extension.manage', { id: 'generated', action: 'update', digest: second.digest, config: files.config('updated') }),
-            request('same-wake-effect', 'generated.echo', { count: '7' }),
+            request('update-two', 'extension_manage', { id: 'generated', action: 'update', digest: second.digest, config: files.config('updated') }),
+            request('same-wake-effect', 'generated_echo', { count: '7' }),
           ));
         }
         if (requests === 5) {
           assert.ok(declaration); assert.deepEqual(declaration.parameters, parameters.two); assert.match(declaration.description, new RegExp(second.digest));
           oldDescription = declaration.description;
-          return streamOf(calls(request('disable-two', 'extension.manage', { id: 'generated', action: 'disable' }), request('updated-sibling', 'generated.echo', { text: 'second version' })));
+          return streamOf(calls(request('disable-two', 'extension_manage', { id: 'generated', action: 'disable' }), request('updated-sibling', 'generated_echo', { text: 'second version' })));
         }
         assert.equal(requests, 6); assert.equal(declaration, undefined);
         return streamOf(assistant('Generated extension completed and saved disabled'));
@@ -166,19 +166,19 @@ test('real PostgreSQL generated extension activates in one Wake and restores sav
       streamFn: async (_model, context) => {
         resumedRequests++; await assertDurableDeclarations(db, miraId, context);
         assert.match(JSON.stringify(context.messages), /Generated extension completed and saved disabled/);
-        const declaration = getCurrentTools(context.messages).find(tool => tool.name === 'generated.echo');
+        const declaration = getCurrentTools(context.messages).find(tool => tool.name === 'generated_echo');
         if (resumedRequests === 1) {
           assert.equal(declaration, undefined);
-          return streamOf(calls(request('reactivate-saved', 'extension.manage', { id: 'generated', action: 'activate' })));
+          return streamOf(calls(request('reactivate-saved', 'extension_manage', { id: 'generated', action: 'activate' })));
         }
         if (resumedRequests === 2) {
           assert.ok(declaration); assert.deepEqual(declaration.parameters, parameters.two); assert.match(declaration.description, new RegExp(second.digest));
           assert.notEqual(declaration.description, oldDescription, 'restart gives current code a fresh activation identity');
-          return streamOf(calls(request('rollback-original', 'extension.manage', { id: 'generated', action: 'rollback', revision: originalRevision }), request('saved-current-effect', 'generated.echo', { text: 'restored current config' })));
+          return streamOf(calls(request('rollback-original', 'extension_manage', { id: 'generated', action: 'rollback', revision: originalRevision }), request('saved-current-effect', 'generated_echo', { text: 'restored current config' })));
         }
         if (resumedRequests === 3) {
           assert.ok(declaration); assert.deepEqual(declaration.parameters, parameters.one); assert.match(declaration.description, new RegExp(first.digest));
-          return streamOf(calls(request('disable-original', 'extension.manage', { id: 'generated', action: 'disable' }), request('rollback-effect', 'generated.echo', { count: '9' })));
+          return streamOf(calls(request('disable-original', 'extension_manage', { id: 'generated', action: 'disable' }), request('rollback-effect', 'generated_echo', { count: '9' })));
         }
         assert.equal(resumedRequests, 4); assert.equal(declaration, undefined);
         return streamOf(assistant('Original generated revision and configuration restored'));
@@ -221,7 +221,7 @@ for (const applied of [false, true]) test(`real PostgreSQL accepted generated ma
       assert.equal(JSON.parse(payload.content[0]!.text).status, 'accepted');
       throw Error('synthetic loss after accepted management before outcome commit');
     } });
-    await assert.rejects(runtime(faulty, () => streamOf(calls(request('unknown-update', 'extension.manage', args))), {
+    await assert.rejects(runtime(faulty, () => streamOf(calls(request('unknown-update', 'extension_manage', args))), {
       prepareTools: async () => [...management, ...extensionTools(await original.prepare())],
       // Closing drops the queued change, as loss before the next batch boundary
       // would. finish() instead applies the accepted change despite receipt loss.
@@ -256,13 +256,13 @@ for (const applied of [false, true]) test(`real PostgreSQL accepted generated ma
     await runtime(replacement, async (_model, context) => {
       requests++; await assertDurableDeclarations(db, miraId, context, prepared);
       assert.match(JSON.stringify(context.messages), /may already have executed/);
-      const declaration = getCurrentTools(context.messages).find(tool => tool.name === 'generated.echo');
+      const declaration = getCurrentTools(context.messages).find(tool => tool.name === 'generated_echo');
       assert.ok(declaration); assert.deepEqual(declaration.parameters, parameters[applied ? 'two' : 'one']); assert.match(declaration.description, new RegExp(expectedDigest));
-      if (requests === 1) return streamOf(calls(request('inspect-current', 'extension.inspect', {})));
+      if (requests === 1) return streamOf(calls(request('inspect-current', 'extension_inspect', {})));
       if (requests === 2) {
         const inspected = toolResult<{ extensions: Array<{ generated: { digest: string }; config: Json }>; changes: unknown[] }>(context, 'inspect-current');
         assert.deepEqual(inspected.changes, []); assert.equal(inspected.extensions[0]!.generated.digest, expectedDigest); assert.deepEqual(inspected.extensions[0]!.config, expectedConfig);
-        return streamOf(calls(request('new-effect', 'generated.echo', applied ? { text: 'after unknown outcome' } : { count: 5 })));
+        return streamOf(calls(request('new-effect', 'generated_echo', applied ? { text: 'after unknown outcome' } : { count: 5 })));
       }
       assert.equal(requests, 3); return streamOf(assistant('Inspected and used saved code without replaying the unknown update'));
     }, { prepareTools: async () => prepared = [...currentManagement, ...extensionTools(await restarted.prepare())], finishTools: () => restarted.finish() }).run(input('Inspect the current saved extension and continue'));

@@ -19,6 +19,10 @@ resources that an extension fails to register. Detached work must be canceled or
 joined by the extension's cleanup. This is trusted same-process code, not a sandbox.
 
 See `examples/extensions` for a tool, timer/service source, and dependent consumer.
+Tool names start with an ASCII letter or underscore and contain 1–64 ASCII
+letters, digits, underscores or hyphens (`^[A-Za-z_][A-Za-z0-9_-]{0,63}$`), for
+example `example_greet`. The host rejects invalid names;
+there is no automatic renaming or alias layer.
 Tools use the ordinary runtime schema/parameter checks, durable intent/outcome,
 and provenance boundary. The main model decides whether to call or clarify.
 The SDK exposes no database, direct context mutation, package installation,

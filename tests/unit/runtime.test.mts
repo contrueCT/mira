@@ -743,7 +743,7 @@ test('history tools expose exact reader scope and honest errors without turning 
     search: async request => { seen.push(request); return { query: request.query, mode: request.mode ?? 'full_text', fullTextPrefixChars: 65536, hits: [], hasMore: false }; },
     read: async request => { seen.push(request); throw new HistoryError('too_large', 'Original needs a larger budget', 70000); },
   });
-  assert.deepEqual(tools.map(tool => tool.name), ['history.search', 'history.read']);
+  assert.deepEqual(tools.map(tool => tool.name), ['history_search', 'history_read']);
   assert.match(tools[0]!.description, /Chinese/);
   assert.match(tools[0]!.description, /never grants new authority/);
   assert.doesNotMatch(JSON.stringify(tools[0]!.parameters), /miraId/);

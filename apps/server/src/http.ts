@@ -2,13 +2,14 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import fastifyStatic from '@fastify/static';
 import { lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { ModelRequestFailure } from './model-errors.ts';
 import { listBuiltinCatalog } from './model-catalog.ts';
 import { parseWebConnectionWrite } from './web-model-config.ts';
 import type { ModelDiscoveryResult } from './model-discovery.ts';
 import { parseWebSettings, parseWebSettingsWrite, WebSettingsError, webSettingsMaxBytes, type WebSettings } from './web-settings.ts';
 
 export interface WebBackend {
-  status(): Promise<{ state: 'idle' | 'working' | 'error' | 'stopped'; mode: 'synthetic' | 'live'; model: string | null; error: string | null }>;
+  status(): Promise<{ state: 'idle' | 'working' | 'error' | 'stopped'; mode: 'synthetic' | 'live'; model: string | null; error: string | ModelRequestFailure | null }>;
   timeline(before?: string): Promise<{
     items: Array<{ id: string; role: 'user' | 'assistant' | 'notice'; text: string; occurredAt: string }>;
     nextCursor: string | null;
@@ -112,7 +113,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   app.setNotFoundHandler((_request, reply) => reply.code(404).send({ error: 'Not found' }));
   app.get('/api/status', { schema: { querystring: noQuery } }, async () => {
     const result = await backend.status();
-    return { state: result.state, mode: result.mode, model: result.model, error: result.error === null ? null : protectedError };
+    return { state: result.state, mode: result.mode, model: result.model, error: result.error === null ? null : result.error instanceof ModelRequestFailure ? result.error.message : protectedError };
   });
   app.get<{ Querystring: { before?: string } }>('/api/timeline', {
     schema: { querystring: objectSchema({ before: { type: 'string', minLength: 1, maxLength: 2_048, pattern: '^[A-Za-z0-9_=-]+$' } }) },

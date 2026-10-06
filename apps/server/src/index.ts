@@ -69,7 +69,7 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
     for (const { event, wake } of options.events) await writer.receive(event, wake);
     const baseTools = [...createWorkspaceTools(workingDirectory), ...createHistoryTools(persistence.history(writer.miraId))];
     if (options.extensions) {
-      extensions = new ExtensionHost({ ...options.extensions, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension.inspect', 'extension.manage', 'extension.stage'], receive: extensionReceiver(writer) });
+      extensions = new ExtensionHost({ ...options.extensions, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage'], receive: extensionReceiver(writer) });
       await extensions.start();
     }
     const host = extensions;

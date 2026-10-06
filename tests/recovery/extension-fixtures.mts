@@ -62,7 +62,7 @@ export default defineExtension({
       await appendFile(config.receiptsPath, JSON.stringify({ extensionId: context.id, eventId: item.event.id, receipt }) + '\\n');
     }
     context.registerTool({
-      name: config.toolName ?? 'fixture.echo',
+      name: config.toolName ?? 'fixture_echo',
       description: 'Synthetic echo revision ' + (config.revision ?? 1),
       parameters: config.parameters ?? ${JSON.stringify(fixtureParameters)},
       async execute(args, execution) {

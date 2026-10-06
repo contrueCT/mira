@@ -103,6 +103,37 @@ test('configuration rejects ambiguous identities, non-absolute entries, unknown 
   await assert.rejects(host.start(), /cannot be started twice/);
 });
 
+test('extension tool names enforce the portable model contract without automatic renaming', async () => {
+  for (const name of ['', 'fixture.echo', 'x'.repeat(65), '工具', 'valid\n', 'has space', 'path/tool', '0', '-', '0tool', '-tool']) await withDirectory(async directory => {
+    const entry = await fixture<Record<string, never>>(directory, 'invalid-name', `
+      export const state = {};
+      export default defineExtension({ name: 'invalid-name', apply(ctx) { ${toolSource(name, "'must not execute'")} } });
+    `);
+    const host = new ExtensionHost({ entries: [{ id: 'invalid-name', path: entry.path }], receive: received });
+    try {
+      await host.start();
+      assert.deepEqual(await host.prepare(), []);
+      assert.equal(host.inspect()[0]!.status, 'failed');
+      assert.match(host.inspect()[0]!.diagnostic ?? '', /Invalid extension tool name: use 1-64 ASCII letters, digits, underscores or hyphens, starting with a letter or underscore/);
+      assert.deepEqual(host.inspect()[0]!.tools, []);
+    } finally { await host.close(); }
+  });
+  await withDirectory(async directory => {
+    const names = ['a', '_', '_0-', 'Tool-0', 'A0_-'.repeat(16)];
+    const entry = await fixture<Record<string, never>>(directory, 'valid-names', `
+      export const state = {};
+      export default defineExtension({ name: 'valid-names', apply(ctx) { ${names.map(name => toolSource(name, JSON.stringify(name))).join('\n')} } });
+    `);
+    const host = new ExtensionHost({ entries: [{ id: 'valid-names', path: entry.path }], receive: received });
+    try {
+      await host.start();
+      const registered = await host.prepare();
+      assert.deepEqual(registered.map(item => item.tool.name), names);
+      for (const name of names) assert.equal(await execute(named(registered, name)), name);
+    } finally { await host.close(); }
+  });
+});
+
 test('reserved and duplicate tools fail activation and unwind partial registrations and async resources', async () => {
   for (const collision of ['reserved', 'duplicate']) await withDirectory(async directory => {
     const owner = await fixture<{ applied: number }>(directory, 'owner', `
@@ -718,21 +749,21 @@ test('shared module callbacks retain independent subscriptions for each configur
       const onPing = () => { state.calls++; };
       export default defineExtension({ name: 'shared-listener', apply(ctx) {
         ctx.onEvent('shared-ping', onPing);
-        ctx.registerTool({ name: ctx.id + '.publish', description: 'Publish shared ping', parameters: { type: 'object' }, async execute() { ctx.publish('shared-ping', null); return { text: 'published' }; } });
+        ctx.registerTool({ name: ctx.id + '_publish', description: 'Publish shared ping', parameters: { type: 'object' }, async execute() { ctx.publish('shared-ping', null); return { text: 'published' }; } });
       } });
     `);
     const host = new ExtensionHost({ entries: [{ id: 'alpha', path: shared.path }, { id: 'beta', path: shared.path }], receive: received });
     try {
       await host.start();
-      await execute(named(await host.prepare(), 'beta.publish'));
+      await execute(named(await host.prepare(), 'beta_publish'));
       assert.equal(shared.state.calls, 2);
       host.requestChange('alpha', { action: 'disable' });
-      const beta = named(await host.prepare(), 'beta.publish');
+      const beta = named(await host.prepare(), 'beta_publish');
       await execute(beta);
       assert.equal(shared.state.calls, 3);
       assert.equal(host.inspect().find(item => item.id === 'beta')!.status, 'active');
       host.requestChange('alpha', { action: 'enable' });
-      await execute(named(await host.prepare(), 'beta.publish'));
+      await execute(named(await host.prepare(), 'beta_publish'));
       assert.equal(shared.state.calls, 5);
     } finally { await host.close(); }
   });
@@ -743,19 +774,19 @@ test('shared mutable tool definitions cannot change a registered cleanup key', a
     const shared = await fixture<Record<string, never>>(directory, 'shared-tool', `
       export const state = {};
       const tool = { name: 'initial', description: 'Shared definition', parameters: { type: 'object' }, async execute() { return { text: 'shared' }; } };
-      export default defineExtension({ name: 'shared-tool', apply(ctx) { tool.name = 'tool.' + ctx.id; ctx.registerTool(tool); } });
+      export default defineExtension({ name: 'shared-tool', apply(ctx) { tool.name = 'tool_' + ctx.id; ctx.registerTool(tool); } });
     `);
     const host = new ExtensionHost({ entries: [{ id: 'alpha', path: shared.path }, { id: 'beta', path: shared.path }], receive: received });
     try {
       await host.start();
-      assert.deepEqual((await host.prepare()).map(item => item.tool.name).sort(), ['tool.alpha', 'tool.beta']);
+      assert.deepEqual((await host.prepare()).map(item => item.tool.name).sort(), ['tool_alpha', 'tool_beta']);
       host.requestChange('alpha', { action: 'disable' });
-      assert.deepEqual((await host.prepare()).map(item => item.tool.name), ['tool.beta']);
+      assert.deepEqual((await host.prepare()).map(item => item.tool.name), ['tool_beta']);
       assert.deepEqual(host.inspect().find(item => item.id === 'alpha')!.tools, []);
       host.requestChange('beta', { action: 'disable' });
       assert.deepEqual(await host.prepare(), []);
       host.requestChange('alpha', { action: 'enable' });
-      assert.deepEqual((await host.prepare()).map(item => item.tool.name), ['tool.alpha']);
+      assert.deepEqual((await host.prepare()).map(item => item.tool.name), ['tool_alpha']);
     } finally { await host.close(); }
   });
 });
@@ -766,7 +797,7 @@ test('class-based SDK tools preserve prototype metadata and private-field execut
       export const state = {};
       class Tool {
         #value = 'private-value';
-        get name() { return 'class.tool'; }
+        get name() { return 'class_tool'; }
         get description() { return 'Prototype description'; }
         get parameters() { return { type: 'object' }; }
         async execute() { return { text: this.#value }; }
@@ -776,7 +807,7 @@ test('class-based SDK tools preserve prototype metadata and private-field execut
     const host = new ExtensionHost({ entries: [{ id: 'class', path: entry.path }], receive: received });
     try {
       await host.start();
-      const registered = named(await host.prepare(), 'class.tool');
+      const registered = named(await host.prepare(), 'class_tool');
       assert.equal(registered.tool.description, 'Prototype description');
       assert.equal(await execute(registered), 'private-value');
       host.requestChange('class', { action: 'disable' });

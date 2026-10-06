@@ -9,6 +9,7 @@ import { writeWakeInput, setupMemoryWorkspace, loadMemoryBootstrap } from '@mira
 import { createWorkspaceTools, demoModel, memoryCheckpointHook } from './index.ts';
 import { extensionManagementTools, extensionReceiver, extensionTools } from './extensions.ts';
 import { WebSettingsStore, hasSelectedWebApiKey, type WebSettings } from './web-settings.ts';
+import { ModelRequestFailure } from './model-errors.ts';
 import { WebHttpError, type WebBackend } from './http.ts';
 
 export interface WebServiceOptions {
@@ -54,7 +55,8 @@ export class LocalWebService implements WebBackend {
   readonly #abort = new AbortController();
   readonly #startedAt = Date.now();
   #drain: Promise<void> | undefined;
-  #error: string | null = null;
+  #error: string | ModelRequestFailure | null = null;
+  #modelFailure: ModelRequestFailure | null = null;
   #closed = false;
   #settingsValue: WebSettings;
   #configurationWrite = false;
@@ -79,7 +81,7 @@ export class LocalWebService implements WebBackend {
       const roots = options.memoryRoot ? await setupMemoryWorkspace({ memoryRoot: options.memoryRoot, sourceDirectory: options.sourceDirectory }) : undefined;
       const baseTools = [...createWorkspaceTools(cwd), ...createHistoryTools(persistence.history(writer.miraId))];
       if (options.extensions) {
-        host = new ExtensionHost({ ...options.extensions, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension.inspect', 'extension.manage', 'extension.stage'], receive: async (extensionId, event, wake) => {
+        host = new ExtensionHost({ ...options.extensions, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage'], receive: async (extensionId, event, wake) => {
           const receipt = await extensionReceiver(writer)(extensionId, event, wake);
           if (wake && receipt === 'inserted' && service) service.#kick();
           return receipt;
@@ -92,9 +94,10 @@ export class LocalWebService implements WebBackend {
         writeOverflowInput: (runId, content) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content }),
         ...(roots ? { beforeComplete: memoryCheckpointHook(writer, roots.memoryRoot, roots.repositoryId) } : {}),
         createRuntime: () => {
+          service!.#modelFailure = null;
           const current = service!.#settingsValue;
           if (!options.synthetic && !hasSelectedWebApiKey(current)) throw Error('Choose a model with a saved API key first');
-          const transport = options.synthetic ? { model: demoModel, streamFn: options.syntheticStream ?? syntheticStream } : settings.transport(current);
+          const transport = options.synthetic ? { model: demoModel, streamFn: options.syntheticStream ?? syntheticStream } : settings.transport(current, { onFailure: failure => { service!.#modelFailure = failure; } });
           return new PiDurableRuntime({ writer, ...transport, tools: baseTools,
             ...(extensionHost ? { prepareTools: async () => [...baseTools, ...management, ...extensionTools(await extensionHost.prepare())], finishTools: () => extensionHost.finish() } : {}),
             miraPrompt: {
@@ -117,8 +120,8 @@ export class LocalWebService implements WebBackend {
     if (this.#configurationWrite || (!this.#options.synthetic && !hasSelectedWebApiKey(this.#settingsValue))) { this.#kickRequested = true; return; }
     if (this.#drain) { this.#kickRequested = true; return; }
     this.#kickRequested = false;
-    this.#error = null;
-    this.#drain = this.#loop.drain(this.#abort.signal).then(() => {}).catch(() => { if (!this.#closed) this.#error = publicFailure; }).finally(() => {
+    this.#error = null; this.#modelFailure = null;
+    this.#drain = this.#loop.drain(this.#abort.signal).then(() => {}).catch((error: unknown) => { if (!this.#closed) this.#error = error instanceof Error && error.message === this.#modelFailure?.message ? this.#modelFailure : publicFailure; }).finally(() => {
       this.#drain = undefined;
       const again = this.#kickRequested; this.#kickRequested = false;
       // A concurrent arrival after the last empty claim needs one more drain.

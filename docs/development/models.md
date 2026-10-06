@@ -110,8 +110,26 @@ const runtime = new PiDurableRuntime({
 
 transport 通过 Pi `Models.streamSimple` 调用，Runtime 保持注入接口、同轮工具、持久 intent/outcome、恢复与显式压缩路径；不把 provider registry/auth 搬进 life/context/runtime-pi，不增加授权门禁。模型重试设为零，不自动重发不确定的网络调用；取消沿用 runtime signal。采样参数仅保留 runtime 显式 temperature/reasoning/maxTokens，没有本阶段新增默认采样策略。Pi 组装完成的实际 output token 字段必须存在，并按协议再次校验上限（包括 Mistral 和 Google 的相应字段）；如果协议把低限额自动放大（例如 Responses 最低 16），超过配置／请求上限会在发出前失败，不悄悄扩大限额。
 
-自定义价格明确为 unknown。Pi Model/usage 要求数值 cost，当前内部零值仅为满足 SDK 的计算占位，绝不是免费或实际账单；消费者不能用这些零值做费用报告。内置也只提供目录估计。HTTP 错误响应和异常细节不会直接输出，避免服务器回显密钥；诊断只提示 endpoint／协议／模型／凭据类别；清理最终消息的原始错误／diagnostics；如果完整内容、工具参数或其它返回字段回显当前请求 Key，整条响应失败，不静默改写成不同的可执行工具调用。取消仍报告 aborted。
+自定义价格明确为 unknown。Pi Model/usage 要求数值 cost，当前内部零值仅为满足 SDK 的计算占位，绝不是免费或实际账单；消费者不能用这些零值做费用报告。内置也只提供目录估计。HTTP 错误响应和异常细节不会直接输出，避免服务器回显密钥；诊断只展示下文约定的有界脱敏错误字段；清理最终消息的原始错误／diagnostics；如果完整内容、工具参数或其它返回字段回显当前请求 Key，整条响应失败，不静默改写成不同的可执行工具调用。取消仍报告 aborted。
 
 ## 验证边界
 
 离线测试使用注入 fetch，把真实 Pi adapter 发出的 HTTP 请求与合成 SSE 响应配对，覆盖三种协议的路径、headers、独立密钥、body、输出解析、完整 Prompt、同轮工具及重启延续；不是实际供应商联通。发现测试不访问真实网络。`pnpm check` 验证类型、包边界、离线回归和工具构建；真实 PostgreSQL 仍由精确提交的批准 CI 执行，不能把 mock 或跳过的测试算作真实模型验收。
+
+## 模型请求错误
+
+模型失败不再统一隐藏为配置检查提示。transport 在凭据仍仅存在于请求闭包时，生成有界脱敏诊断，保留实际可用的 HTTP 状态、provider message/code/type、request ID，以及网络/TLS/超时 cause 的 message/code。HTTP 状态与 request ID 只从实际响应读取；没有证据时不推测鉴权、余额、模型或协议原因。取消仍单独显示。
+
+HTTP 错误体在 Pi 截断前最多读取64 KiB并提取白名单字段；超限取消余下读取。只选取错误字段，不输出原始请求、headers、stack、任意响应对象或 HTML 错误页；诊断最长约 2 KiB，超长文本明确截断，超过解析上限的错误文本不展示。选中的 Key、常见 URI/form/base64 编码、认证字段及 URL 会隐藏。包含凭据的模型正文/工具调用仍拒绝整条响应，不把改写后的参数交给工具。没有原始错误日志开关。
+
+相同的脱敏文本进入原有 assistant error 历史，并由 Web 状态显示；数据库、工具或其它未分类异常继续使用通用提示。安全诊断只对应实际失败的模型请求，不复用前一轮错误。修复配置本身和重复消息 receipt 不自动重试；重启或一条新消息会依原有 Wake 恢复语义继续未完成输入。测试使用注入 fetch/合成 SSE，不代表真实 provider 联通或账户状态已验收。
+
+### 工具名约定
+
+直接采用扁平名称；复合名称用 snake_case，例如 `history_search`、`history_read`、`extension_inspect`、`extension_stage`、`extension_manage`。Pi 的 read/bash/edit/write/grep/find/ls、Codex 的 exec_command/write_stdin/update_plan、OpenCode 的 read/webfetch/todowrite 都采用这种直接命名习惯，而不是以点号模拟服务方法调用。普通服务 API 的属性名不属于模型工具名。
+
+注册和动态扩展工具统一校验 `^[A-Za-z_][A-Za-z0-9_-]{0,63}$`，以字母或下划线开头，后续仅字母、数字、下划线或连字符；不允许点号、空格或换行。[DeepSeek 官方规范](https://api-docs.deepseek.com/api/create-chat-completion/)允许这些字符，长度上限128；[OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)上限64，因此使用共同的64字符界限；首字符同时满足受支持的 Gemini FunctionDeclaration 的字母/下划线要求。此规则在调用模型前检查，不靠 provider 报错才发现。
+
+这是直接改名，不存在旧名称别名、协议映射或历史迁移。已保存的原始历史不改写；如果某条历史里已经有旧点号 assistant 工具调用，严格 provider 仍可能拒绝那段原始调用历史。新工具声明和新调用均使用当前名称，但不宣称旧调用已经迁移；程序不会为此删除、重置数据库或上下文。实际需要处理这种已有数据时须另行明确决定。
+
+命名参考 [Pi 工具注册](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/index.ts)、[Codex 计划工具](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/plan.rs)、[OpenCode read](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/tool/read.ts)。

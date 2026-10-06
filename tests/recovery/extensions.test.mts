@@ -15,7 +15,7 @@ import { createExtensionFixture, fixtureParameters } from './extension-fixtures.
 const event = (id: string): LifeEvent => ({ id, type: 'synthetic.user-message', source: 'user', occurredAt: '2026-10-05T08:00:00.000Z', payload: { text: `Synthetic extension request ${id}` } });
 const request = (id: string, name: string, args: AgentToolCall['arguments']) => ({ type: 'toolCall' as const, id, name, arguments: args });
 const calls = (...content: AssistantMessage['content']): AssistantMessage => ({ ...assistant(), stopReason: 'toolUse', content });
-const builtinNames = ['read', 'write', 'edit', 'grep', 'find', 'ls', 'bash', 'history.search', 'history.read', 'extension.inspect', 'extension.stage', 'extension.manage'];
+const builtinNames = ['read', 'write', 'edit', 'grep', 'find', 'ls', 'bash', 'history_search', 'history_read', 'extension_inspect', 'extension_stage', 'extension_manage'];
 
 function messages(snapshot: RecoverySnapshot) {
   return decodeRecords(snapshot.records).flatMap(entry => entry.type === 'message' ? [entry.message] : []);
@@ -35,7 +35,7 @@ async function assertDurableDeclarations(db: Awaited<ReturnType<typeof createTes
   const stored = decodeRecords(rows.rows.map(row => row.envelope)).flatMap(entry => entry.type === 'message' ? [entry.message] : []);
   assert.deepEqual(getCurrentTools(stored), getCurrentTools(context.messages), 'real PostgreSQL declarations precede the provider request');
   assert.equal(getCurrentSystemPrompt(stored), getCurrentSystemPrompt(context.messages), 'the same current Prompt is durable before the provider request');
-  assert.deepEqual(getCurrentTools(context.messages).filter(tool => tool.name !== 'fixture.echo').map(tool => tool.name), builtinNames);
+  assert.deepEqual(getCurrentTools(context.messages).filter(tool => tool.name !== 'fixture_echo').map(tool => tool.name), builtinNames);
 }
 
 interface Inspection { extensions: ExtensionStatus[]; changes: ChangeStatus[]; diagnostics: string[] }
@@ -45,10 +45,10 @@ function toolResult<T>(context: TranscriptContext, callId: string): T {
   return JSON.parse(message.content[0].text) as T;
 }
 function assertCapability(context: TranscriptContext, revision: number | null, parameters = fixtureParameters): string {
-  const declaration = getCurrentTools(context.messages).find(tool => tool.name === 'fixture.echo');
+  const declaration = getCurrentTools(context.messages).find(tool => tool.name === 'fixture_echo');
   const prompt = getCurrentSystemPrompt(context.messages);
   if (revision === null) {
-    assert.equal(declaration, undefined); assert.doesNotMatch(prompt, /Synthetic echo revision|fixture\.echo/); return '';
+    assert.equal(declaration, undefined); assert.doesNotMatch(prompt, /Synthetic echo revision|fixture_echo/); return '';
   }
   assert.ok(declaration); assert.deepEqual(declaration.parameters, parameters);
   assert.match(declaration.description, new RegExp(`Synthetic echo revision ${revision}\\n`));
@@ -81,10 +81,10 @@ test('real PostgreSQL server enables and invokes a manual extension in one Wake,
       events: [{ event: event('enable'), wake: { id: 'wake-enable', reason: 'Enable and use the configured synthetic extension' } }],
       streamFn: async (_model, context) => {
         requests++; await assertDurableDeclarations(db, miraId, context);
-        const tool = getCurrentTools(context.messages).find(tool => tool.name === 'fixture.echo');
+        const tool = getCurrentTools(context.messages).find(tool => tool.name === 'fixture_echo');
         if (requests === 1) {
           assert.equal(tool, undefined);
-          return streamOf(calls(request('enable-manual', 'extension.manage', { id: 'manual', action: 'enable' }), request('builtin-ls', 'ls', { path: fixture.root })));
+          return streamOf(calls(request('enable-manual', 'extension_manage', { id: 'manual', action: 'enable' }), request('builtin-ls', 'ls', { path: fixture.root })));
         }
         assert.ok(tool); assert.deepEqual(tool.parameters, fixtureParameters);
         oldDescription = tool.description;
@@ -92,7 +92,7 @@ test('real PostgreSQL server enables and invokes a manual extension in one Wake,
         const results = context.messages.filter(message => message.role === 'toolResult');
         assert.ok(results.some(message => message.toolCallId === 'enable-manual'));
         assert.ok(results.some(message => message.toolCallId === 'builtin-ls' && !message.isError));
-        if (requests === 2) return streamOf(calls(request('extension-effect', 'fixture.echo', { count: '7', label: 'synthetic' })));
+        if (requests === 2) return streamOf(calls(request('extension-effect', 'fixture_echo', { count: '7', label: 'synthetic' })));
         assert.equal(requests, 3);
         assert.match(JSON.stringify(results), /Synthetic extension result/);
         return streamOf(assistant('Completed the synthetic extension request in this Wake'));
@@ -125,11 +125,11 @@ test('real PostgreSQL server enables and invokes a manual extension in one Wake,
       streamFn: async (_model, context) => {
         restartRequests++; await assertDurableDeclarations(db, miraId, context);
         assert.match(JSON.stringify(context.messages), /Completed the synthetic extension request in this Wake/);
-        const tool = getCurrentTools(context.messages).find(tool => tool.name === 'fixture.echo'); assert.ok(tool);
+        const tool = getCurrentTools(context.messages).find(tool => tool.name === 'fixture_echo'); assert.ok(tool);
         assert.deepEqual(tool.parameters, fixtureParameters);
         assert.notEqual(tool.description, oldDescription); assert.match(tool.description, /revision 2/);
         assert.match(tool.description, /Extension "manual", activation /);
-        if (restartRequests === 1) return streamOf(calls(request('current-effect', 'fixture.echo', { count: 4, label: 'synthetic' })));
+        if (restartRequests === 1) return streamOf(calls(request('current-effect', 'fixture_echo', { count: 4, label: 'synthetic' })));
         assert.equal(restartRequests, 2); return streamOf(assistant('Current extension result recorded'));
       },
     });
@@ -141,7 +141,7 @@ test('real PostgreSQL server enables and invokes a manual extension in one Wake,
     assert.deepEqual((await fixture.effects()).map(effect => [effect.callId, effect.revision]), [['extension-effect', 1], ['current-effect', 2]]);
     const deltas = decodeRecords(after.records.slice(saved.records.length), saved.records.at(-1)!.id)
       .flatMap(entry => entry.type === 'message' && entry.message.role === 'system' && (entry.message.toolsAdded || entry.message.toolsRemoved) ? [entry.message] : []);
-    assert.equal(deltas.length, 1); assert.deepEqual(deltas[0]!.toolsRemoved, [{ name: 'fixture.echo' }]);
+    assert.equal(deltas.length, 1); assert.deepEqual(deltas[0]!.toolsRemoved, [{ name: 'fixture_echo' }]);
     assert.equal(deltas[0]!.toolsAdded?.length, 1); assert.match(deltas[0]!.toolsAdded![0]!.description, /revision 2/);
   } finally { await db.close(); await rm(fixture.root, { recursive: true, force: true }); }
 });
@@ -153,7 +153,7 @@ test('real PostgreSQL extension events bind configured identity, stay asleep, an
   const silent = synthetic('same-silent-id');
   const wakeItems = ['one', 'two'].map(id => ({ event: synthetic(`ready-${id}`), wake: { id: `same-wake-${id}`, reason: `Synthetic readiness ${id}` } }));
   const entries = (wake: boolean) => ['alpha', 'beta'].map(id => ({ id, path: fixture.modulePath,
-    config: { ...fixture.config, toolName: `fixture.${id}`, startup: [{ event: silent }, ...(wake ? wakeItems : [])] } }));
+    config: { ...fixture.config, toolName: `fixture_${id}`, startup: [{ event: silent }, ...(wake ? wakeItems : [])] } }));
   const options = { connectionString: db.connectionString, schema: db.schema, miraId, sourceDirectory: process.cwd(), spoolDirectory: path.join(fixture.root, 'spool'), events: [] };
   try {
     for (let restart = 0; restart < 2; restart++) {
@@ -203,7 +203,7 @@ test('real PostgreSQL extension Wake requests during a tool batch queue for the 
     const completed = await runDemo({ ...options, events: [{ event: event('start'), wake: { id: 'wake-start', reason: 'Use synthetic extension' } }],
       streamFn: (_model, context) => {
         requests++;
-        if (requests === 1) return streamOf(calls(request('queue-during-effect', 'fixture.echo', { count: 1, label: 'synthetic' })));
+        if (requests === 1) return streamOf(calls(request('queue-during-effect', 'fixture_echo', { count: 1, label: 'synthetic' })));
         const inputs = context.messages.filter(message => message.role === 'user');
         if (requests === 2) {
           assert.equal(inputs.length, 1); assert.doesNotMatch(JSON.stringify(inputs), /Queued extension/);
@@ -256,7 +256,7 @@ test('real PostgreSQL model configure, reload and remove preserve batch resource
         'SELECT intent, outcome, context_version::int AS context_version FROM tool_executions WHERE mira_id = $1 AND call_id = $2', [miraId, effect.callId]);
       assert.equal(rows.rows.length, 1); const row = rows.rows[0]!;
       assert.equal(row.outcome, null, 'durable intent exists before the fixture effect, without a manufactured outcome');
-      assert.deepEqual(row.intent.arguments, effect.arguments); assert.equal(row.intent.toolName, 'fixture.echo');
+      assert.deepEqual(row.intent.arguments, effect.arguments); assert.equal(row.intent.toolName, 'fixture_echo');
       const records = await db.admin.query('SELECT envelope FROM context_records WHERE mira_id = $1 ORDER BY version', [miraId]);
       const stored = decodeRecords(records.rows.map(item => item.envelope));
       const source = stored.find(entry => entry.id === row.intent.assistantRecordId);
@@ -273,8 +273,8 @@ test('real PostgreSQL model configure, reload and remove preserve batch resource
         if (requests === 1) {
           originalDescription = assertCapability(context, 1);
           assert.deepEqual((await fixture.lifecycle()).map(item => [item.phase, item.saved]), [['apply', initialEntry]]);
-          return streamOf(calls(request('configure-manual', 'extension.manage', { id: 'manual', action: 'configure', config: updatedConfig }),
-            request('configure-sibling', 'fixture.echo', { count: '7', label: 'synthetic' }), request('inspect-configure-queued', 'extension.inspect', {})));
+          return streamOf(calls(request('configure-manual', 'extension_manage', { id: 'manual', action: 'configure', config: updatedConfig }),
+            request('configure-sibling', 'fixture_echo', { count: '7', label: 'synthetic' }), request('inspect-configure-queued', 'extension_inspect', {})));
         }
         if (requests === 2) {
           configuredDescription = assertCapability(context, 2, updatedParameters);
@@ -289,8 +289,8 @@ test('real PostgreSQL model configure, reload and remove preserve batch resource
           assert.deepEqual(lifecycle[2]!.saved, updatedEntry, 'desired config is saved before old resource cleanup');
           assert.deepEqual(lifecycle[3]!.saved, updatedEntry, 'apply reads the actual new configuration file, not a later observation');
           configuredBytes = await readFile(configurationFile, 'utf8');
-          return streamOf(calls(request('inspect-configure-applied', 'extension.inspect', {}), request('reload-manual', 'extension.manage', { id: 'manual', action: 'reload' }),
-            request('reload-sibling', 'fixture.echo', { count: '8', label: 'synthetic' }), request('inspect-reload-queued', 'extension.inspect', {})));
+          return streamOf(calls(request('inspect-configure-applied', 'extension_inspect', {}), request('reload-manual', 'extension_manage', { id: 'manual', action: 'reload' }),
+            request('reload-sibling', 'fixture_echo', { count: '8', label: 'synthetic' }), request('inspect-reload-queued', 'extension_inspect', {})));
         }
         if (requests === 3) {
           reloadedDescription = assertCapability(context, 2, updatedParameters);
@@ -306,7 +306,7 @@ test('real PostgreSQL model configure, reload and remove preserve batch resource
           ]);
           assert.equal(new Set((await fixture.lifecycle()).map(item => item.moduleId)).size, 1, 'manual reload reactivates the same imported module; this does not test source HMR');
           assert.equal(await readFile(configurationFile, 'utf8'), configuredBytes, 'reload does not rewrite the desired configuration');
-          return streamOf(calls(request('inspect-reload-applied', 'extension.inspect', {}), request('reloaded-effect', 'fixture.echo', { count: '9', label: 'synthetic' })));
+          return streamOf(calls(request('inspect-reload-applied', 'extension_inspect', {}), request('reloaded-effect', 'fixture_echo', { count: '9', label: 'synthetic' })));
         }
         assert.equal(requests, 4); assert.equal(assertCapability(context, 2, updatedParameters), reloadedDescription);
         assert.deepEqual(toolResult<Inspection>(context, 'inspect-reload-applied').changes, [
@@ -318,7 +318,7 @@ test('real PostgreSQL model configure, reload and remove preserve batch resource
     assert.equal(first.completedRuns, 1); assert.equal(first.modelCalls, 4);
     const saved = await assertStoredChain(db, miraId);
     assert.deepEqual(saved.executions.map(item => item.intent.callId), ['configure-manual', 'configure-sibling', 'inspect-configure-queued', 'inspect-configure-applied', 'reload-manual', 'reload-sibling', 'inspect-reload-queued', 'inspect-reload-applied', 'reloaded-effect']);
-    for (const execution of saved.executions.filter(item => item.intent.toolName === 'fixture.echo')) {
+    for (const execution of saved.executions.filter(item => item.intent.toolName === 'fixture_echo')) {
       const count = (execution.intent.arguments as { count: number }).count;
       assert.deepEqual(execution.intent.requestedArguments, { count: String(count), label: 'synthetic' });
       assert.deepEqual(execution.intent.arguments, { count, label: 'synthetic' });
@@ -336,9 +336,9 @@ test('real PostgreSQL model configure, reload and remove preserve batch resource
         assert.match(JSON.stringify(context.messages), /Configured and reloaded the synthetic extension/);
         if (resumedRequests === 1) {
           assert.notEqual(assertCapability(context, 2, updatedParameters), reloadedDescription);
-          return streamOf(calls(request('inspect-restarted', 'extension.inspect', {}), request('remove-manual', 'extension.manage', { id: 'manual', action: 'remove' }),
-            request('remove-sibling', 'fixture.echo', { count: '10', label: 'synthetic' }), request('inspect-remove-queued', 'extension.inspect', {}),
-            request('remove-missing', 'extension.manage', { id: 'missing', action: 'remove' })));
+          return streamOf(calls(request('inspect-restarted', 'extension_inspect', {}), request('remove-manual', 'extension_manage', { id: 'manual', action: 'remove' }),
+            request('remove-sibling', 'fixture_echo', { count: '10', label: 'synthetic' }), request('inspect-remove-queued', 'extension_inspect', {}),
+            request('remove-missing', 'extension_manage', { id: 'missing', action: 'remove' })));
         }
         assertCapability(context, null);
         if (resumedRequests === 2) {
@@ -351,7 +351,7 @@ test('real PostgreSQL model configure, reload and remove preserve batch resource
           assert.deepEqual(toolResult(context, 'remove-missing'), { status: 'rejected', error: 'Unknown configured extension: missing' });
           assert.deepEqual((await fixture.lifecycle()).slice(-2).map(item => [item.phase, item.activation, item.saved]), [['execute', 5, updatedEntry], ['cleanup', 5, null]]);
           assert.deepEqual(JSON.parse(await readFile(configurationFile, 'utf8')), { entries: [], ...metadata });
-          return streamOf(calls(request('inspect-remove-applied', 'extension.inspect', {})));
+          return streamOf(calls(request('inspect-remove-applied', 'extension_inspect', {})));
         }
         assert.equal(resumedRequests, 3);
         const removed = toolResult<Inspection>(context, 'inspect-remove-applied');
@@ -400,7 +400,7 @@ test('real PostgreSQL model removal retires a generated activation but retains s
         for (const [callId, receipt] of accepted) assert.deepEqual(toolResult(context, callId), receipt, 'later lifecycle changes never revise an accepted result');
         if (requests === 1) {
           assertCapability(context, null);
-          return streamOf(calls(request('install-generated-removal', 'extension.manage', { id: 'generated', action: 'install', digest: release.digest, config })));
+          return streamOf(calls(request('install-generated-removal', 'extension_manage', { id: 'generated', action: 'install', digest: release.digest, config })));
         }
         const previous = requests === 2 ? ['install-generated-removal', 'install'] : requests === 3 ? ['activate-generated-removal', 'activate'] : requests === 4 ? ['remove-generated', 'remove'] : null;
         if (previous) {
@@ -412,15 +412,15 @@ test('real PostgreSQL model removal retires a generated activation but retains s
           assertCapability(context, null); assert.deepEqual(await fixture.lifecycle(), [], 'staging and disabled install never apply');
           const installed = (await readExtensionConfiguration(configurationFile)).entries[0]!;
           assert.equal(installed.enabled, false); assert.equal(installed.generated!.digest, release.digest); assert.deepEqual(installed.config, config);
-          return streamOf(calls(request('activate-generated-removal', 'extension.manage', { id: 'generated', action: 'activate' })));
+          return streamOf(calls(request('activate-generated-removal', 'extension_manage', { id: 'generated', action: 'activate' })));
         }
         if (requests === 3) {
           assert.match(assertCapability(context, 1), new RegExp(release.digest));
           const current = (await readExtensionConfiguration(configurationFile)).entries[0]!;
           assert.equal(current.enabled, true); assert.deepEqual((await fixture.lifecycle())[0]!.saved, current, 'generated apply observes saved activation config');
           activationDirectories = await readdir(path.join(artifactsDirectory, 'activations')); assert.equal(activationDirectories.length, 1);
-          return streamOf(calls(request('remove-generated', 'extension.manage', { id: 'generated', action: 'remove' }),
-            request('generated-remove-sibling', 'fixture.echo', { count: '12', label: 'synthetic' }), request('inspect-generated-remove-queued', 'extension.inspect', {})));
+          return streamOf(calls(request('remove-generated', 'extension_manage', { id: 'generated', action: 'remove' }),
+            request('generated-remove-sibling', 'fixture_echo', { count: '12', label: 'synthetic' }), request('inspect-generated-remove-queued', 'extension_inspect', {})));
         }
         assertCapability(context, null);
         if (requests === 4) {
@@ -431,7 +431,7 @@ test('real PostgreSQL model removal retires a generated activation but retains s
           assert.deepEqual((await fixture.lifecycle()).map(item => item.phase), ['apply', 'execute', 'cleanup']);
           assert.equal((await fixture.lifecycle()).at(-1)!.saved, null, 'remove saves desired absence before resource cleanup');
           assert.deepEqual(JSON.parse(await readFile(configurationFile, 'utf8')), { entries: [], artifactsDirectory, comment: 'Retain the ordinary version files' });
-          return streamOf(calls(request('inspect-generated-removed', 'extension.inspect', {})));
+          return streamOf(calls(request('inspect-generated-removed', 'extension_inspect', {})));
         }
         assert.equal(requests, 5);
         const inspected = toolResult<Inspection & { releases: Array<{ digest: string }> }>(context, 'inspect-generated-removed');
