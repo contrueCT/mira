@@ -11,6 +11,31 @@ available tools and installed extensions; reuse an existing capability when it f
 Use ordinary file and shell tools to do the work. This skill grants no additional
 permission to run code, access accounts, or create external effects.
 
+## Design or review
+
+Read the applicable references below and inspect the proposed or existing extension
+against current APIs. Report design choices or findings instead of following the
+installation workflow. Do not write files, install extensions, or change runtime
+configuration unless the user requests implementation.
+
+## Deliver a working extension first
+
+1. Resolve the requested result and whether an existing tool or extension already
+   provides it. Start with a small working version; do not add speculative features
+2. Discover only the APIs needed for that version: use `extension_inspect` for
+   installed state, then read the SDK contract and relevant references below.
+   Read lifecycle guidance before choosing asynchronous work or services
+3. Create an ordinary workspace with the existing template. Write the extension,
+   validate its configuration, typecheck and test offline. Stage the complete
+   workspace, then test the exact staged digest using the documented artifact CLI
+4. When the user's request authorizes execution, install the staged release as
+   disabled and activate it. Read the management receipt, then inspect the applied
+   state on the next tool batch. Saved desired configuration does not prove that
+   the runtime is active; an active registration does not prove the task works
+5. Exercise the actual capability with safe authorized inputs, fix observed defects
+   in the same extension, and report its location and verification limits. A fake
+   provider test is not proof of real account access or external effects
+
 ## Choose the relevant reference
 
 - Read [SDK contracts](references/sdk.md) when writing a tool, event source,
@@ -57,3 +82,18 @@ Finish with the workspace and entry, checks actually run, staged digest/test
 receipt if any, requested change receipt, observed runtime/configuration state,
 and remaining limitations. Do not claim installation, live-provider behavior,
 cleanup, or rollback succeeded from a typecheck or an `accepted` receipt alone.
+
+
+## Upstream source
+
+The design/review branch, working-extension-first workflow, API discovery order,
+and verification guidance are adapted from DeepSeek's official shipped
+[cordis-plugin-development skill](https://github.com/deepseek-ai/deepseek-harness/blob/5badb15009ae1756c3afe0ae0cef1faafc290ccc/packages/preset/agent-preset/skills/cordis-plugin-development/SKILL.md)
+and its verification reference, pinned at commit
+`5badb15009ae1756c3afe0ae0cef1faafc290ccc`. Copyright (c) 2026 DeepSeek;
+[MIT license](LICENSE.deepseek).
+
+Mira's SDK, content-bound staging, disabled installation, lifecycle and test
+commands replace DSH's profile bundles and direct Cordis APIs. DSH's UI slots,
+presets, MCP bundles, executable YAML and separate approval mechanisms are not
+Mira features. The linked Mira-specific references describe the current code.

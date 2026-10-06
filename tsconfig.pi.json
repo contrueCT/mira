@@ -24,7 +24,9 @@
     "tests/unit/model-discovery.test.mts",
     "tests/unit/web-http.test.mts",
     "tests/unit/web-settings.test.mts",
-    "tests/unit/web-service.test.mts"
+    "tests/unit/web-service.test.mts",
+    "scripts/tool-usability.mts",
+    "tests/unit/tool-guidance.test.mts"
   ],
   "exclude": [
     "node_modules",

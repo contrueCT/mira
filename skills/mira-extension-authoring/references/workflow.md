@@ -25,7 +25,7 @@ staging snapshots all selected files, including hidden files.
 Commands below assume `MIRA_CHECKOUT`, `EXTENSION_WORKSPACE`, and
 `EXTENSION_ARTIFACTS` are set to the verified paths, not literal placeholders. Set
 `EXTENSION_DIGEST` only from an actual stage result. These shell variables do not
-configure the running host; inspect its real `artifactsDirectory` and use that store.
+configure the running host; use the actual `Extensions Workspace` path supplied in the runtime environment as that store. If it is not configured, report the missing host configuration instead of inventing a store for the running host.
 Do not replace an existing desired configuration to initialize a new one.
 
 ## 2. Generate and implement

@@ -24,7 +24,7 @@
 
 ## 内置扩展作者技能
 
-`skills/mira-extension-authoring` 提供入口、完整 SDK/生命周期/开发流程参考及可测试的 watcher 范例。相对引用定位当前源码中的 SDK、模板和脚本，不复制 SDK、模板或旧版本副本到用户目录。指南覆盖当前真实能力，不把设计中的未来接口写成可调用 API。
+`skills/mira-extension-authoring` 改编 DeepSeek Harness 官方内置 `cordis-plugin-development` 的设计/实现分支、交付与验证工作流（固定上游提交及完整 MIT 通知保留在技能目录），替换 DSH 专属 profile/UI/直接 Cordis 接口为当前 Mira SDK。技能提供入口、完整 SDK/生命周期/开发流程参考及可测试的 watcher 范例。相对引用定位当前源码中的 SDK、模板和脚本，不复制 SDK、模板或旧版本副本到用户目录。指南覆盖当前真实能力，不把设计中的未来接口写成可调用 API。
 
 ## Prompt 来源
 
