@@ -67,3 +67,8 @@ Cordis 处理依赖、生命周期与资源清理，不是安全边界。用户�
 当前时间和可用能力在实际请求边界更新，工具说明来自该请求已准备的同一注册表；停用/更新不保留过时说明，不为说明刷新另起 Wake 或模型调用。Memory 部分始终使用该持续上下文保存的 bootstrap 快照，普通重启、Wake、压缩或文件编辑不重新读取 MEMORY.md。authorizationContext 只提供事实语境，不能伪造用户已批准；执行意图来自主模型实际调用，runtime 保留 schema/参数、不可变 intent/outcome、去重、来源与所有权检查。模型、采样、思考与 token 配置仍属于 Runtime/provider。
 
 v0.5 §40 不引入额外产品隔离。用户再次确认普通工具和生成代码均按宿主 OS 身份运行；既有授权、凭据保护、OS 权限及数据完整性边界继续有效，无批准 UI 或固定风险硬门禁。
+
+
+## 模型目录与 transport
+
+按 [ADR 0008](adr/0008-model-catalog-and-connections.md)，server 直接使用 Pi 内置 chat 目录与逐模型协议，组装显式 API Key 和三种独立自定义连接。模型发现只返回候选 ID/名称，限额／能力需明确配置。runtime-pi 继续接收 model/streamFn，不拥有凭据、provider registry 或 ambient fallback；核心依赖方向、完整 Prompt、同轮工具、恢复与显式压缩不变。命令和限制见 [模型说明](development/models.md)。

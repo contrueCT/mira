@@ -48,6 +48,8 @@
     "tests/unit/extension-artifacts.test.mts",
     "tests/unit/generated-extensions.test.mts",
     "tests/unit/generated-runtime.test.mts",
-    "tests/unit/system-prompt.test.mts"
+    "tests/unit/system-prompt.test.mts",
+    "tests/unit/model-connections.test.mts",
+    "tests/unit/model-discovery.test.mts"
   ]
 }

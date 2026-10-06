@@ -8,7 +8,7 @@
 
 ## 当前状态与关系
 
-当前实现包含连续上下文、合并 Wake、普通 Memory 与完整 Mira v0.2 Prompt、通用 Pi 工具、Memory Git、只读历史查询与 Cordis 手工/生成扩展生命周期，见 [ADR 0005](docs/adr/0005-generated-extension-lifecycle.md) 和 [扩展宿主](packages/extension-host/README.md)。Server 仅有假 provider CLI 组装，没有 HTTP/UI 或完整产品。
+当前实现包含连续上下文、合并 Wake、普通 Memory 与完整 Mira v0.2 Prompt、通用 Pi 工具、Memory Git、只读历史查询与 Cordis 手工/生成扩展生命周期，见 [ADR 0005](docs/adr/0005-generated-extension-lifecycle.md) 和 [扩展宿主](packages/extension-host/README.md)。Server 有假 provider CLI、Pi 离线模型目录、自定义发现与显式 model/streamFn transport；没有交互真实模型 CLI、HTTP/UI 或完整产品。
 
 - `apps/server` 组装核心与适配器；`apps/web` 提供单条 Timeline
 - `life` / `context` 保持独立，不导入 Pi、Cordis、数据库或 Web 框架
@@ -49,7 +49,7 @@ pnpm install --frozen-lockfile --ignore-scripts
 pnpm check
 ```
 
-`check` 包括类型、包边界、基础/离线测试和工具构建；`test:integration` 要求显式隔离数据库，`check:all` 包含真实 PostgreSQL 验证。模型始终使用假 provider。测试数量以实际输出为准，命令和隔离要求见 [toolchain.md](docs/development/toolchain.md)。`build` 仍只构建检查工具。
+`check` 包括类型、包边界、基础/离线测试和工具构建；`test:integration` 要求显式隔离数据库，`check:all` 包含真实 PostgreSQL 验证。测试使用假 provider 或注入 fetch 的合成协议响应，不调用真实模型。测试数量以实际输出为准，命令和隔离要求见 [toolchain.md](docs/development/toolchain.md)。`build` 仍只构建检查工具。
 
 ## 共享约束
 

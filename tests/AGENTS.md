@@ -7,6 +7,7 @@
 - `foundation/design-sources.test.mts` 锁定三份新原文和 v0.4 存档的字节数/SHA-256，核对来源 manifest
 - `foundation/boundaries.test.mts` 是当前实际测试入口
 - `foundation/toolchain.test.mts` 通过当前 pnpm 验证配置和不支持的 Node 版本被拒绝；用 `pnpm test` 运行以传入准确包管理器入口
+- `unit/model-connections.test.mts` 与 `unit/model-discovery.test.mts` 使用真实 Pi adapter + 注入 fetch／合成 SSE 验证协议与发现，绝不执行 live 模型调用
 - `unit/` 为核心/离线运行时测试；`integration/` 与 `recovery/` 为真实数据库/进程测试；`e2e/` 仍是占位
 - `scripts/run-tests.mts` 显式发现对应目录的 `*.test.mts`，剥离凭据并设置临时 HOME；新增目录要同步测试发现
 

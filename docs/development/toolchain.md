@@ -33,7 +33,7 @@ CI 固定第三方 Action 的完整 commit SHA，只有只读仓库权限，不�
 
 ## 包依赖策略
 
-`context` 导出 JSON envelope 与快照，`cognition` 导出最小 Runtime 契约，`life` 导出持久化契约与串行 WakeLoop。`persistence` 与 `runtime-pi` 依赖所需核心出口；`workspace` 仅公开普通溢出文本写入，`server` 公开假 provider 组装。Pi 依赖只开放给 runtime-pi 和 server 组装，数据库驱动只开放给 persistence；其余占位包保持空 exports。新增契约同步声明最小允许边。
+`context` 导出 JSON envelope 与快照，`cognition` 导出最小 Runtime 契约，`life` 导出持久化契约与串行 WakeLoop。`persistence` 与 `runtime-pi` 依赖所需核心出口；`workspace` 仅公开普通溢出文本写入，`server` 公开假 provider 组装、Pi 目录、显式自定义发现与 model/streamFn transport，见 [模型说明](models.md)。Pi 依赖只开放给 runtime-pi 和 server 组装，数据库驱动只开放给 persistence；其余占位包保持空 exports。新增契约同步声明最小允许边。
 
 检查器拒绝未声明依赖、禁止层次依赖、内部子路径、跨包相对路径、动态非字面量导入、CommonJS require、导入别名和 URL、包树符号链接，以及依赖环。静态导入、重导出、动态字面量导入、import type 均通过 TypeScript AST 分析。
 
@@ -57,7 +57,7 @@ exports 仅支持明确子路径映射到普通相对路径/null，或一层 `ty
 
 2026-10-05 用户确认声明检查例外。Pi 1.0.2 发布的 `.d.ts` 中 JSON 导入缺少 NodeNext 所需 import attribute，Google 传递依赖的声明还引用未安装的可选 MCP SDK。未修改上游包，也未添加无用途的 MCP 依赖。
 
-根 `tsconfig.json` 保持 `skipLibCheck: false`，检查核心、持久化、workspace、非 Pi 应用、工具和相应测试。`tsconfig.pi.json` 承接 Pi 运行时、server 假 provider 组装及消费 Pi 的离线/恢复测试，设置 `skipLibCheck: true`。例外跳过该项目消费的所有声明文件检查，不仅是 Pi 包；若以后添加自己的 `.d.ts`，也会落入这个例外，必须另行评估。两套配置继承相同 `strict`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes` 等源代码检查，仍使用上游声明检查 Mira 的实际调用。本阶段新增下述 Cordis 项目；`pnpm typecheck` 必须运行全部三套配置。
+根 `tsconfig.json` 保持 `skipLibCheck: false`，检查核心、持久化、workspace、非 Pi 应用、工具和相应测试。`tsconfig.pi.json` 承接 Pi 运行时、server provider 组装及消费 Pi 的离线/恢复测试，设置 `skipLibCheck: true`。例外跳过该项目消费的所有声明文件检查，不仅是 Pi 包；若以后添加自己的 `.d.ts`，也会落入这个例外，必须另行评估。两套配置继承相同 `strict`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes` 等源代码检查，仍使用上游声明检查 Mira 的实际调用。本阶段新增下述 Cordis 项目；`pnpm typecheck` 必须运行全部三套配置。
 
 CI 和本地安装显式使用 `--ignore-scripts`。pnpm 11 对未批准的传递依赖构建会返回 `ERR_PNPM_IGNORED_BUILDS`；本批不需要 Google SDK、esbuild、protobufjs 的安装脚本，因此继续禁用脚本，不执行 `approve-builds` 或扩大构建权限。
 

@@ -25,6 +25,8 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 - [0007 主模型决定动作，移除独立授权门禁](0007-model-owned-action-decisions.md)：Accepted，2026-10-06，移除 authorize 和合成证据，保留事实 Prompt 语境、执行来源与技术完整性
 
+- [0008 Pi 目录与显式自定义连接](0008-model-catalog-and-connections.md)：Accepted，2026-10-06，完整离线 chat 目录、逐模型协议、三种自定义协议、独立 API Key、模型发现与 transport 组装
+
 ## 待确认
 
 | 决策 | 当前建议 / 需要验证 | 开始依赖它的工作前确认 |

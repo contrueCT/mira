@@ -13,7 +13,7 @@ pnpm demo first-message 'Hello Mira'
 
 `MIRA_DEMO_MAX_INLINE_BYTES` 可降低内联大小以演示溢出文件。`MIRA_DEMO_SPOOL` 必须是源码仓库及用户 home 以外的受控目录。完整批次保存在普通文本文件中，模型收到路径；复用 Pi 的普通 `read` 工具及其已有输出限制，不添加专用读取服务。超长单行等限制遵循该通用工具；同批也开放 Pi 原生 write/edit/grep/find/ls/bash；默认目录不是沙箱，没有应用目录限制。本演示假 provider 默认直接产生合成回复，不假称它已经阅读溢出文件。测试可以注入会调用文件工具的确定性模型。
 
-`runDemo` 供测试/本地组装使用，假 provider 的确定性工具调用不证明真实模型判断质量。主模型通过对话、上下文及自然语言 Prompt 决定调用或澄清；server 不注入 authorize 回调或合成授权证据，authorizationContext 仅说明事实。生产账户身份、真实模型网络与服务入口均未实现。见 [ADR 0007](../../docs/adr/0007-model-owned-action-decisions.md)。
+`runDemo` 供测试/本地组装使用，假 provider 的确定性工具调用不证明真实模型判断质量。主模型通过对话、上下文及自然语言 Prompt 决定调用或澄清；server 不注入 authorize 回调或合成授权证据，authorizationContext 仅说明事实。生产账户身份及服务入口仍未实现；显式真实协议 transport 与离线目录见下节。见 [ADR 0007](../../docs/adr/0007-model-owned-action-decisions.md)。
 
 验证：`pnpm check`、`pnpm check:all`；真实数据库要求见 `tests/integration/README.md`。本地 socket 被禁止时不要用 TCP 绕过，使用现有批准 CI 验证。
 
@@ -33,3 +33,8 @@ CLI 设置 `MIRA_DEMO_MEMORY` 即可启用 Memory；只支持当前 Memory 配�
 来源身份由组装层绑定。`emitEvent` 不唤醒；显式 Wake 复用原队列去重/合并。SDK 工具和 `extension.inspect` / `extension.manage` 保留普通 Pi 技术校验、不可变 intent/outcome 与来源路径。管理工具返回 accepted，整批工具完成后等待应用，再由同一 Wake 的下一自然请求看到并调用新工具；不重开已完成的最终回复。
 
 启用/停用/配置先保存到同一 JSON，再交给 Cordis，receipt 区分保存与应用失败。源码 HMR 使用 `node --expose-internals apps/server/src/cli.mts ...`；没有 addon 或运行时依赖安装。生成扩展按 [ADR 0005](../../docs/adr/0005-generated-extension-lifecycle.md) 开启 artifactsDirectory 后使用 stage/install/activate/update/rollback/remove，仍走原工具技术校验和持久化路径。文件 watcher 是异步的，嵌套 CJS require 不自动追踪，apply 失败不保证旧代回滚。完整语义见 [扩展宿主](../../packages/extension-host/README.md)。假 provider 默认仍不自动调用工具；真正同轮激活/调用由确定性测试验证。
+
+
+## 模型目录与连接
+
+`pnpm models --help` 提供完整 Pi chat 目录、逐模型协议、显式自定义配置和按 base URL 发现模型。`createModelTransport` 返回可注入既有 `PiDurableRuntime` 的 model/streamFn；不会改动假 provider demo。配置与 URL 语义、独立 API Key、延期的 OAuth/云登录、unknown pricing 和验证边界见 [模型说明](../../docs/development/models.md)及 [ADR 0008](../../docs/adr/0008-model-catalog-and-connections.md)。
