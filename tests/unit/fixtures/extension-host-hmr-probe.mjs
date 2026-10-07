@@ -8,7 +8,7 @@ import { ExtensionHost } from '@mira/extension-host';
 
 const directory = await mkdtemp(path.join(os.tmpdir(), 'mira-host-hmr-'));
 const entry = path.join(directory, 'entry.mjs');
-const state = globalThis.extensionHostProbe = { runs: [], received: [] };
+const state = globalThis.extensionHostProbe = { runs: [], received: [], gate: null, release: null };
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const sdk = import.meta.resolve('@mira/extension-sdk');
 const source = version => `
@@ -20,8 +20,9 @@ const source = version => `
     ctx.interval(() => { run.ticks++; }, 5);
     ctx.onEvent('lease-ping', () => { run.events++; });
     ctx.onCleanup(async () => { await new Promise(resolve => setTimeout(resolve, 10)); run.closed = true; });
-    ctx.registerTool({ name: 'lease', description: 'Use the entire pinned generation', parameters: { type: 'object' },
+    ctx.registerTool({ name: 'lease', description: 'Use an execution-leased generation', parameters: { type: 'object' },
       async execute() {
+        await globalThis.extensionHostProbe.gate;
         ctx.publish('lease-ping', null);
         const resource = ctx.service('lease-resource');
         await ctx.emitEvent({ id: 'event-' + run.version + '-' + run.events, type: 'lease-test', occurredAt: '2026-10-05T00:00:00.000Z', payload: { version: run.version } });
@@ -52,19 +53,25 @@ try {
   // HMR exposes no public ready promise; allow chokidar's initial scan, then
   // require an observed unloading state rather than assuming a change happened.
   await sleep(200);
+  state.gate = new Promise(resolve => { state.release = resolve; });
+  const pending = execute(first);
   await writeFile(entry, source(2));
   await until(() => host.inspect()[0].status === 'unloading', 'HMR should reach the held generation');
   const old = state.runs[0];
   const ticksDuringUnload = old.ticks;
   assert.equal(old.closed, false);
-  assert.equal(state.runs.length, 1, 'new apply must wait for the entire batch');
-  assert.equal((await execute(first)).text, '1:1', 'old service, listener, and emit stay usable during HMR disposal');
-  assert.equal(old.events, 2);
+  assert.equal(state.runs.length, 1, 'new apply must wait for the actual in-flight call');
+  assert.deepEqual((await execute(first)).details, { status: 'stale', executed: false, extensionId: 'host-hmr', activation: first.activation, toolName: 'lease' });
+  assert.equal(old.events, 1, 'unloading activation rejects new calls before entering its closure');
   await until(() => old.ticks > ticksDuringUnload, 'pinned timer should stay live during disposal');
+  assert.equal(state.received.length, 1);
+  state.release(); state.gate = null;
+  assert.equal((await pending).text, '1:1', 'executing call can still use old service, listener and emit during disposal');
   assert.equal(state.received.length, 2);
   assert.equal(state.received[1].source, 'host-hmr');
   assert.equal(state.received[1].wake, undefined);
   assert.deepEqual(state.received[1].event.payload, { version: 1 });
+  await until(() => state.runs.length === 2 && old.closed, 'HMR must complete without another request boundary');
   const second = (await host.prepare())[0];
   assert.ok(second, 'next boundary should publish the replacement tool');
   assert.equal(old.closed, true, 'boundary awaits async old cleanup');
@@ -75,11 +82,12 @@ try {
   await sleep(20);
   assert.equal(old.ticks, oldTicks, 'retired timer cannot leak');
   assert.equal(old.events, 2, 'retired listener cannot leak');
-  await assert.rejects(execute(first), /activation has retired/, 'retired context cannot emit new activity');
+  assert.equal((await execute(first)).details.executed, false, 'retired declaration cannot emit new activity');
   assert.equal(state.received.length, 3);
   await host.finish();
   success = true;
 } finally {
+  state.release?.();
   await host.close();
   if (success) {
     const final = structuredClone(state.runs);

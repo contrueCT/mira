@@ -191,7 +191,9 @@ test('tool CLI uses real scaffold, durable desired config, host activation and e
     await execute(process.execPath, [path.resolve('scripts/create-extension-workspace.mts'), paths.workspace]);
     const release = value(await cli(session, 'call', 'extension_stage', JSON.stringify({ sourceRoot: paths.workspace, entryRelative: 'src/index.ts' })));
     const install = await cli(session, 'call', 'extension_manage', JSON.stringify({ id: 'greeting', action: 'install', digest: release.digest }));
-    assert.equal(value(install).status, 'accepted');
+    assert.equal(value(install).status, 'applied');
+    assert.equal(value(install).persistence, 'saved');
+    assert.equal(value(install).runtime.status, 'disabled');
     assert.equal(install.settled.changes[0].status, 'applied');
     assert.equal(install.settled.extensions[0].status, 'disabled');
     const child = spawn(process.execPath, [script, session, 'serve'], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -209,11 +211,15 @@ test('tool CLI uses real scaffold, durable desired config, host activation and e
     const messages = stdout.trim().split('\n').map(line => JSON.parse(line));
     const active = messages[1];
     assert.equal(active.results[0].result.content[0].type, 'text');
-    assert.match(active.results[1].error, /not found/, 'same-batch activation cannot publish a new registry early');
+    assert.equal(value(active).status, 'applied');
+    assert.equal(value(active).runtime.status, 'active');
+    assert.match(active.results[1].error, /not found/, 'an undeclared same-batch tool remains unavailable until the next request');
     assert.equal(active.settled.extensions[0].status, 'active');
     assert.ok(active.settled.availableTools.includes('hello_world'));
     assert.equal(messages[2].results[0].result.content[0].text, 'Hello, Fixture!');
     const disabled = messages[3];
+    assert.equal(value(disabled).status, 'applied');
+    assert.equal(value(disabled).runtime.status, 'disabled');
     assert.equal(disabled.settled.extensions[0].status, 'disabled');
     assert.ok(!disabled.settled.availableTools.includes('hello_world'));
     assert.equal(JSON.parse(await readFile(paths.configuration, 'utf8')).entries[0].enabled, false);

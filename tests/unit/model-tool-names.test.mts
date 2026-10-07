@@ -4,7 +4,7 @@ import test from 'node:test';
 import type { AgentTool } from '@earendil-works/pi-agent-core';
 import { getCurrentTools } from '@earendil-works/pi-ai';
 import { builtinModels } from '@earendil-works/pi-ai/providers/all';
-import { ExtensionHost } from '@mira/extension-host';
+import { ExtensionHost, type ChangeStatus } from '@mira/extension-host';
 import { createHistoryTools, PiDurableRuntime } from '@mira/runtime-pi';
 import { createModelTransport, extensionManagementTools, extensionTools, type CustomProtocol, type ModelTransportOptions } from '@mira/server';
 import { createExtensionFixture, fixtureParameters } from '../recovery/extension-fixtures.mts';
@@ -151,10 +151,14 @@ for (const api of ['openai-completions', 'openai-responses', 'anthropic-messages
         // This fixture intentionally has no artifact store. The real stage tool
         // must dispatch and return its honest rejection, not an unknown-tool error.
         assert.match(transcript.results.find(result => result.id === 'stage0001')!.text, /Generated extensions require artifactsDirectory/);
-        assert.match(transcript.results.find(result => result.id === 'enable001')!.text, /"status":"accepted"/);
+        const enabled = JSON.parse(transcript.results.find(result => result.id === 'enable001')!.text) as ChangeStatus;
+        assert.equal(enabled.status, 'applied'); assert.equal(enabled.persistence, 'not-required');
+        assert.equal(enabled.runtime?.status, 'active'); assert.deepEqual(enabled.runtime.tools, ['generated_echo']);
         if (round >= 3) {
           assert.match(transcript.results.find(result => result.id === 'echo00001')!.text, /Synthetic extension result/);
-          assert.match(transcript.results.find(result => result.id === 'disable01')!.text, /"status":"accepted"/);
+          const disabled = JSON.parse(transcript.results.find(result => result.id === 'disable01')!.text) as ChangeStatus;
+          assert.equal(disabled.status, 'applied'); assert.equal(disabled.persistence, 'not-required');
+          assert.equal(disabled.runtime?.status, 'disabled'); assert.deepEqual(disabled.runtime.tools, []);
         }
       }
       assert.ok(round <= 4, 'one same-round continuation per completed tool batch, one restart request');

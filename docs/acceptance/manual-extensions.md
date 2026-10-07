@@ -14,3 +14,6 @@
 - `tests/recovery/extensions.test.mts`：真实 PostgreSQL 的同 Wake 激活、精确证据、重启无重放、来源绑定、显式 Wake 合并去重
 
 测试使用假 provider 和临时扩展文件，不把离线 MemoryWriter 当数据库验证。HMR 子进程实际携带 `--expose-internals`；不需要原生 addon 或网络。执行结果和最终提交 CI 以该 PR 的完整验证记录为准，尚未运行的数据库测试不能记为通过。
+
+
+当前管理回归按 [ADR 0014](../adr/0014-awaited-extension-management.md) 验证：工具直接 await 应用，保护实际在途调用，移除/替换旧 activation 的尚未执行 sibling 返回明确错误；早期整批保活验收记录不再代表现行契约。

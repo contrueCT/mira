@@ -164,7 +164,8 @@ test('CLI-created default host stages, installs disabled, activates and restores
     assert.deepEqual(host.inspect(), []); assert.deepEqual(await host.prepare(), []);
     const staged = await host.stage(source, 'entry.mjs');
     assert.equal(await readFile(lifecycle, 'utf8'), '', 'staging must not import or activate code');
-    const install = host.requestChange('generated', { action: 'install', digest: staged.digest, config: { label: 'persisted' } });
+    const install = await host.requestChange('generated', { action: 'install', digest: staged.digest, config: { label: 'persisted' } });
+    assert.equal(install.status, 'applied'); assert.equal(install.runtime?.status, 'disabled');
     assert.deepEqual(await host.prepare(), []);
     assert.equal(host.inspect()[0]!.status, 'disabled');
     assert.equal(host.changeStatus().find(item => item.id === install.id)!.persistence, 'saved');
@@ -176,7 +177,8 @@ test('CLI-created default host stages, installs disabled, activates and restores
     host = new ExtensionHost({ ...disabledOptions.extensions, receive }); await host.start();
     assert.deepEqual(await host.prepare(), []);
     assert.equal(await readFile(lifecycle, 'utf8'), '', 'a default restart must not activate a disabled install');
-    const activate = host.requestChange('generated', { action: 'activate' });
+    const activate = await host.requestChange('generated', { action: 'activate' });
+    assert.equal(activate.status, 'applied'); assert.equal(activate.runtime?.status, 'active');
     const [tool] = await host.prepare(); assert.ok(tool);
     assert.equal(tool.tool.name, 'default_generated_echo'); assert.equal(tool.digest, staged.digest);
     assert.equal((await tool.tool.execute({}, { callId: 'before-restart', signal: new AbortController().signal })).text, 'persisted:1');

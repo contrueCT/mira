@@ -47,11 +47,12 @@ export type ExtensionChange = { action: 'enable' | 'disable' | 'reload' | 'activ
   | { action: 'configure'; config: Json }
   | { action: 'install' | 'update'; digest: string; config?: Json }
   | { action: 'rollback'; revision: string };
-export interface ChangeStatus { id: string; extensionId: string; action: ExtensionChange['action']; status: 'accepted' | 'applied' | 'failed'; persistence: 'pending' | 'saved' | 'failed' | 'not-required' | 'not-attempted'; error?: string; digest?: string; revision?: string; artifact?: 'verified' | 'failed'; test?: 'passed' | 'failed' | 'not-run' | 'invalidated'; cleanup?: 'failed' }
-interface Instance { id: string; activation: string; context: ExtensionContext; fiber: Fiber }
+export interface ChangeStatus { id: string; extensionId: string; action: ExtensionChange['action']; status: 'applied' | 'failed'; runtime: ExtensionStatus | null; persistence: 'saved' | 'failed' | 'not-required' | 'not-attempted'; error?: string; digest?: string; revision?: string; artifact?: 'verified' | 'failed'; test?: 'passed' | 'failed' | 'not-run' | 'invalidated'; cleanup?: 'failed' }
+interface Instance { id: string; activation: string; context: ExtensionContext; fiber: Fiber; executions: Set<Promise<void>>; dependencies: string[]; provided: Set<string> }
+interface CleanupScope { extensionId: string; activations: Set<string>; services: Set<string>; errors: string[] }
 
-/** Cordis owns dependency/lifecycle/HMR state. This coordinator only protects
- * a published model/tool batch and queues explicit local lifecycle changes. */
+/** Cordis owns dependency/lifecycle/HMR state. This coordinator protects only
+ * executing extension calls and awaits explicit local lifecycle changes. */
 export class ExtensionHost {
   private readonly ctx = new Context();
   private readonly entries = new Map<string, LocalExtensionEntry>();
@@ -63,15 +64,13 @@ export class ExtensionHost {
   private readonly diagnostics = new Map<string, string>();
   private readonly hostDiagnostics: string[] = [];
   private readonly cleanupFailures = new Map<string, string[]>();
-  private readonly changes: Array<{ receipt: ChangeStatus; change: ExtensionChange }> = [];
+  private cleanupScope: CleanupScope | undefined;
   private readonly receipts: ChangeStatus[] = [];
-  private releaseBatch: (() => void) | undefined;
-  private batch: Promise<void> | undefined;
+  private lifecycle: Promise<void> = Promise.resolve();
   private started = false;
   private closed = false;
   private closing = false;
   private closeTask: Promise<void> | undefined;
-  private advancing = false;
   private configuration: ConfigurationWriter | undefined;
   private readonly reserved: Set<string>;
   private readonly artifacts: ArtifactStore | undefined;
@@ -152,13 +151,23 @@ export class ExtensionHost {
   }
 
   private assertOpen(): void { if (!this.started || this.closed || this.closing) throw new Error('Extension host is not running'); }
-  private waitBatch(): Promise<void> { return this.batch ?? Promise.resolve(); }
+  private async waitExecutions(ctx: Context): Promise<void> {
+    // Cordis fences the fiber as unloading before invoking its disposers. Tool
+    // admission checks that state and acquires synchronously, so this snapshot
+    // cannot miss a newly admitted call on the retiring activation.
+    await Promise.all(this.instances.get(ctx.fiber)?.executions ?? []);
+  }
+  private serialize<T>(action: () => Promise<T>): Promise<T> {
+    const task = this.lifecycle.then(action);
+    this.lifecycle = task.then(() => {}, () => {});
+    return task;
+  }
   private defer(ctx: Context, cleanup: Cleanup): Promise<void> {
     const done = Promise.withResolvers<void>();
     ctx.effect(() => async () => {
-      await this.waitBatch();
+      await this.waitExecutions(ctx);
       try { await cleanup(); } catch (error) { this.recordCleanupFailure(ctx, error); throw error; } finally { done.resolve(); }
-    }, 'Mira batch-safe cleanup');
+    }, 'Mira execution-safe cleanup');
     return done.promise;
   }
   /** Collect the native effect so Cordis cannot run it as a concurrent sibling.
@@ -170,17 +179,39 @@ export class ExtensionHost {
     ctx.effect(function* () {
       yield dispose;
       yield async () => {
-        await host.waitBatch();
+        await host.waitExecutions(ctx);
         await before?.();
         try { await dispose(); } catch (error) { host.recordCleanupFailure(ctx, error); throw error; } finally { done.resolve(); }
       };
-    }, 'Mira batch-safe Cordis resource');
+    }, 'Mira execution-safe Cordis resource');
     return done.promise;
+  }
+  private trackAffected(instance: Instance): void {
+    const scope = this.cleanupScope;
+    if (!scope || (instance.id !== scope.extensionId && !scope.activations.has(instance.activation)
+      && !instance.dependencies.some(key => scope.services.has(key)))) return;
+    scope.activations.add(instance.activation);
+    for (const key of instance.provided) scope.services.add(key);
+  }
+  private beginCleanupScope(id: string): void {
+    const scope: CleanupScope = { extensionId: id, activations: new Set(), services: new Set(), errors: [] };
+    this.cleanupScope = scope;
+    let previousSize = -1;
+    while (previousSize !== scope.activations.size) {
+      previousSize = scope.activations.size;
+      for (const instance of this.latest.values()) {
+        if (this.instances.get(instance.fiber) === instance) this.trackAffected(instance);
+      }
+    }
   }
   private recordCleanupFailure(ctx: Context, error: unknown): void {
     const id = ctx.fiber.entry?.id;
     const message = error instanceof Error ? error.message : String(error);
     if (id) this.cleanupFailures.set(id, [...this.cleanupFailures.get(id) ?? [], message]);
+    const instance = this.instances.get(ctx.fiber);
+    if (instance && this.cleanupScope?.activations.has(instance.activation)) {
+      this.cleanupScope.errors.push(`${id}: ${message}`);
+    }
     this.hostDiagnostics.push(`Cleanup failed for ${id ?? 'unknown extension'}: ${message}`);
     if (this.hostDiagnostics.length > 50) this.hostDiagnostics.shift();
   }
@@ -193,8 +224,17 @@ export class ExtensionHost {
     if (!id || !this.entries.has(id)) throw new Error('Mira API requires a configured extension identity');
     const activation = randomUUID();
     let retired = false;
+    const executions = new Set<Promise<void>>();
     const finished = Promise.withResolvers<void>();
     const dependencies = Object.keys(ctx.fiber.inject).filter(key => key.startsWith('mira.extension.'));
+    // Cordis withdraws services to start dependent disposal before the provider
+    // resource is closed. Pin this activation's injected values now, so an
+    // already executing call may first access a dependency while unloading.
+    const services = new Map<string, unknown>();
+    for (const key of dependencies) {
+      const value: unknown = ctx.get(key, false);
+      if (value !== undefined) services.set(key, value);
+    }
     for (const key of dependencies) {
       let consumers = this.consumers.get(key);
       if (!consumers) this.consumers.set(key, consumers = new Set());
@@ -204,7 +244,6 @@ export class ExtensionHost {
     const resourceDrains: Promise<void>[] = [];
     const cleanupDrains: Promise<void>[] = [];
     const provided = new Set<string>();
-    const services = new Map<string, unknown>();
     const drainConsumers = async (): Promise<void> => {
       await Promise.all([...provided].flatMap(key => [...this.consumers.get(key) ?? []]).filter(task => task !== finished.promise));
     };
@@ -223,7 +262,21 @@ export class ExtensionHost {
         if (typeof name !== 'string' || !/^[a-zA-Z_]/.test(name) || name.length > 64 || /[^a-zA-Z0-9_-]/.test(name)) throw new Error('Invalid extension tool name: use 1-64 ASCII letters, digits, underscores or hyphens, starting with a letter or underscore');
         if (!description.trim() || parameters.type !== 'object' || typeof execute !== 'function') throw new Error('Invalid extension tool');
         if (this.reserved.has(name) || this.tools.has(name)) throw new Error(`Duplicate registered tool: ${name}`);
-        const registered = { extensionId: id, activation, ...(this.entries.get(id)?.generated ? { digest: this.entries.get(id)!.generated!.digest } : {}), tool: { name, description, parameters: structuredClone(parameters), execute: execute.bind(tool) } };
+        const registered: RegisteredTool = { extensionId: id, activation, ...(this.entries.get(id)?.generated ? { digest: this.entries.get(id)!.generated!.digest } : {}), tool: {
+          name, description, parameters: structuredClone(parameters),
+          execute: async (arguments_, execution) => {
+            if (retired || this.closed || this.closing || ctx.fiber.state !== 2 || this.tools.get(name) !== registered) {
+              return {
+                text: `Tool ${name} was not executed because extension activation ${activation} is stale. Use the next model request’s fresh tool declarations before retrying.`,
+                details: { status: 'stale', executed: false, extensionId: id, activation, toolName: name },
+              };
+            }
+            const lease = Promise.withResolvers<void>();
+            executions.add(lease.promise);
+            try { return await execute.call(tool, arguments_, execution); }
+            finally { executions.delete(lease.promise); lease.resolve(); }
+          },
+        } };
         resourceDrains.push(releaseResource(() => { if (this.tools.get(name) === registered) this.tools.delete(name); }));
         this.tools.set(name, registered);
       },
@@ -233,7 +286,7 @@ export class ExtensionHost {
         if (!request.id || !request.reason.trim()) throw new Error('Wake needs a stable ID and reason');
         return this.options.receive(id, validatedEvent(request.event), { id: request.id, reason: request.reason });
       },
-      provideService: (name, value) => { canRegister(); const key = serviceKey(name); serviceDrains.push(this.deferNative(ctx, ctx.provide(key, value))); provided.add(key); services.set(key, value); },
+      provideService: (name, value) => { canRegister(); const key = serviceKey(name); serviceDrains.push(this.deferNative(ctx, ctx.provide(key, value))); provided.add(key); services.set(key, value); this.trackAffected(this.instances.get(ctx.fiber)!); },
       service: <T>(name: string): T => {
         alive(); const key = serviceKey(name);
         if (!(key in ctx.fiber.inject) && !provided.has(key)) throw new Error(`Declare required service: ${name}`);
@@ -261,8 +314,9 @@ export class ExtensionHost {
         resourceDrains.push(this.deferNative(ctx, ctx.interval(callback, milliseconds), drainDependencies));
       },
     };
-    const instance = { id, activation, context, fiber: ctx.fiber };
+    const instance = { id, activation, context, fiber: ctx.fiber, executions, dependencies, provided };
     this.instances.set(ctx.fiber, instance); this.latest.set(id, instance);
+    this.trackAffected(instance);
     this.defer(ctx, async () => {
       await Promise.all([...serviceDrains, ...resourceDrains, ...cleanupDrains]);
       await drainConsumers();
@@ -274,28 +328,37 @@ export class ExtensionHost {
     return context;
   }
 
-  /** Accepted, not applied. A tool must not await its own batch's retirement. */
-  requestChange(id: string, change: ExtensionChange): ChangeStatus {
+  /** Save desired configuration, then await the actual lifecycle outcome. */
+  async requestChange(id: string, change: ExtensionChange): Promise<ChangeStatus> {
     this.assertOpen();
     if (!/^[a-zA-Z][\w-]*$/.test(id)) throw new Error('Invalid extension ID');
     if (!['enable', 'disable', 'reload', 'configure', 'install', 'activate', 'update', 'rollback', 'remove'].includes(change.action)) throw new Error('Unknown extension action');
-    if (change.action === 'install') {
-      if (this.entries.has(id)) throw new Error(`Extension already installed: ${id}`);
-      if (!this.artifacts) throw new Error('Generated extensions require artifactsDirectory');
-    } else if (!this.entries.has(id)) throw new Error(`Unknown configured extension: ${id}`);
     if (change.action === 'configure' || ((change.action === 'install' || change.action === 'update') && change.config !== undefined)) validateConfig(change.config!);
     if (change.action === 'install' || change.action === 'update') validateDigest(change.digest);
-    if (change.action === 'update' || change.action === 'rollback' || change.action === 'activate') {
-      if (!this.entries.get(id)?.generated) throw new Error('Action requires an installed generated extension');
-    }
-    const receipt: ChangeStatus = { id: randomUUID(), extensionId: id, action: change.action, status: 'accepted', persistence: this.configuration && change.action !== 'reload' ? 'pending' : 'not-required' };
-    this.changes.push({ receipt, change: structuredClone(change) }); this.receipts.push(receipt);
-    return structuredClone(receipt);
+    const snapshot = structuredClone(change);
+    return this.serialize(async () => {
+      if (snapshot.action === 'install') {
+        if (this.entries.has(id)) throw new Error(`Extension already installed: ${id}`);
+        if (!this.artifacts) throw new Error('Generated extensions require artifactsDirectory');
+      } else if (!this.entries.has(id)) throw new Error(`Unknown configured extension: ${id}`);
+      if (snapshot.action === 'update' || snapshot.action === 'rollback' || snapshot.action === 'activate') {
+        if (!this.entries.get(id)?.generated) throw new Error('Action requires an installed generated extension');
+      }
+      const receipt: ChangeStatus = { id: randomUUID(), extensionId: id, action: snapshot.action, status: 'failed', runtime: null, persistence: this.configuration && snapshot.action !== 'reload' ? 'not-attempted' : 'not-required' };
+      try { await this.applyChange(receipt, snapshot); }
+      finally { this.cleanupScope = undefined; }
+      receipt.runtime = this.snapshot().find(entry => entry.id === id) ?? null;
+      this.receipts.push(receipt);
+      return structuredClone(receipt);
+    });
   }
   changeStatus(): ChangeStatus[] { return structuredClone(this.receipts); }
   diagnosticsLog(): string[] { return [...this.hostDiagnostics]; }
   inspect(): ExtensionStatus[] {
     this.assertOpen();
+    return this.snapshot();
+  }
+  private snapshot(): ExtensionStatus[] {
     const names: ExtensionStatus['status'][] = ['waiting', 'loading', 'active', 'failed', 'disposed', 'unloading'];
     return [...this.entries.values()].map(entry => {
       const cordis = this.ctx.loader.store[entry.id];
@@ -382,89 +445,84 @@ export class ExtensionHost {
     return desired;
   }
 
-  private release(): void { const release = this.releaseBatch; this.batch = undefined; this.releaseBatch = undefined; release?.(); }
-  private async advance(): Promise<void> {
-    this.release();
-    await this.ctx.loader.await();
-    while (this.changes.length) {
-      const { receipt, change } = this.changes.shift()!;
-      this.cleanupFailures.delete(receipt.extensionId);
-      try {
-        const id = receipt.extensionId;
-        const desired = await this.desiredEntry(id, change, receipt);
-        if (this.configuration && change.action !== 'reload') {
-          try { await this.configuration.replace(id, desired); receipt.persistence = 'saved'; }
-          catch (error) { receipt.persistence = 'failed'; throw error; }
-        }
-        this.diagnostics.delete(id);
-        if (desired === null) {
-          try { await this.removeRuntime(id); }
-          finally { this.entries.delete(id); this.latest.delete(id); }
-        } else {
-          this.entries.set(id, desired);
-          if (desired.generated) {
-            if (change.action === 'disable' && this.ctx.loader.store[id]) await this.ctx.loader.update(id, { disabled: true });
-            else {
-              await this.removeRuntime(id);
-              this.latest.delete(id);
-              await this.createGenerated(desired, receipt);
-            }
-          } else {
-            const entry = this.ctx.loader.resolve(id);
-            if (change.action === 'reload') {
-              if (entry.disabled) throw new Error('Enable a disabled extension before restarting it');
-              if (entry.fiber) await entry.fiber.update(entry.fiber.config, true); else await entry.init();
-            } else await this.ctx.loader.update(id, change.action === 'configure' ? { config: change.config } : { disabled: change.action === 'disable' });
-          }
-          await this.ctx.loader.await();
-          const state = this.inspect().find(item => item.id === id)!;
-          if (state.status === 'failed' || state.status === 'import-failed') throw new Error(state.diagnostic ?? `Extension ${state.status}`);
-        }
-        receipt.status = 'applied';
-      } catch (error) { if (receipt.persistence === 'pending') receipt.persistence = 'not-attempted'; receipt.status = 'failed'; receipt.error = error instanceof Error ? error.message : String(error); }
-      // An earlier failure can bypass createGenerated (for example cleanup
-      // mutates a candidate and then throws). Do not retain stale preflight
-      // evidence merely because activation was never reached.
-      if (receipt.status === 'failed' && receipt.artifact === 'verified' && receipt.digest) {
-        try { await this.artifacts!.read(receipt.digest); }
-        catch (error) {
-          receipt.artifact = 'failed'; receipt.test = 'invalidated';
-          receipt.error = `${receipt.error ?? 'Change failed'}; ${error instanceof Error ? error.message : String(error)}`;
-        }
+  private async applyChange(receipt: ChangeStatus, change: ExtensionChange): Promise<void> {
+    try {
+      await this.ctx.loader.await();
+      const id = receipt.extensionId;
+      this.cleanupFailures.delete(id);
+      this.beginCleanupScope(id);
+      const desired = await this.desiredEntry(id, change, receipt);
+      if (this.configuration && change.action !== 'reload') {
+        try { await this.configuration.replace(id, desired); receipt.persistence = 'saved'; }
+        catch (error) { receipt.persistence = 'failed'; throw error; }
       }
-      const failures = this.cleanupFailures.get(receipt.extensionId);
-      if (failures?.length) {
-        receipt.cleanup = 'failed'; receipt.status = 'failed';
-        receipt.error ??= `Cleanup failed: ${failures.join('; ')}`;
+      // Saving is awaited I/O: HMR may have started retiring this entry in the
+      // meantime. Drain that work before mutating its runtime. Keep the final
+      // task check and mutation in the same turn, so a stale fiber cannot be
+      // disabled/configured while HMR is still replacing it.
+      while (this.ctx.loader.getTasks().length) await this.ctx.loader.await();
+      this.diagnostics.delete(id);
+      if (desired === null) {
+        try { await this.removeRuntime(id); }
+        finally { this.entries.delete(id); this.latest.delete(id); }
+      } else {
+        this.entries.set(id, desired);
+        if (desired.generated) {
+          if (change.action === 'disable' && this.ctx.loader.store[id]) await this.ctx.loader.update(id, { disabled: true });
+          else {
+            await this.removeRuntime(id);
+            this.latest.delete(id);
+            await this.createGenerated(desired, receipt);
+          }
+        } else {
+          const entry = this.ctx.loader.resolve(id);
+          if (change.action === 'reload') {
+            if (entry.disabled) throw new Error('Enable a disabled extension before restarting it');
+            if (entry.fiber) await entry.fiber.update(entry.fiber.config, true); else await entry.init();
+          } else await this.ctx.loader.update(id, change.action === 'configure' ? { config: change.config } : { disabled: change.action === 'disable' });
+        }
+        await this.ctx.loader.await();
+        const state = this.snapshot().find(item => item.id === id)!;
+        if (state.status === 'failed' || state.status === 'import-failed') throw new Error(state.diagnostic ?? `Extension ${state.status}`);
+      }
+      receipt.status = 'applied';
+    } catch (error) { receipt.status = 'failed'; receipt.error = error instanceof Error ? error.message : String(error); }
+    // An earlier failure can bypass createGenerated (for example cleanup
+    // mutates a candidate and then throws). Do not retain stale preflight
+    // evidence merely because activation was never reached.
+    if (receipt.status === 'failed' && receipt.artifact === 'verified' && receipt.digest) {
+      try { await this.artifacts!.read(receipt.digest); }
+      catch (error) {
+        receipt.artifact = 'failed'; receipt.test = 'invalidated';
+        receipt.error = `${receipt.error ?? 'Change failed'}; ${error instanceof Error ? error.message : String(error)}`;
       }
     }
-    await this.ctx.loader.await();
+    const failures = this.cleanupScope?.errors;
+    if (failures?.length) {
+      receipt.cleanup = 'failed'; receipt.status = 'failed';
+      const message = `Cleanup failed: ${failures.join('; ')}`;
+      receipt.error = receipt.error ? `${receipt.error}; ${message}` : message;
+    }
   }
-  /** Release the previous entire batch, settle known lifecycle work, then capture
-   * a generation without an intervening await. Watcher delivery may occur later;
-   * it does not make an explicit activation request nondeterministic. */
+  /** Settle known lifecycle work and snapshot declarations. Only actual tool
+   * execution leases resources; an old declaration never pins an activation. */
   async prepare(): Promise<RegisteredTool[]> {
     this.assertOpen();
-    if (this.advancing) throw new Error('Concurrent extension boundary');
-    this.advancing = true;
-    try {
-      await this.advance();
-      this.batch = new Promise(resolve => { this.releaseBatch = resolve; });
+    return this.serialize(async () => {
+      await this.ctx.loader.await();
       return [...this.tools.values()].map(tool => ({ ...tool, tool: { ...tool.tool, parameters: structuredClone(tool.tool.parameters) } }));
-    } finally { this.advancing = false; }
+    });
   }
   /** Terminal/error cleanup never reopens a finished cognition turn. */
   async finish(): Promise<void> {
     this.assertOpen();
-    if (this.advancing) throw new Error('Concurrent extension boundary');
-    this.advancing = true;
-    try { await this.advance(); } finally { this.advancing = false; }
+    await this.serialize(() => this.ctx.loader.await());
   }
   close(): Promise<void> {
     if (this.closeTask) return this.closeTask;
-    this.release();
     this.closing = true;
     this.closeTask = (async () => {
+      await this.lifecycle;
       try { await this.ctx.fiber.dispose(); } finally { this.closed = true; this.closing = false; }
     })();
     return this.closeTask;

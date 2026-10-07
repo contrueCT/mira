@@ -34,9 +34,11 @@ node scripts/tool-usability.mts /tmp/mira-tool-usability-EXAMPLE serve
 
 The last command accepts one JSON request per line and keeps one live
 `ExtensionHost` until stdin closes or a `{"command":"close"}` request arrives.
-Each `call` or `batch` completes one host preparation boundary. A batch freezes the
-same tool registry for all of its calls; newly activated tools are available at
-the next boundary. The other invocations start a new host from the same saved
+Each `call` or `batch` completes one host preparation boundary. A batch keeps the
+same declared schemas for its calls, while management applies before returning.
+Calls to replaced/removed activations return explicit stale/not-executed errors;
+newly activated tools are declared at the next boundary. Management results carry
+actual status, persistence and the runtime snapshot captured under its serial lock. The other invocations start a new host from the same saved
 configuration. Restart imports active extensions again, so use `serve` when
 measuring in-process resources or activation continuity. No wrapper service or
 alternative runtime is introduced.
@@ -99,3 +101,44 @@ checks are included in the ordinary offline test discovery. The CLI source is
 checked by `tsconfig.pi.json` because Pi/Cordis declarations require the same
 Bundler-resolution profile as the production adapters. Run the CLI from source;
 it is intentionally not part of the standalone NodeNext script build.
+
+## Awaited lifecycle exercise (2026-10-07)
+
+A fresh independent `gpt-6-luna` / `high` evaluator received only the production
+prompt, declarations, skill entry points, ordinary file tools, and one user task:
+install and enable a prevalidated synthetic fixed-counter release, invoke it once,
+then disable it and report the result. It received the actual staged digest but
+no expected call sequence or result. The session started through the production
+blank-home loader. A line transport drove one persistent `serve` process and hid
+its evaluator-only `settled` witness; all visible results came from actual tool
+handlers. Startup ready-line handling and response identity were checked before
+launching the evaluator.
+
+The first task attempt used `inspect → install → activate → sample_counter →
+disable → inspect`, with zero rejected/failed calls, no mutation retry, no additional
+user message, and no premature final response. Install/activate/disable returned
+applied/saved with disabled/active/disabled runtime snapshots respectively. The
+capability returned `count=1`; final inspection showed disabled and no registered
+tools. The evaluator correctly distinguished its actual invocation from the staged
+test marker (`not-run`). Ordinary test helpers separately prevalidated this plugin.
+
+An earlier attempt was invalidated: its temporary line transport failed to consume
+the startup ready record, shifting replies by one request, and its initial synthetic
+plugin was not constructed through the SDK. Those evaluator-setup failures are
+retained as invalid evidence, not counted as model failures or passing coverage.
+The corrected test used a new session and an entirely fresh evaluator, without
+coaching from that failed attempt.
+
+After the dependency-lifetime and cleanup-reporting fixes, a second completely
+fresh evaluator and session repeated the same task on the final implementation,
+also first-attempt successful with the same actual count and final disabled state,
+zero tool errors/retries, and no additional user message. After the final HMR
+ordering fix, a third fresh evaluator/session also completed the task on its first
+attempt, using the settled disable result to verify the final stopped state without
+extra polling. All three valid runs are separate from the invalid setup attempt.
+
+This is a bounded tool-usability result, not proof that every deployed model will
+follow the instructions. It does not cover user-authored plugin quality, real
+accounts, autonomous timer delivery, PostgreSQL persistence, or HTTP transport;
+those require their respective tests. Deterministic same-request Pi/host tests
+separately verify stale-generation errors and durable outcomes.

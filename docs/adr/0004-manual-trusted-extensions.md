@@ -1,5 +1,7 @@
 # ADR 0004：手工可信扩展与同轮工具更新
 
+> 当前管理及资源保护契约由 [ADR 0014](0014-awaited-extension-management.md) 取代：直接等待应用，仅保护实际在途执行，旧 activation 的未执行调用明确拒绝；下面 accepted/整批租约段落记录原决定，不是当前实现。
+
 > 后续变更：独立 authorize 回调、执行前授权 gate 及合成授权证据由 [ADR 0007](0007-model-owned-action-decisions.md) 取代。主模型直接依据对话/Prompt 决定调用或澄清；下文保留当时决定与阶段事实，技术校验、持久 intent/outcome、来源及恢复约束不变。
 
 > 后续变更：独立 SemanticState 及其配置/自动引导已由 [ADR 0006](0006-memory-only-system-prompt.md) 取代；下文保留当时决定与阶段事实。普通工具/生成代码的宿主 OS 执行边界、Memory Git、无通知/重注入等未被撤销。

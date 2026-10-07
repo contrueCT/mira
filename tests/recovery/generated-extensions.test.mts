@@ -79,8 +79,22 @@ function assertExactOutcomes(snapshot: RecoverySnapshot) {
     assert.ok(result?.role === 'toolResult'); assert.deepEqual(execution.outcome.payload, result);
     assert.equal(execution.outcome.occurredAt, new Date(result.timestamp).toISOString());
     if (execution.intent.toolName === 'extension_manage') {
-      assert.ok(result.content[0]?.type === 'text'); assert.equal(JSON.parse(result.content[0].text).status, 'accepted');
+      assert.ok(result.content[0]?.type === 'text'); assert.equal(JSON.parse(result.content[0].text).status, 'applied');
     }
+  }
+}
+function assertStaleOutcomes(snapshot: RecoverySnapshot, callIds: string[]) {
+  for (const callId of callIds) {
+    const execution = snapshot.executions.find(item => item.intent.callId === callId);
+    assert.ok(execution?.outcome, 'stale dispatch is a known durable outcome');
+    const result = messages(snapshot).find(message => message.role === 'toolResult' && message.toolCallId === callId);
+    assert.ok(result?.role === 'toolResult' && result.isError);
+    assert.deepEqual(result.details, {
+      status: 'stale', executed: false, extensionId: 'generated',
+      activation: (result.details as { activation: string }).activation, toolName: 'generated_echo',
+    });
+    assert.equal(typeof (result.details as { activation: unknown }).activation, 'string');
+    assert.deepEqual(execution.outcome.payload, result);
   }
 }
 async function assertDurableDeclarations(db: Awaited<ReturnType<typeof createTestDatabase>>, miraId: string, context: TranscriptContext, prepared?: AgentTool[]) {
@@ -120,20 +134,25 @@ test('real PostgreSQL generated extension activates in one Wake and restores sav
           assert.equal(declaration, undefined); assert.deepEqual(await files.lifecycle(), [], 'disabled install is import-free');
           const saved = (await readExtensionConfiguration(files.configurationFile)).entries[0]!;
           assert.equal(saved.enabled, false); originalRevision = saved.generated!.revision;
-          assert.equal(toolResult<{ status: string }>(context, 'install-one').status, 'accepted');
+          assert.equal(toolResult<{ status: string }>(context, 'install-one').status, 'applied');
           return streamOf(calls(request('activate-one', 'extension_manage', { id: 'generated', action: 'activate' })));
         }
         if (requests === 4) {
           assert.ok(declaration); assert.deepEqual(declaration.parameters, parameters.one); assert.match(declaration.description, new RegExp(first.digest));
           return streamOf(calls(
-            request('update-two', 'extension_manage', { id: 'generated', action: 'update', digest: second.digest, config: files.config('updated') }),
             request('same-wake-effect', 'generated_echo', { count: '7' }),
+            request('update-two', 'extension_manage', { id: 'generated', action: 'update', digest: second.digest, config: files.config('updated') }),
+            request('stale-after-update', 'generated_echo', { count: '8' }),
           ));
         }
         if (requests === 5) {
           assert.ok(declaration); assert.deepEqual(declaration.parameters, parameters.two); assert.match(declaration.description, new RegExp(second.digest));
           oldDescription = declaration.description;
-          return streamOf(calls(request('disable-two', 'extension_manage', { id: 'generated', action: 'disable' }), request('updated-sibling', 'generated_echo', { text: 'second version' })));
+          return streamOf(calls(
+            request('updated-sibling', 'generated_echo', { text: 'second version' }),
+            request('disable-two', 'extension_manage', { id: 'generated', action: 'disable' }),
+            request('stale-after-disable', 'generated_echo', { text: 'must not execute' }),
+          ));
         }
         assert.equal(requests, 6); assert.equal(declaration, undefined);
         return streamOf(assistant('Generated extension completed and saved disabled'));
@@ -142,7 +161,8 @@ test('real PostgreSQL generated extension activates in one Wake and restores sav
     assert.equal(initial.completedRuns, 1); assert.equal(initial.modelCalls, 6);
     const reader = await db.acquire(miraId); const saved = await reader.load(); await reader.close();
     assertExactOutcomes(saved);
-    assert.deepEqual(saved.executions.map(execution => execution.intent.callId), ['stage-one', 'install-one', 'activate-one', 'update-two', 'same-wake-effect', 'disable-two', 'updated-sibling']);
+    assertStaleOutcomes(saved, ['stale-after-update', 'stale-after-disable']);
+    assert.deepEqual(saved.executions.map(execution => execution.intent.callId), ['stage-one', 'install-one', 'activate-one', 'same-wake-effect', 'update-two', 'stale-after-update', 'updated-sibling', 'disable-two', 'stale-after-disable']);
     const raw = await db.admin.query<{ intent: ToolExecution['intent']; outcome: ToolExecution['outcome'] }>('SELECT intent, outcome FROM tool_executions WHERE mira_id = $1 ORDER BY context_version', [miraId]);
     assert.deepEqual(raw.rows, saved.executions);
     for (const execution of saved.executions) assert.equal('authorization' in execution.intent, false);
@@ -174,11 +194,19 @@ test('real PostgreSQL generated extension activates in one Wake and restores sav
         if (resumedRequests === 2) {
           assert.ok(declaration); assert.deepEqual(declaration.parameters, parameters.two); assert.match(declaration.description, new RegExp(second.digest));
           assert.notEqual(declaration.description, oldDescription, 'restart gives current code a fresh activation identity');
-          return streamOf(calls(request('rollback-original', 'extension_manage', { id: 'generated', action: 'rollback', revision: originalRevision }), request('saved-current-effect', 'generated_echo', { text: 'restored current config' })));
+          return streamOf(calls(
+            request('saved-current-effect', 'generated_echo', { text: 'restored current config' }),
+            request('rollback-original', 'extension_manage', { id: 'generated', action: 'rollback', revision: originalRevision }),
+            request('stale-after-rollback', 'generated_echo', { text: 'must not use replaced code' }),
+          ));
         }
         if (resumedRequests === 3) {
           assert.ok(declaration); assert.deepEqual(declaration.parameters, parameters.one); assert.match(declaration.description, new RegExp(first.digest));
-          return streamOf(calls(request('disable-original', 'extension_manage', { id: 'generated', action: 'disable' }), request('rollback-effect', 'generated_echo', { count: '9' })));
+          return streamOf(calls(
+            request('rollback-effect', 'generated_echo', { count: '9' }),
+            request('disable-original', 'extension_manage', { id: 'generated', action: 'disable' }),
+            request('stale-after-original-disable', 'generated_echo', { count: '10' }),
+          ));
         }
         assert.equal(resumedRequests, 4); assert.equal(declaration, undefined);
         return streamOf(assistant('Original generated revision and configuration restored'));
@@ -188,6 +216,7 @@ test('real PostgreSQL generated extension activates in one Wake and restores sav
     const replacement = await db.acquire(miraId); const after = await replacement.load(); await replacement.close();
     assert.deepEqual(after.records.slice(0, saved.records.length), saved.records);
     assert.deepEqual(after.executions.slice(0, saved.executions.length), saved.executions); assertExactOutcomes(after);
+    assertStaleOutcomes(after, ['stale-after-rollback', 'stale-after-original-disable']);
     assert.deepEqual((await files.effects()).slice(2), [
       { extensionId: 'generated', version: 'two', label: 'updated', callId: 'saved-current-effect', serial: 1, arguments: { text: 'restored current config' } },
       { extensionId: 'generated', version: 'one', label: 'original', callId: 'rollback-effect', serial: 1, arguments: { count: 9 } },
@@ -201,7 +230,7 @@ test('real PostgreSQL generated extension activates in one Wake and restores sav
   } finally { await db.close(); await rm(files.root, { recursive: true, force: true }); }
 });
 
-for (const applied of [false, true]) test(`real PostgreSQL accepted generated management outcome loss ${applied ? 'after desired-state apply' : 'before desired-state apply'} preserves uncertainty without replay`, { timeout: 30_000 }, async () => {
+for (const applied of [false, true]) test(`real PostgreSQL ${applied ? 'applied' : 'failed'} awaited generated management outcome loss preserves uncertainty without replay`, { timeout: 30_000 }, async () => {
   const db = await createTestDatabase(); const files = await fixture(); const miraId = `generated-unknown-${applied}`;
   let host: ExtensionHost | undefined;
   try {
@@ -209,25 +238,30 @@ for (const applied of [false, true]) test(`real PostgreSQL accepted generated ma
     host = new ExtensionHost({ ...await readExtensionConfiguration(files.configurationFile), receive: extensionReceiver(writer) });
     const original = host; await original.start();
     const first = await original.stage(files.sources.one, 'entry.mjs'); const second = await original.stage(files.sources.two, 'entry.mjs');
-    original.requestChange('generated', { action: 'install', digest: first.digest, config: files.config('original') }); await original.finish();
-    original.requestChange('generated', { action: 'activate' }); await original.finish();
+    await original.requestChange('generated', { action: 'install', digest: first.digest, config: files.config('original') }); await original.finish();
+    await original.requestChange('generated', { action: 'activate' }); await original.finish();
+    if (!applied) await rm(second.directory, { recursive: true, force: true });
     const management = extensionManagementTools(original); const args = { id: 'generated', action: 'update', digest: second.digest, config: files.config('updated') };
-    let accepted = 0; let faultCalls = 0;
+    let completed = 0; let faultCalls = 0;
     const faulty = overrideWriter(writer, { finishTool: async outcome => {
       faultCalls++; assert.equal(outcome.callId, 'unknown-update');
       const receipt = original.changeStatus().at(-1)!;
-      assert.equal(receipt.action, 'update'); assert.equal(receipt.status, 'accepted'); accepted++;
+      assert.equal(receipt.action, 'update'); assert.equal(receipt.status, applied ? 'applied' : 'failed');
+      assert.equal(receipt.persistence, applied ? 'saved' : 'not-attempted'); completed++;
       const payload = outcome.payload as { content: Array<{ text: string }> };
-      assert.equal(JSON.parse(payload.content[0]!.text).status, 'accepted');
-      throw Error('synthetic loss after accepted management before outcome commit');
+      const result = JSON.parse(payload.content[0]!.text);
+      assert.equal(result.status, receipt.status);
+      assert.equal(result.runtime.generated.digest, applied ? second.digest : first.digest);
+      assert.equal(result.runtime.status, 'active');
+      throw Error('synthetic loss after completed management before outcome commit');
     } });
     await assert.rejects(runtime(faulty, () => streamOf(calls(request('unknown-update', 'extension_manage', args))), {
       prepareTools: async () => [...management, ...extensionTools(await original.prepare())],
-      // Closing drops the queued change, as loss before the next batch boundary
-      // would. finish() instead applies the accepted change despite receipt loss.
-      finishTools: () => applied ? original.finish() : original.close(),
-    }).run(input('Update this synthetic generated extension')), /synthetic loss after accepted management/);
-    assert.equal(accepted, 1); assert.equal(faultCalls, 1);
+      // Both lifecycle success and failure have settled before the durable
+      // outcome write. Recovery still cannot infer the missing tool result.
+      finishTools: () => original.finish(),
+    }).run(input('Update this synthetic generated extension')), /synthetic loss after completed management/);
+    assert.equal(completed, 1); assert.equal(faultCalls, 1);
     const interrupted = await writer.load(); assert.equal(interrupted.executions.length, 1);
     assert.deepEqual(interrupted.executions[0]!.intent.arguments, args); assert.equal(interrupted.executions[0]!.outcome, null);
     const rows = await db.admin.query('SELECT intent, outcome FROM tool_executions WHERE mira_id = $1', [miraId]);
@@ -242,7 +276,7 @@ for (const applied of [false, true]) test(`real PostgreSQL accepted generated ma
     const expectedDigest = applied ? second.digest : first.digest; const expectedConfig = files.config(applied ? 'updated' : 'original');
     assert.equal(restarted.inspect()[0]!.generated!.digest, expectedDigest); assert.deepEqual(restarted.inspect()[0]!.config, expectedConfig);
     assert.equal(restarted.inspect()[0]!.generated!.history.length, applied ? 2 : 1);
-    assert.deepEqual(restarted.changeStatus(), [], 'restart never reconstructs a pending management queue from an unknown intent');
+    assert.deepEqual(restarted.changeStatus(), [], 'restart never replays a completed management operation from an unknown intent');
     const recovered = await runtime(replacement, () => { throw Error('Recovery must not call the provider'); }).recover();
     assert.deepEqual(recovered.snapshot.records.slice(0, interrupted.records.length), interrupted.records);
     assert.deepEqual(recovered.snapshot.executions, interrupted.executions);

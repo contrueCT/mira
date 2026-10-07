@@ -30,6 +30,16 @@ function assertExactOutcomes(snapshot: RecoverySnapshot): void {
     assert.equal(execution.outcome.occurredAt, new Date(message.timestamp).toISOString());
   }
 }
+function assertStaleOutcomes(snapshot: RecoverySnapshot, callIds: string[]): void {
+  for (const callId of callIds) {
+    const result = messages(snapshot).find(message => message.role === 'toolResult' && message.toolCallId === callId);
+    assert.ok(result?.role === 'toolResult' && result.isError, 'a retired tool returns a known error result');
+    const details = result.details as { status: string; executed: boolean; toolName: string; activation: string };
+    assert.equal(details.status, 'stale'); assert.equal(details.executed, false);
+    assert.equal(details.toolName, 'fixture_echo'); assert.equal(typeof details.activation, 'string');
+    assert.deepEqual(snapshot.executions.find(item => item.intent.callId === callId)?.outcome?.payload, result);
+  }
+}
 async function assertDurableDeclarations(db: Awaited<ReturnType<typeof createTestDatabase>>, miraId: string, context: TranscriptContext): Promise<void> {
   const rows = await db.admin.query('SELECT envelope FROM context_records WHERE mira_id = $1 ORDER BY version', [miraId]);
   const stored = decodeRecords(rows.rows.map(row => row.envelope)).flatMap(entry => entry.type === 'message' ? [entry.message] : []);
@@ -224,7 +234,7 @@ test('real PostgreSQL extension Wake requests during a tool batch queue for the 
   } finally { await db.close(); await rm(fixture.root, { recursive: true, force: true }); }
 });
 
-test('real PostgreSQL model configure, reload and remove preserve batch resources, saved config and immutable receipts across restart', { timeout: 30_000 }, async () => {
+test('real PostgreSQL model configure, reload and remove await lifecycle changes, preserve saved config and immutable receipts across restart', { timeout: 30_000 }, async () => {
   const db = await createTestDatabase(); const fixture = await createExtensionFixture(); const miraId = 'managed-extension';
   const configurationFile = path.join(fixture.root, 'extensions.json');
   const initialConfig = { ...fixture.config, lifecyclePath: fixture.lifecyclePath, configurationFile, revision: 1 };
@@ -234,16 +244,18 @@ test('real PostgreSQL model configure, reload and remove preserve batch resource
   const updatedEntry = { ...initialEntry, config: updatedConfig };
   const metadata = { comment: 'Synthetic owner metadata survives management' };
   const options = { connectionString: db.connectionString, schema: db.schema, miraId, sourceDirectory: process.cwd(), spoolDirectory: path.join(fixture.root, 'spool'), workingDirectory: fixture.root };
-  const accepted = new Map<string, ChangeStatus>();
+  const receipts = new Map<string, ChangeStatus>();
   let requests = 0; let originalDescription = ''; let configuredDescription = ''; let reloadedDescription = ''; let configuredBytes = ''; let checkedEffects = 0;
   const remember = (context: TranscriptContext, callId: string, action: ChangeStatus['action'], persistence: ChangeStatus['persistence']): ChangeStatus => {
     const result = toolResult<ChangeStatus>(context, callId);
     assert.match(result.id, /^[a-f0-9-]{36}$/);
-    assert.deepEqual(result, { id: result.id, extensionId: 'manual', action, status: 'accepted', persistence });
-    accepted.set(callId, structuredClone(result)); return result;
+    assert.deepEqual(result, { id: result.id, extensionId: 'manual', action, status: 'applied', persistence, runtime: result.runtime });
+    if (action === 'remove') assert.equal(result.runtime, null);
+    else { assert.equal(result.runtime?.status, 'active'); assert.deepEqual(result.runtime.config, updatedConfig); }
+    receipts.set(callId, structuredClone(result)); return result;
   };
-  const assertAccepted = (context: TranscriptContext) => {
-    for (const [callId, receipt] of accepted) assert.deepEqual(toolResult(context, callId), receipt, 'applied state never rewrites the accepted tool result');
+  const assertReceipts = (context: TranscriptContext) => {
+    for (const [callId, receipt] of receipts) assert.deepEqual(toolResult(context, callId), receipt, 'later state never rewrites the completed tool result');
   };
   try {
     await writeFile(configurationFile, JSON.stringify({ entries: [initialEntry], ...metadata }));
@@ -269,38 +281,42 @@ test('real PostgreSQL model configure, reload and remove preserve batch resource
     const first = await runDemo({ ...options, extensions: await readExtensionConfiguration(configurationFile),
       events: [{ event: event('configure'), wake: { id: 'wake-configure', reason: 'Configure and reload this synthetic extension' } }],
       streamFn: async (_model, context) => {
-        requests++; await assertDurableDeclarations(db, miraId, context); assertAccepted(context);
+        requests++; await assertDurableDeclarations(db, miraId, context); assertReceipts(context);
         if (requests === 1) {
           originalDescription = assertCapability(context, 1);
           assert.deepEqual((await fixture.lifecycle()).map(item => [item.phase, item.saved]), [['apply', initialEntry]]);
-          return streamOf(calls(request('configure-manual', 'extension_manage', { id: 'manual', action: 'configure', config: updatedConfig }),
-            request('configure-sibling', 'fixture_echo', { count: '7', label: 'synthetic' }), request('inspect-configure-queued', 'extension_inspect', {})));
+          return streamOf(calls(request('configure-sibling', 'fixture_echo', { count: '7', label: 'synthetic' }),
+            request('configure-manual', 'extension_manage', { id: 'manual', action: 'configure', config: updatedConfig }),
+            request('stale-after-configure', 'fixture_echo', { count: '7', label: 'synthetic' }), request('inspect-configure-completed', 'extension_inspect', {})));
         }
         if (requests === 2) {
           configuredDescription = assertCapability(context, 2, updatedParameters);
           assert.notEqual(configuredDescription, originalDescription); assert.ok(!getCurrentSystemPrompt(context.messages).includes(originalDescription));
-          const receipt = remember(context, 'configure-manual', 'configure', 'pending');
-          const queued = toolResult<Inspection>(context, 'inspect-configure-queued');
-          assert.deepEqual(queued.changes, [receipt]); assert.equal(queued.extensions[0]!.status, 'active');
-          assert.deepEqual(queued.extensions[0]!.config, initialConfig); assert.ok(originalDescription.includes(queued.extensions[0]!.activation!));
+          const receipt = remember(context, 'configure-manual', 'configure', 'saved');
+          const completed = toolResult<Inspection>(context, 'inspect-configure-completed');
+          assert.deepEqual(completed.changes, [receipt]); assert.equal(completed.extensions[0]!.status, 'active');
+          assert.deepEqual(completed.extensions[0]!.config, updatedConfig); assert.ok(configuredDescription.includes(completed.extensions[0]!.activation!));
+          assert.deepEqual(receipt.runtime, completed.extensions[0]);
           const lifecycle = await fixture.lifecycle();
           assert.deepEqual(lifecycle.map(item => [item.phase, item.revision]), [['apply', 1], ['execute', 1], ['cleanup', 1], ['apply', 2]]);
-          assert.deepEqual(lifecycle[1]!.saved, initialEntry, 'queued configure does not replace config while its sibling is executing');
+          assert.deepEqual(lifecycle[1]!.saved, initialEntry, 'the earlier sibling completes against the original config before configure begins');
           assert.deepEqual(lifecycle[2]!.saved, updatedEntry, 'desired config is saved before old resource cleanup');
           assert.deepEqual(lifecycle[3]!.saved, updatedEntry, 'apply reads the actual new configuration file, not a later observation');
           configuredBytes = await readFile(configurationFile, 'utf8');
-          return streamOf(calls(request('inspect-configure-applied', 'extension_inspect', {}), request('reload-manual', 'extension_manage', { id: 'manual', action: 'reload' }),
-            request('reload-sibling', 'fixture_echo', { count: '8', label: 'synthetic' }), request('inspect-reload-queued', 'extension_inspect', {})));
+          return streamOf(calls(request('inspect-configure-applied', 'extension_inspect', {}), request('reload-sibling', 'fixture_echo', { count: '8', label: 'synthetic' }),
+            request('reload-manual', 'extension_manage', { id: 'manual', action: 'reload' }),
+            request('stale-after-reload', 'fixture_echo', { count: '8', label: 'synthetic' }), request('inspect-reload-completed', 'extension_inspect', {})));
         }
         if (requests === 3) {
           reloadedDescription = assertCapability(context, 2, updatedParameters);
           assert.notEqual(reloadedDescription, configuredDescription); assert.ok(!getCurrentSystemPrompt(context.messages).includes(configuredDescription));
           const configured = toolResult<Inspection>(context, 'inspect-configure-applied');
-          assert.deepEqual(configured.changes, [{ ...accepted.get('configure-manual')!, status: 'applied', persistence: 'saved' }]);
+          assert.deepEqual(configured.changes, [receipts.get('configure-manual')]);
           const receipt = remember(context, 'reload-manual', 'reload', 'not-required');
-          const queued = toolResult<Inspection>(context, 'inspect-reload-queued');
-          assert.deepEqual(queued.changes, [...configured.changes, receipt]);
-          assert.ok(configuredDescription.includes(queued.extensions[0]!.activation!)); assert.deepEqual(queued.extensions[0]!.config, updatedConfig);
+          const completed = toolResult<Inspection>(context, 'inspect-reload-completed');
+          assert.deepEqual(completed.changes, [...configured.changes, receipt]);
+          assert.ok(reloadedDescription.includes(completed.extensions[0]!.activation!)); assert.deepEqual(completed.extensions[0]!.config, updatedConfig);
+          assert.deepEqual(receipt.runtime, completed.extensions[0]);
           assert.deepEqual((await fixture.lifecycle()).map(item => [item.phase, item.activation, item.revision]), [
             ['apply', 1, 1], ['execute', 1, 1], ['cleanup', 1, 1], ['apply', 2, 2], ['execute', 2, 2], ['cleanup', 2, 2], ['apply', 3, 2],
           ]);
@@ -310,14 +326,14 @@ test('real PostgreSQL model configure, reload and remove preserve batch resource
         }
         assert.equal(requests, 4); assert.equal(assertCapability(context, 2, updatedParameters), reloadedDescription);
         assert.deepEqual(toolResult<Inspection>(context, 'inspect-reload-applied').changes, [
-          { ...accepted.get('configure-manual')!, status: 'applied', persistence: 'saved' }, { ...accepted.get('reload-manual')!, status: 'applied' },
+          receipts.get('configure-manual'), receipts.get('reload-manual'),
         ]);
         return streamOf(assistant('Configured and reloaded the synthetic extension'));
       },
     });
     assert.equal(first.completedRuns, 1); assert.equal(first.modelCalls, 4);
     const saved = await assertStoredChain(db, miraId);
-    assert.deepEqual(saved.executions.map(item => item.intent.callId), ['configure-manual', 'configure-sibling', 'inspect-configure-queued', 'inspect-configure-applied', 'reload-manual', 'reload-sibling', 'inspect-reload-queued', 'inspect-reload-applied', 'reloaded-effect']);
+    assert.deepEqual(saved.executions.map(item => item.intent.callId), ['configure-sibling', 'configure-manual', 'stale-after-configure', 'inspect-configure-completed', 'inspect-configure-applied', 'reload-sibling', 'reload-manual', 'stale-after-reload', 'inspect-reload-completed', 'inspect-reload-applied', 'reloaded-effect']);
     for (const execution of saved.executions.filter(item => item.intent.toolName === 'fixture_echo')) {
       const count = (execution.intent.arguments as { count: number }).count;
       assert.deepEqual(execution.intent.requestedArguments, { count: String(count), label: 'synthetic' });
@@ -332,12 +348,13 @@ test('real PostgreSQL model configure, reload and remove preserve batch resource
     const continued = await runDemo({ ...options, extensions: await readExtensionConfiguration(configurationFile),
       events: [{ event: event('remove'), wake: { id: 'wake-remove', reason: 'Remove the saved synthetic extension' } }],
       streamFn: async (_model, context) => {
-        resumedRequests++; await assertDurableDeclarations(db, miraId, context); assertAccepted(context);
+        resumedRequests++; await assertDurableDeclarations(db, miraId, context); assertReceipts(context);
         assert.match(JSON.stringify(context.messages), /Configured and reloaded the synthetic extension/);
         if (resumedRequests === 1) {
           assert.notEqual(assertCapability(context, 2, updatedParameters), reloadedDescription);
-          return streamOf(calls(request('inspect-restarted', 'extension_inspect', {}), request('remove-manual', 'extension_manage', { id: 'manual', action: 'remove' }),
-            request('remove-sibling', 'fixture_echo', { count: '10', label: 'synthetic' }), request('inspect-remove-queued', 'extension_inspect', {}),
+          return streamOf(calls(request('inspect-restarted', 'extension_inspect', {}), request('remove-sibling', 'fixture_echo', { count: '10', label: 'synthetic' }),
+            request('remove-manual', 'extension_manage', { id: 'manual', action: 'remove' }),
+            request('stale-after-remove', 'fixture_echo', { count: '10', label: 'synthetic' }), request('inspect-remove-completed', 'extension_inspect', {}),
             request('remove-missing', 'extension_manage', { id: 'missing', action: 'remove' })));
         }
         assertCapability(context, null);
@@ -345,9 +362,9 @@ test('real PostgreSQL model configure, reload and remove preserve batch resource
           const restarted = toolResult<Inspection>(context, 'inspect-restarted');
           assert.deepEqual(restarted.changes, [], 'restart loads saved state, without replaying prior management calls');
           assert.deepEqual(restarted.extensions[0]!.config, updatedConfig);
-          const receipt = remember(context, 'remove-manual', 'remove', 'pending');
-          const queued = toolResult<Inspection>(context, 'inspect-remove-queued');
-          assert.deepEqual(queued.changes, [receipt]); assert.deepEqual(queued.extensions, restarted.extensions);
+          const receipt = remember(context, 'remove-manual', 'remove', 'saved');
+          const completed = toolResult<Inspection>(context, 'inspect-remove-completed');
+          assert.deepEqual(completed.changes, [receipt]); assert.deepEqual(completed.extensions, []);
           assert.deepEqual(toolResult(context, 'remove-missing'), { status: 'rejected', error: 'Unknown configured extension: missing' });
           assert.deepEqual((await fixture.lifecycle()).slice(-2).map(item => [item.phase, item.activation, item.saved]), [['execute', 5, updatedEntry], ['cleanup', 5, null]]);
           assert.deepEqual(JSON.parse(await readFile(configurationFile, 'utf8')), { entries: [], ...metadata });
@@ -356,14 +373,15 @@ test('real PostgreSQL model configure, reload and remove preserve batch resource
         assert.equal(resumedRequests, 3);
         const removed = toolResult<Inspection>(context, 'inspect-remove-applied');
         assert.deepEqual(removed.extensions, []); assert.deepEqual(removed.diagnostics, []);
-        assert.deepEqual(removed.changes, [{ ...accepted.get('remove-manual')!, status: 'applied', persistence: 'saved' }]);
+        assert.deepEqual(removed.changes, [receipts.get('remove-manual')]);
         return streamOf(assistant('Removed the extension and reported the invalid target truthfully'));
       },
     });
     assert.equal(continued.completedRuns, 1); assert.equal(continued.modelCalls, 3);
     const after = await assertStoredChain(db, miraId);
     assert.deepEqual(after.records.slice(0, saved.records.length), saved.records); assert.deepEqual(after.executions.slice(0, saved.executions.length), saved.executions);
-    assert.deepEqual(after.executions.slice(saved.executions.length).map(item => item.intent.callId), ['inspect-restarted', 'remove-manual', 'remove-sibling', 'inspect-remove-queued', 'remove-missing', 'inspect-remove-applied']);
+    assert.deepEqual(after.executions.slice(saved.executions.length).map(item => item.intent.callId), ['inspect-restarted', 'remove-sibling', 'remove-manual', 'stale-after-remove', 'inspect-remove-completed', 'remove-missing', 'inspect-remove-applied']);
+    assertStaleOutcomes(after, ['stale-after-configure', 'stale-after-reload', 'stale-after-remove']);
     const effects = await fixture.effects(); assert.equal(checkedEffects, 4);
     assert.deepEqual(effects.map(item => [item.callId, item.revision, item.arguments]), [
       ['configure-sibling', 1, { count: 7, label: 'synthetic' }], ['reload-sibling', 2, { count: 8, label: 'synthetic' }],
@@ -388,7 +406,7 @@ test('real PostgreSQL model removal retires a generated activation but retains s
   const config = { ...fixture.config, lifecyclePath: fixture.lifecyclePath, configurationFile, revision: 1 };
   const options = { connectionString: db.connectionString, schema: db.schema, miraId, sourceDirectory: process.cwd(), spoolDirectory: path.join(fixture.root, 'spool'), workingDirectory: fixture.root };
   let requests = 0; let activationDirectories: string[] = [];
-  const accepted = new Map<string, ChangeStatus>();
+  const receipts = new Map<string, ChangeStatus>();
   try {
     await mkdir(sourceRoot); const sourceBytes = await readFile(fixture.modulePath, 'utf8'); await writeFile(sourceFile, sourceBytes);
     await writeFile(configurationFile, JSON.stringify({ entries: [], artifactsDirectory, comment: 'Retain the ordinary version files' }));
@@ -397,7 +415,7 @@ test('real PostgreSQL model removal retires a generated activation but retains s
       events: [{ event: event('generated-remove'), wake: { id: 'wake-generated-remove', reason: 'Install, activate and remove a synthetic generated extension' } }],
       streamFn: async (_model, context) => {
         requests++; await assertDurableDeclarations(db, miraId, context);
-        for (const [callId, receipt] of accepted) assert.deepEqual(toolResult(context, callId), receipt, 'later lifecycle changes never revise an accepted result');
+        for (const [callId, receipt] of receipts) assert.deepEqual(toolResult(context, callId), receipt, 'later lifecycle changes never revise a completed result');
         if (requests === 1) {
           assertCapability(context, null);
           return streamOf(calls(request('install-generated-removal', 'extension_manage', { id: 'generated', action: 'install', digest: release.digest, config })));
@@ -405,8 +423,15 @@ test('real PostgreSQL model removal retires a generated activation but retains s
         const previous = requests === 2 ? ['install-generated-removal', 'install'] : requests === 3 ? ['activate-generated-removal', 'activate'] : requests === 4 ? ['remove-generated', 'remove'] : null;
         if (previous) {
           const receipt = toolResult<ChangeStatus>(context, previous[0]!);
-          assert.deepEqual(receipt, { id: receipt.id, extensionId: 'generated', action: previous[1], status: 'accepted', persistence: 'pending' });
-          accepted.set(previous[0]!, structuredClone(receipt));
+          assert.equal(receipt.extensionId, 'generated'); assert.equal(receipt.action, previous[1]);
+          assert.equal(receipt.status, 'applied'); assert.equal(receipt.persistence, 'saved');
+          if (previous[1] === 'remove') assert.equal(receipt.runtime, null);
+          else {
+            assert.equal(receipt.artifact, 'verified'); assert.equal(receipt.digest, release.digest);
+            assert.equal(receipt.runtime?.status, previous[1] === 'install' ? 'disabled' : 'active');
+            assert.equal(receipt.runtime.generated?.digest, release.digest);
+          }
+          receipts.set(previous[0]!, structuredClone(receipt));
         }
         if (requests === 2) {
           assertCapability(context, null); assert.deepEqual(await fixture.lifecycle(), [], 'staging and disabled install never apply');
@@ -419,15 +444,16 @@ test('real PostgreSQL model removal retires a generated activation but retains s
           const current = (await readExtensionConfiguration(configurationFile)).entries[0]!;
           assert.equal(current.enabled, true); assert.deepEqual((await fixture.lifecycle())[0]!.saved, current, 'generated apply observes saved activation config');
           activationDirectories = await readdir(path.join(artifactsDirectory, 'activations')); assert.equal(activationDirectories.length, 1);
-          return streamOf(calls(request('remove-generated', 'extension_manage', { id: 'generated', action: 'remove' }),
-            request('generated-remove-sibling', 'fixture_echo', { count: '12', label: 'synthetic' }), request('inspect-generated-remove-queued', 'extension_inspect', {})));
+          return streamOf(calls(request('generated-remove-sibling', 'fixture_echo', { count: '12', label: 'synthetic' }),
+            request('remove-generated', 'extension_manage', { id: 'generated', action: 'remove' }),
+            request('stale-after-generated-remove', 'fixture_echo', { count: '12', label: 'synthetic' }), request('inspect-generated-remove-completed', 'extension_inspect', {})));
         }
         assertCapability(context, null);
         if (requests === 4) {
-          const queued = toolResult<Inspection>(context, 'inspect-generated-remove-queued');
-          assert.equal(queued.extensions[0]!.status, 'active'); assert.equal(queued.extensions[0]!.generated!.digest, release.digest);
-          assert.deepEqual(queued.changes.map(item => [item.action, item.status, item.persistence]), [['install', 'applied', 'saved'], ['activate', 'applied', 'saved'], ['remove', 'accepted', 'pending']]);
-          assert.deepEqual(queued.changes.at(-1), accepted.get('remove-generated'));
+          const completed = toolResult<Inspection>(context, 'inspect-generated-remove-completed');
+          assert.deepEqual(completed.extensions, []);
+          assert.deepEqual(completed.changes.map(item => [item.action, item.status, item.persistence]), [['install', 'applied', 'saved'], ['activate', 'applied', 'saved'], ['remove', 'applied', 'saved']]);
+          assert.deepEqual(completed.changes.at(-1), receipts.get('remove-generated'));
           assert.deepEqual((await fixture.lifecycle()).map(item => item.phase), ['apply', 'execute', 'cleanup']);
           assert.equal((await fixture.lifecycle()).at(-1)!.saved, null, 'remove saves desired absence before resource cleanup');
           assert.deepEqual(JSON.parse(await readFile(configurationFile, 'utf8')), { entries: [], artifactsDirectory, comment: 'Retain the ordinary version files' });
@@ -437,13 +463,14 @@ test('real PostgreSQL model removal retires a generated activation but retains s
         const inspected = toolResult<Inspection & { releases: Array<{ digest: string }> }>(context, 'inspect-generated-removed');
         assert.deepEqual(inspected.extensions, []); assert.deepEqual(inspected.diagnostics, []);
         assert.deepEqual(inspected.releases.map(item => item.digest), [release.digest]);
-        assert.deepEqual(inspected.changes.at(-1), { ...accepted.get('remove-generated')!, status: 'applied', persistence: 'saved' });
+        assert.deepEqual(inspected.changes.at(-1), receipts.get('remove-generated'));
         return streamOf(assistant('Generated extension removed while its ordinary files were retained'));
       },
     });
     assert.equal(completed.completedRuns, 1); assert.equal(completed.modelCalls, 5);
     const saved = await assertStoredChain(db, miraId);
-    assert.deepEqual(saved.executions.map(item => item.intent.callId), ['install-generated-removal', 'activate-generated-removal', 'remove-generated', 'generated-remove-sibling', 'inspect-generated-remove-queued', 'inspect-generated-removed']);
+    assert.deepEqual(saved.executions.map(item => item.intent.callId), ['install-generated-removal', 'activate-generated-removal', 'generated-remove-sibling', 'remove-generated', 'stale-after-generated-remove', 'inspect-generated-remove-completed', 'inspect-generated-removed']);
+    assertStaleOutcomes(saved, ['stale-after-generated-remove']);
     const effect = saved.executions.find(item => item.intent.callId === 'generated-remove-sibling')!;
     assert.deepEqual(effect.intent.requestedArguments, { count: '12', label: 'synthetic' }); assert.deepEqual(effect.intent.arguments, { count: 12, label: 'synthetic' });
     assert.deepEqual(await fixture.effects(), [{ extensionId: 'generated', revision: 1, callId: 'generated-remove-sibling', arguments: { count: 12, label: 'synthetic' } }]);

@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
-import { rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import type { AgentTool, AgentToolCall } from '@earendil-works/pi-agent-core';
 import { getCurrentSystemPrompt, getCurrentTools, toToolDeclaration, type AssistantMessage, type TranscriptContext } from '@earendil-works/pi-ai';
-import { ExtensionHost } from '@mira/extension-host';
+import { ExtensionHost, readExtensionConfiguration } from '@mira/extension-host';
 import { extensionManagementTools, extensionReceiver, extensionTools } from '@mira/server';
 import { decodeRecords } from '@mira/runtime-pi';
-import { assistant, effectTool, input, MemoryWriter, result, runtime, streamOf } from '../recovery/fixtures.mts';
+import { assistant, deferred, effectTool, input, MemoryWriter, result, runtime, streamOf } from '../recovery/fixtures.mts';
 import { createExtensionFixture, fixtureParameters } from '../recovery/extension-fixtures.mts';
 
 const call = (id: string, name: string, args: AgentToolCall['arguments']): AssistantMessage => ({
@@ -18,6 +21,12 @@ function assertDeclarations(writer: MemoryWriter, context: TranscriptContext, pr
   assert.deepEqual(getCurrentTools(context.messages), expected, 'provider declares the exact executable registry');
   const persisted = decodeRecords(writer.state.records).flatMap(entry => entry.type === 'message' ? [entry.message] : []);
   assert.deepEqual(getCurrentTools(persisted), expected, 'declarations are durable before the request');
+}
+function assertStale(context: TranscriptContext, callId: string, activation: string): void {
+  const message = context.messages.find(message => message.role === 'toolResult' && message.toolCallId === callId);
+  assert.ok(message?.role === 'toolResult' && message.isError && message.content[0]?.type === 'text');
+  assert.match(message.content[0].text, /was not executed.*stale/);
+  assert.deepEqual(message.details, { status: 'stale', executed: false, extensionId: 'manual', activation, toolName: 'fixture_echo' });
 }
 
 test('real extension host enables a configured module within one runtime turn and persists exact intent and outcomes', { timeout: 15_000 }, async () => {
@@ -73,7 +82,9 @@ test('real extension host enables a configured module within one runtime turn an
     }
     const receipt = recovered.messages.find(message => message.role === 'toolResult' && message.toolCallId === 'enable-manual');
     assert.ok(receipt?.role === 'toolResult' && receipt.content[0]?.type === 'text');
-    assert.equal(JSON.parse(receipt.content[0].text).status, 'accepted', 'historical accepted receipt is not retroactively rewritten as applied');
+    assert.equal(JSON.parse(receipt.content[0].text).status, 'applied', 'management returns the final outcome after activation');
+    assert.equal(JSON.parse(receipt.content[0].text).persistence, 'not-required');
+    assert.deepEqual(JSON.parse(receipt.content[0].text).runtime, host.inspect()[0]);
     assert.ok(recovered.entries.every(entry => entry.type === 'message'));
   } finally { await host.close(); await writer.close(); await rm(fixture.root, { recursive: true, force: true }); }
 });
@@ -118,14 +129,14 @@ test('extension restart restores history without replay and replaces same-schema
   } finally { await host?.close(); await writer.close(); await rm(fixture.root, { recursive: true, force: true }); }
 });
 
-test('real host configuration and disable preserve every sibling executable until the batch settles', { timeout: 15_000 }, async () => {
+test('awaited configuration and disable skip unstarted stale siblings and publish current declarations', { timeout: 15_000 }, async () => {
   const fixture = await createExtensionFixture(); const writer = new MemoryWriter(); const builtin = effectTool(async () => result);
   const host = new ExtensionHost({ entries: [{ id: 'manual', path: fixture.modulePath, config: fixture.config }], receive: extensionReceiver(writer) });
   const changedParameters = { type: 'object' as const, properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false };
-  let prepared: AgentTool[] = []; let requests = 0;
+  let prepared: AgentTool[] = []; let requests = 0; let changedActivation = '';
   try {
     await host.start(); const management = extensionManagementTools(host); const originalActivation = host.inspect()[0]!.activation;
-    await runtime(writer, (_model, context) => {
+    const completed = await runtime(writer, (_model, context) => {
       requests++; assertDeclarations(writer, context, prepared);
       assert.ok(prepared.some(tool => tool.name === builtin.name));
       const declaration = getCurrentTools(context.messages).find(tool => tool.name === 'fixture_echo');
@@ -141,30 +152,42 @@ test('real host configuration and disable preserve every sibling executable unti
         ] });
       }
       if (requests === 2) {
+        assertStale(context, 'old-sibling', originalActivation!);
         assert.ok(declaration); assert.deepEqual(declaration.parameters, changedParameters);
         assert.notEqual(host.inspect()[0]!.activation, originalActivation);
+        changedActivation = host.inspect()[0]!.activation!;
         assert.match(declaration.description, /revision 2/);
         assert.match(guidance, /revision 2/); assert.doesNotMatch(guidance, /revision 1/);
         return streamOf({ ...assistant(), stopReason: 'toolUse', content: [
+          { type: 'toolCall', id: 'current-effect', name: 'fixture_echo', arguments: { text: 'current generation' } },
           { type: 'toolCall', id: 'disable-manual', name: 'extension_manage', arguments: { id: 'manual', action: 'disable' } },
           { type: 'toolCall', id: 'new-sibling', name: 'fixture_echo', arguments: { text: 'replacement' } },
         ] });
       }
       assert.equal(requests, 3); assert.equal(declaration, undefined);
+      assertStale(context, 'new-sibling', changedActivation);
       assert.doesNotMatch(guidance, /fixture_echo|revision 2/);
       assert.equal(host.inspect()[0]!.status, 'disabled');
-      return streamOf(assistant('Both complete batches settled before replacement and removal'));
+      return streamOf(assistant('Configuration and disable settled before unstarted stale siblings'));
     }, {
       miraPrompt: { environmentContext: 'Synthetic real Cordis test', authorizationContext: 'Synthetic test intent', now: () => new Date('2026-10-05T12:00:00Z') },
       prepareTools: async () => prepared = [builtin, ...management, ...extensionTools(await host.prepare())], finishTools: () => host.finish(),
     }).run(input('Reconfigure then disable the synthetic extension'));
     assert.deepEqual(await fixture.effects(), [
-      { extensionId: 'manual', revision: 1, callId: 'old-sibling', arguments: { count: 2, label: 'synthetic' } },
-      { extensionId: 'manual', revision: 2, callId: 'new-sibling', arguments: { text: 'replacement' } },
+      { extensionId: 'manual', revision: 2, callId: 'current-effect', arguments: { text: 'current generation' } },
     ]);
     assert.deepEqual(host.changeStatus().map(receipt => [receipt.action, receipt.status]), [['configure', 'applied'], ['disable', 'applied']]);
-    assert.deepEqual(writer.state.executions.map(execution => execution.intent.callId), ['configure-manual', 'old-sibling', 'disable-manual', 'new-sibling']);
+    assert.deepEqual(writer.state.executions.map(execution => execution.intent.callId), ['configure-manual', 'old-sibling', 'current-effect', 'disable-manual', 'new-sibling']);
     assert.ok(writer.state.executions.every(execution => execution.outcome));
+    assert.deepEqual(completed.recovery.operations, [], 'stale siblings have definite durable outcomes');
+    for (const execution of writer.state.executions) {
+      const message = completed.messages.find(message => message.role === 'toolResult' && message.toolCallId === execution.intent.callId);
+      assert.ok(message?.role === 'toolResult'); assert.deepEqual(execution.outcome!.payload, message);
+      if (execution.intent.toolName === 'extension_manage') {
+        assert.ok(message.content[0]?.type === 'text');
+        assert.equal(JSON.parse(message.content[0].text).status, 'applied');
+      }
+    }
     const changes = decodeRecords(writer.state.records).flatMap(entry => entry.type === 'message' && entry.message.role === 'system' && (entry.message.toolsAdded || entry.message.toolsRemoved) ? [entry.message] : []);
     assert.equal(changes.length, 3);
     assert.deepEqual(changes[1]!.toolsRemoved, [{ name: 'fixture_echo' }]);
@@ -172,6 +195,113 @@ test('real host configuration and disable preserve every sibling executable unti
     assert.deepEqual(changes[2]!.toolsRemoved, [{ name: 'fixture_echo' }]);
     assert.deepEqual(getCurrentTools((await runtime(writer).recover()).messages).map(tool => tool.name), [builtin.name, 'extension_inspect', 'extension_stage', 'extension_manage']);
   } finally { await host.close(); await writer.close(); await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+for (const action of ['reload', 'remove'] as const) test(`awaited ${action} never runs or redirects an unstarted same-schema sibling`, { timeout: 15_000 }, async () => {
+  const fixture = await createExtensionFixture(); const writer = new MemoryWriter();
+  const host = new ExtensionHost({ entries: [{ id: 'manual', path: fixture.modulePath, config: fixture.config }], receive: extensionReceiver(writer) });
+  let prepared: AgentTool[] = []; let requests = 0;
+  try {
+    await host.start(); const activation = host.inspect()[0]!.activation!; const management = extensionManagementTools(host);
+    const completed = await runtime(writer, (_model, context) => {
+      requests++; assertDeclarations(writer, context, prepared);
+      if (requests === 1) return streamOf({ ...assistant(), stopReason: 'toolUse', content: [
+        { type: 'toolCall', id: 'manage-manual', name: 'extension_manage', arguments: { id: 'manual', action } },
+        { type: 'toolCall', id: 'stale-sibling', name: 'fixture_echo', arguments: { count: 1, label: 'synthetic' } },
+      ] });
+      assertStale(context, 'stale-sibling', activation);
+      const receipt = context.messages.find(message => message.role === 'toolResult' && message.toolCallId === 'manage-manual');
+      assert.ok(receipt?.role === 'toolResult' && receipt.content[0]?.type === 'text');
+      assert.equal(JSON.parse(receipt.content[0].text).status, 'applied');
+      assert.deepEqual(JSON.parse(receipt.content[0].text).runtime, action === 'remove' ? null : host.inspect()[0]);
+      const declaration = getCurrentTools(context.messages).find(tool => tool.name === 'fixture_echo');
+      if (action === 'reload') {
+        assert.ok(declaration); assert.deepEqual(declaration.parameters, fixtureParameters);
+        assert.notEqual(host.inspect()[0]!.activation, activation);
+        assert.doesNotMatch(declaration.description, new RegExp(activation));
+        if (requests === 2) return streamOf(call('fresh-effect', 'fixture_echo', { count: 2, label: 'synthetic' }));
+        assert.equal(requests, 3);
+      } else {
+        assert.equal(requests, 2); assert.equal(declaration, undefined); assert.deepEqual(host.inspect(), []);
+      }
+      return streamOf(assistant('Lifecycle change and stale sibling outcome verified'));
+    }, {
+      prepareTools: async () => prepared = [...management, ...extensionTools(await host.prepare())], finishTools: () => host.finish(),
+    }).run(input(`${action} the configured synthetic extension`));
+    assert.deepEqual(await fixture.effects(), action === 'reload'
+      ? [{ extensionId: 'manual', revision: 1, callId: 'fresh-effect', arguments: { count: 2, label: 'synthetic' } }] : []);
+    assert.deepEqual(completed.recovery.operations, []);
+    assert.deepEqual(writer.state.executions.map(execution => execution.intent.callId),
+      action === 'reload' ? ['manage-manual', 'stale-sibling', 'fresh-effect'] : ['manage-manual', 'stale-sibling']);
+    for (const execution of writer.state.executions) {
+      const message = completed.messages.find(message => message.role === 'toolResult' && message.toolCallId === execution.intent.callId);
+      assert.ok(message?.role === 'toolResult' && execution.outcome); assert.deepEqual(execution.outcome.payload, message);
+    }
+  } finally { await host.close(); await writer.close(); await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test('abort during awaited management cleanup leaves a possibly completed change unknown and never replays it', { timeout: 15_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mira-extension-cancel-')); const writer = new MemoryWriter();
+  const modulePath = path.join(root, 'extension.mjs'); const configurationFile = path.join(root, 'extensions.json');
+  const effectsPath = path.join(root, 'effects.txt'); const enteredCleanup = deferred(); const releaseCleanup = deferred();
+  const controller = new AbortController(); let host: ExtensionHost | undefined; let work: Promise<unknown> | undefined;
+  try {
+    await writeFile(effectsPath, '');
+    await writeFile(modulePath, `
+import { appendFile } from 'node:fs/promises';
+import { defineExtension } from ${JSON.stringify(import.meta.resolve('@mira/extension-sdk'))};
+export const cleanupGate = { wait: async () => {} };
+export default defineExtension({ name: 'synthetic-cancel-cleanup', apply(context, config) {
+  context.onCleanup(async () => { await cleanupGate.wait(); await appendFile(config.effectsPath, 'cleanup\\n'); });
+  context.registerTool({ name: 'cancel_fixture', description: 'Synthetic cancellation witness', parameters: { type: 'object' },
+    async execute() { await appendFile(config.effectsPath, 'effect\\n'); return { text: 'Synthetic effect' }; } });
+} });
+`);
+    await writeFile(configurationFile, JSON.stringify({ entries: [{ id: 'manual', path: modulePath, config: { effectsPath } }] }));
+    const module = await import(pathToFileURL(modulePath).href) as { cleanupGate: { wait(): Promise<void> } };
+    module.cleanupGate.wait = async () => { enteredCleanup.resolve(); await releaseCleanup.promise; };
+    host = new ExtensionHost({ ...await readExtensionConfiguration(configurationFile), receive: extensionReceiver(writer) });
+    const activeHost = host; await activeHost.start(); const management = extensionManagementTools(activeHost); let requests = 0;
+    const instance = runtime(writer, () => {
+      requests++; assert.equal(requests, 1);
+      return streamOf(call('cancel-disable', 'extension_manage', { id: 'manual', action: 'disable' }));
+    }, {
+      prepareTools: async () => [...management, ...extensionTools(await activeHost.prepare())], finishTools: () => activeHost.finish(),
+    });
+    work = instance.run(input('Disable the configured synthetic extension'), controller.signal);
+    const rejected = assert.rejects(work, /cancel during cleanup/);
+    await enteredCleanup.promise;
+    assert.equal(writer.state.executions[0]!.intent.callId, 'cancel-disable');
+    assert.equal(writer.state.executions[0]!.outcome, null);
+    assert.equal((await readExtensionConfiguration(configurationFile)).entries[0]!.enabled, false, 'desired state is already saved while cleanup waits');
+    controller.abort(Error('cancel during cleanup')); releaseCleanup.resolve(); await rejected;
+    assert.equal(requests, 1); assert.equal(writer.signal.aborted, false, 'caller cancellation does not lose the durable writer');
+    assert.equal(activeHost.inspect()[0]!.status, 'disabled');
+    assert.equal(activeHost.changeStatus()[0]!.status, 'applied'); assert.equal(activeHost.changeStatus()[0]!.persistence, 'saved');
+    assert.equal(await readFile(effectsPath, 'utf8'), 'cleanup\n', 'the dispatched cleanup can finish after cancellation');
+    assert.equal(writer.state.executions.length, 1); assert.equal(writer.state.executions[0]!.outcome, null);
+    assert.equal(decodeRecords(writer.state.records).some(entry => entry.type === 'message' && entry.message.role === 'toolResult'), false,
+      'post-effect cancellation prevents publishing a definitive management outcome');
+    const savedConfig = await readFile(configurationFile, 'utf8'); const savedExecutions = structuredClone(writer.state.executions);
+    const recovered = await runtime(writer, () => { throw Error('Recovery cannot invoke a provider'); }).recover();
+    assert.equal(recovered.recovery.operations.length, 1);
+    assert.equal(recovered.recovery.operations[0]!.callId, 'cancel-disable');
+    assert.equal(recovered.recovery.operations[0]!.status, 'outcome-unknown');
+    let continued = 0;
+    await runtime(writer, (_model, context) => {
+      continued++; assert.match(JSON.stringify(context.messages), /may already have executed/);
+      assert.equal(getCurrentTools(context.messages).some(tool => tool.name === 'cancel_fixture'), false);
+      return streamOf(assistant('Cancellation left the dispatched management outcome unknown'));
+    }, {
+      prepareTools: async () => [...management, ...extensionTools(await activeHost.prepare())], finishTools: () => activeHost.finish(),
+    }).run(input('Continue after the cancellation'));
+    assert.equal(continued, 1); assert.deepEqual(writer.state.executions, savedExecutions);
+    assert.equal(activeHost.changeStatus().length, 1, 'continuation never reissues the cancelled management call');
+    assert.equal(await readFile(configurationFile, 'utf8'), savedConfig); assert.equal(await readFile(effectsPath, 'utf8'), 'cleanup\n');
+  } finally {
+    releaseCleanup.resolve(); await work?.catch(() => {});
+    await host?.close(); await writer.close(); await rm(root, { recursive: true, force: true });
+  }
 });
 
 for (const managementCall of [true, false]) test(`the model asks before extension ${managementCall ? 'management' : 'execution'} without producing a tool call`, { timeout: 15_000 }, async () => {

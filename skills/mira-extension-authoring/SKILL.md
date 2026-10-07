@@ -29,9 +29,14 @@ configuration unless the user requests implementation.
    validate its configuration (see the SDK reference for Json narrowing and sync/async test patterns), typecheck and test offline. Stage the complete
    workspace, then test the exact staged digest using the documented artifact CLI
 4. When the user's request authorizes execution, install the staged release as
-   disabled and activate it. Read the management receipt, then inspect the applied
-   state on the next tool batch. Saved desired configuration does not prove that
-   the runtime is active; an active registration does not prove the task works
+   disabled, read the actual management result, then activate it. Management waits
+   for application and returns `status`, `persistence`, and a `runtime` snapshot.
+   Check those fields before continuing; saved configuration does not prove an
+   active runtime. Continue the requested workflow within the same user request,
+   with ordinary progress messages when useful, without waiting for another user
+   message or Wake. Inspect when discovery, failure diagnosis or fresh state needs
+   it; do not repeat inspections when the returned result already establishes the
+   requested state
 5. Exercise the actual capability with safe authorized inputs, fix observed defects
    in the same extension, and report its location and verification limits. A fake
    provider test is not proof of real account access or external effects
@@ -73,7 +78,7 @@ checkout before running commands; do not guess a machine-specific path.
 5. The main model decides whether the user's instruction authorizes an action or
    needs clarification. Preserve existing schema, provenance, durable intent/outcome,
    and OS boundaries; add no independent approval engine or synthetic consent
-6. Inspect actual results. `accepted`, saved desired configuration, verified bytes,
+6. Inspect actual results. Saved desired configuration, verified bytes,
    test evidence, and active runtime are distinct. A rollback is another explicit
    activation and cannot undo an external effect. Never blindly replay an unknown
    outcome
@@ -81,7 +86,7 @@ checkout before running commands; do not guess a machine-specific path.
 Finish with the workspace and entry, checks actually run, staged digest/test
 receipt if any, requested change receipt, observed runtime/configuration state,
 and remaining limitations. Do not claim installation, live-provider behavior,
-cleanup, or rollback succeeded from a typecheck or an `accepted` receipt alone.
+cleanup, or rollback succeeded from a typecheck or saved configuration alone.
 
 
 ## Upstream source
@@ -94,6 +99,9 @@ and its verification reference, pinned at commit
 [MIT license](LICENSE.deepseek).
 
 Mira's SDK, content-bound staging, disabled installation, lifecycle and test
-commands replace DSH's profile bundles and direct Cordis APIs. DSH's UI slots,
+commands replace DSH's profile bundles and direct Cordis APIs. Like DSH live-profile
+management, Mira waits for lifecycle application and returns an actual result.
+Mira retains its own disabled-install, persistence and activation fields; both
+workflows use those actual results before exercising and reporting the capability. DSH's UI slots,
 presets, MCP bundles, executable YAML and separate approval mechanisms are not
 Mira features. The linked Mira-specific references describe the current code.

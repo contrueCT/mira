@@ -14,7 +14,8 @@
 - 验证卸载、重载失败、旧 timer/listener/socket 清理和注册撤销
 - 扩展只使用 SDK 公共契约，不直接接触数据库或核心内部
 - `artifacts.ts` 的 stage 只复制/哈希，不 import；测试/激活版本必须真实绑定完整快照与本地依赖
-- 每次生成版本激活使用私有新路径，复用 batch lease/cleanup；保留 release，不宣称回退外部效果
+- 每次生成版本激活使用私有新路径，保护实际在途调用并等待 cleanup；保留 release，不宣称回退外部效果
+- requestChange 统一 await 保存/清理/应用，返回最终 receipt + runtime；无 accepted 队列，管理工具不持有扩展执行租约，旧 activation 的未执行调用返回已知 stale 结果
 - configuration、artifact、PG 与 runtime 非原子；receipt 必须分别报告未保存/已保存/实际失败
 
 ## 验证

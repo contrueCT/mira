@@ -40,7 +40,7 @@ Demo 与 Web 都使用 `createSkillLoader` 调用 Pi 1.0.2 的公开 `loadSkills
 
 `MIRA_DEMO_EXTENSIONS=/absolute/extensions.json` 加载普通 JSON 中明确配置的可信本地模块；格式见 [示例](../../examples/extensions/README.md)。程序化组装可使用 `runDemo({extensions:{entries,hmr?,configurationFile?,artifactsDirectory?}, ...})`。不指定配置文件的程序化管理变更仅在当前进程有效。
 
-来源身份由组装层绑定。`emitEvent` 不唤醒；显式 Wake 复用原队列去重/合并。SDK 工具和 `extension_inspect` / `extension_manage` 保留普通 Pi 技术校验、不可变 intent/outcome 与来源路径。管理工具返回 accepted，整批工具完成后等待应用，再由同一 Wake 的下一自然请求看到并调用新工具；不重开已完成的最终回复。
+来源身份由组装层绑定。`emitEvent` 不唤醒；显式 Wake 复用原队列去重/合并。SDK 工具和 `extension_inspect` / `extension_manage` 保留普通 Pi 技术校验、不可变 intent/outcome 与来源路径。管理工具等待保存、清理和应用，直接返回 applied/failed、persistence 与当时的 runtime 状态。同批里尚未执行的旧 activation 调用明确返回 stale/未执行，不跳转到同名新实现；同一 Wake 的下一自然请求看到新声明并调用新工具，不重开已完成的最终回复。
 
 启用/停用/配置先保存到同一 JSON，再交给 Cordis，receipt 区分保存与应用失败。源码 HMR 使用 `node --expose-internals apps/server/src/cli.mts ...`；没有 addon 或运行时依赖安装。生成扩展按 [ADR 0005](../../docs/adr/0005-generated-extension-lifecycle.md) 开启 artifactsDirectory 后使用 stage/install/activate/update/rollback/remove，仍走原工具技术校验和持久化路径。文件 watcher 是异步的，嵌套 CJS require 不自动追踪，apply 失败不保证旧代回滚。完整语义见 [扩展宿主](../../packages/extension-host/README.md)。假 provider 默认仍不自动调用工具；真正同轮激活/调用由确定性测试验证。
 
