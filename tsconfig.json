@@ -57,6 +57,7 @@
     "tests/unit/web-http.test.mts",
     "tests/unit/web-settings.test.mts",
     "tests/unit/web-service.test.mts",
+    "tests/unit/web-extension-startup.test.mts",
     "scripts/tool-usability.mts",
     "tests/unit/tool-guidance.test.mts"
   ]
