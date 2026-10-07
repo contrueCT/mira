@@ -15,3 +15,5 @@
 ## 验证
 
 回归覆盖实际 Web CLI 的默认及显式配置路径、并发初始化、已有配置保留、无效配置拒绝，以及默认 Host 的 stage/install/activate 和重启恢复。PostgreSQL service 测试核对默认管理工具到达真实运行时；不以预配置工具 fixture 代替默认入口测试。所有模型响应采用合成 provider，真实模型和用户日常配置不在本次验证范围。
+
+工具级可用性 CLI 同样从空测试 home 经由这个默认 loader 启动真实 Host，不再预先手写扩展配置。冷评估者只使用正常 CLI、实际 Prompt/skills 与工具 schemas，无须自造 `/tmp` adapter；该测试基础设施仍不替代 PostgreSQL/HTTP 回归。

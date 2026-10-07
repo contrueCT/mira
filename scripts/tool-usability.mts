@@ -7,16 +7,17 @@ import { fileURLToPath } from 'node:url';
 import type { AgentTool } from '@earendil-works/pi-agent-core';
 import { validateToolArguments, type JsonObject } from '@earendil-works/pi-ai';
 import { formatSkillsForPrompt } from '@earendil-works/pi-coding-agent';
-import { ExtensionHost, readExtensionConfiguration } from '@mira/extension-host';
+import { ExtensionHost } from '@mira/extension-host';
 import { setupMemoryWorkspace, snapshotMemory } from '@mira/workspace';
 import { createHistoryTools } from '../packages/runtime-pi/src/history-tools.ts';
 import { MIRA_PROMPT_SHA256, renderMiraPrompt } from '../packages/runtime-pi/src/system-prompt.ts';
 import { extensionManagementTools, extensionTools } from '../apps/server/src/extensions.ts';
 import { createSkillLoader } from '../apps/server/src/skills.ts';
+import { readWebExtensionConfiguration } from '../apps/server/src/web-extensions.ts';
 import { FixtureHistoryReader, fixtureHistoryIds, fixtureMemoryText, fixtureMiraId, historyFixtureNotice, historyFixtures } from './tool-usability-fixtures.mts';
 
 const checkout = fileURLToPath(new URL('..', import.meta.url));
-const marker = 'mira-production-tools-usability-v1';
+const marker = 'mira-production-tools-usability-v2';
 const canonicalNames = ['history_search', 'history_read', 'extension_inspect', 'extension_stage', 'extension_manage'];
 const usage = `Production-tool usability fixture (no model, network, credentials, or database required)
   node scripts/tool-usability.mts init
@@ -30,6 +31,8 @@ Each call or batch settles one real host boundary. serve keeps one live host; se
 CLI invocations restart it from saved config. Accepted receipts and post-boundary
 states are logged to evidence.jsonl. This is not a Pi durable-runtime replay test.
 Extension code/native tests execute as the current OS user, without a sandbox.
+init creates a blank home; opening a session uses the web CLI's actual default
+extension configuration loader and real host, without an MIRA_EXTENSIONS override.
 Use only synthetic code and files under the printed session directory.`;
 interface Call { name: string; arguments: JsonObject }
 interface Command { command: string; name?: string; arguments?: JsonObject; calls?: Call[] }
@@ -41,7 +44,7 @@ function scenario(root: string) {
   return {
     session: root, historyBackend: historyFixtureNotice,
     sources: { prompt: path.join(checkout, 'packages/runtime-pi/prompts/mira-system-v0.2.md'), skills: path.join(checkout, 'skills'), authoringSkill: path.join(checkout, 'skills/mira-extension-authoring/SKILL.md') },
-    paths: { memory: path.join(root, 'Memory'), draft: path.join(root, 'stage-draft'), workspace: path.join(root, 'authored-extension'), artifacts: path.join(root, 'artifacts'), configuration: path.join(root, 'extensions.json'), evidence: path.join(root, 'evidence.jsonl') },
+    paths: { home: path.join(root, 'home'), memory: path.join(root, 'Memory'), draft: path.join(root, 'stage-draft'), workspace: path.join(root, 'authored-extension'), artifacts: path.join(root, 'home', 'extension-artifacts'), configuration: path.join(root, 'home', 'extensions.json'), evidence: path.join(root, 'evidence.jsonl') },
     exercises: [
       'Review the Harbor export requirements and the original Chinese reminder decision. Explain the recorded Memory change using the commit’s provenance and the original conversation, and determine what is known about the follow-up verification. Explain whether the vendor note changes the user request.',
       'Recover the final retention exception from the Harbor audit appendix, including its literal Chinese tag. Report any bounded-read or search limitations you encounter.',
@@ -68,7 +71,6 @@ async function initialize(): Promise<void> {
   const snapshot = await snapshotMemory({ ...memory, miraId: fixtureMiraId, runId: fixtureHistoryIds.wake, expectedRepositoryId: memory.repositoryId });
   if (!snapshot.commitId || !snapshot.changed) throw new Error('The disposable Memory fixture did not produce its initial snapshot');
   await writeFile(path.join(root, 'history.json'), JSON.stringify(historyFixtures(snapshot.commitId)));
-  await writeFile(path.join(root, 'extensions.json'), JSON.stringify({ entries: [], artifactsDirectory: path.join(root, 'artifacts') }, null, 2));
   await writeFile(path.join(root, 'evidence.jsonl'), '');
   await writeFile(path.join(root, 'stage-draft', 'index.mjs'), `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(path.join(root, 'draft-imported.txt'))}, 'The draft was imported');\nthrow new Error('This synthetic draft is for file-only staging, not activation');\n`);
   output(scenario(root));
@@ -77,7 +79,8 @@ async function openSession(directory: string) {
   const root = await realpath(directory);
   const state = JSON.parse(await readFile(path.join(root, 'session.json'), 'utf8')) as { marker?: string };
   if (state.marker !== marker) throw new Error('Not a tool-usability fixture directory');
-  const host = new ExtensionHost({ ...await readExtensionConfiguration(path.join(root, 'extensions.json')), reservedToolNames: canonicalNames,
+  const extensions = await readWebExtensionConfiguration(path.join(root, 'home'));
+  const host = new ExtensionHost({ ...extensions, reservedToolNames: canonicalNames,
     receive: async () => { throw new Error('This tool-only fixture does not persist extension events'); } });
   try {
   const history = createHistoryTools(new FixtureHistoryReader(JSON.parse(await readFile(path.join(root, 'history.json'), 'utf8'))));
@@ -101,7 +104,7 @@ async function openSession(directory: string) {
       }
       if (command.command === 'prompt') {
         const skills = await createSkillLoader({ sourceDirectory: checkout, miraHome: path.join(root, 'home') })(new AbortController().signal);
-        const prompt = renderMiraPrompt({ MEMORY_ROOT: path.join(root, 'Memory'), MEMORY_STATE: 'The initial MEMORY.md is empty in this synthetic fixture.', CURRENT_TIME: new Date().toISOString(), EXTENSIONS_ROOT: path.join(root, 'artifacts'),
+        const prompt = renderMiraPrompt({ MEMORY_ROOT: path.join(root, 'Memory'), MEMORY_STATE: 'The initial MEMORY.md is empty in this synthetic fixture.', CURRENT_TIME: new Date().toISOString(), EXTENSIONS_ROOT: extensions.artifactsDirectory ?? 'Not configured',
           OTHER_ENVIRONMENT_CONTEXT: `Synthetic tool-usability session at ${root}. ${historyFixtureNotice}`,
           DYNAMIC_TOOL_AND_EXTENSION_GUIDANCE: tools.map(tool => `${tool.name}: ${tool.description}`).join('\n\n'),
           CURRENT_AUTHORIZATION_CONTEXT: 'The exercise authorizes synthetic local development and execution inside the session directory only. No external accounts or effects.' });
