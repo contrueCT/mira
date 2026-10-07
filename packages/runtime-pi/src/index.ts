@@ -3,16 +3,17 @@ import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type AgentTo
 import { getCurrentSystemMessage, type Api, type Model, type ToolResultMessage } from '@earendil-works/pi-ai';
 import { buildSessionProjection, convertToLlm, formatSkillsForPrompt, type SessionEntry, type Skill } from '@earendil-works/pi-coding-agent';
 import type { DurableWriter, RecoverySnapshot, ToolExecution, WakeWriter } from '@mira/life';
+import { DurableOperationError } from '@mira/life';
 import type { CognitionRuntime, CognitionTurn } from '@mira/cognition';
-import { observationEntry, sanitizeEntries, validateObservation, withRecoveryAdvisory, type RecoveryOperation } from './observations.ts';
+import { observationEntry, sanitizeEntries, validateObservation, withRecoveryAdvisory, type RecoveryOperation, type ToolDiagnostic } from './observations.ts';
 import { compactSnapshot, type CompactionOptions } from './compactor.ts';
 import { MIRA_PROMPT_SECTION, renderMiraPrompt, initialMemory, projectMiraPrompt, type MiraPromptOptions } from './system-prompt.ts';
 export { MIRA_PROMPT_SECTION, MIRA_PROMPT_SHA256, MIRA_SYSTEM_TEMPLATE, MIRA_PLACEHOLDERS, renderMiraPrompt } from './system-prompt.ts';
 export type { MiraPromptOptions, MiraPromptValues } from './system-prompt.ts';
-import { decodeRecords, encodeEntry, jsonValue, messageEntry, validateMessage } from './records.ts';
+import { decodeRecords, encodeEntry, jsonValue, messageEntry, normalizeToolResult, validateMessage, RuntimeJsonError } from './records.ts';
 export { decodeRecords, encodeEntry, jsonValue, messageEntry, PI_RUNTIME_VERSION } from './records.ts';
 export type { CompactionOptions } from './compactor.ts';
-export type { RecoveryOperation } from './observations.ts';
+export type { RecoveryOperation, ToolDiagnostic } from './observations.ts';
 
 export interface PiRuntimeOptions {
   writer: DurableWriter;
@@ -37,7 +38,15 @@ export interface RecoveredContext {
   projectionEntries: SessionEntry[];
   recovery: { status: 'complete' | 'observed-incomplete'; operations: RecoveryOperation[] };
 }
-class ToolInterruptionError extends Error { override name = 'ToolInterruptionError'; }
+class ToolInterruptionError extends Error {
+  override name = 'ToolInterruptionError';
+  readonly callId: string;
+  readonly diagnostic: ToolDiagnostic;
+  constructor(callId: string, diagnostic: ToolDiagnostic) {
+    super('Tool execution interrupted; external outcome is unknown');
+    this.callId = callId; this.diagnostic = diagnostic;
+  }
+}
 
 export class RecoveryBlockedError extends Error {
   override name = 'RecoveryBlockedError';
@@ -79,6 +88,16 @@ export class PiDurableRuntime implements CognitionRuntime {
     this.gate();
   }
 
+  private async publish<T>(write: () => Promise<T>): Promise<T> {
+    try { return await write(); }
+    catch (error) {
+      if (this.controller.signal.aborted || DurableOperationError.is(error)) throw error;
+      // Keep the internal exception for callers; only the trusted category is
+      // rendered in public status. A failed write is never an effect diagnostic.
+      throw new DurableOperationError('persistence-write-failure', error instanceof Error ? error.message : 'Persistence write failed', { cause: error });
+    }
+  }
+
   private async exclusive<T>(action: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     this.gate();
     if (this.busy) throw new Error('Runtime operation already active');
@@ -105,7 +124,7 @@ export class PiDurableRuntime implements CognitionRuntime {
    * Corrupt evidence still fails closed before any repair or model request. */
   recover(): Promise<RecoveredContext> { return this.exclusive(() => this.recoverInternal()); }
 
-  private async recoverInternal(): Promise<RecoveredContext> {
+  private async recoverInternal(interruption?: ToolInterruptionError): Promise<RecoveredContext> {
     await this.verified();
     const snapshot = await this.options.writer.load();
     this.gate();
@@ -133,7 +152,7 @@ export class PiDurableRuntime implements CognitionRuntime {
         validateObservation(entry);
         if (unresolved.length !== entry.details!.operations.length || unresolved.some((id, index) => {
           const operation = entry.details!.operations[index]!;
-          const expected = operationFor(id);
+          const expected = { ...operationFor(id), ...(operation.diagnostic ? { diagnostic: operation.diagnostic } : {}) };
           return (index > 0 && operation.status !== 'not-started') || !isDeepStrictEqual(expected, operation);
         })) throw new RecoveryBlockedError('Recovery observation does not close the exact incomplete batch');
         operations.push(...structuredClone(entry.details!.operations));
@@ -186,16 +205,17 @@ export class PiDurableRuntime implements CognitionRuntime {
       if (gap && execution) throw new RecoveryBlockedError('Nonsequential execution evidence after incomplete operation');
       if (!execution?.outcome) gap = true;
     }
+    if (interruption && (!unresolved.includes(interruption.callId) || !executions.get(interruption.callId) || executions.get(interruption.callId)!.outcome)) throw new RecoveryBlockedError('Tool diagnostic does not reference an unknown durable intent');
     const append = async (entry: SessionEntry): Promise<void> => {
       const record = encodeEntry(entry);
-      snapshot.version = await this.options.writer.append(snapshot.version, record);
+      snapshot.version = await this.publish(() => this.options.writer.append(snapshot.version, record));
       this.gate(); snapshot.records.push(record); entries.push(entry);
     };
     const incomplete: RecoveryOperation[] = [];
     for (const id of unresolved) {
       const outcome = executions.get(id)?.outcome;
       if (outcome) await append(messageEntry(outcome.payload as unknown as ToolResultMessage, entries.at(-1)?.id ?? null));
-      else incomplete.push(operationFor(id));
+      else incomplete.push({ ...operationFor(id), ...(interruption?.callId === id ? { diagnostic: interruption.diagnostic } : {}) });
     }
     if (incomplete.length) {
       await append(observationEntry(incomplete, entries.at(-1)?.id ?? null));
@@ -222,7 +242,8 @@ export class PiDurableRuntime implements CognitionRuntime {
     if (typeof memory !== 'string') throw new Error('Initial Memory must be text');
     await this.verified();
     const message = { role: 'system' as const, content: '', timestamp: Date.now(), miraMemory: memory };
-    await this.options.writer.append(0, encodeEntry(messageEntry(message, null)), this.controller.signal);
+    const record = encodeEntry(messageEntry(message, null));
+    await this.publish(() => this.options.writer.append(0, record, this.controller.signal));
     return this.recoverInternal();
   }
 
@@ -233,7 +254,8 @@ export class PiDurableRuntime implements CognitionRuntime {
       if (message.role !== 'user' && message.role !== 'system') throw new Error('Only user/system input may be appended');
       const current = await this.initializeEmpty(await this.recoverInternal());
       const entry = messageEntry(message, current.entries.at(-1)?.id ?? null);
-      await this.options.writer.append(current.snapshot.version, encodeEntry(entry));
+      const record = encodeEntry(entry);
+      await this.publish(() => this.options.writer.append(current.snapshot.version, record));
       return this.recoverInternal();
     });
   }
@@ -266,7 +288,8 @@ export class PiDurableRuntime implements CognitionRuntime {
       if (!run.inputRecordId) {
         const message: AgentMessage = { role: 'user', content: turn.input, timestamp: Date.parse(turn.occurredAt) };
         const entry = messageEntry(message, current.entries.at(-1)?.id ?? null);
-        await writer.appendWakeInput(turn.id, current.snapshot.version, encodeEntry(entry), this.controller.signal);
+        const record = encodeEntry(entry);
+        await this.publish(() => writer.appendWakeInput(turn.id, current.snapshot.version, record, this.controller.signal));
         current = await this.recoverInternal();
       }
       await this.runInternal(undefined, turn);
@@ -287,6 +310,7 @@ export class PiDurableRuntime implements CognitionRuntime {
         await this.verified();
         // The interrupted Agent is discarded. Only new model-selected calls can
         // execute; recoverInternal records the unresolved facts before that model.
+        await this.recoverInternal(error);
         input = undefined;
       }
     }
@@ -347,7 +371,20 @@ export class PiDurableRuntime implements CognitionRuntime {
                   // neither failure nor success, so stop this attempt without asking
                   // Pi to publish its synthetic error result.
                   this.gate();
-                  interruption = new ToolInterruptionError(error instanceof Error ? error.message : String(error));
+                  const category = DurableOperationError.categoryOf(error);
+                  if (category === 'persistence-write-failure') throw error;
+                  interruption = new ToolInterruptionError(id, { phase: 'execute', category: category ?? 'execution-rejected' });
+                  this.agent?.abort();
+                  throw interruption;
+                }
+                attemptGate();
+                try { result = normalizeToolResult(result); }
+                catch (error) {
+                  this.gate();
+                  // Pi inspects isError before the after-hook and converts a
+                  // throw into a known error result. Validate first so malformed
+                  // returns stay unknown and raw accessor errors cannot escape.
+                  interruption = new ToolInterruptionError(id, { phase: 'result', category: RuntimeJsonError.categoryOf(error) ?? 'invalid-json-result' });
                   this.agent?.abort();
                   throw interruption;
                 }
@@ -422,7 +459,8 @@ export class PiDurableRuntime implements CognitionRuntime {
               if (getCurrentSystemMessage(state.messages)?.sections?.[MIRA_PROMPT_SECTION] !== text) {
                 await this.verified();
                 const entry = messageEntry({ role: 'system', content: '', sections: { [MIRA_PROMPT_SECTION]: text }, timestamp: Date.now() }, parentId);
-                version = await this.options.writer.append(version, encodeEntry(entry), this.controller.signal);
+                const record = encodeEntry(entry);
+                version = await this.publish(() => this.options.writer.append(version, record, this.controller.signal));
                 attemptGate();
                 parentId = entry.id;
               }
@@ -440,7 +478,7 @@ export class PiDurableRuntime implements CognitionRuntime {
             if (!issuedCall || !isDeepStrictEqual(jsonValue(context.toolCall), jsonValue(issuedCall.call))) throw new Error('Tool call differs from durably recorded assistant request');
             const args = jsonValue(context.args);
             const intent = { callId: id, assistantRecordId: issuedCall.recordId, toolName: context.toolCall.name, requestedArguments: jsonValue(context.toolCall.arguments), arguments: args, occurredAt: new Date().toISOString() };
-            await this.options.writer.beginTool(version, intent);
+            await this.publish(() => this.options.writer.beginTool(version, intent));
             attemptGate();
             executions.set(id, { intent, outcome: null });
           } catch (error) { throw fail(error); }
@@ -448,11 +486,20 @@ export class PiDurableRuntime implements CognitionRuntime {
         afterToolCall: async context => {
           try {
             attemptGate();
-            const saved = jsonValue({ role: 'toolResult', toolCallId: context.toolCall.id, toolName: context.toolCall.name,
-              content: context.result.content ?? [], details: context.result.details, usage: context.result.usage,
-              isError: context.isError, timestamp: Date.now() }) as unknown as ToolResultMessage;
+            let saved: ToolResultMessage;
+            try {
+              saved = jsonValue({ role: 'toolResult', toolCallId: context.toolCall.id, toolName: context.toolCall.name,
+                content: context.result.content ?? [], details: context.result.details, usage: context.result.usage,
+                isError: context.isError, timestamp: Date.now() }) as unknown as ToolResultMessage;
+              validateMessage(saved);
+            } catch (error) {
+              this.gate();
+              interruption = new ToolInterruptionError(context.toolCall.id, { phase: 'result', category: RuntimeJsonError.categoryOf(error) ?? 'invalid-json-result' });
+              this.agent?.abort();
+              throw interruption;
+            }
             const outcome = { callId: saved.toolCallId, occurredAt: new Date(saved.timestamp).toISOString(), payload: jsonValue(saved) };
-            await this.options.writer.finishTool(outcome);
+            await this.publish(() => this.options.writer.finishTool(outcome));
             attemptGate();
             const execution = executions.get(saved.toolCallId);
             if (!execution) throw new Error('Outcome without durable intent');
@@ -497,9 +544,10 @@ export class PiDurableRuntime implements CognitionRuntime {
             }
           }
           const terminal = turn && message.role === 'assistant' && message.stopReason === 'stop' && !message.content.some(block => block.type === 'toolCall');
-          version = terminal
-            ? await this.wakeWriter().appendWakeFinal(turn.id, version, encodeEntry(entry), this.controller.signal)
-            : await this.options.writer.append(version, encodeEntry(entry));
+          const record = encodeEntry(entry);
+          version = await this.publish(() => terminal
+            ? this.wakeWriter().appendWakeFinal(turn!.id, version, record, this.controller.signal)
+            : this.options.writer.append(version, record));
           attemptGate();
           parentId = entry.id;
           if (message.role === 'assistant') {
@@ -534,7 +582,8 @@ export class PiDurableRuntime implements CognitionRuntime {
         }, { ...options, signal: this.controller.signal }, before.recovery.operations);
       await this.verified();
       options.signal?.throwIfAborted();
-      await this.options.writer.append(before.snapshot.version, encodeEntry(checkpoint), this.controller.signal);
+      const record = encodeEntry(checkpoint);
+      await this.publish(() => this.options.writer.append(before.snapshot.version, record, this.controller.signal));
       return this.recoverInternal();
     }, options.signal);
   }

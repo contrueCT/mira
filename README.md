@@ -25,6 +25,7 @@
 - [生成扩展生命周期与执行边界](docs/adr/0005-generated-extension-lifecycle.md)
 - [生成扩展验收](docs/acceptance/generated-extensions.md)
 - [最小假模型演示](apps/server/README.md)
+- [安全的工具恢复诊断](docs/adr/0015-safe-tool-recovery-diagnostics.md)
 
 项目仍处早期开发，只维护当前 Architecture v0.5 与 Prompt v0.2，不保留旧 State/Prompt 兼容层；原始设计存档仅作来源记录。当前格式的持久上下文、重启/压缩、原始历史和 Memory Git 完整性继续保证。
 

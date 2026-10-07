@@ -39,6 +39,8 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 - [0014 扩展管理直接等待应用](0014-awaited-extension-management.md)：Accepted，2026-10-07，统一返回实际管理结果、实际执行租约与旧 activation 明确拒绝
 
+- [0015 安全的工具恢复诊断](0015-safe-tool-recovery-diagnostics.md)：Accepted，2026-10-07，现有 unknown operation 的白名单可选诊断、写入故障的临时状态提示及扩展契约测试；不添加日志表或自动重放
+
 ## 后续范围
 
 不提前引入部署、付费模型调用、第三方账户、新凭据或不必要的框架。阶段临近时给出具体方案、取舍和验证结果。

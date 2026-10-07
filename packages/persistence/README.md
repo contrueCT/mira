@@ -47,6 +47,18 @@ This early-development revision defines the current schema directly. Start with 
 - `finishTool(outcome)` records only the first outcome, while the context version still equals the version saved by that call's `beginTool`. Persist the outcome before appending its transcript result; sequential siblings each begin at their own current version. A late outcome after context has advanced is rejected without changing history or stopping a healthy writer, because recovery may already have observed the execution as unknown. This is an immutable-evidence boundary, not an authorization decision about a newly proposed call. Missing outcomes remain unresolved and are not replayed automatically. This slice does not implement an external-delivery outbox or an automatic reconciliation executor
 - JSON columns retain complete serialized envelopes/provider fields; the adapter does not replace messages with text. Returned objects are ordinary JSON copies, not references to mutable adapter state
 
+`PersistenceError` retains its name/code and two-argument constructor. It now
+extends the small core-owned `DurableOperationError`; an optional third category
+tags only the exact event/Wake identity-content conflicts in `receive`. Ordinary
+invalid/version/duplicate failures have no write-failure category and retain
+their existing semantics. A stopped writer's signal and unknown transactional
+faults carry `persistence-write-failure`. Consumers recognize real privately
+branded instances rather than parsing external messages or SQL codes. Internal
+causes/messages are not rendered as public or durable tool diagnostics. The Pi
+adapter owns the optional reason in its existing recovery observation; this
+adapter introduces no diagnostic table or runtime-payload parser. See
+[ADR 0015](../../docs/adr/0015-safe-tool-recovery-diagnostics.md).
+
 ## Verification
 
 ```sh

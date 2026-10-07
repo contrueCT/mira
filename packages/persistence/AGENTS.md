@@ -21,6 +21,7 @@
 - intent 保留原始/验证参数与 assistantRecordId，工具行 context version 保留来源；不保存合成授权决策，不因移除 JSON 字段添加迁移或改写历史
 - finishTool 仅在当前 context version 等于该 intent 的 beginTool version 时写入；先保存 outcome 再追加工具结果。上下文推进后的迟到 outcome 拒绝且不修改证据，不把这个完整性边界用作新调用的风险或授权判定
 - 事务内不执行模型或外部工具；外部结果不明必须保留核对状态，不自动重试
+- PersistenceError 保留 name/code/两参数 API；仅 receive 的 identity/content 冲突给可信标签。普通 invalid/version/duplicate 不冒充写入故障；实际 stopped writer/未知事务故障标记致命类别，不新增诊断表或解释 Pi payload
 - 事件与可选 Wake 原子落库；无 Wake 的事件不得启动推理；重复 ID 必须核对全部记录
 - claim 全部积累请求为一批，运行中新到请求留下一批；关联不可变、每 Mira 仅一个活动 run
 - 输入/终止回复与 run 关联同事务，最终回复后先完成再追加；Pi 语义由 Runtime 核对

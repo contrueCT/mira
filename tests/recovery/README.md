@@ -35,6 +35,16 @@ skipped/pass result. Check the current CI evidence before claiming a real-DB pas
   history and paired tool tails, then supports continuation
 - Real-DB stale-version CAS and compaction cancellation reject publication
 
+`tool-diagnostics.test.mts` adds fixed-category execution/result diagnostics,
+exact fresh-process recovery, real process exits before and after observation
+commit, and a synthetic PostgreSQL trigger that rejects outcome writes. A crash
+before observation commit honestly has no diagnostic. A failed write remains
+fatal and only a temporary safe server notice is available. All fixtures use the
+explicit isolated database/schema above and synthetic counter files, never user
+data or live providers. `tool-diagnostics-worker.mts` is the subprocess fixture,
+not a production entrypoint. The suite must actually run on the exact tested
+commit before claiming a PostgreSQL pass.
+
 ## Mira-owned tool chains
 
 `history-runtime.test.mts` connects a scripted provider to the actual Pi runtime,

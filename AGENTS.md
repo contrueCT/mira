@@ -59,6 +59,7 @@ pnpm check
 - 一个持续 Mira；Wake 继续上下文，Event 不等于 Wake；不加入 New Chat 或会话领域
 - Compaction 与 Dreaming 分开；先验证 Pi 恢复/工具/压缩，再实现主循环
 - 跨进程单写者、版本检查、增量工具记录；未知结果真实呈现给模型，不自动重放、不全局阻断认知
+- [ADR 0015](docs/adr/0015-safe-tool-recovery-diagnostics.md)：可选 phase/category 诊断仅写现有 unknown operation，固定白名单文字；无原异常/headers/参数片段，无新日志表。写入/finishTool/fencing 失败仍致命，临时 Web notice 不承诺诊断落库
 - 主模型依据用户对话、上下文和自然语言 Prompt 决定调用或澄清；无 authorize 回调、allowed/evidence/denial 决策或替代引擎/额外模型调用。authorizationContext 仅为事实语境；schema、不可变 intent/outcome、来源、去重、真实身份/OS 权限和数据完整性仍是硬边界
 - 超限唤醒保存普通文本文件并告知路径；复用普通文件工具，不构建专用消息读取/分页服务
 - [ADR 0012](docs/adr/0012-global-history-identities.md)：四类 History 采用全局 UUID 薄身份表；read 只接收 ID，外部事件/工具协议标识分离；Memory commit 保存直接 History-Id。新空库/数据目录启动，不添加旧库检测、映射、兼容或清理

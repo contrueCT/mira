@@ -28,6 +28,9 @@ Shared rules: [root AGENTS.md](../../AGENTS.md). Read `README.md` before changes
   Matching arguments are advisory evidence, not an unconditional retry veto
 - Preserve exact known outcomes across the outcome/transcript crash window,
   including timestamps. Duplicate call IDs are errors
+- Optional recovery diagnostics use fixed allowlisted phase/category only, exact
+  unknown-intent linkage and bounds; never copy raw errors or rejected values.
+  Result validation may recover unknown; finishTool/writer faults stay fatal
 - Compaction snapshots are disposable. CAS and cancellation fence publication;
   COMMIT-dispatch ambiguity requires authoritative recovery
 - Compactor uses an unregistered disposable provider alias verified through public

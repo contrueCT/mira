@@ -4,6 +4,9 @@ import type { CustomMessageEntry, SessionEntry } from '@earendil-works/pi-coding
 import type { Json } from '@mira/context';
 
 export const RECOVERY_OBSERVATION_TYPE = 'mira.recovery-observation.v1';
+export type ToolDiagnostic =
+  | { phase: 'execute'; category: 'execution-rejected' | 'event-content-conflict' }
+  | { phase: 'result'; category: 'invalid-json-result' | 'non-finite-result' };
 export interface RecoveryOperation {
   callId: string;
   assistantRecordId: string;
@@ -11,6 +14,9 @@ export interface RecoveryOperation {
   requestedArguments: Json;
   arguments?: Json;
   status: 'outcome-unknown' | 'not-started';
+  /** A bounded runtime-observed reason, separate from unknown external outcome.
+   * Absent when the process died before this observation was persisted. */
+  diagnostic?: ToolDiagnostic;
 }
 export interface RecoveryObservation { version: 1; operations: RecoveryOperation[] }
 export type ObservationEntry = CustomMessageEntry<RecoveryObservation>;
@@ -20,7 +26,8 @@ export function observationText(operations: readonly RecoveryOperation[]): strin
     `Operation ${JSON.stringify(operation.callId)}; tool ${JSON.stringify(operation.toolName)}; assistant record ${JSON.stringify(operation.assistantRecordId)}; requested arguments ${JSON.stringify(operation.requestedArguments)}${operation.arguments === undefined ? '' : `; validated arguments ${JSON.stringify(operation.arguments)}`}\n` +
     (operation.status === 'outcome-unknown'
       ? 'A durable execution intent exists, but no durable outcome exists. The operation may already have executed; success or failure is unknown.'
-      : 'No durable execution intent exists. Execution did not start through this runtime.')
+      : 'No durable execution intent exists. Execution did not start through this runtime.') +
+    (operation.diagnostic ? `\nRuntime diagnostic (${operation.diagnostic.phase}/${operation.diagnostic.category}): ${diagnosticText(operation.diagnostic)}` : '')
   ).join('\n') + '\nContinue reasoning and use read-only checks when useful. These older calls will not be replayed. For a deliberate new operation, use a new call ID and decide from the user’s request and current context; explain its rationale in the assistant narrative. Matching prior arguments are evidence to consider, not an automatic prohibition.';
 }
 export function observationEntry(operations: RecoveryOperation[], parentId: string | null): ObservationEntry {
@@ -38,8 +45,30 @@ export function validateObservation(entry: CustomMessageEntry): asserts entry is
         !Object.hasOwn(op, 'requestedArguments') || !['outcome-unknown', 'not-started'].includes(op.status) ||
         (op.status === 'outcome-unknown') !== Object.hasOwn(op, 'arguments') || seen.has(op.callId)) throw new Error('Invalid recovery observation operation');
     seen.add(op.callId);
+    if (Object.hasOwn(op, 'diagnostic')) {
+      if (op.status !== 'outcome-unknown') throw new Error('Diagnostic requires an unknown durable intent');
+      validateDiagnostic(op.diagnostic);
+    }
   }
   if (entry.content !== observationText(details.operations)) throw new Error('Recovery observation text differs from its evidence');
+}
+function validateDiagnostic(value: unknown): asserts value is ToolDiagnostic {
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) ||
+      Reflect.ownKeys(value).length !== 2 || !Object.hasOwn(value, 'phase') || !Object.hasOwn(value, 'category')) throw new Error('Invalid recovery diagnostic');
+  const { phase, category } = value as Record<string, unknown>;
+  if (typeof phase !== 'string' || typeof category !== 'string' || phase.length > 7 || category.length > 32 ||
+      !(phase === 'execute' && (category === 'execution-rejected' || category === 'event-content-conflict') ||
+        phase === 'result' && (category === 'invalid-json-result' || category === 'non-finite-result'))) throw new Error('Unsupported recovery diagnostic');
+  if (JSON.stringify(value).length > 96) throw new Error('Recovery diagnostic exceeds its limit');
+}
+function diagnosticText(diagnostic: ToolDiagnostic): string {
+  switch (diagnostic.category) {
+    case 'execution-rejected': return 'The tool execution rejected. It may already have caused effects; inspect external state before deciding whether to retry.';
+    case 'event-content-conflict': return 'An event or Wake identity conflicts with previously saved content. Inspect the original event and reuse its exact identity, timestamp, payload and Wake choice for a receipt retry; a genuinely new event needs a new identity.';
+    case 'invalid-json-result': return 'The returned tool result could not be represented as valid runtime JSON. Repair the result contract and inspect external state before deciding whether to retry.';
+    case 'non-finite-result': return 'The returned tool result contained a nonfinite number. Return only finite JSON numbers and inspect external state before deciding whether to retry.';
+  }
 }
 /** Only the disposable Pi view changes. IDs, metadata, narrative, thinking and
  * completed tool pairs remain intact; authoritative entries are never mutated. */
