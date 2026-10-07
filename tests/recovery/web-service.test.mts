@@ -4,7 +4,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { createLocalHttp, LocalWebService, WebHttpError, WebSettingsStore, listBuiltinCatalog, type WebSettings } from '@mira/server';
-import { createAssistantMessageEventStream, type TranscriptContext } from '@earendil-works/pi-ai';
+import { createAssistantMessageEventStream, getCurrentTools, type TranscriptContext } from '@earendil-works/pi-ai';
+import { readWebExtensionConfiguration } from '../../apps/server/src/web-extensions.ts';
 import { createTestDatabase } from '../integration/database.mts';
 import { assistant, streamOf } from './fixtures.mts';
 
@@ -15,6 +16,44 @@ async function settled(service: LocalWebService): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 10));
   }
 }
+test('default web extension configuration exposes real management dispatch and restores it with PostgreSQL', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-default-extensions-');
+  let service: LocalWebService | undefined; let requests = 0;
+  try {
+    const extensions = await readWebExtensionConfiguration(root);
+    const original = await readFile(extensions.configurationFile, 'utf8');
+    assert.deepEqual(extensions.entries, []);
+    const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'default-extensions', sourceDirectory: process.cwd(),
+      spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), miraHome: root, synthetic: true,
+      syntheticStream: (_model: unknown, context: TranscriptContext) => {
+        requests++;
+        const names = getCurrentTools(context.messages).map(tool => tool.name);
+        for (const name of ['extension_stage', 'extension_inspect', 'extension_manage']) assert.ok(names.includes(name), `Missing ${name} in the actual request`);
+        if (requests === 1 || requests === 3) return streamOf({ ...assistant(), stopReason: 'toolUse', content: [
+          { type: 'toolCall', id: `default-inspect-${requests}`, name: 'extension_inspect', arguments: {} },
+        ] });
+        const result = context.messages.find(message => message.role === 'toolResult' && message.toolCallId === `default-inspect-${requests - 1}`);
+        assert.ok(result?.role === 'toolResult' && !result.isError && result.content[0]?.type === 'text');
+        const inspected = JSON.parse(result.content[0].text);
+        assert.deepEqual(inspected.extensions, []); assert.deepEqual(inspected.releases, []); assert.deepEqual(inspected.changes, []);
+        return streamOf(assistant('Default extension management is available'));
+      } };
+    service = await LocalWebService.open({ ...options, extensions }); await settled(service);
+    assert.equal(requests, 0, 'default startup must not create a Wake or provider request');
+    await service.submit({ id: 'default-inspect-before-restart', text: 'Inspect the configured extensions', occurredAt: '2026-10-07T08:00:00.000Z' });
+    await settled(service); assert.equal((await service.status()).state, 'idle'); assert.equal(requests, 2);
+    await service.close(); service = undefined;
+    service = await LocalWebService.open({ ...options, extensions: await readWebExtensionConfiguration(root) }); await settled(service);
+    assert.equal(requests, 2, 'restart must not replay completed management tools');
+    await service.submit({ id: 'default-inspect-after-restart', text: 'Inspect them again after restart', occurredAt: '2026-10-07T08:01:00.000Z' });
+    await settled(service); assert.equal((await service.status()).state, 'idle'); assert.equal(requests, 4);
+    const executions = (await db.admin.query('SELECT intent, outcome FROM tool_executions')).rows;
+    assert.equal(executions.length, 2);
+    for (const execution of executions) { assert.equal(execution.intent.toolName, 'extension_inspect'); assert.ok(execution.outcome); }
+    assert.equal(await readFile(extensions.configurationFile, 'utf8'), original);
+  } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('local web composition persists one timeline, hides system/thinking, deduplicates uncertain submits and restores after restart', { timeout: 30_000 }, async () => {
   const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-service-');
   let service: LocalWebService | undefined; let calls = 0;

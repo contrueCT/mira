@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import test from 'node:test';
@@ -15,6 +15,24 @@ async function cli(...args: string[]) {
 function value(response: Awaited<ReturnType<typeof cli>>) { return JSON.parse(response.results[0].result.content[0].text); }
 
 // These assertions are evaluator evidence, not part of the black-box task brief.
+test('tool CLI begins with a blank home and uses the web default loader on first open and reopen', async () => {
+  const { session, paths } = await cli('init');
+  try {
+    assert.deepEqual(await readdir(paths.home), []);
+    await assert.rejects(access(paths.configuration));
+    const list = await cli(session, 'list');
+    assert.ok(list.tools.some((tool: { name: string }) => tool.name === 'extension_manage'));
+    assert.equal(paths.configuration, path.join(paths.home, 'extensions.json'));
+    assert.equal(paths.artifacts, path.join(paths.home, 'extension-artifacts'));
+    const bytes = await readFile(paths.configuration, 'utf8');
+    assert.deepEqual(JSON.parse(bytes), { entries: [], artifactsDirectory: paths.artifacts });
+    const prompt = await cli(session, 'prompt');
+    assert.ok(prompt.prompt.includes(paths.artifacts));
+    assert.deepEqual(value(await cli(session, 'call', 'extension_inspect', '{}')).extensions, []);
+    assert.equal(await readFile(paths.configuration, 'utf8'), bytes);
+  } finally { await rm(session, { recursive: true, force: true }); }
+});
+
 test('tool CLI exposes live declarations, bounded history results and production prompt/skill catalog', async () => {
   const { session } = await cli('init');
   try {
@@ -243,7 +261,7 @@ test('serve closed acknowledgement follows actual asynchronous cleanup exactly o
     const entry = path.join(session, 'slow-cleanup.mjs');
     await writeFile(entry, `import { writeFile } from 'node:fs/promises';
 export default { name: 'slow-cleanup', apply({ mira }) { mira.onCleanup(async () => { await new Promise(resolve => setTimeout(resolve, 50)); await writeFile(${JSON.stringify(marker)}, 'done'); }); } };`);
-    await writeFile(path.join(session, 'extensions.json'), JSON.stringify({ entries: [{ id: 'slow-cleanup', path: entry }], artifactsDirectory: path.join(session, 'artifacts') }));
+    await writeFile(path.join(session, 'home', 'extensions.json'), JSON.stringify({ entries: [{ id: 'slow-cleanup', path: entry }], artifactsDirectory: path.join(session, 'home', 'extension-artifacts') }));
     const child = spawn(process.execPath, [script, session, 'serve'], { stdio: ['pipe', 'pipe', 'pipe'] });
     let buffer = ''; let closedSawMarker: Promise<void> | undefined; let stderr = '';
     child.stderr.on('data', chunk => { stderr += String(chunk); });
@@ -271,7 +289,7 @@ test('startup evidence failure closes live plugin resources before reporting an 
     const entry = path.join(session, 'cleanup-on-failure.mjs');
     await writeFile(entry, `import { writeFileSync } from 'node:fs';
 export default { name: 'cleanup-on-failure', apply({ mira }) { mira.interval(() => {}, 1000); mira.onCleanup(() => writeFileSync(${JSON.stringify(marker)}, 'done')); } };`);
-    await writeFile(path.join(session, 'extensions.json'), JSON.stringify({ entries: [{ id: 'cleanup-on-failure', path: entry }], artifactsDirectory: path.join(session, 'artifacts') }));
+    await writeFile(path.join(session, 'home', 'extensions.json'), JSON.stringify({ entries: [{ id: 'cleanup-on-failure', path: entry }], artifactsDirectory: path.join(session, 'home', 'extension-artifacts') }));
     const evidence = path.join(session, 'evidence.jsonl'); await rm(evidence); await mkdir(evidence);
     await assert.rejects(execute(process.execPath, [script, session, 'list'], { timeout: 5000 }), (error: unknown) => {
       const failure = error as Error & { code?: number; signal?: string; stderr?: string };

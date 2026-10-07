@@ -157,10 +157,11 @@ Linux 缺少系统库时，使用 Playwright 官方 `pnpm exec playwright instal
 ## 6. 数据位置、故障与限制
 
 - `MIRA_DATABASE_URL` 必需，明确本地数据库名；不接受查询选项或远程数据库地址。启动会执行当前向上迁移，不自动建库或重置数据
-- `MIRA_HOME` 默认 `~/.mira`，必须在源码仓库外；保存 `models.json`、`memory/` 独立 Git 和 `wake-input/`
+- `MIRA_HOME` 默认 `~/.mira`，必须在源码仓库外；保存 `models.json`、`memory/` 独立 Git、`wake-input/`、`extensions.json` 和 `extension-artifacts/`
 - `MIRA_SCHEMA` 默认 `mira`；固定 Mira ID 为 `mira`。两个进程不能同时持有同一实例的 writer
 - `MIRA_CWD` 默认启动目录，只是工具 cwd，不是沙箱；文件/Shell 使用宿主 OS 权限
-- `MIRA_EXTENSIONS` 可选，沿用可信本地扩展配置；没有新增扩展安装器或管理 UI
+- 未设置 `MIRA_EXTENSIONS` 时，首次启动在 `MIRA_HOME/extensions.json` 创建空 `entries` 与绝对 `artifactsDirectory`（`MIRA_HOME/extension-artifacts`），启用持久扩展宿主及 `extension_inspect`、`extension_stage`、`extension_manage`。已有默认配置原样加载；首次初始化原子发布，不覆盖并发创建的文件。artifact 子目录按需创建。默认初始化不安装或激活新代码；重启沿用已保存的扩展及启用状态
+- `MIRA_EXTENSIONS` 可指定其它可信本地配置，始终优先；不存在、空路径、非法 JSON 或错误配置均报错，不回退到默认文件，也不修复或覆盖配置。显式配置仍可不含 artifact store（仅手工扩展）。没有新增管理 UI、独立授权门禁或自动批准；模型按用户对话选择管理动作，保存和实际应用结果仍需分别检查
 - `models.json` 在同一原子文件中保存私有配置、选择和 API Key，使用 revision 防止并发编辑静默覆盖。文件为明文，创建/更新权限为 `0600`，新建私有目录为 `0700`。已有文件及其直接父目录也必须由当前 OS 账户拥有，且无组/其他用户权限；否则明确失败，不自动 chmod。只有脱敏的 `hasApiKey` 状态返回网页，Key 不写入 PostgreSQL 配置、上下文或 Memory 快照。修改冲突需重载；运行中不能改模型；空闲保存后下一条消息生效
 - 与 Pi 的本地凭据文件类似，这不是加密保险箱；同一 OS 账户、管理员或该身份执行的工具/扩展仍可能读取文件。请勿把 `models.json` 上传、提交 Git 或复制进 Memory；备份也应作为秘密保管。无旧环境变量设置文件的兼容迁移，旧格式明确报错，不自动删除或改写用户文件
 - Timeline 只显示可见消息、必要通知和整体处理状态，不输出 system/thinking/原始工具参数；目前没有逐 token 显示、New Chat、账号、多租户或公网部署

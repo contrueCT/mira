@@ -1,5 +1,14 @@
 # Independent tool usability exercise
 
+The disposable session starts with an empty `home/`, not a prewritten extension
+configuration. Its first tool operation calls the same default configuration
+loader as the web CLI, then starts the real `ExtensionHost`; later CLI operations
+reopen that saved home. No `MIRA_EXTENSIONS` override is supplied. The scenario's
+paths and rendered prompt point to `home/extensions.json` and
+`home/extension-artifacts`. Evaluators use this CLI directly rather than writing
+their own adapter or manual configuration. This covers the default loader and
+production management handlers, not the database-backed web service or listener.
+
 Run `node scripts/tool-usability.mts init` from the source checkout. The command
 creates a fresh disposable directory outside the checkout (and rejects a TMPDIR inside it) and prints its path,
 exercise goals, a `paths.memory` directory, and production prompt/skill references.
@@ -80,7 +89,8 @@ session directory you created after retaining any desired evidence.
 
 ## Harness regression check
 
-`node --test tests/unit/tool-usability.test.mts` covers live declarations and
+`node --test tests/unit/tool-usability.test.mts` covers blank-home default startup
+and configuration retention across reopening, live declarations and
 prompt references, id-only schemas and canonical UUID validation, complete
 provenance links and Mira scoping, history read limits, a real production Memory
 commit-to-History round trip, file-only staging, genuine rejections,

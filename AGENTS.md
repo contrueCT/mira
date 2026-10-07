@@ -16,6 +16,7 @@
 - 扩展只使用 `extension-sdk`；Cordis 处理生命周期，不是安全沙箱
 - 生成扩展测试/导入/执行按已确认的宿主 OS 身份运行，无产品隔离；默认生成流程不修改核心/授权/历史/security，目录只是约定
 - stage 不执行代码，内容 SHA 包含本地依赖；版本/config 先保存后 apply，rollback 是显式新激活，不是原子撤销
+- Web 默认初始化持久空扩展配置及 artifact store，提供管理工具；保留已有文件与显式 `MIRA_EXTENSIONS` 优先级，不自动安装/激活新扩展，见 ADR 0013
 - 用户数据、Memory 的独立 Git、生成扩展、日志、凭据均在源码仓库之外；不再配置、创建或自动读取独立 SemanticState
 - 普通文件变化不通知上下文、不 Wake、不重注入；仅真正初始上下文加载 MEMORY.md；正常恢复/重启沿用持久 bootstrap 快照
 - Pi 通用文件/search/bash 工具无应用工作目录限制，无产品隔离环境要求；cwd 不是沙箱，OS 权限与自然语言意图判断仍有效
