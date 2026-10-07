@@ -52,9 +52,10 @@ async function document(file: string): Promise<Record<string, unknown> & { entri
 async function savedHost(file: string): Promise<ExtensionHost> {
   return new ExtensionHost({ ...await readExtensionConfiguration(file), receive });
 }
-function receipt(host: ExtensionHost, accepted: ChangeStatus): ChangeStatus {
-  const result = host.changeStatus().find(item => item.id === accepted.id);
-  assert.ok(result, `Expected receipt ${accepted.id}`);
+function receipt(host: ExtensionHost, completed: ChangeStatus): ChangeStatus {
+  const result = host.changeStatus().find(item => item.id === completed.id);
+  assert.ok(result, `Expected receipt ${completed.id}`);
+  assert.deepEqual(result, completed, 'requestChange returns the final recorded receipt');
   return result;
 }
 function named(tools: RegisteredTool[]): RegisteredTool {
@@ -84,7 +85,7 @@ test('enable, configure, and disable save the same ordinary JSON before apply an
       hmr: false,
       operator: { comment: 'Hand maintained configuration', flags: [true, null, 3] },
     };
-    const original = await writeDocument(entry.configurationFile, initial);
+    await writeDocument(entry.configurationFile, initial);
     const loaded = await readExtensionConfiguration(entry.configurationFile);
     assert.equal(loaded.configurationFile, await realpath(entry.configurationFile));
     assert.deepEqual(Object.keys(loaded).sort(), ['configurationFile', 'entries', 'hmr']);
@@ -94,32 +95,33 @@ test('enable, configure, and disable save the same ordinary JSON before apply an
     try {
       await host.start();
       assert.deepEqual(await host.prepare(), []);
-      const enable = host.requestChange('configured', { action: 'enable' });
-      assert.equal(enable.status, 'accepted');
-      assert.equal(enable.persistence, 'pending');
-      assert.equal(await readFile(entry.configurationFile, 'utf8'), original);
-      assert.deepEqual(entry.state.applied, []);
+      const enable = await host.requestChange('configured', { action: 'enable' });
+      assert.equal(enable.status, 'applied');
+      assert.equal(enable.persistence, 'saved');
+      assert.equal(enable.runtime?.status, 'active');
+      assert.equal((await document(entry.configurationFile)).entries[0]!['enabled'], true);
+      assert.deepEqual(entry.state.applied, [{ label: 'initial' }]);
       assert.deepEqual(await configured(await host.prepare()), { label: 'initial' });
       assert.equal(receipt(host, enable).status, 'applied');
       assert.equal(receipt(host, enable).persistence, 'saved');
       assert.deepEqual(entry.state.saved[0], { ...initial.entries[0], enabled: true });
 
       const next = { label: 'updated', nested: [null, false, 0, ''] };
-      const configure = host.requestChange('configured', { action: 'configure', config: next });
+      const configuring = host.requestChange('configured', { action: 'configure', config: next });
       next.label = 'mutated-after-request';
-      assert.equal(configure.persistence, 'pending');
-      assert.deepEqual((await document(entry.configurationFile)).entries[0]!['config'], { label: 'initial' });
-      await host.finish();
+      const configure = await configuring;
       const expected = { label: 'updated', nested: [null, false, 0, ''] };
+      assert.equal(configure.persistence, 'saved');
+      assert.deepEqual((await document(entry.configurationFile)).entries[0]!['config'], expected);
       assert.deepEqual(await configured(await host.prepare()), expected);
       assert.equal(receipt(host, configure).status, 'applied');
       assert.equal(receipt(host, configure).persistence, 'saved');
       assert.deepEqual(entry.state.saved.at(-1), { ...initial.entries[0], enabled: true, config: expected });
 
-      const disable = host.requestChange('configured', { action: 'disable' });
-      assert.equal(disable.persistence, 'pending');
-      assert.equal((await document(entry.configurationFile)).entries[0]!['enabled'], true);
-      await host.finish();
+      const disable = await host.requestChange('configured', { action: 'disable' });
+      assert.equal(disable.persistence, 'saved');
+      assert.equal(disable.runtime?.status, 'disabled');
+      assert.equal((await document(entry.configurationFile)).entries[0]!['enabled'], false);
       assert.equal(receipt(host, disable).status, 'applied');
       assert.equal(receipt(host, disable).persistence, 'saved');
       assert.deepEqual(host.inspect().map(item => item.status), ['disabled', 'disabled']);
@@ -127,8 +129,10 @@ test('enable, configure, and disable save the same ordinary JSON before apply an
       const saved = await document(entry.configurationFile);
       assert.deepEqual(saved, { ...initial, entries: [{ ...initial.entries[0], config: expected }, unrelatedEntry] });
       assert.deepEqual(entry.state.cleaned, [{ label: 'initial' }, expected]);
-      assert.equal(enable.status, 'accepted', 'accepted receipts are detached snapshots');
-      assert.equal(enable.persistence, 'pending');
+      assert.equal(enable.status, 'applied', 'completed receipts remain detached snapshots');
+      assert.equal(enable.persistence, 'saved');
+      assert.equal(enable.runtime?.status, 'active');
+      assert.deepEqual(enable.runtime.config, { label: 'initial' });
       await assertNoTemporaryFiles(directory);
     } finally { await host.close(); }
 
@@ -138,7 +142,7 @@ test('enable, configure, and disable save the same ordinary JSON before apply an
       assert.deepEqual(await restarted.prepare(), []);
       assert.deepEqual(restarted.inspect().map(item => item.status), ['disabled', 'disabled']);
       assert.deepEqual(restarted.changeStatus(), [], 'runtime receipts are not database/configuration history');
-      const enable = restarted.requestChange('configured', { action: 'enable' });
+      const enable = await restarted.requestChange('configured', { action: 'enable' });
       assert.deepEqual(await configured(await restarted.prepare()), { label: 'updated', nested: [null, false, 0, ''] });
       assert.equal(receipt(restarted, enable).persistence, 'saved');
     } finally { await restarted.close(); }
@@ -162,7 +166,9 @@ test('failed activation leaves saved desired configuration for restart and never
     try {
       await host.start();
       assert.deepEqual(await configured(await host.prepare()), { label: 'working' });
-      const change = host.requestChange('configured', { action: 'configure', config: failing });
+      const change = await host.requestChange('configured', { action: 'configure', config: failing });
+      assert.equal(change.status, 'failed');
+      assert.equal(change.runtime?.status, 'failed');
       assert.deepEqual(await host.prepare(), []);
       assert.equal(receipt(host, change).status, 'failed');
       assert.equal(receipt(host, change).persistence, 'saved');
@@ -186,7 +192,7 @@ test('failed activation leaves saved desired configuration for restart and never
   });
 });
 
-test('observed external edits reject queued saves without changing active runtime or clobbering any bytes', async () => {
+test('observed external edits reject awaited saves without changing active runtime or clobbering any bytes', async () => {
   await withDirectory(async directory => {
     const entry = await fixture(directory);
     const initialEntry = { id: 'configured', path: entry.extensionFile, config: { label: 'runtime-original' } };
@@ -199,12 +205,11 @@ test('observed external edits reject queued saves without changing active runtim
       const external = `${JSON.stringify({ entries: [{ ...initialEntry, config: { label: 'external-edit' } }], comment: 'edited outside the host' })}\n\n`;
       await writeFile(entry.configurationFile, external);
       for (const change of [{ action: 'configure', config: { label: 'must-not-apply' } }, { action: 'disable' }, { action: 'enable' }] as const) {
-        const accepted = host.requestChange('configured', change);
-        assert.equal(accepted.persistence, 'pending');
+        const completed = await host.requestChange('configured', change);
         const current = named(await host.prepare());
-        assert.equal(receipt(host, accepted).status, 'failed');
-        assert.equal(receipt(host, accepted).persistence, 'failed');
-        assert.match(receipt(host, accepted).error ?? '', /changed externally/);
+        assert.equal(receipt(host, completed).status, 'failed');
+        assert.equal(receipt(host, completed).persistence, 'failed');
+        assert.match(receipt(host, completed).error ?? '', /changed externally/);
         assert.equal(current.activation, originalTool.activation);
         assert.deepEqual(host.inspect(), originalStatus);
         assert.deepEqual(await configured([current]), { label: 'runtime-original' });
@@ -255,11 +260,11 @@ test('filesystem failure after preparing a save removes its temporary file and l
       const backup = path.join(directory, 'external-backup.json');
       await rename(entry.configurationFile, backup);
       await mkdir(entry.configurationFile);
-      const accepted = host.requestChange('configured', { action: 'disable' });
+      const completed = await host.requestChange('configured', { action: 'disable' });
       const current = named(await host.prepare());
-      assert.equal(receipt(host, accepted).status, 'failed');
-      assert.equal(receipt(host, accepted).persistence, 'failed');
-      assert.ok(receipt(host, accepted).error);
+      assert.equal(receipt(host, completed).status, 'failed');
+      assert.equal(receipt(host, completed).persistence, 'failed');
+      assert.ok(receipt(host, completed).error);
       assert.equal(current.activation, originalTool.activation);
       assert.deepEqual(await configured([current]), { label: 'still-running' });
       assert.deepEqual(host.inspect(), originalStatus);
@@ -272,7 +277,7 @@ test('filesystem failure after preparing a save removes its temporary file and l
   });
 });
 
-test('queued configuration changes while disabled save in order without activating until enabled', async () => {
+test('awaited configuration changes while disabled each persist without activating until enabled', async () => {
   await withDirectory(async directory => {
     const entry = await fixture(directory);
     await writeDocument(entry.configurationFile, { entries: [{ id: 'configured', path: entry.extensionFile, enabled: false, config: { label: 'initial' } }] });
@@ -280,8 +285,9 @@ test('queued configuration changes while disabled save in order without activati
     const finalConfig = { label: 'configured-while-disabled', nested: { keep: true } };
     try {
       await host.start();
-      const first = host.requestChange('configured', { action: 'configure', config: { label: 'first-queued' } });
-      const second = host.requestChange('configured', { action: 'configure', config: finalConfig });
+      const first = await host.requestChange('configured', { action: 'configure', config: { label: 'first-saved' } });
+      assert.deepEqual((await document(entry.configurationFile)).entries[0]!['config'], { label: 'first-saved' });
+      const second = await host.requestChange('configured', { action: 'configure', config: finalConfig });
       assert.deepEqual(await host.prepare(), []);
       for (const change of [first, second]) {
         assert.equal(receipt(host, change).status, 'applied');
@@ -295,7 +301,7 @@ test('queued configuration changes while disabled save in order without activati
     try {
       await restarted.start();
       assert.deepEqual(await restarted.prepare(), []);
-      const enable = restarted.requestChange('configured', { action: 'enable' });
+      const enable = await restarted.requestChange('configured', { action: 'enable' });
       assert.deepEqual(await configured(await restarted.prepare()), finalConfig);
       assert.equal(receipt(restarted, enable).persistence, 'saved');
       assert.deepEqual(entry.state.applied, [finalConfig]);
@@ -316,7 +322,7 @@ test('start adopts unrelated manual keys changed after read without discarding t
     const host = new ExtensionHost({ ...loaded, receive });
     try {
       await host.start();
-      const change = host.requestChange('configured', { action: 'disable' });
+      const change = await host.requestChange('configured', { action: 'disable' });
       await host.finish();
       assert.equal(receipt(host, change).persistence, 'saved');
       assert.deepEqual(await document(entry.configurationFile), { entries: [{ ...entries[0], enabled: false }], ...metadata });
@@ -332,7 +338,7 @@ test('restart is runtime-only even with a saved configuration and does not rewri
     try {
       await host.start();
       const before = named(await host.prepare());
-      const change = host.requestChange('configured', { action: 'reload' });
+      const change = await host.requestChange('configured', { action: 'reload' });
       assert.equal(change.persistence, 'not-required');
       const after = named(await host.prepare());
       assert.notEqual(after.activation, before.activation);
@@ -353,12 +359,12 @@ test('programmatic hosts remain ephemeral and never infer a configuration file',
     try {
       await host.start();
       await host.prepare();
-      const configure = host.requestChange('configured', { action: 'configure', config: { label: 'runtime-only' } });
+      const configure = await host.requestChange('configured', { action: 'configure', config: { label: 'runtime-only' } });
       assert.equal(configure.persistence, 'not-required');
       assert.deepEqual(await configured(await host.prepare()), { label: 'runtime-only' });
       assert.equal(receipt(host, configure).status, 'applied');
       assert.equal(receipt(host, configure).persistence, 'not-required');
-      const disable = host.requestChange('configured', { action: 'disable' });
+      const disable = await host.requestChange('configured', { action: 'disable' });
       await host.finish();
       assert.equal(receipt(host, disable).persistence, 'not-required');
       assert.equal(await readFile(entry.configurationFile, 'utf8'), original);
@@ -382,19 +388,17 @@ test('omitted configuration is exposed as null and explicit null survives disabl
       assert.equal(await configured(await host.prepare()), null);
       assert.deepEqual(entry.state.applied, [null]);
       assert.equal(Object.hasOwn((await document(entry.configurationFile)).entries[0]!, 'config'), false);
-      assert.throws(() => {
-        // @ts-expect-error A configure request must contain JSON, never undefined.
-        host.requestChange('configured', { action: 'configure', config: undefined });
-      }, /plain finite JSON/);
+      // @ts-expect-error A configure request must contain JSON, never undefined.
+      await assert.rejects(host.requestChange('configured', { action: 'configure', config: undefined }), /plain finite JSON/);
       assert.deepEqual(host.changeStatus(), []);
-      const nullChange = host.requestChange('configured', { action: 'configure', config: null });
+      const nullChange = await host.requestChange('configured', { action: 'configure', config: null });
       assert.equal(await configured(await host.prepare()), null);
       assert.equal(receipt(host, nullChange).status, 'applied');
       assert.equal(receipt(host, nullChange).persistence, 'saved');
       assert.equal((await document(entry.configurationFile)).entries[0]!['config'], null);
-      host.requestChange('configured', { action: 'disable' });
+      await host.requestChange('configured', { action: 'disable' });
       assert.deepEqual(await host.prepare(), []);
-      host.requestChange('configured', { action: 'enable' });
+      await host.requestChange('configured', { action: 'enable' });
       assert.equal(await configured(await host.prepare()), null);
       assert.ok(entry.state.applied.every(value => value === null));
     } finally { await host.close(); }
@@ -446,7 +450,7 @@ test('manual settings preserve authored symlink paths across retargeting and res
     try {
       await host.start();
       for (const change of [{action:'enable'}, {action:'configure',config:{}}, {action:'disable'}] as const) {
-        host.requestChange('manual', change); const tools = await host.prepare();
+        await host.requestChange('manual', change); const tools = await host.prepare();
         if (change.action !== 'disable') assert.equal(await configured(tools), 'one');
         assert.equal((await document(configurationFile)).entries[0]!['path'], current);
       }
@@ -454,7 +458,7 @@ test('manual settings preserve authored symlink paths across retargeting and res
     await rm(current); await symlink('two.mjs',current);
     const restarted = await savedHost(configurationFile);
     try {
-      await restarted.start(); restarted.requestChange('manual',{action:'enable'});
+      await restarted.start(); await restarted.requestChange('manual',{action:'enable'});
       assert.equal(await configured(await restarted.prepare()), 'two');
       assert.equal((await document(configurationFile)).entries[0]!['path'], current);
     } finally { await restarted.close(); }

@@ -68,15 +68,20 @@ messages and the newly wrapped registry. `prepareRequest` refreshes authoritativ
 messages after those declaration events, retaining exactly the registry already
 declared for that request. It never swaps tools after declaration generation.
 
-The adapter deep-copies declaration/validation schemas and constrained-sampling metadata for each published generation. A source must keep its
-executable resources alive, through the full provider request and tool batch.
-Replacement/removal is safe at the next preparation boundary; changing a registry
-while the first sibling executes must not invalidate later siblings. The optional
-`finishTools(): Promise<void>` releases the final snapshot on every attempt exit,
-including cancellation, failed initial preparation, and interrupted attempts that
-will recover. It is awaited exactly once per attempt that begins preparation and
-must tolerate a preparation that failed before acquiring resources. The source
-may drain pending lifecycle work there, but cleanup never requests another model
+The adapter deep-copies declaration/validation schemas and constrained-sampling
+metadata for each published generation. Calls retain those declarations for the
+current provider response; they never silently redirect to a replacement with a
+new schema or behavior. Dynamic sources guard activation identity before running
+the pinned closure. Mira's extension host protects actual in-flight executions,
+allows management to await application, and returns a known stale/not-executed
+error for a later sibling whose activation was removed or replaced. This error
+uses the ordinary durable intent/outcome path; an actual thrown effect still has
+unknown-result recovery semantics.
+
+The optional `finishTools(): Promise<void>` settles lifecycle work on every attempt
+exit, including cancellation, failed initial preparation, and interrupted attempts
+that will recover. It is awaited exactly once per attempt that begins preparation
+and must tolerate a preparation that failed. Cleanup never requests another model
 turn. A terminal assistant reply remains terminal.
 
 Additions, schema/description changes, and removals use existing durable Pi
@@ -214,7 +219,7 @@ pnpm check:all
 
 `tests/unit/runtime.test.mts` and `tests/unit/live-tools.test.mts` are offline
 fault-injection coverage, not database proof. The live-tool suite verifies
-same-run activation and use, full-batch lifetime barriers, declared/executable
+same-run activation and use, in-flight lifetime and stale-generation barriers, declared/executable
 schema agreement, replacement/removal, durable intent before effect, cleanup, and
 recovery. `tests/recovery/postgres-recovery.test.mts` requires an isolated real
 PostgreSQL service and covers fresh-process recovery and crashes around a

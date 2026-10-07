@@ -9,20 +9,29 @@ Cordis behavior. Do not substitute an imagined generic plugin lifecycle.
 `apply` may be async. Validate config, obtain required services, and register tools,
 services, listeners, timers, and cleanup while that activation is live. Resource
 creation is fenced once unloading starts. Existing service reads, `publish`, and
-event/Wake submission remain usable by the leased generation until its cleanup
+event/Wake submission remain usable by the executing generation until its cleanup
 finishes. Do not retain the context for use after retirement.
 
-The host publishes a complete immutable registry for each model/tool batch. The
-whole batch leases its generations, including tools not currently executing.
-Queued changes take effect only after the previous batch releases; the next
-`prepare()` waits for known lifecycle work before publishing the new registry.
-`finish()` releases a terminal/error batch. These are host operations, not SDK calls.
-A tool must not wait for a management change that requires its own batch to end.
-Return the accepted receipt, then inspect after a natural batch boundary.
+The host publishes an immutable tool declaration snapshot for each model request.
+`extension_manage` waits for the requested save, cleanup and application, then
+returns the actual result; it does not queue work for another user message or
+Wake. Continue the requested workflow yourself and report observed failures.
+
+Only an extension tool call that is actually executing holds its activation's
+resources. Management does not hold such a lease, so it can wait for outstanding
+calls and cleanup without waiting on itself. Once an activation starts unloading,
+no new call may enter it. A later call in the same model-produced batch may still
+reference an old declaration; if its activation was removed or replaced it gets
+an explicit stale/not-executed error. Do not assume a same-named new tool has the
+same schema or behavior. Use the next model request's fresh declarations.
+
+`prepare()` settles known lifecycle work and takes the next declaration snapshot;
+`finish()` settles terminal/error work without reopening cognition. These are host
+operations, not SDK calls. Ordinary progress messages need not end the task.
 
 On provider teardown, the host withdraws provided services and drains dependent
 generations before stopping provider timers/listeners. User cleanup runs after
-those registered resources drain. This allows a still-leased consumer to finish
+those registered resources drain. This allows a still-executing consumer to finish
 using the service. Consumers should capture their service in `apply`; providers
 must leave its underlying resource usable until their cleanup runs.
 

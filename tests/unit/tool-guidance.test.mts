@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { ExtensionHost } from '@mira/extension-host';
@@ -39,11 +39,15 @@ test('production extension schemas explain each argument and distinguish receipt
     const stage = tools.find(tool => tool.name === 'extension_stage')!;
     const manage = tools.find(tool => tool.name === 'extension_manage')!;
     assert.match(inspect.description, /generated.history\[\].id/);
-    assert.match(inspect.description, /next tool batch/);
+    assert.match(inspect.description, /current runtime state/);
     assert.match(stage.description, /"entryRelative":"src\/index.ts"/);
     assert.match(stage.description, /neither tests nor activates/);
-    assert.match(manage.description, /accepted receipt is NOT proof/);
+    assert.match(manage.description, /wait for its actual result/);
     assert.match(manage.description, /status=rejected/);
+    assert.match(manage.description, /same user request without another user message or Wake/);
+    assert.match(manage.description, /stale\/not-executed error/);
+    assert.match(inspect.description, /disabled means stopped/);
+    assert.doesNotMatch(manage.description, /accepted|queue|next batch/);
     assert.match((manage.parameters as GuidanceSchema).properties!['action']!.anyOf!.find(action => action.const === 'rollback')!.description!, /preserving enabled state/);
     for (const action of (manage.parameters as GuidanceSchema).properties!['action']!.anyOf!) {
       assert.ok(action.description, `action ${action.const}`);
@@ -64,9 +68,23 @@ test('activate guidance matches generated-only semantics while enable accepts a 
     assert.match(activate.description!, /generated extension only/);
     const rejected = await manage.execute('synthetic-activate', { id: 'manual', action: 'activate' });
     assert.match(JSON.stringify(rejected), /Action requires an installed generated extension/);
-    const accepted = await manage.execute('synthetic-enable', { id: 'manual', action: 'enable' });
-    assert.match(JSON.stringify(accepted), /accepted/);
-    await host.prepare();
+    const applied = await manage.execute('synthetic-enable', { id: 'manual', action: 'enable' });
+    const receipt = JSON.parse((applied.content[0] as { text: string }).text);
+    assert.equal(receipt.status, 'applied');
+    assert.equal(receipt.runtime.status, 'active');
     assert.equal(host.inspect()[0]!.status, 'active');
   } finally { await host.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+
+test('authoring guidance describes awaited results and same-request completion', async () => {
+  for (const relative of ['SKILL.md', 'references/workflow.md', 'references/lifecycle.md']) {
+    const text = await readFile(new URL(`../../skills/mira-extension-authoring/${relative}`, import.meta.url), 'utf8');
+    assert.match(text, /waits/);
+    assert.match(text, /user request|user message/);
+  }
+  const workflow = await readFile(new URL('../../skills/mira-extension-authoring/references/workflow.md', import.meta.url), 'utf8');
+  assert.match(workflow, /rather\nthan waiting for the timer you just stopped/);
+  assert.match(workflow, /stale\/not-executed error/);
+  assert.match(workflow, /Do not blindly repeat mutations or poll indefinitely/);
 });

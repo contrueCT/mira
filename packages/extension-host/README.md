@@ -16,25 +16,38 @@ contain 1–64 ASCII letters, digits, underscores or hyphens
 (`^[A-Za-z_][A-Za-z0-9_-]{0,63}$`). Invalid names fail activation with an explicit diagnostic.
 Names are used unchanged by Pi and model APIs; dotted names are not supported.
 
-`requestChange` returns **accepted**, not applied. The next `prepare()` releases the
-previous entire model/tool batch, awaits queued operations and known Cordis work,
-then captures a complete immutable registry and holds its resources. `finish()`
-releases the terminal/error batch without reopening cognition. Never await a queued
-change from a tool that belongs to the batch being retired. Server management tools
-use the same schema/parameter, immutable intent/outcome, and provenance path as
-every other tool. The main model decides to call or clarify; there is no separate
-authorize callback (see [ADR 0007](../../docs/adr/0007-model-owned-action-decisions.md)).
+`await requestChange(...)` serializes management, saves desired configuration, waits
+for cleanup/application and returns **applied** or **failed**, with separate
+`persistence` and `runtime` facts captured before the next management operation.
+Invalid requests reject; the server presents those as `status: rejected`.
+After awaited configuration I/O, management drains known Loader tasks again and
+starts runtime mutation synchronously after the final empty-task check. This
+prevents an already-started HMR replacement from restoring the old state/config;
+no private HMR hooks or alternate reload implementation are used.
+`prepare()` waits for known lifecycle work and captures an immutable declaration
+snapshot. `finish()` settles lifecycle work on exit without reopening cognition.
+There is no accepted queue or batch-end application mode. Management tools use
+the same schema, immutable intent/outcome and provenance path as every tool.
+The main model decides to call or clarify; there is no separate authorize callback
+(see [ADR 0007](../../docs/adr/0007-model-owned-action-decisions.md)).
 
-Native service/timer disposers are collected into ordered Cordis effects, with the
-batch wait disposed first. Registering an independent async cleanup is insufficient:
-Cordis otherwise disposes sibling resources concurrently. SDK tools/listeners and
-async callbacks wait for the same batch. Registration is fenced once unloading
-starts, and each listener registration has its own identity even when two
-configured entries share a module-level callback. Provided services are withdrawn and their
-dependent generations fully drained before provider timers/listeners are stopped;
-only then do user cleanup callbacks release provider resources. Shutdown also
-tracks dependencies after Cordis removes its registry entries. Code is not unloaded while its published
-batch is executing. Detached, unregistered extension work has no such guarantee.
+Only an actually executing extension tool holds its activation's resources.
+Admission checks activation identity and running state synchronously before
+acquiring the execution lease. Once unloading starts, old declarations cannot
+start another execution: they return an explicit stale/not-executed result, mapped
+to a normal error tool outcome by the server. They never redirect to a new same-name
+implementation. Pi keeps the original declaration for validation and obtains the
+fresh registry on its next natural model request. Management is not an extension
+execution and never holds a lease on the resources it waits to clean up.
+
+Native service/timer disposers use ordered Cordis effects that first drain actual
+executions. Registering an independent async cleanup is insufficient because
+Cordis otherwise disposes sibling resources concurrently. Registration is fenced
+once unloading starts; each listener registration has its own identity. Provided
+services are withdrawn and dependent generations drained before provider timers
+and listeners stop; user cleanup runs afterward. Shutdown tracks dependencies even
+after Cordis removes registry entries. Detached, unregistered extension work has
+no such guarantee; extensions must cancel and join their own async callbacks.
 
 Each activation has an instance UUID appended to tool descriptions by the server.
 Existing Pi declaration deltas persist it even when a code change keeps the schema.
@@ -83,8 +96,8 @@ an implicit code-activation route.
 `pnpm check` runs strict typechecking, boundaries, all offline tests and tool build.
 `tests/unit/official-hmr.test.mts` launches real Node `--expose-internals` children;
 it requires a post-teardown completion marker so an upstream zero-code exit cannot
-look like a passing test. Host tests cover dependency loss/recovery, errors, queued
-changes, repeated async cleanup and whole-batch leases. `pnpm check:all` additionally
+look like a passing test. Host tests cover dependency loss/recovery, errors, awaited
+management, stale-generation rejection, repeated async cleanup and in-flight execution leases. `pnpm check:all` additionally
 requires the explicit isolated PostgreSQL service; no live models are used.
 
 
@@ -125,7 +138,7 @@ An untested version is `not-run`, not implicitly verified by an activation UUID.
 No mandatory test-success veto is imposed on an otherwise authorized decision.
 
 Each revision stores config in the same JSON desired state. Release/config/runtime
-and PG writes remain separate. Persistence reports pending, saved, failed,
+and PG writes remain separate. Persistence reports saved, failed,
 not-attempted (artifact failed first), or not-required (ephemeral/reload). A saved
 version whose import/apply fails remains desired for restart, without claiming
 rollback. If old cleanup changes candidate files after saving, activation-time

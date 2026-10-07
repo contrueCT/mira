@@ -47,7 +47,7 @@ async function sourceVersion(source: string, root: string, version: string, fail
     }});
   `);
 }
-const state = (host: ExtensionHost, accepted: ChangeStatus) => host.changeStatus().find(item => item.id === accepted.id)!;
+const state = (host: ExtensionHost, completed: ChangeStatus) => host.changeStatus().find(item => item.id === completed.id)!;
 const echo = (tools: RegisteredTool[]) => tools.find(item => item.tool.name === 'generated_echo')!;
 const execute = async (tool: RegisteredTool) => (await tool.tool.execute(null, execution)).text;
 
@@ -58,34 +58,34 @@ test('generated install is import-free; activate, dependency update, explicit ro
   const host = new ExtensionHost({ ...await readExtensionConfiguration(config), receive });
   try {
     await host.start();
-    const install = host.requestChange('generated', { action: 'install', digest: first.digest, config: { label: 'old' } });
+    const install = await host.requestChange('generated', { action: 'install', digest: first.digest, config: { label: 'old' } });
     assert.deepEqual(await host.prepare(), []);
     assert.equal(state(host, install).status, 'applied');
     assert.equal(state(host, install).test, 'not-run');
     assert.deepEqual(events.get(root), [], 'install disabled must not import');
     const originalRevision = host.inspect()[0]!.generated!.revision;
-    host.requestChange('generated', { action: 'activate' });
+    await host.requestChange('generated', { action: 'activate' });
     const old = echo(await host.prepare());
     assert.equal(await execute(old), 'one:old:1');
     assert.equal(old.digest, first.digest);
     await sourceVersion(source, root, 'two');
     const second = await store.stage(source, 'entry.mjs');
     assert.notEqual(second.digest, first.digest);
-    const update = host.requestChange('generated', { action: 'update', digest: second.digest, config: { label: 'new' } });
-    assert.equal(await execute(old), 'one:old:2', 'accepted change leaves the current batch alive');
-    assert.equal(events.get(root)!.includes('clean:one'), false);
+    const update = await host.requestChange('generated', { action: 'update', digest: second.digest, config: { label: 'new' } });
+    assert.deepEqual((await old.tool.execute(null, execution)).details, { status: 'stale', executed: false, extensionId: 'generated', activation: old.activation, toolName: 'generated_echo' });
+    assert.equal(events.get(root)!.includes('clean:one'), true);
     const latest = echo(await host.prepare());
     assert.equal(state(host, update).persistence, 'saved');
     assert.equal(await execute(latest), 'two:new:1');
     assert.notEqual(latest.activation, old.activation);
     assert.equal(latest.tool.parameters.properties!['value'] && (latest.tool.parameters.properties!['value'] as { type: string }).type, 'number');
     assert.ok(events.get(root)!.includes('clean:one'));
-    host.requestChange('generated', { action: 'rollback', revision: originalRevision });
+    await host.requestChange('generated', { action: 'rollback', revision: originalRevision });
     const rollback = echo(await host.prepare());
     assert.equal(await execute(rollback), 'one:old:1', 'rollback imports fresh module state, including transitive code');
     assert.notEqual(rollback.activation, old.activation);
     assert.equal(rollback.digest, first.digest);
-    host.requestChange('generated', { action: 'disable' });
+    await host.requestChange('generated', { action: 'disable' });
     assert.deepEqual(await host.prepare(), []);
     await host.close();
     const restarted = new ExtensionHost({ ...await readExtensionConfiguration(config), receive });
@@ -94,9 +94,9 @@ test('generated install is import-free; activate, dependency update, explicit ro
       await restarted.start();
       assert.equal(events.get(root)!.length, count, 'disabled restart cannot import');
       assert.deepEqual(await restarted.prepare(), []);
-      restarted.requestChange('generated', { action: 'activate' });
+      await restarted.requestChange('generated', { action: 'activate' });
       assert.equal(await execute(echo(await restarted.prepare())), 'one:old:1');
-      restarted.requestChange('generated', { action: 'remove' });
+      await restarted.requestChange('generated', { action: 'remove' });
       assert.deepEqual(await restarted.prepare(), []);
       assert.deepEqual(restarted.inspect(), []);
       const saved = JSON.parse(await readFile(config, 'utf8'));
@@ -112,10 +112,10 @@ test('generated import/apply failures report saved desired state and restart att
     await sourceVersion(source, root, 'one'); const good = await store.stage(source, 'entry.mjs');
     const host = new ExtensionHost({ ...await readExtensionConfiguration(config), receive });
     try {
-      await host.start(); host.requestChange('generated', { action: 'install', digest: good.digest, config: { label: 'working' } }); await host.finish();
-      host.requestChange('generated', { action: 'activate' }); await host.prepare();
+      await host.start(); await host.requestChange('generated', { action: 'install', digest: good.digest, config: { label: 'working' } }); await host.finish();
+      await host.requestChange('generated', { action: 'activate' }); await host.prepare();
       await sourceVersion(source, root, 'broken', failure); const bad = await store.stage(source, 'entry.mjs');
-      const change = host.requestChange('generated', { action: 'update', digest: bad.digest });
+      const change = await host.requestChange('generated', { action: 'update', digest: bad.digest });
       assert.deepEqual(await host.prepare(), []);
       assert.equal(state(host, change).status, 'failed'); assert.equal(state(host, change).persistence, 'saved');
       assert.equal(host.inspect()[0]!.generated!.digest, bad.digest);
@@ -125,7 +125,7 @@ test('generated import/apply failures report saved desired state and restart att
       try {
         await restarted.start(); assert.deepEqual(await restarted.prepare(), []);
         assert.ok(['failed', 'import-failed'].includes(restarted.inspect()[0]!.status));
-        assert.deepEqual(restarted.changeStatus(), [], 'accepted management history is not blindly replayed');
+        assert.deepEqual(restarted.changeStatus(), [], 'completed management history is not blindly replayed');
       } finally { await restarted.close(); }
     } finally { await host.close(); }
   });
@@ -135,16 +135,16 @@ test('artifact mutation and external JSON conflict leave current runtime untouch
   await sourceVersion(source, root, 'one'); const first = await store.stage(source, 'entry.mjs');
   const host = new ExtensionHost({ ...await readExtensionConfiguration(config), receive });
   try {
-    await host.start(); host.requestChange('generated', { action: 'install', digest: first.digest, config: { label: 'old' } }); await host.finish();
-    host.requestChange('generated', { action: 'activate' }); const old = echo(await host.prepare());
+    await host.start(); await host.requestChange('generated', { action: 'install', digest: first.digest, config: { label: 'old' } }); await host.finish();
+    await host.requestChange('generated', { action: 'activate' }); const old = echo(await host.prepare());
     await sourceVersion(source, root, 'two'); const second = await store.stage(source, 'entry.mjs');
     const external = (await readFile(config, 'utf8')) + '\n'; await writeFile(config, external);
-    const conflict = host.requestChange('generated', { action: 'update', digest: second.digest });
+    const conflict = await host.requestChange('generated', { action: 'update', digest: second.digest });
     assert.equal(echo(await host.prepare()).activation, old.activation);
     assert.equal(state(host, conflict).persistence, 'failed');
     assert.equal(await readFile(config, 'utf8'), external);
     await writeFile(path.join(second.directory, 'helper.mjs'), 'export const version = "mutation"');
-    const mutated = host.requestChange('generated', { action: 'update', digest: second.digest });
+    const mutated = await host.requestChange('generated', { action: 'update', digest: second.digest });
     assert.equal(echo(await host.prepare()).activation, old.activation);
     assert.equal(state(host, mutated).artifact, 'failed');
     assert.equal(state(host, mutated).persistence, 'not-attempted');
@@ -153,7 +153,7 @@ test('artifact mutation and external JSON conflict leave current runtime untouch
   } finally { await host.close(); }
 }));
 
-test('update, rollback, disable and remove drain dependent service consumers after the old tool batch', async () => fixture(async (root, source, store, config) => {
+test('update, rollback, disable and remove drain dependent service consumers after actual in-flight tool calls', async () => fixture(async (root, source, store, config) => {
   await sourceVersion(source, root, 'one'); const first = await store.stage(source, 'entry.mjs');
   const consumer = path.join(root, 'consumer.mjs');
   await writeFile(consumer, `import { defineExtension } from ${JSON.stringify(new URL('../../packages/extension-sdk/src/index.ts', import.meta.url).href)};
@@ -170,8 +170,8 @@ test('update, rollback, disable and remove drain dependent service consumers aft
   initial.entries.push({ id:'consumer',path:consumer }); await writeFile(config, JSON.stringify(initial));
   const host = new ExtensionHost({ ...await readExtensionConfiguration(config), receive });
   try {
-    await host.start(); host.requestChange('generated', { action:'install',digest:first.digest,config:{label:'old'} }); await host.finish();
-    host.requestChange('generated', {action:'activate'}); let tools = await host.prepare();
+    await host.start(); await host.requestChange('generated', { action:'install',digest:first.digest,config:{label:'old'} }); await host.finish();
+    await host.requestChange('generated', {action:'activate'}); let tools = await host.prepare();
     const revision = host.inspect().find(item => item.id === 'generated')!.generated!.revision;
     await sourceVersion(source, root, 'two'); const second = await store.stage(source, 'entry.mjs');
     for (const change of [
@@ -179,19 +179,21 @@ test('update, rollback, disable and remove drain dependent service consumers aft
     ] as const) {
       const old = tools.find(item => item.tool.name === 'consume')!;
       const before = await execute(old); const pending = execute(old);
-      host.requestChange('generated', change);
-      assert.equal((await pending).split(':')[0], before.split(':')[0]);
       const previousEvents = events.get(root)!.length;
+      const changing = host.requestChange('generated', change);
+      assert.equal((await pending).split(':')[0], before.split(':')[0]);
+      assert.equal((await changing).status, 'applied');
+      assert.match(await execute(old), /was not executed.*stale/);
       tools = await host.prepare();
-      const appended = events.get(root)!.slice(previousEvents);
+      const appended = events.get(root)!.slice(previousEvents).filter(event => !event.startsWith('event:'));
       assert.equal(appended[0], `consumer-clean:${before.split(':')[0]}`);
       assert.equal(appended[1], `clean:${before.split(':')[0]}`, 'dependent cleanup can read old service before provider closes it');
     }
     assert.deepEqual(tools, []);
     assert.equal(host.inspect().find(item => item.id === 'consumer')!.status, 'waiting');
-    host.requestChange('generated', {action:'activate'}); tools = await host.prepare();
+    await host.requestChange('generated', {action:'activate'}); tools = await host.prepare();
     const pending = execute(tools.find(item => item.tool.name === 'consume')!);
-    host.requestChange('generated', {action:'remove'});
+    await host.requestChange('generated', {action:'remove'});
     assert.match(await pending, /^one:/);
     assert.deepEqual(await host.prepare(), []);
     assert.equal(host.inspect().find(item => item.id === 'consumer')!.status, 'waiting');
@@ -204,14 +206,14 @@ test('generated desired revisions are detached from caller objects and reject co
   await sourceVersion(source, root, 'one'); const first = await store.stage(source, 'entry.mjs');
   const host = new ExtensionHost({ ...await readExtensionConfiguration(config), receive });
   await host.start();
-  try { host.requestChange('generated', { action:'install',digest:first.digest,config:{label:'saved'} }); await host.finish(); }
+  try { await host.requestChange('generated', { action:'install',digest:first.digest,config:{label:'saved'} }); await host.finish(); }
   finally { await host.close(); }
   const loaded = await readExtensionConfiguration(config);
   const independent = new ExtensionHost({ entries: loaded.entries, artifactsDirectory: store.root, receive });
   loaded.entries[0]!.generated!.digest = '0'.repeat(64);
   loaded.entries[0]!.generated!.history[0]!.config = { label:'caller-mutated' };
   try {
-    await independent.start(); independent.requestChange('generated', {action:'activate'});
+    await independent.start(); await independent.requestChange('generated', {action:'activate'});
     assert.equal(await execute(echo(await independent.prepare())), 'one:saved:1');
   } finally { await independent.close(); }
   const contradictory = await readExtensionConfiguration(config);
@@ -237,9 +239,9 @@ for (const cleanupThrows of [false, true]) test(`activation-time mutation invali
   assert.equal((await store.test(second, {command:process.execPath,args:['-e','process.exit(0)']})).passed,true);
   const host = new ExtensionHost({ ...await readExtensionConfiguration(config),receive });
   try {
-    await host.start(); host.requestChange('generated',{action:'install',digest:first.digest,config:{label:'old',mutatePath:second.entry}}); await host.finish();
-    host.requestChange('generated',{action:'activate'}); await host.prepare();
-    const update = host.requestChange('generated',{action:'update',digest:second.digest,config:{label:'new'}});
+    await host.start(); await host.requestChange('generated',{action:'install',digest:first.digest,config:{label:'old',mutatePath:second.entry}}); await host.finish();
+    await host.requestChange('generated',{action:'activate'}); await host.prepare();
+    const update = await host.requestChange('generated',{action:'update',digest:second.digest,config:{label:'new'}});
     assert.deepEqual(await host.prepare(),[]);
     const final = state(host,update);
     assert.equal(final.status,'failed'); assert.equal(final.persistence,'saved');
@@ -255,9 +257,9 @@ test('remove retains visible cleanup failure after dropping the configured ident
   const first = await store.stage(source,'entry.mjs');
   const host = new ExtensionHost({...await readExtensionConfiguration(config),receive});
   try {
-    await host.start(); host.requestChange('generated',{action:'install',digest:first.digest,config:{label:'old'}}); await host.finish();
-    host.requestChange('generated',{action:'activate'}); await host.prepare();
-    const remove = host.requestChange('generated',{action:'remove'}); assert.deepEqual(await host.prepare(),[]);
+    await host.start(); await host.requestChange('generated',{action:'install',digest:first.digest,config:{label:'old'}}); await host.finish();
+    await host.requestChange('generated',{action:'activate'}); await host.prepare();
+    const remove = await host.requestChange('generated',{action:'remove'}); assert.deepEqual(await host.prepare(),[]);
     const final = state(host,remove); assert.equal(final.status,'failed'); assert.equal(final.persistence,'saved'); assert.equal(final.cleanup,'failed');
     assert.match(final.error!,/synthetic resource close failure/);
     assert.deepEqual(host.inspect(),[]); assert.deepEqual(JSON.parse(await readFile(config,'utf8')).entries,[]);
@@ -272,3 +274,31 @@ test('manual HMR excludes nested generated artifacts through canonical and alias
   assert.equal(child.status,0,`${child.stdout}\n${child.stderr}`);
   assert.match(child.stdout,/GENERATED_HMR_EXCLUSION_COMPLETE/);
 });
+
+
+test('concurrent management validates identities against the preceding completed change', async () => fixture(async (root, source, store, config) => {
+  await sourceVersion(source, root, 'one');
+  const release = await store.stage(source, 'entry.mjs');
+  const host = new ExtensionHost({ ...await readExtensionConfiguration(config), receive });
+  try {
+    await host.start();
+    const installs = await Promise.allSettled([
+      host.requestChange('generated', { action: 'install', digest: release.digest, config: { label: 'first' } }),
+      host.requestChange('generated', { action: 'install', digest: release.digest, config: { label: 'second' } }),
+    ]);
+    assert.equal(installs[0]!.status, 'fulfilled');
+    assert.equal(installs[1]!.status, 'rejected');
+    assert.match(String((installs[1] as PromiseRejectedResult).reason), /already installed/);
+    assert.equal(host.changeStatus().length, 1);
+    assert.deepEqual(host.inspect()[0]!.config, { label: 'first' });
+    const changes = await Promise.allSettled([
+      host.requestChange('generated', { action: 'remove' }),
+      host.requestChange('generated', { action: 'configure', config: { label: 'too-late' } }),
+    ]);
+    assert.equal(changes[0]!.status, 'fulfilled');
+    assert.equal(changes[1]!.status, 'rejected');
+    assert.match(String((changes[1] as PromiseRejectedResult).reason), /Unknown configured extension/);
+    assert.deepEqual(host.inspect(), []);
+    assert.deepEqual(JSON.parse(await readFile(config, 'utf8')).entries, []);
+  } finally { await host.close(); }
+}));

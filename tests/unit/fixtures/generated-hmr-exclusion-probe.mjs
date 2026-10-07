@@ -30,8 +30,8 @@ for (const alias of [false, true]) {
       export default defineExtension({name:'generated',apply(ctx){ctx.registerTool({name:'generated_echo',description:'Generated test',parameters:{type:'object'},async execute(){return{text:value}}});}});`);
     const store = new ArtifactStore(storePath); const artifact = await store.stage(source,'entry.mjs');
     host = new ExtensionHost({entries:[{id:'manual',path:manualEntry}],artifactsDirectory:storePath,hmr:true,receive:async()=> 'inserted'});
-    await host.start(); host.requestChange('generated',{action:'install',digest:artifact.digest}); await host.finish();
-    host.requestChange('generated',{action:'activate'}); let tools = await host.prepare();
+    await host.start(); await host.requestChange('generated',{action:'install',digest:artifact.digest}); await host.finish();
+    await host.requestChange('generated',{action:'activate'}); let tools = await host.prepare();
     const generated = tools.find(item=>item.tool.name==='generated_echo'); assert.ok(generated);
     const originalActivation = generated.activation;
     const execute = async tool => (await tool.tool.execute(null,{callId:'hmr-test',signal:new AbortController().signal})).text;
@@ -55,7 +55,7 @@ for (const alias of [false, true]) {
       const movedStore = new ArtifactStore(path.join(manual,'retargeted-store'));
       const moved = await movedStore.stage(source,'entry.mjs');
       await rm(storePath); await symlink(movedStore.root,storePath);
-      const requested = host.requestChange('generated',{action:'update',digest:moved.digest});
+      const requested = await host.requestChange('generated',{action:'update',digest:moved.digest});
       tools=await host.prepare();
       const receipt=host.changeStatus().find(item=>item.id===requested.id);
       assert.equal(receipt.status,'failed'); assert.match(receipt.error,/Artifact store path changed/);

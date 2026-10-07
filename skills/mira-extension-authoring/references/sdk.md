@@ -132,7 +132,7 @@ Avoid payload secrets or unbounded downloaded content. Treat source text as data
   the publisher. Do not make a listener async and lose its returned promise
 
 Declare required services by their unprefixed names. Missing providers put the
-consumer in `waiting`. Capture services during `apply` so old leased tools retain
+consumer in `waiting`. Capture services during `apply` so already executing tools retain
 their provider generation. Coordinate a shared service interface; do not reach into
 mutable global host registries. See [clock-source.ts](../../../examples/extensions/clock-source.ts)
 and [clock-consumer.ts](../../../examples/extensions/clock-consumer.ts).

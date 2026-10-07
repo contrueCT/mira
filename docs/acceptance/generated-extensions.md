@@ -20,7 +20,7 @@
 - `extension-artifacts.test.mts`：stage 无 import/脚本；文件权限、入口、普通文件及依赖字节改变 digest；循环/逃出链接拒绝；重叠根、别名、hoisted 依赖及跨根相对路径；不完整依赖/包作用域明确拒绝；fresh ESM/嵌套 CJS；测试/激活前后改动拒绝继承测试成功；启动/信号失败；CLI smoke
 - `generated-extensions.test.mts`：disabled install 无 import；activate/update/rollback 真实不同代码、配置、模块状态、schema 与 activation；重启 disabled；source/release 保留；import/apply/文件保存冲突分别真实报告；在途工具 lease、服务消费者清理顺序、依赖等待/恢复
 - `generated-runtime.test.mts`：确定性模型同一 Wake 中的 stage/install/activate、后续新工具调用、update/rollback schema 与 dispatcher 同代，技术校验/持久 intent、声明和结果延续
-- `generated-extensions.test.mts`（recovery）：真实 PostgreSQL 的 accepted 管理调用结果丢失/未知恢复、desired code/config/disabled 重启；不盲重放未知操作
+- `generated-extensions.test.mts`（recovery）：真实 PostgreSQL 的已应用管理调用结果丢失/未知恢复、desired code/config/disabled 重启；不盲重放未知操作
 - 既有 296 个基础/离线/PG 测试继续保留；计数以最终命令和 exact-head CI 为准
 
 ## 执行记录

@@ -22,9 +22,9 @@ export interface PiRuntimeOptions {
   tools?: AgentTool[];
   /** Complete registry, prepared before the first request and after each settled
    * tool batch that naturally continues. Replaces tools when provided. The source
-   * must retain current tool resources until this next preparation boundary. */
+   * must safely reject a stale activation before invoking its old closure. */
   prepareTools?: (signal: AbortSignal) => Promise<AgentTool[]>;
-  /** Release the final prepared registry on every exit, including cancellation
+  /** Settle the prepared registry on every exit, including cancellation
    * or failed preparation. Cleanup never schedules an extra model request. */
   finishTools?: () => Promise<void>;
   miraPrompt?: MiraPromptOptions;
@@ -316,7 +316,8 @@ export class PiDurableRuntime implements CognitionRuntime {
       const wrapTools = (registry: AgentTool[]): AgentTool[] => {
         validateTools(registry);
         // Pin each executable definition for the whole request and its tool batch.
-        // Later snapshots may replace/remove a name, but never alter its dispatch.
+        // Later snapshots may replace/remove a name, but never silently alter its
+        // dispatch. Dynamic hosts guard activation lifetime before executing it.
         return registry.map(source => {
           const tool = { ...source,
             name: source.name, label: source.label, description: source.description,

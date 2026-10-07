@@ -37,6 +37,8 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 - [0013 Web 默认持久扩展宿主](0013-default-web-extension-host.md)：Accepted，2026-10-07，默认空配置与 artifact store、显式配置优先、重启沿用保存状态；不改正常对话输出
 
+- [0014 扩展管理直接等待应用](0014-awaited-extension-management.md)：Accepted，2026-10-07，统一返回实际管理结果、实际执行租约与旧 activation 明确拒绝
+
 ## 后续范围
 
 不提前引入部署、付费模型调用、第三方账户、新凭据或不必要的框架。阶段临近时给出具体方案、取舍和验证结果。

@@ -133,18 +133,41 @@ network, or a malicious process that mutates and restores bytes.
 Use the real `extension_manage` tool, not code inside the extension. Under the
 user's authorized scope:
 
-1. `action: "install"`, new `id`, exact `digest`, optional plain JSON `config`.
-   This adds desired configuration disabled; it does not import or activate
-2. Let the current tool batch finish and inspect. Capture the change receipt ID,
-   saved revision/config, digest, disabled runtime, and diagnostics
-3. `action: "activate"` with that `id` (or `enable`) only when activation is intended
-4. After the next natural safe boundary, inspect again. Verify active state, actual
-   tools, activation UUID, generated SHA, config, and separate receipt fields
+1. Call `action: "install"` with a new `id`, the actual staged `digest`, and optional
+   plain JSON `config`. It saves the new extension disabled without importing it
+2. Read the returned `status`, `persistence`, and `runtime` snapshot. Installation
+   should be applied with `runtime.status: "disabled"`; persistent hosts should
+   also report `persistence: "saved"`. `failed` or `rejected` is not completion
+3. Call `action: "activate"` with that `id` (or `enable`) when activation is intended
+4. Read its result: verify `status: "applied"`, persistence, `runtime.status: "active"`,
+   actual tools, activation UUID, digest and config. On the next model request,
+   use the fresh tool declarations to exercise the requested capability
 
-`extension_inspect` takes `{}` and returns `extensions`, `releases`, `changes`, and
-`diagnostics`. A same-batch inspection may still show `accepted`; do not busy-poll
-inside a tool that prevents its own batch from ending or create a gratuitous Wake.
-Do not claim a queued request has already applied.
+These are ordinary successive tool calls in the same user request. Management
+waits for application itself. Do not end the task, ask the user to say "continue",
+wait for another user message/Wake, or create a Wake to finish management. Brief
+progress messages are fine while continuing.
+
+For an already installed generated extension whose ID is `sample`, the activation
+call is `extension_manage({"id":"sample","action":"activate"})`. Read its actual
+response before invoking the tools named in `runtime.tools`. Use IDs discovered
+by `extension_inspect({})`; this example does not authorize guessing an installed ID.
+
+`extension_inspect({})` returns current `extensions`, `releases`, `changes`, and
+`diagnostics`; use it for discovery, current status, or a concrete failure. Match
+`changes[].id` to the management receipt. Receipts describe that completed
+operation; later changes or restarts may change the current runtime state.
+`persistence: "saved"` alone does not prove code is active, and `waiting` means a
+missing dependency. After disable, verify disabled state from its result rather
+than waiting for the timer you just stopped to wake you again. After remove,
+`runtime` is null. A timer registration or active extension does not prove that
+its requested future behavior has actually happened.
+
+A same-batch call to an activation just removed or replaced returns a known
+stale/not-executed error. Continue with the next model request's fresh declaration;
+do not silently assume old arguments fit a new schema. On failure, diagnose the
+reported fields and preserve the distinction between saved desired state and
+runtime state. Do not blindly repeat mutations or poll indefinitely.
 
 Generated lifecycle needs a real absolute `artifactsDirectory` in the host's
 ordinary desired JSON. File-backed hosts save to that same configuration file;
@@ -171,8 +194,8 @@ prerequisite; this skill does not authorize unrelated core or configuration edit
 
 Inspect these separately:
 
-- Change `status`: `accepted`, `applied`, or `failed`
-- `persistence`: `pending`, `saved`, `failed`, `not-attempted`, or `not-required`
+- Change `status`: `applied` or `failed`; invalid management requests return `rejected`
+- `persistence`: `saved`, `failed`, `not-attempted`, or `not-required`
 - `artifact`: `verified` or `failed` when reported
 - `test`: `passed`, `failed`, `not-run`, or `invalidated` when reported
 - `cleanup: "failed"`, errors/diagnostics, and actual extension state/tools
