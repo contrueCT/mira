@@ -54,3 +54,12 @@ Demo 与 Web 都使用 `createSkillLoader` 调用 Pi 1.0.2 的公开 `loadSkills
 The web CLI initializes an empty persistent extension configuration at `${MIRA_HOME}/extensions.json` when absent, with `${MIRA_HOME}/extension-artifacts` as its artifact store. Ordinary startup exposes inspect/stage/manage without requiring an environment override. Existing configuration is retained across restarts; explicit `MIRA_EXTENSIONS` remains authoritative and invalid paths or contents fail rather than falling back. This initializes infrastructure only, not new extension installation or activation. Programmatic service and synthetic demo options remain explicit.
 
 `web-cli.mts` / `pnpm start` starts Fastify on 127.0.0.1 and opens the built React/Vite UI. `web-service.ts` keeps the existing PostgreSQL writer and wake/runtime contracts; `web-settings.ts` stores private API keys and model settings together outside source with protected permissions and atomic CAS; explicit public projections only return `hasApiKey`, never stored keys. CLI configuration retains explicit environment references. See [local-web](../../docs/development/local-web.md) for exact setup and verification. No live model request is made by the offline/browser fixtures.
+
+Trusted persistence failures use a fixed temporary error notice through the
+existing `/api/status` and HTTP error text. It explicitly does not confirm a
+durable tool diagnostic; a failed write or lost COMMIT response requires
+authoritative recovery. Raw tool/database exceptions, causes and headers never
+enter this notice. Unrecognized errors remain generic. Recoverable tool reasons
+live only in the existing validated recovery observation for the model, and no
+tool activity/chips are added to normal Timeline output. See
+[ADR 0015](../../docs/adr/0015-safe-tool-recovery-diagnostics.md).

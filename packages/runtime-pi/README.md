@@ -130,6 +130,15 @@ The before-hook records immutable intent after technical validation; the after-h
 records the exact normalized tool-result JSON with its chosen timestamp. The emitted tool-result
 message is canonicalized to that saved JSON before append.
 
+The guarded execute boundary validates and snapshots returned results **before**
+Pi inspects `isError`. Results must be ordinary finite, acyclic JSON objects with
+valid text/image content, usage and optional boolean flags. Pi's existing
+absent/null content normalization to `[]` is retained. Supported fields, including
+non-enumerable accessors, are read once; Pi receives detached canonical JSON with
+all defined fields, including `structuredContent` and `terminate`. Invalid roots
+or throwing accessors therefore stay unknown rather than becoming Pi's synthetic
+known errors. The after-hook still validates final assembly before `finishTool`.
+
 Pi catches hook errors and may resolve `prompt()` after failure. Explicit runtime
 latches, subscription gates, wrapped effect/model functions, writer checks, and
 abort signals therefore enforce stopping independently. A database, provider,
@@ -162,6 +171,21 @@ The decoder rejects other custom types/versions and malformed observations;
 recovery verifies every reference, status, argument, and batch position against
 the authority. Only the current observation format is supported; this change adds
 no old-format compatibility parser, history rewrite, or migration.
+
+An outcome-unknown operation may additionally contain a strict optional
+`diagnostic: {phase, category}`. Supported pairs are `execute/execution-rejected`,
+`execute/event-content-conflict`, `result/invalid-json-result`, and
+`result/non-finite-result`. Text comes only from fixed runtime-owned explanations;
+raw exceptions, causes, headers, arguments and rejected result snippets are never
+diagnostic fields. The diagnostic has exactly two keys, allowlisted values and
+a 96-byte JSON limit. Recovery validates its link to a real unknown intent;
+not-started and known outcomes cannot carry it. Existing original arguments and
+known result evidence remain unchanged. A result-serialization rejection stops
+the attempt without `finishTool`, leaves outcome null, and records the diagnostic
+before continuing with a fresh Agent. A crash before observation commit leaves no
+diagnostic to recover. Compaction preserves the exact optional diagnostic through
+the existing advisory. Persistence/finishTool/fencing failures remain fatal and
+cannot promise an observation was saved. See [ADR 0015](../../docs/adr/0015-safe-tool-recovery-diagnostics.md).
 
 Unknown envelope/runtime versions, malformed required message fields, unsupported
 entry/message types, pending/deferred assistant states, mismatched execution
@@ -226,6 +250,10 @@ PostgreSQL service and covers fresh-process recovery and crashes around a
 synthetic local counter effect. The suite injects every model response and makes
 no live model calls. Detailed limits and test setup are in
 [`tests/recovery/README.md`](../../tests/recovery/README.md).
+`tests/unit/tool-diagnostics.test.mts` adds strict reason/redaction/recovery and
+failure-window coverage; `tests/recovery/tool-diagnostics.test.mts` requires the
+isolated PostgreSQL gate and independent processes. Do not count it as passed
+without running that gate for the exact code.
 
 ## Ordinary Memory bootstrap and history tools
 

@@ -71,6 +71,8 @@ export interface WakeWriter extends DurableWriter {
   completeWakeRun(runId: string): Promise<void>;
 }
 export { WakeLoop, prepareWakeTurn, renderWakeBatch } from './loop.ts';
+export { DurableOperationError } from './durable-errors.ts';
+export type { DurableFailureCategory } from './durable-errors.ts';
 export type { WakeLoopOptions } from './loop.ts';
 export type { MemoryCheckpoint, MemoryCheckpointState, MemoryCheckpointWriter, MemorySnapshotReceipt } from './memory-lifecycle.ts';
 export { HistoryError } from './history.ts';

@@ -3,6 +3,9 @@ import { test } from 'node:test';
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { DurableOperationError } from '@mira/life';
+import { PersistenceError } from '@mira/persistence';
+import { PersistenceFailureNotice } from '../../apps/server/src/persistence-errors.ts';
 import { createLocalHttp, WebHttpError, WebSettingsError, type WebBackend, type WebSettings } from '@mira/server';
 
 const port = 4317;
@@ -137,6 +140,41 @@ test('busy and unavailable service errors have fixed status and text, never raw 
   const app = createLocalHttp({ backend: backend({ submit: async () => { throw new WebHttpError('unavailable'); }, saveSettings: async () => { throw new WebHttpError('busy'); } }), port }); t.after(() => app.close());
   assert.equal((await app.inject({ method: 'POST', url: '/api/messages', headers: writeHeaders, payload: message })).statusCode, 503);
   assert.equal((await app.inject({ method: 'PUT', url: '/api/settings', headers: writeHeaders, payload: settings() })).statusCode, 409);
+});
+
+test('persistence status and HTTP failures use a fixed volatile notice without claiming a saved diagnostic', async t => {
+  const secret = 'synthetic-persistence-secret-do-not-expose';
+  const failure = new DurableOperationError('persistence-write-failure', `Authorization: Bearer ${secret}`, { cause: { headers: { cookie: secret }, payload: secret } });
+  const notice = PersistenceFailureNotice.from(failure)!;
+  const app = createLocalHttp({ backend: backend({
+    status: async () => ({ state: 'stopped', mode: 'synthetic', model: null, error: notice }),
+    submit: async () => { throw failure; },
+  }), port }); t.after(() => app.close());
+  const status = await app.inject({ url: '/api/status', headers: readHeaders });
+  assert.equal(status.statusCode, 200); assert.equal(status.json().state, 'stopped');
+  assert.match(status.json().error, /Persistence write failed/);
+  assert.match(status.json().error, /temporary server notice; no durable tool diagnostic is confirmed/);
+  assert.ok(!status.body.includes(secret)); assert.ok(!status.body.includes('headers'));
+  const response = await app.inject({ method: 'POST', url: '/api/messages', headers: writeHeaders, payload: message });
+  assert.equal(response.statusCode, 503); assert.equal(response.json().error, status.json().error);
+  assert.ok(!response.body.includes(secret));
+  const timeline = await app.inject({ url: '/api/timeline', headers: readHeaders });
+  assert.deepEqual(timeline.json(), { items: [{ id: 'user-1', role: 'user', text: 'Hello Mira', occurredAt: message.occurredAt }], nextCursor: null });
+});
+
+test('lookalike persistence notices and ordinary validation errors retain protected generic HTTP text', async t => {
+  const secret = 'synthetic-lookalike-secret';
+  const fake = Object.assign(Object.create(PersistenceFailureNotice.prototype), { message: secret, category: 'persistence-write-failure' }) as PersistenceFailureNotice;
+  const app = createLocalHttp({ backend: backend({
+    status: async () => ({ state: 'error', mode: 'synthetic', model: null, error: fake }),
+    submit: async () => { throw new PersistenceError('invalid', secret); },
+  }), port }); t.after(() => app.close());
+  const status = await app.inject({ url: '/api/status', headers: readHeaders });
+  assert.equal(status.statusCode, 200); assert.ok(!status.body.includes(secret));
+  assert.ok(!status.body.includes('Persistence write failed'));
+  const response = await app.inject({ method: 'POST', url: '/api/messages', headers: writeHeaders, payload: message });
+  assert.equal(response.statusCode, 500); assert.ok(!response.body.includes(secret));
+  assert.ok(!response.body.includes('Persistence write failed'));
 });
 
 test('model discovery has one active request and a bounded per-minute rate', async t => {

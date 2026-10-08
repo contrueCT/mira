@@ -10,8 +10,13 @@ export type Observation = {
 };
 
 /** Supply this via a separate provider using only the authorized source access.
- * Return a bounded batch; retain/replay facts if delivery fails. Honor abort and
- * bound actual I/O. The example itself has no account, credentials, or network. */
+ * Return a bounded batch; retain/replay the complete original source envelope
+ * (id, revision, occurredAt, status and payload) if delivery fails or restarts.
+ * Changing a fact needs a new revision/ID, never a new timestamp under its old ID.
+ * Capture an unavailable source timestamp once at first observation and retain it;
+ * do not substitute a fixed production timestamp or the current retry time.
+ * Honor abort and bound actual I/O. The example itself has no account,
+ * credentials, or network. */
 export type WatchSource = {
   id: string;
   poll(signal: AbortSignal): Promise<readonly Observation[]>;
@@ -69,6 +74,8 @@ export default defineExtension<WatchConfig>({
           phase = 'wake';
           // Submit the event and Wake together. Emitting this event first could
           // deduplicate the later submission before its Wake is enqueued.
+          // This reason is deterministic. Retries must retain the full event,
+          // Wake ID and reason; the host rejects changed bodies under one ID.
           await api.requestWake({ id: event.id, reason: 'Watcher matched the configured status', event });
         } else {
           await api.emitEvent(event);

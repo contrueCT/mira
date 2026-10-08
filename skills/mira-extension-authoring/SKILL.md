@@ -26,8 +26,10 @@ configuration unless the user requests implementation.
    installed state, then read the SDK contract and relevant references below.
    Read lifecycle guidance before choosing asynchronous work or services
 3. Create an ordinary workspace with the existing template. Write the extension,
-   validate its configuration (see the SDK reference for Json narrowing and sync/async test patterns), typecheck and test offline. Stage the complete
-   workspace, then test the exact staged digest using the documented artifact CLI
+   validate its configuration and computed results (see the SDK reference for Json
+   narrowing, finite output checks, and sync/async test patterns), typecheck and
+   test offline. Stage the complete workspace, then test the exact staged digest
+   using the documented artifact CLI
 4. When the user's request authorizes execution, install the staged release as
    disabled, read the actual management result, then activate it. Management waits
    for application and returns `status`, `persistence`, and a `runtime` snapshot.
@@ -52,6 +54,8 @@ configuration unless the user requests implementation.
 - Adapt [watch-and-wake.ts](examples/watch-and-wake.ts) for non-overlapping polling,
   software filtering, stable IDs, cancellation, and observed failures. It needs a
   source service; it does not contact an account or install itself
+- Adapt [finite-sum.ts](examples/finite-sum.ts) for input narrowing, computed-output
+  validation, and known business results using only the SDK's `text` and `details`
 
 The authoritative contract is [extension-sdk/src/index.ts](../../packages/extension-sdk/src/index.ts).
 Check it and the [host README](../../packages/extension-host/README.md) before
@@ -68,7 +72,10 @@ checkout before running commands; do not guess a machine-specific path.
    authorization, history, context, or runtime security
 2. `emitEvent` records a fact; `requestWake` explicitly requests continuation of the
    existing Mira. `publish`/`onEvent` only communicate in-process. A timer tick or
-   ordinary Memory file edit does not itself warrant cognition or reinjection
+   ordinary Memory file edit does not itself warrant cognition or reinjection.
+   Retrying one ID requires the same full event and optional Wake, including the
+   original `occurredAt`, payload, Wake ID, and reason. A changed source fact needs
+   a new ID; changing its timestamp to the retry time is not deduplication
 3. Register resources in `apply`. Capture injected services there. Track async work,
    observe its errors, and cancel/join it in `onCleanup`; never detach a promise and
    assume Cordis will stop it

@@ -43,6 +43,7 @@
 - 上下文更新使用版本检查，拒绝过期写入
 - 事件、Wake 与需要原子提交的记录必须在明确事务边界内完成
 - 工具调用 intent、原始/验证参数和 outcome 按执行边界增量持久化；assistantRecordId 与 context version 保留真实来源，不生成独立授权证明，不能只在 Wake 结束时保存
+- [ADR 0015](adr/0015-safe-tool-recovery-diagnostics.md)：unknown operation 可在现有 recovery observation 附固定 phase/category 诊断。副作用仍未知；原异常、headers、参数/结果片段不进入诊断，无新 journal/表。写入和 writer 故障仍致命；Web 仅显示不承诺落库的临时状态提示
 - 外部副作用与本地事务无法天然原子化。本批使用持久化 intent/outcome 和结果核对，外部 outbox/幂等投递暂不实现；执行结果不明时持久化真实恢复说明并继续认知，不自动重放；模型依自然语言意图与已知事实决定查询、提问或新调用
 - 崩溃恢复必须区分未执行、确定成功、确定失败和结果不明；不能把网络超时当作失败并直接重发
 - 工具 schema/参数验证、不可变 intent 持久化与 writer 所有权核对先于副作用；不设置独立 authorize 回调

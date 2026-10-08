@@ -10,6 +10,7 @@ import { createWorkspaceTools, demoModel, memoryCheckpointHook } from './index.t
 import { extensionManagementTools, extensionReceiver, extensionTools } from './extensions.ts';
 import { WebSettingsStore, hasSelectedWebApiKey, type WebSettings } from './web-settings.ts';
 import { ModelRequestFailure } from './model-errors.ts';
+import { PersistenceFailureNotice } from './persistence-errors.ts';
 import { WebHttpError, type WebBackend } from './http.ts';
 import { createSkillLoader } from './skills.ts';
 
@@ -57,7 +58,7 @@ export class LocalWebService implements WebBackend {
   readonly #host: ExtensionHost | undefined;
   readonly #abort = new AbortController();
   #drain: Promise<void> | undefined;
-  #error: string | ModelRequestFailure | null = null;
+  #error: string | ModelRequestFailure | PersistenceFailureNotice | null = null;
   #modelFailure: ModelRequestFailure | null = null;
   #closed = false;
   #settingsValue: WebSettings;
@@ -124,7 +125,9 @@ export class LocalWebService implements WebBackend {
     if (this.#drain) { this.#kickRequested = true; return; }
     this.#kickRequested = false;
     this.#error = null; this.#modelFailure = null;
-    this.#drain = this.#loop.drain(this.#abort.signal).then(() => {}).catch((error: unknown) => { if (!this.#closed) this.#error = error instanceof Error && error.message === this.#modelFailure?.message ? this.#modelFailure : publicFailure; }).finally(() => {
+    this.#drain = this.#loop.drain(this.#abort.signal).then(() => {}).catch((error: unknown) => {
+      if (!this.#closed) this.#error = PersistenceFailureNotice.from(error) ?? (error instanceof Error && error.message === this.#modelFailure?.message ? this.#modelFailure : publicFailure);
+    }).finally(() => {
       this.#drain = undefined;
       const again = this.#kickRequested; this.#kickRequested = false;
       // A concurrent arrival after the last empty claim needs one more drain.

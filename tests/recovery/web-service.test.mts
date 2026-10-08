@@ -396,7 +396,7 @@ for (const recovery of ['restart', 'new-message'] as const) test(`live model HTT
   }
 });
 
-test('a PostgreSQL failure saving a provider error remains generic instead of reusing the provider diagnostic', { timeout: 30_000 }, async () => {
+test('a PostgreSQL failure saving a provider error shows only a fixed temporary persistence notice', { timeout: 30_000 }, async () => {
   const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-model-db-failure-');
   const originalFetch = globalThis.fetch; const key = 'synthetic-database-diagnostic-key';
   let service: LocalWebService | undefined; let app: ReturnType<typeof createLocalHttp> | undefined; let requests = 0;
@@ -427,8 +427,9 @@ test('a PostgreSQL failure saving a provider error remains generic instead of re
     assert.deepEqual((await db.admin.query('SELECT last_value::int, is_called FROM synthetic_error_append_attempts')).rows, [{ last_value: 1, is_called: true }]);
     app = createLocalHttp({ backend: service, port: httpPort });
     const status = await app.inject({ url: '/api/status', headers: readHeaders }); assert.equal(status.statusCode, 200); assert.equal(status.json().state, 'stopped');
-    assert.equal(status.json().error, 'Mira could not complete the operation. Check the local server and model configuration.');
-    assert.doesNotMatch(status.body, /synthetic-provider-before-database-failure|synthetic-database-private-error|synthetic-database-diagnostic-key|HTTP 400/);
+    assert.equal(status.json().error, 'Persistence write failed and the runtime stopped. This is a temporary server notice; no durable tool diagnostic is confirmed. Check PostgreSQL and recover saved state before retrying. External tool effects may already have happened.');
+    assert.deepEqual(Object.keys(status.json()).sort(), ['error', 'mode', 'model', 'state'], 'status exposes no internal IDs, cause or stack');
+    assert.doesNotMatch(status.body, /synthetic-provider-before-database-failure|synthetic-database-private-error|synthetic-database-diagnostic-key|HTTP 400|invalid_request_error|P0001|synthetic_reject_model_error|"cause"|"stack"|"headers"|"requestId"|"request_id"/);
     const runs = (await db.admin.query('SELECT input_record_id, final_record_id, completed FROM wake_runs')).rows;
     assert.equal(runs.length, 1); assert.ok(runs[0].input_record_id); assert.equal(runs[0].final_record_id, null); assert.equal(runs[0].completed, false);
     assert.equal((await db.admin.query("SELECT count(*)::int AS n FROM context_records WHERE envelope->'payload'->'message'->>'role' = 'assistant'")).rows[0].n, 0);

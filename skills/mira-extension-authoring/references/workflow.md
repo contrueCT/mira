@@ -69,11 +69,17 @@ node --test tests/*.test.mts
 
 Use the template's strict NodeNext configuration with full declaration checking.
 Extend its tests around actual behavior: valid/invalid arguments and config,
-matching/nonmatching facts, stable duplicate IDs, abort, non-overlap, rejected
+finite computed outputs (including overflow from finite inputs), known business
+rejections, matching/nonmatching facts, exact full-body retries, abort, non-overlap, rejected
 promises, cleanup joins, and dependency generation changes where relevant. Inject
-synthetic source data and fake SDK contexts; do not call a live account or model
-just to prove the contract. Real host lifecycle tests can be added when necessary.
-Testing/importing still runs with the current OS account and can have effects.
+synthetic source data and fake SDK contexts for local behavior; do not call a live
+account or model just to prove the contract. A stub returning `duplicate` cannot
+prove ingestion. Check Event/Wake duplicate and conflict behavior against the real
+Host/PostgreSQL receive path; check provider-visible results against the real Host
+and Pi runtime with the existing offline writer fixture. Use the SDK reference's
+contract tests as examples, keep database prerequisites explicit, and report a
+missing database as unverified. Testing/importing still runs with the current OS
+account and can have effects.
 
 ## 4. Stage immutable content and test that digest
 

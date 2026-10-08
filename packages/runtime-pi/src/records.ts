@@ -1,21 +1,35 @@
 import { randomUUID } from 'node:crypto';
 import { assertRecord, type Json, type RuntimeRecord } from '@mira/context';
-import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import type { AgentMessage, AgentToolResult } from '@earendil-works/pi-agent-core';
 import { validateObservation } from './observations.ts';
 import type { SessionEntry, SessionMessageEntry } from '@earendil-works/pi-coding-agent';
 
 export const PI_RUNTIME_VERSION = '1.0.2';
+/** Only the validator mints these tags; result diagnostics never parse an
+ * arbitrary tool exception's message to guess what failed. */
+export class RuntimeJsonError extends Error {
+  readonly #category: 'invalid-json-result' | 'non-finite-result';
+  constructor(message: string, category: 'invalid-json-result' | 'non-finite-result' = 'invalid-json-result') {
+    super(message); this.name = 'RuntimeJsonError'; this.#category = category;
+  }
+  static categoryOf(error: unknown): 'invalid-json-result' | 'non-finite-result' | undefined {
+    return typeof error === 'object' && error !== null && #category in error ? error.#category : undefined;
+  }
+}
 
 /** Pi's optional undefined properties have no JSON representation. Every defined
  * JSON field, including provider opaque fields, survives without a field whitelist. */
 export function jsonValue(value: unknown): Json {
   const clean = (item: unknown, ancestors: Set<object>): Json => {
     if (item === null || typeof item === 'string' || typeof item === 'boolean') return item;
-    if (typeof item === 'number' && Number.isFinite(item)) return item;
-    if (typeof item !== 'object' || item === null || ancestors.has(item)) throw new Error('Non-JSON runtime value');
-    if (!Array.isArray(item) && Object.getPrototypeOf(item) !== Object.prototype && Object.getPrototypeOf(item) !== null) throw new Error('Non-plain runtime value');
-    if (Object.getOwnPropertySymbols(item).length) throw new Error('Non-JSON symbol key');
-    if (Array.isArray(item) && Object.keys(item).length !== item.length) throw new Error('Non-JSON sparse or extended array');
+    if (typeof item === 'number') {
+      if (!Number.isFinite(item)) throw new RuntimeJsonError('Non-JSON nonfinite runtime number', 'non-finite-result');
+      return item;
+    }
+    if (typeof item !== 'object' || item === null || ancestors.has(item)) throw new RuntimeJsonError('Non-JSON runtime value');
+    if (!Array.isArray(item) && Object.getPrototypeOf(item) !== Object.prototype && Object.getPrototypeOf(item) !== null) throw new RuntimeJsonError('Non-plain runtime value');
+    if (Object.getOwnPropertySymbols(item).length) throw new RuntimeJsonError('Non-JSON symbol key');
+    if (Array.isArray(item) && Object.keys(item).length !== item.length) throw new RuntimeJsonError('Non-JSON sparse or extended array');
     const next = new Set(ancestors).add(item);
     if (Array.isArray(item)) return Array.from(item, child => clean(child, next));
     const result: Record<string, Json> = Object.create(null) as Record<string, Json>;
@@ -23,6 +37,31 @@ export function jsonValue(value: unknown): Json {
     return result;
   };
   return JSON.parse(JSON.stringify(clean(value, new Set()))) as Json;
+}
+
+/** Snapshot a tool's supported fields before Pi reads isError or constructs a
+ * synthetic error. Read each root field once, including non-enumerable SDK
+ * fields, then return ordinary JSON so Pi cannot reread mutable accessors. */
+export function normalizeToolResult(value: unknown): AgentToolResult {
+  if (!object(value)) {
+    // Preserve the specific non-finite category even for an invalid root number.
+    jsonValue(value);
+    throw new RuntimeJsonError('Invalid Pi tool result object');
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if ((prototype !== Object.prototype && prototype !== null) || Object.getOwnPropertySymbols(value).length)
+    throw new RuntimeJsonError('Non-plain or symbol-keyed Pi tool result');
+  const snapshot: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  const keys = new Set([...Object.keys(value), 'content', 'details', 'structuredContent', 'usage', 'isError', 'terminate']);
+  for (const key of keys) snapshot[key] = value[key];
+  const result = jsonValue(snapshot) as Record<string, Json>;
+  // Pi 1.0.2 supports ordinary untyped results with absent/null content.
+  result['content'] ??= [];
+  for (const key of ['isError', 'terminate']) if (result[key] !== undefined && typeof result[key] !== 'boolean')
+    throw new RuntimeJsonError('Invalid Pi tool result boolean');
+  validateMessage({ role: 'toolResult', toolCallId: 'validation', toolName: 'validation', timestamp: 0,
+    content: result['content'], usage: result['usage'], isError: result['isError'] ?? false });
+  return result as unknown as AgentToolResult;
 }
 
 export function encodeEntry(entry: SessionEntry): RuntimeRecord {

@@ -20,4 +20,6 @@ PostgreSQL 与 Git 不能原子提交。Git 适配器须按 Mira/run 保存可�
 
 接口见 `src/index.ts` 和 `src/loop.ts`，语义见 [ADR 0002](../../docs/adr/0002-coalesced-wake-loop.md)。验证为根目录 `pnpm check` 及 `pnpm check:all`。
 
+`DurableOperationError` 是无数据库/Pi 依赖的小型错误标签，用私有实例字段识别 event-content-conflict 与 persistence-write-failure；普通无类别错误仍可保留原有语义。标签不是外部工具 outcome，也不创建新记录。恢复诊断由 Runtime 的现有 observation 承载，见 [ADR 0015](../../docs/adr/0015-safe-tool-recovery-diagnostics.md)。
+
 History references use one global canonical UUID across events, context, tools and Wake runs. `HistoryReader.read({id})` returns kind with the original. `WakeRequest.eventId` is the event History UUID; nested `event.id` and `wake.id` keep their external/idempotency meanings. Non-Web input labels both distinctly; the ordinary Web text header stays concise.

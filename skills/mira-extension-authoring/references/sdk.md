@@ -11,7 +11,10 @@ work; SDK access is an interface convention, not process isolation.
 
 - `Json`: null, boolean, number, string, arrays, and string-keyed objects containing
   Json values. Use finite numbers and ordinary JSON data; no `undefined`, functions,
-  credentials, class instances, or cyclic values in config, payloads, or details
+  credentials, class instances, or cyclic values in config, payloads, or details.
+  Validate computed values too: finite inputs can produce `Infinity`, `-Infinity`,
+  or `NaN`. `JSON.stringify` silently converts those numbers to `null`; it is not
+  an output validator
 - `Cleanup`: `() => void | Promise<void>`
 - `ExtensionDefinition<C extends Json>`: `name`, optional `requires: string[]`, and
   `apply(context: ExtensionContext, config: C): void | Promise<void>`
@@ -48,6 +51,23 @@ useful text plus optional structured details. Pass an idempotency key derived fr
 transactional. The runtime handles technical argument validation, provenance and
 persisted intent/outcome. It does not provide a separate authorization callback.
 An unknown remote result needs reconciliation, not an assumed-safe repeat.
+
+`text` and optional `details` are the entire SDK return contract; it has no
+`isError`, `outcome`, or success-status field. Choose business fields such as
+`details.ok` deliberately and describe them in text. Returned `details: { ok: false }`
+is still a known business result, with a durable outcome; it does not set Pi's
+`isError` or make the execution outcome unknown. Throwing is different:
+the runtime cannot infer whether effects already happened, so it preserves an
+unresolved intent for reconciliation. Do not throw merely to encode a known
+business rejection or invent a failure-status API.
+
+Check each computed number before returning it. For example, after validating an
+array of finite inputs, a sum still needs `Number.isFinite(total)`. Return a useful
+known business result on overflow, or choose a representation the tool's contract
+explicitly supports; do not let serialization replace the result with `null`.
+The [finite-sum example](../examples/finite-sum.ts) and its
+[real Host/Pi offline contract test](../../../tests/unit/extension-result-contract.test.mts)
+exercise this boundary without a live model or alternative writer implementation.
 
 Start with [greeting.ts](../../../examples/extensions/greeting.ts) or the
 [template tool and its tests](../../../templates/extension/src/index.ts).
@@ -100,8 +120,20 @@ fixture from memory. Compile the authored tests as well as the implementation.
 `ExtensionEvent` has `id: string`, `type: string`, `occurredAt: string`, `payload: Json`.
 `occurredAt` must parse as a date; use the source fact's ISO timestamp. IDs and type
 must be nonempty. Derive IDs from stable source identity plus record/revision, so the
-same fact after retries or restarts retains its ID. A random activation ID, polling
-counter, or current time creates duplicates instead of durable deduplication.
+same fact after retries or restarts retains its ID **and its full original body**.
+Deduplication compares the complete event and optional Wake, not the ID alone:
+`type`, `occurredAt`, payload, presence/absence of Wake, Wake ID, and reason must
+match. Reusing an ID with changed data is rejected, not accepted as a duplicate.
+A random activation ID, polling counter, or current time creates duplicates
+instead of durable deduplication.
+
+Preserve/replay the original source envelope through failures and restarts. Do not
+rebuild the same fact using the current poll time, current status, a fresh payload,
+or a newly worded Wake reason. If the source fact/revision changes, issue a new ID
+and retain its own source occurrence time. If a source supplies no timestamp,
+capture the first actual observation time once with its identity and retain that
+envelope for retries; do not use a constant production timestamp or refresh it on
+each attempt. Fixed dates are appropriate only for explicitly synthetic tests.
 
 - `emitEvent(event): Promise<'inserted' | 'duplicate'>` records the fact only
 - `ExtensionWake` has a stable `id`, nonblank `reason`, and an `event`
@@ -109,6 +141,12 @@ counter, or current time creates duplicates instead of durable deduplication.
   together through the host's receive path. Choose this directly for a matching
   fact; do not first `emitEvent` it and then expect a second submission of the same
   event to create a Wake
+
+Test identical full-body retries and changed-body rejections through the real host
+and PostgreSQL receive path, including a restarted writer. A permissive SDK test
+stub returning `duplicate` proves neither persistence nor exact-body identity.
+The [real event/Wake contract test](../../../tests/recovery/extension-event-contract.test.mts)
+also checks that one event-only fact creates no Wake or cognitive record.
 
 The host binds configured source identity and namespaces event/Wake IDs. A payload
 field cannot impersonate another extension or user authorization. Wake continues

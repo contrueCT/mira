@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 import { PostgresHistoryReader } from './history.ts';
 import type { HistoryReader } from '@mira/life';
+import { DurableOperationError, type DurableFailureCategory } from '@mira/life';
 import { assertJson, assertRecord } from '@mira/context';
 import type { RuntimeRecord } from '@mira/context';
 import type { LifeEvent, MemoryCheckpoint, MemoryCheckpointState, MemoryCheckpointWriter, MemorySnapshotReceipt, RecoverySnapshot, ToolIntent, ToolOutcome, WakeReceipt, WakeRun } from '@mira/life';
@@ -13,10 +14,10 @@ export type { MigrationOptions } from './migrate.ts';
 const OWNER_NAMESPACE = 1_296_650_817;
 const REGISTRY_NAMESPACE = 1_296_650_818;
 
-export class PersistenceError extends Error {
+export class PersistenceError extends DurableOperationError {
   readonly code: 'ownership' | 'version' | 'duplicate' | 'invalid' | 'corrupt';
-  constructor(code: PersistenceError['code'], message: string) {
-    super(message);
+  constructor(code: PersistenceError['code'], message: string, category?: DurableFailureCategory) {
+    super(category, message);
     this.name = 'PersistenceError';
     this.code = code;
   }
@@ -46,6 +47,12 @@ interface MemoryCheckpointRow {
   commit_id: string | null;
 }
 function fail(code: PersistenceError['code'], message: string): never { throw new PersistenceError(code, message); }
+function persistenceFailure(error: unknown): Error {
+  if (DurableOperationError.categoryOf(error)) return error as Error;
+  // The original exception stays internal. Public/durable diagnostics consume
+  // only the trusted tag, never this message or cause.
+  return new DurableOperationError('persistence-write-failure', error instanceof Error ? error.message : 'PostgreSQL operation failed', { cause: error });
+}
 function text(value: unknown, label: string): asserts value is string {
   if (typeof value !== 'string' || value.length === 0) fail('invalid', `Invalid ${label}`);
 }
@@ -169,7 +176,7 @@ class PostgresWriter implements MemoryCheckpointWriter {
     client.on('end', () => this.#stop(new PersistenceError('ownership', 'PostgreSQL ownership connection ended')));
   }
   #stop(error: unknown): void {
-    if (!this.signal.aborted) this.#abort.abort(error);
+    if (!this.signal.aborted) this.#abort.abort(persistenceFailure(error));
   }
   assertActive(): void {
     if (this.signal.aborted) fail('ownership', 'Writer is stopped; acquire a new writer and recover before continuing');
@@ -212,7 +219,7 @@ class PostgresWriter implements MemoryCheckpointWriter {
         const callerAbort = signal?.aborted && error === signal.reason;
         if (!callerAbort && (!(error instanceof PersistenceError) || error.code === 'corrupt')) this.#stop(error);
         if (this.signal.aborted) void this.#end();
-        throw error;
+        throw callerAbort || error instanceof PersistenceError || !this.signal.aborted ? error : persistenceFailure(error);
       }
     });
   }
@@ -459,7 +466,7 @@ class PostgresWriter implements MemoryCheckpointWriter {
         'SELECT event, requested_wake FROM life_events WHERE mira_id = $1 AND event_id = $2', [this.miraId, event.id]);
       const old = previous.rows[0];
       if (old) {
-        if (!isDeepStrictEqual(old.event, event) || !isDeepStrictEqual(old.requested_wake, wake)) fail('duplicate', 'Event ID was reused with different data or wake');
+        if (!isDeepStrictEqual(old.event, event) || !isDeepStrictEqual(old.requested_wake, wake)) throw new PersistenceError('duplicate', 'Event ID was reused with different data or wake', 'event-content-conflict');
         const receipts = await this.#client.query<{ wake_id: string; wake: WakeReceipt }>(
           'SELECT wake_id, wake FROM wake_requests WHERE mira_id = $1 AND event_id = $2', [this.miraId, event.id]);
         if (wake === null ? receipts.rows.length !== 0 : receipts.rows.length !== 1 || receipts.rows[0]?.wake_id !== wake.id || !isDeepStrictEqual(receipts.rows[0]?.wake, wake)) fail('corrupt', 'Event and wake receipt disagree');
@@ -471,7 +478,7 @@ class PostgresWriter implements MemoryCheckpointWriter {
         [this.miraId, event.id, JSON.stringify(event), wake === null ? null : JSON.stringify(wake), id]);
       if (wake) {
         const existing = await this.#client.query('SELECT 1 FROM wake_requests WHERE mira_id = $1 AND wake_id = $2', [this.miraId, wake.id]);
-        if (existing.rowCount) fail('duplicate', 'Wake ID already belongs to another event');
+        if (existing.rowCount) throw new PersistenceError('duplicate', 'Wake ID already belongs to another event', 'event-content-conflict');
         await this.#client.query('INSERT INTO wake_requests(mira_id, wake_id, event_id, wake) VALUES ($1, $2, $3, $4::json)',
           [this.miraId, wake.id, event.id, JSON.stringify(wake)]);
       }
