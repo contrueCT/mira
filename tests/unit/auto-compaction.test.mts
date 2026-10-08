@@ -302,3 +302,14 @@ for (const invalid of [undefined, null, 42]) test(`an invalid Memory loader resu
   }).compact({ keepRecentTokens: 1 }), /Memory snapshot/i);
   assert.deepEqual(await writer.load(), before);
 });
+
+test('a one-token output reserve stays positive for every SDK summary request', async () => {
+  const writer = new MemoryWriter();
+  await seed(writer, [input('Older question '.repeat(100)), assistant('Earlier answer '.repeat(100)), input('Recent question'), assistant('Recent answer')]);
+  const limits: number[] = [];
+  await runtime(writer, (_model, _context, options) => {
+    assert.equal(options?.maxTokens, 1); limits.push(options.maxTokens);
+    return streamOf(assistant('Summary'));
+  }, { autoCompaction: { enabled: false, reserveTokens: 1, keepRecentTokens: 1 } }).compact();
+  assert.ok(limits.length >= 1);
+});

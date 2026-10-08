@@ -59,7 +59,9 @@ export async function compactSnapshot(
     if (requestOptions?.apiKey !== undefined || requestOptions?.headers !== undefined || requestOptions?.env !== undefined) throw new Error('Compaction unexpectedly resolved request auth');
     // The caller sees the original model in full, never the SDK-only identity.
     const summaryContext = recoveryOperations.length ? { ...context, messages: [...context.messages, { role: 'user' as const, content: `Preserve these exact outstanding execution facts in the summary.\n${observationText(recoveryOperations)}`, timestamp: Date.now() }] } : context;
-    const maxTokens = Math.min(requestOptions?.maxTokens ?? options.reserveTokens ?? 512, options.reserveTokens ?? 512, model.maxTokens);
+    // Pi floors fractions of reserveTokens for split summaries; a valid
+    // one-token reserve must never become an invalid zero-token request.
+    const maxTokens = Math.max(1, Math.min(requestOptions?.maxTokens ?? options.reserveTokens ?? 512, options.reserveTokens ?? 512, model.maxTokens));
     if (estimateRequestTokens(summaryContext.messages) + maxTokens > model.contextWindow) throw new Error('Compaction summary request exceeds model context budget');
     const stream = await streamFn(model, summaryContext, { ...requestOptions, maxTokens });
     // The public stream result is a cached promise. Checking it does not consume
