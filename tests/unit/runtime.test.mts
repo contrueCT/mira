@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { setImmediate } from 'node:timers/promises';
 import { Type, createAssistantMessageEventStream, getCurrentTools, toToolDeclaration, type TranscriptContext } from '@earendil-works/pi-ai';
-import { decodeRecords, encodeEntry, jsonValue, messageEntry, PiDurableRuntime } from '@mira/runtime-pi';
+import { decodeRecords, encodeEntry, jsonValue, messageEntry, PiDurableRuntime, renderMiraPrompt, MIRA_PROMPT_SECTION, type MiraPromptSnapshot } from '@mira/runtime-pi';
 import { assistant, deferred, effectTool, model, result, scripted, streamOf, toolCalls, MemoryWriter, input, runtime, seed, compactionMessages } from '../recovery/fixtures.mts';
 
 test('structured JSON roundtrip retains system sections, images, tool fields and opaque provider fields', async () => {
@@ -612,7 +612,7 @@ for (const boundary of ['input', 'final'] as const) test(`cognition recovers ${b
 
 test('finalized current-format Wake awaiting completion does not reload Memory or touch context', async () => {
   const writer = new AtomicWakeWriter();
-  await runtime(writer, scripted([assistant()]), { miraPrompt: { environmentContext: 'Synthetic test', authorizationContext: 'Synthetic test only', loadInitialMemory: async () => 'Frozen Memory' } }).continueTurn(turn(writer));
+  await runtime(writer, scripted([assistant()]), { miraPrompt: { environmentContext: 'Synthetic test', authorizationContext: 'Synthetic test only', loadMemory: async () => 'Frozen Memory' } }).continueTurn(turn(writer));
   assert.equal(writer.wake.status, 'running');
   assert.ok(writer.wake.finalRecordId);
   const before = structuredClone(writer.state);
@@ -621,7 +621,7 @@ test('finalized current-format Wake awaiting completion does not reload Memory o
   await runtime(writer, () => { requests++; return streamOf(assistant()); }, {
     miraPrompt: {
       environmentContext: 'Synthetic test', authorizationContext: 'Synthetic test only',
-      loadInitialMemory: async () => { loads++; return 'must not load Memory'; },
+      loadMemory: async () => { loads++; return 'must not load Memory'; },
     },
   }).continueTurn(turn(writer));
   assert.equal(writes, 0); assert.equal(loads, 0); assert.equal(requests, 0);
@@ -715,7 +715,7 @@ test('ordinary restart and file changes do not reload initial Memory', async () 
   const writer = new MemoryWriter();
   let loads = 0;
   let content = 'Initial ordinary MEMORY.md';
-  const miraPrompt = { environmentContext: 'Synthetic test', authorizationContext: 'Synthetic test only', loadInitialMemory: async () => { loads++; return content; } };
+  const miraPrompt = { environmentContext: 'Synthetic test', authorizationContext: 'Synthetic test only', loadMemory: async () => { loads++; return content; } };
   await runtime(writer, scripted([assistant()]), { miraPrompt }).run(input());
   const before = writer.state.records.length;
   content = 'Changed files are available via normal tools';
@@ -731,7 +731,7 @@ test('ordinary restart and file changes do not reload initial Memory', async () 
 test('crash after durable initial Memory does not reload snapshot on recovery', async () => {
   const writer = new MemoryWriter();
   let loads = 0;
-  const miraPrompt = { environmentContext: 'Synthetic test', authorizationContext: 'Synthetic test only', now: () => new Date(1000), loadInitialMemory: async () => { loads++; return 'Frozen Memory'; } };
+  const miraPrompt = { environmentContext: 'Synthetic test', authorizationContext: 'Synthetic test only', now: () => new Date(1000), loadMemory: async () => { loads++; return 'Frozen Memory'; } };
   await assert.rejects(runtime(writer, () => { throw Error('synthetic provider interruption'); }, { miraPrompt }).run(input()), /synthetic provider interruption/);
   await runtime(writer, scripted([assistant()]), { miraPrompt }).run();
   assert.equal(loads, 1);
@@ -758,4 +758,24 @@ test('history tools expose exact reader scope and honest errors without turning 
   assert.match(JSON.stringify(error), /too_large/);
   assert.match(JSON.stringify(error), /70000/);
   assert.deepEqual(seen, [{ query: '中文', mode: 'substring' }, { id: '10000000-0000-4000-8000-000000000001' }]);
+});
+
+
+test('stale natural prompt Memory with an unresolved tool call rejects before any repair write', async () => {
+  const writer = new MemoryWriter();
+  await runtime(writer, scripted([assistant()]), { miraPrompt: { environmentContext: 'Synthetic test', authorizationContext: 'Synthetic user', loadMemory: async () => 'committed Memory' } }).run(input());
+  await seed(writer, [toolCalls('unresolved-after-stale-prompt')]);
+  const promptRecord = writer.state.records.find(record => {
+    const entry = record.payload as unknown as { message?: { miraPrompt?: MiraPromptSnapshot } };
+    return entry.message?.miraPrompt !== undefined;
+  })!;
+  const promptMessage = (promptRecord.payload as unknown as { message: { miraPrompt: MiraPromptSnapshot; sections: Record<string, string> } }).message;
+  promptMessage.miraPrompt.values.MEMORY_STATE = 'stale Memory';
+  promptMessage.sections[MIRA_PROMPT_SECTION] = renderMiraPrompt(promptMessage.miraPrompt.values) + promptMessage.miraPrompt.skills;
+  const before = structuredClone(writer.state);
+  let writes = 0;
+  writer.beforeAppend = async () => { writes++; };
+  await assert.rejects(runtime(writer).recover(), /does not use current Memory snapshot/);
+  assert.equal(writes, 0);
+  assert.deepEqual(writer.state, before);
 });

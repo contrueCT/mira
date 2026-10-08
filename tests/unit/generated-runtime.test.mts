@@ -9,7 +9,7 @@ import { getCurrentTools, toToolDeclaration, type AssistantMessage, type Transcr
 import { ExtensionHost, readExtensionConfiguration, type ArtifactManifest, type ChangeStatus, type ExtensionStatus, type Json } from '@mira/extension-host';
 import { decodeRecords } from '@mira/runtime-pi';
 import { extensionManagementTools, extensionReceiver, extensionTools } from '@mira/server';
-import { assistant, effectTool, input, MemoryWriter, result, runtime, streamOf } from '../recovery/fixtures.mts';
+import { assistant, effectTool, input, MemoryWriter, model, result, runtime, streamOf } from '../recovery/fixtures.mts';
 
 const parameters = {
   one: { type: 'object', properties: { count: { type: 'number', minimum: 1 } }, required: ['count'], additionalProperties: false },
@@ -148,6 +148,9 @@ test('awaited generated management installs, activates, inspects and invokes wit
       assert.match(JSON.stringify(context.messages), /Generated result/);
       return streamOf(assistant('Installation, activation, use and disable completed in the same turn'));
     }, {
+      // This lifecycle scenario retains its full multi-tool transcript; token
+      // pressure and compaction are covered by the dedicated runtime tests.
+      model: { ...model, contextWindow: 32768 },
       prepareTools: async () => prepared = [...management, ...extensionTools(await host.prepare())], finishTools: () => host.finish(),
     }).run(user);
     assert.equal(requests, 3); assert.deepEqual(completedManagement, ['install', 'activate', 'disable']);

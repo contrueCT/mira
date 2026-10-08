@@ -65,10 +65,14 @@ Cordis 处理依赖、生命周期与资源清理，不是安全边界。用户�
 
 实际完整 v0.2 模板作为一个具名 Pi system section 进入真实请求上下文；未配置 Memory 也使用同一 Mira 身份。具名 section 更新会在 fenced writer/CAS 下先持久化，当前格式重启后延续同一 section，不按 Wake 叠加完整 Prompt。渲染只单次替换白名单占位符，转义动态文本边界，不递归解释 Memory/工具文字。
 
-当前时间和可用能力在实际请求边界更新，工具说明来自该请求已准备的同一注册表；停用/更新不保留过时说明，不为说明刷新另起 Wake 或模型调用。Memory 部分始终使用该持续上下文保存的 bootstrap 快照，普通重启、Wake、压缩或文件编辑不重新读取 MEMORY.md。authorizationContext 只提供事实语境，不能伪造用户已批准；执行意图来自主模型实际调用，runtime 保留 schema/参数、不可变 intent/outcome、去重、来源与所有权检查。模型、采样、思考与 token 配置仍属于 Runtime/provider。
+当前时间和可用能力在实际请求边界更新，工具说明来自该请求已准备的同一注册表；停用/更新不保留过时说明，不为说明刷新另起 Wake 或模型调用。Memory 初始化读取，普通请求、Wake、重启或文件编辑使用最新持久快照。按 [ADR 0016](adr/0016-automatic-compaction-memory-refresh.md)，每次压缩摘要成功后重新读取当前 MEMORY.md，并将刷新后的 Memory/system、摘要和近期尾部原子写入同一 fenced CAS checkpoint；失败不发布部分刷新。authorizationContext 只提供事实语境，不能伪造用户已批准；执行意图来自主模型实际调用，runtime 保留 schema/参数、不可变 intent/outcome、去重、来源与所有权检查。模型、采样、思考与 token 配置仍属于 Runtime/provider。
 
 v0.5 §40 不引入额外产品隔离。用户再次确认普通工具和生成代码均按宿主 OS 身份运行；既有授权、凭据保护、OS 权限及数据完整性边界继续有效，无批准 UI 或固定风险硬门禁。
 
+
+## 自动压缩与输入预算
+
+Runtime 默认启用自动压缩，位于已完成工具批次并持久化结果后的自然 `prepareRequest` 边界。输入预算为 contextWindow 减输出 reserve，达到其 80% 时尝试 Pi 完整 SDK 压缩；Pi 公开估计器加协议及当前工具 schema 开销估算请求。reserve 同时限制实际输出。自动候选必须比原投影更小并容纳在输入预算内，否则不发布；一次 run 最多一次明确 context overflow 恢复重试，其他错误不作为溢出。保留原始历史、未知结果事实、工具配对及无重放边界，不增加 watcher、Wake、Memory 改写或新框架。公式与失败语义见 ADR 0016。
 
 ## 模型目录与 transport
 

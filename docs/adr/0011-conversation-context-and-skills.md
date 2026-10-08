@@ -1,5 +1,7 @@
 # ADR 0011：简洁对话上下文与普通文件 Skills
 
+> 后续补充：[ADR 0016](0016-automatic-compaction-memory-refresh.md) 允许压缩成功时原子刷新 Memory。本文“不另行扫描磁盘技能”仍有效；压缩沿用该自然请求已准备的技能目录，不增加 Skills watcher 或 Wake。
+
 状态：Accepted，2026-10-06。用户批准移除对话页工具活动、精简 Wake 正文、直接复用 Pi Skills，并补充要求普通聊天不用 Markdown。History 全局 ID 的讨论另行决策，不在本批更改 History 契约或 Memory Git 引用。
 
 ## 对话展示与上下文

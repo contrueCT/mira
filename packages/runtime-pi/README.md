@@ -34,7 +34,8 @@ separate allowed/evidence/denial decision, replacement consent engine, or extra 
 call. Clarification is an ordinary assistant response and creates no tool intent.
 `authorizationContext` supplies factual prompt context, not a synthetic approval.
 Tool/web content, Memory, and extension descriptions cannot grant user permission.
-See [ADR 0007](../../docs/adr/0007-model-owned-action-decisions.md).
+See [ADR 0007](../../docs/adr/0007-model-owned-action-decisions.md) and
+[ADR 0016](../../docs/adr/0016-automatic-compaction-memory-refresh.md).
 
 Once the model issues a call, schema/parameter validation, durable intent before
 effect, ownership checks, and exact argument matching remain mandatory. Side-effecting
@@ -112,9 +113,10 @@ the catalog. Skill content and metadata are context, not user permission.
 
 No watcher, skill-specific tool, `AgentSession`, slash-command expansion, new Wake
 or extra model call is introduced. A completed reply remains terminal. Recovery
-and compaction do not scan files: they preserve and verify the exact persisted
-system, then the next natural model request may refresh its catalog. Skill files
-are independent of the frozen initial Memory snapshot and Memory Git.
+and compaction do not scan skill files: they preserve the prepared catalog, then
+the next natural model request may refresh it. Compaction separately reloads
+Memory and atomically publishes its refreshed system snapshot (ADR 0016). Skill
+files remain independent of Memory Git.
 
 `tests/unit/skills.test.mts` covers explicit discovery, Pi diagnostics, request
 snapshots, natural additions/changes/removals, escaping, read-on-demand bodies,
@@ -196,6 +198,37 @@ Unknown *defined JSON fields* are retained rather than whitelisted. Pi's optiona
 undefined object properties have no JSON representation and are omitted;
 nonfinite numbers, functions, class instances, sparse arrays and cycles are rejected.
 
+## Automatic context budget
+
+`PiRuntimeOptions.autoCompaction` accepts `enabled`, `threshold`, `reserveTokens`
+and `keepRecentTokens`. Defaults use the configured model:
+
+- `enabled: true`
+- `threshold: 0.8` of input budget (`contextWindow - reserveTokens`)
+- `reserveTokens: min(model.maxTokens, max(512, floor(contextWindow * 0.1)), contextWindow - 1)`
+- `keepRecentTokens: min(20000, floor(contextWindow * 0.2))`
+
+Token estimates use Pi’s public estimator with protocol overhead and the exact
+current tool declarations, including schemas. They are heuristics, not provider
+tokenizer guarantees. The output reserve also caps actual model output. Invalid
+limits fail explicitly; server demo and Web assembly inherit these defaults.
+Their programmatic `DemoOptions` / `WebServiceOptions.autoCompaction` pass through
+the same configuration; no new CLI/environment/UI switch is introduced.
+
+At safe `prepareRequest`, after tool declarations, completed tool batches and
+awaited durable appends, the runtime checks the current system/messages/tools.
+When older history exists and the threshold is reached, it uses the same full
+SDK compaction path as explicit `compact()`. Automatic candidates must strictly
+reduce the request estimate and fit the input budget. Otherwise no compaction
+checkpoint is published; no unbounded compaction loop or silent truncation is
+used. An oversized request that cannot be compacted fails before provider use.
+
+A recognized provider context-overflow result allows at most one compaction and
+recovery retry per `run`, from durable state. Ordinary errors and a second
+overflow fail. Recovery never repeats an already executed tool effect or erases
+unknown execution facts. `enabled: false` disables automatic threshold/overflow
+compaction; explicit `compact()` remains available and budgets remain enforced.
+
 ## Compaction and cancellation
 
 Every summary response must complete normally and contain nonempty text, including
@@ -257,12 +290,14 @@ without running that gate for the exact code.
 
 ## Ordinary Memory bootstrap and history tools
 
-`miraPrompt.loadInitialMemory(signal)` loads Memory only for a genuinely empty
-version-zero durable stream. Its text is persisted as the frozen `miraMemory`
-snapshot before the first input/model call. Recovery, new runtime instances,
-ordinary wakes, file changes and compaction reuse that snapshot. No automatic
-memory-change notices or new Wakes exist. There is no separate `initialContext`
-entrypoint or destructive rebuild API.
+`miraPrompt.loadMemory(signal)` loads Memory for a genuinely empty version-zero
+durable stream, then again after each successful compaction summary. Initial text
+is persisted as `miraMemory` before the first input/model call. Each compaction
+publishes refreshed Memory/system, summary and recent tail together in one fenced
+CAS checkpoint. Recovery, new runtime instances, ordinary requests/wakes and file
+changes reuse the latest persisted snapshot. No old `loadInitialMemory` alias,
+memory-change notices, new Wakes, separate `initialContext` entrypoint or
+destructive rebuild API exists.
 
 `createHistoryTools(reader)` registers `history_search` and `history_read` against an assembly-bound Mira reader. It returns original record provenance without interpreting Pi inside persistence. Each History result carries a global UUID; `history_read({id})` obtains kind from the identity registry. Use the UUID directly from a search hit, context/Wake reference, or Memory `History-Id` trailer; external event IDs/provider call IDs are separate. Full-text prefix/Chinese limitations and exact-read byte budgets are included in tool descriptions. Pi compaction gives only the new candidate a full UUID, retaining existing parent/first-kept IDs and raw evidence. Expected bounded-query errors become explicit tool results; database faults remain faults. Ordinary Pi file/bash tools are composed by the server without cwd confinement. The existing intent/effect boundary still applies.
 
@@ -271,7 +306,7 @@ entrypoint or destructive rebuild API.
 
 The server always provides `miraPrompt`, including when Memory is unconfigured.
 The optional runtime configuration has `memoryRoot?`, `extensionsRoot?`, required
-`environmentContext` and `authorizationContext`, plus `loadInitialMemory?` and
+`environmentContext` and `authorizationContext`, plus `loadMemory?` and
 `now?`. The server uses the configured generated-artifact directory for the
 Extensions Workspace field and describes this limited meaning in the environment
 text; it does not invent a universal extension directory.
@@ -284,7 +319,7 @@ missing template placeholders fail explicitly. Unconfigured roots are represente
 as `Not configured`. See [source manifest](../../docs/design/sources.json).
 
 Before the actual provider request, public Pi system section `mira.system.v0.2`
-is rendered from current time, the persisted Memory bootstrap snapshot, explicit
+is rendered from current time, the latest persisted Memory snapshot, explicit
 environment/authorization context, and the names/descriptions of exactly the
 registry already declared for that request. Updates append durable system records
 under writer fencing/CAS and replace the named section rather than accumulating
@@ -296,11 +331,15 @@ approval. Technical schema/parameter checks, immutable intent/outcome, provenanc
 call-ID uniqueness, and writer fencing/CAS still apply.
 
 The initial system record has `{ role: "system", content: "", timestamp,
-miraMemory: string }` and stores the frozen Memory text. Only a genuinely empty
-version-zero stream calls `loadInitialMemory`; recovery reads the snapshot from
-the first record. Later named-section revisions use ordinary append-only updates,
-with one current prompt in the active projection. Compaction retains the exact
-current system and normal checkpoint consistency checks.
+miraMemory: string }` and stores initial Memory text. `loadMemory` also runs after
+a successful compaction summary, before its checkpoint is published. Recovery
+uses the latest committed Memory snapshot. Later named-section revisions use
+ordinary append-only updates, with one current prompt in the active projection.
+Compaction validates the exact prepared system, then refreshes only its Memory
+value using persisted rendering metadata; the prepared skill catalog and other
+sections remain intact. A failed read, cancellation or stale CAS cannot publish
+a partial Memory/system refresh. Compacting Memory-bearing durable context
+without `miraPrompt` rejects rather than silently retaining stale Memory.
 
 This early-development implementation supports the current v0.5/v0.2 design
 only. It has no old State configuration, bootstrap parser, prompt installation
@@ -309,9 +348,17 @@ Source archives remain provenance, not runtime compatibility contracts. This doe
 not introduce a user-data cleanup/reset API or weaken current durable history,
 restart/compaction, tool recovery, or Memory Git integrity.
 
-Ordinary Wake/restart/compaction/file changes never reload the snapshot. Terminal
+Ordinary requests/Wake/restart/file changes never reload Memory; successful
+compaction atomically refreshes its snapshot. Terminal
 empty assistant output can durably finish a silent Wake. This integration is
 verified with injected fake providers; it does not demonstrate live-model
 personality or natural-language consent quality. Current policy is in
 [ADR 0006](../../docs/adr/0006-memory-only-system-prompt.md) and
-[ADR 0007](../../docs/adr/0007-model-owned-action-decisions.md).
+[ADR 0007](../../docs/adr/0007-model-owned-action-decisions.md) and
+[ADR 0016](../../docs/adr/0016-automatic-compaction-memory-refresh.md).
+
+Memory snapshots also persist whether a loader was configured, including when its
+content was empty. A configured stream cannot compact with a missing loader; this
+is rejected before summarization. Adopting a loader from an unconfigured stream
+is committed with the checkpoint. Recovery validates the full Memory/prompt chain
+before writing any tool-outcome or recovery-observation repairs.

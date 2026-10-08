@@ -19,7 +19,7 @@
 - 管理操作直接等待应用并返回实际状态；仅保护执行中的扩展调用，旧 activation 的未执行 sibling 返回明确 stale，不按同名切换新实现，见 ADR 0014
 - Web 默认初始化持久空扩展配置及 artifact store，提供管理工具；保留已有文件与显式 `MIRA_EXTENSIONS` 优先级，不自动安装/激活新扩展，见 ADR 0013
 - 用户数据、Memory 的独立 Git、生成扩展、日志、凭据均在源码仓库之外；不再配置、创建或自动读取独立 SemanticState
-- 普通文件变化不通知上下文、不 Wake、不重注入；仅真正初始上下文加载 MEMORY.md；正常恢复/重启沿用持久 bootstrap 快照
+- 普通文件变化不通知上下文、不 Wake、不重注入；初始上下文及每次成功压缩加载当前 MEMORY.md，刷新 system/摘要/尾部同一 fenced CAS checkpoint 原子发布；正常恢复/重启沿用最新持久快照，见 ADR 0016
 - Pi 通用文件/search/bash 工具无应用工作目录限制，无产品隔离环境要求；cwd 不是沙箱，OS 权限与自然语言意图判断仍有效
 - 实际允许依赖和出口以 `scripts/boundaries.json` 与各包 `package.json` 为准；新增时最小开放
 
@@ -57,7 +57,7 @@ pnpm check
 
 - 先读 [最新设计 v0.5](docs/design/architecture-v0.5.md)、[Prompt 集成 ADR 0006](docs/adr/0006-memory-only-system-prompt.md)、[主模型判断 ADR 0007](docs/adr/0007-model-owned-action-decisions.md)、[架构](docs/architecture.md)和 [验收](docs/acceptance/foundation.md)
 - 一个持续 Mira；Wake 继续上下文，Event 不等于 Wake；不加入 New Chat 或会话领域
-- Compaction 与 Dreaming 分开；先验证 Pi 恢复/工具/压缩，再实现主循环
+- Compaction 与 Dreaming 分开；自动压缩默认开启，在工具批次全部落库后的自然请求边界检查预算；保留 Pi 完整 SDK、未知结果与合法工具配对，溢出最多恢复重试一次，见 [ADR 0016](docs/adr/0016-automatic-compaction-memory-refresh.md)
 - 跨进程单写者、版本检查、增量工具记录；未知结果真实呈现给模型，不自动重放、不全局阻断认知
 - [ADR 0015](docs/adr/0015-safe-tool-recovery-diagnostics.md)：可选 phase/category 诊断仅写现有 unknown operation，固定白名单文字；无原异常/headers/参数片段，无新日志表。写入/finishTool/fencing 失败仍致命，临时 Web notice 不承诺诊断落库
 - 主模型依据用户对话、上下文和自然语言 Prompt 决定调用或澄清；无 authorize 回调、allowed/evidence/denial 决策或替代引擎/额外模型调用。authorizationContext 仅为事实语境；schema、不可变 intent/outcome、来源、去重、真实身份/OS 权限和数据完整性仍是硬边界

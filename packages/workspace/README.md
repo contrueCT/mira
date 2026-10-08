@@ -8,7 +8,7 @@
 
 只在缺失时创建空白 `memoryRoot/MEMORY.md`。其余文件和目录由 Mira 用普通文件工具自行组织，不创建 Memory README、预设 taxonomy 或心理状态文件。已有正文原样保留。这些约束只保证数据存储分离，不限制通用 shell 的工作目录、读写范围或命令能力。
 
-`loadMemoryBootstrap({ memoryRoot, signal? })` 返回 `{ memory: { path, content } }`。它只读取 `MEMORY.md`，不扫描目录、不自动创建缺失文件。MEMORY.md 缺失时报错。此函数由 runtime 仅在真正首次初始化上下文时调用，正常 Wake、恢复、压缩与文件变化均不重新读取或回注。
+`loadMemoryBootstrap({ memoryRoot, signal? })` 返回 `{ memory: { path, content } }`。它只读取 `MEMORY.md`，不扫描目录、不自动创建缺失文件。MEMORY.md 缺失时报错。此函数由 runtime 在真正首次初始化及每次压缩摘要成功后的刷新阶段调用。压缩将新 Memory/system、摘要与保留尾部原子提交为一个 checkpoint；正常请求、Wake、恢复与文件变化不触发重读或回注，重启恢复最新持久快照，见 [ADR 0016](../../docs/adr/0016-automatic-compaction-memory-refresh.md)。
 
 ## Wake 末尾 Memory 快照
 

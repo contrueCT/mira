@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { assertRecord, type Json, type RuntimeRecord } from '@mira/context';
 import type { AgentMessage, AgentToolResult } from '@earendil-works/pi-agent-core';
+import type { SystemMessage } from '@earendil-works/pi-ai';
 import { validateObservation } from './observations.ts';
+import { validateMiraPromptSnapshot } from './system-prompt.ts';
 import type { SessionEntry, SessionMessageEntry } from '@earendil-works/pi-coding-agent';
 
 export const PI_RUNTIME_VERSION = '1.0.2';
@@ -90,13 +92,24 @@ export function decodeRecords(records: readonly RuntimeRecord[], initialParent: 
     if (!entry || typeof entry !== 'object' || !['message', 'compaction', 'custom_message'].includes(entry.type)) throw new Error('Unsupported Pi entry');
     if (seen.has(record.id) || record.parentId !== parentId || entry.id !== record.id || entry.parentId !== record.parentId || entry.timestamp !== record.occurredAt) throw new Error('Broken Pi record chain');
     if ((entry.type === 'compaction' ? 'checkpoint' : 'message') !== record.kind) throw new Error('Pi record kind mismatch');
+    if (entry.type !== 'compaction' && Object.hasOwn(entry, 'miraMemoryConfigured')) throw new Error('Invalid Memory configuration marker placement');
     if (entry.type === 'message') {
       validateMessage(entry.message);
     } else if (entry.type === 'custom_message') {
       validateObservation(entry);
     } else if (entry.type === 'compaction') {
       if (typeof entry.summary !== 'string' || entry.summary.trim().length === 0 || typeof entry.firstKeptEntryId !== 'string' || !Number.isFinite(entry.tokensBefore)) throw new Error('Invalid Pi checkpoint');
-      if (entry.systemMessage !== undefined) { validateMessage(entry.systemMessage); if (entry.systemMessage.role !== 'system') throw new Error('Invalid checkpoint system message'); }
+      if (entry.systemMessage !== undefined) {
+        validateMessage(entry.systemMessage);
+        if (entry.systemMessage.role !== 'system' || Object.hasOwn(entry.systemMessage, 'miraMemory') || Object.hasOwn(entry.systemMessage, 'miraPrompt') || Object.hasOwn(entry.systemMessage, 'miraMemoryConfigured')) throw new Error('Invalid checkpoint system message');
+      }
+      const checkpoint = entry as typeof entry & { miraMemory?: unknown; miraMemoryConfigured?: unknown; miraPrompt?: unknown };
+      if ((Object.hasOwn(checkpoint, 'miraMemory') || Object.hasOwn(checkpoint, 'miraMemoryConfigured')) && (typeof checkpoint.miraMemory !== 'string' || typeof checkpoint.miraMemoryConfigured !== 'boolean' || (!checkpoint.miraMemoryConfigured && checkpoint.miraMemory !== ''))) throw new Error('Invalid checkpoint Memory snapshot');
+      if (checkpoint.miraPrompt !== undefined) {
+        if (typeof checkpoint.miraMemory !== 'string') throw new Error('Missing checkpoint Memory snapshot');
+        validateMiraPromptSnapshot(checkpoint.miraPrompt, entry.systemMessage);
+        if (checkpoint.miraPrompt.values.MEMORY_STATE !== checkpoint.miraMemory) throw new Error('Checkpoint prompt does not use current Memory snapshot');
+      }
     }
     entries.push(entry);
     seen.add(record.id);
@@ -120,6 +133,7 @@ function validateUsage(value: unknown): void {
 export function validateMessage(value: unknown): asserts value is AgentMessage {
   if (!object(value) || typeof value['role'] !== 'string' || !['system', 'user', 'assistant', 'toolResult'].includes(value['role']) || typeof value['timestamp'] !== 'number' || !Number.isFinite(value['timestamp'])) throw new Error('Unsupported Pi message');
   const role = value['role'];
+  if (role !== 'system' && (Object.hasOwn(value, 'miraMemory') || Object.hasOwn(value, 'miraPrompt') || Object.hasOwn(value, 'miraMemoryConfigured'))) throw new Error('Invalid Mira metadata placement');
   const content = value['content'];
   if (typeof content !== 'string' || (role !== 'user' && role !== 'system')) {
     if (!Array.isArray(content)) throw new Error('Invalid Pi message content');
@@ -134,7 +148,8 @@ export function validateMessage(value: unknown): asserts value is AgentMessage {
     }
   }
   if (role === 'system') {
-    if (value['miraMemory'] !== undefined && typeof value['miraMemory'] !== 'string') throw new Error('Invalid initial Memory snapshot');
+    if ((Object.hasOwn(value, 'miraMemory') || Object.hasOwn(value, 'miraMemoryConfigured')) && (typeof value['miraMemory'] !== 'string' || typeof value['miraMemoryConfigured'] !== 'boolean' || (!value['miraMemoryConfigured'] && value['miraMemory'] !== ''))) throw new Error('Invalid initial Memory snapshot');
+    if (value['miraPrompt'] !== undefined) validateMiraPromptSnapshot(value['miraPrompt'], value as unknown as SystemMessage);
     if (value['sections'] !== undefined && (!object(value['sections']) || !Object.values(value['sections']).every(section => section === null || typeof section === 'string'))) throw new Error('Invalid system sections');
     if (value['toolsAdded'] !== undefined && (!Array.isArray(value['toolsAdded']) || !value['toolsAdded'].every(tool => object(tool) && nonempty(tool['name']) && typeof tool['description'] === 'string' && object(tool['parameters'])))) throw new Error('Invalid system tools');
     if (value['toolsRemoved'] !== undefined && (!Array.isArray(value['toolsRemoved']) || !value['toolsRemoved'].every(tool => object(tool) && nonempty(tool['name'])))) throw new Error('Invalid removed tools');

@@ -6,6 +6,7 @@ import {
   ModelRuntime, SessionManager, SettingsManager,
   type CompactionEntry, type ResourceLoader, type SessionEntry,
 } from '@earendil-works/pi-coding-agent';
+import { estimateRequestTokens } from './budget.ts';
 import { validateMessage } from './records.ts';
 import { observationText, type RecoveryOperation } from './observations.ts';
 
@@ -38,6 +39,7 @@ export async function compactSnapshot(
   options: CompactionOptions = {}, recoveryOperations: RecoveryOperation[] = [],
 ): Promise<CompactionEntry> {
   options.signal?.throwIfAborted();
+  for (const value of [options.reserveTokens ?? 512, options.keepRecentTokens ?? 1024]) if (!Number.isSafeInteger(value) || value < 1) throw new Error('Invalid compaction token setting');
   const cwd = process.cwd();
   const manager = SessionManager.inMemory(cwd, undefined, [
     { type: 'session', version: CURRENT_SESSION_VERSION, id: miraId, timestamp: new Date().toISOString(), cwd },
@@ -57,7 +59,9 @@ export async function compactSnapshot(
     if (requestOptions?.apiKey !== undefined || requestOptions?.headers !== undefined || requestOptions?.env !== undefined) throw new Error('Compaction unexpectedly resolved request auth');
     // The caller sees the original model in full, never the SDK-only identity.
     const summaryContext = recoveryOperations.length ? { ...context, messages: [...context.messages, { role: 'user' as const, content: `Preserve these exact outstanding execution facts in the summary.\n${observationText(recoveryOperations)}`, timestamp: Date.now() }] } : context;
-    const stream = await streamFn(model, summaryContext, requestOptions);
+    const maxTokens = Math.min(requestOptions?.maxTokens ?? options.reserveTokens ?? 512, options.reserveTokens ?? 512, model.maxTokens);
+    if (estimateRequestTokens(summaryContext.messages) + maxTokens > model.contextWindow) throw new Error('Compaction summary request exceeds model context budget');
+    const stream = await streamFn(model, summaryContext, { ...requestOptions, maxTokens });
     // The public stream result is a cached promise. Checking it does not consume
     // events or copy SDK preparation. Guard each split-turn response separately;
     // otherwise SDK boilerplate can conceal an empty summary and discard history.

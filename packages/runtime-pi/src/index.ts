@@ -1,21 +1,25 @@
 import { isDeepStrictEqual } from 'node:util';
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type AgentToolCall, type StreamFn } from '@earendil-works/pi-agent-core';
-import { getCurrentSystemMessage, type Api, type Model, type ToolResultMessage } from '@earendil-works/pi-ai';
+import { getCurrentSystemMessage, isContextOverflow, type Api, type Model, type ToolResultMessage } from '@earendil-works/pi-ai';
 import { buildSessionProjection, convertToLlm, formatSkillsForPrompt, type SessionEntry, type Skill } from '@earendil-works/pi-coding-agent';
 import type { DurableWriter, RecoverySnapshot, ToolExecution, WakeWriter } from '@mira/life';
 import { DurableOperationError } from '@mira/life';
 import type { CognitionRuntime, CognitionTurn } from '@mira/cognition';
 import { observationEntry, sanitizeEntries, validateObservation, withRecoveryAdvisory, type RecoveryOperation, type ToolDiagnostic } from './observations.ts';
 import { compactSnapshot, type CompactionOptions } from './compactor.ts';
-import { MIRA_PROMPT_SECTION, renderMiraPrompt, initialMemory, projectMiraPrompt, type MiraPromptOptions } from './system-prompt.ts';
+import { MIRA_PROMPT_SECTION, renderMiraPrompt, currentMemory, memoryConfigured, refreshMiraMemory, projectMiraPrompt, type MiraPromptOptions, type MiraPromptSnapshot } from './system-prompt.ts';
 export { MIRA_PROMPT_SECTION, MIRA_PROMPT_SHA256, MIRA_SYSTEM_TEMPLATE, MIRA_PLACEHOLDERS, renderMiraPrompt } from './system-prompt.ts';
-export type { MiraPromptOptions, MiraPromptValues } from './system-prompt.ts';
+export { currentMemory, currentPrompt, memoryConfigured, refreshMiraMemory, projectMiraPrompt } from './system-prompt.ts';
+export type { MiraPromptSnapshot, MiraPromptOptions, MiraPromptValues } from './system-prompt.ts';
 import { decodeRecords, encodeEntry, jsonValue, messageEntry, normalizeToolResult, validateMessage, RuntimeJsonError } from './records.ts';
 export { decodeRecords, encodeEntry, jsonValue, messageEntry, PI_RUNTIME_VERSION } from './records.ts';
 export type { CompactionOptions } from './compactor.ts';
 export type { RecoveryOperation, ToolDiagnostic } from './observations.ts';
 
+import { contextBudget, estimateRequestTokens, type AutoCompactionOptions } from './budget.ts';
+export type { AutoCompactionOptions } from './budget.ts';
 export interface PiRuntimeOptions {
+  autoCompaction?: AutoCompactionOptions;
   writer: DurableWriter;
   model: Model<Api>;
   /** Required injection. This adapter never discovers credentials or chooses a live stream. */
@@ -37,6 +41,10 @@ export interface RecoveredContext {
   snapshot: RecoverySnapshot; entries: SessionEntry[]; messages: AgentMessage[];
   projectionEntries: SessionEntry[];
   recovery: { status: 'complete' | 'observed-incomplete'; operations: RecoveryOperation[] };
+}
+class ContextOverflowError extends Error {
+  override name = 'ContextOverflowError';
+  constructor() { super('Provider context overflow after bounded compaction recovery'); }
 }
 class ToolInterruptionError extends Error {
   override name = 'ToolInterruptionError';
@@ -65,6 +73,7 @@ export class PiDurableRuntime implements CognitionRuntime {
     if (typeof options.streamFn !== 'function') throw new Error('Injected streamFn is required');
     if (options.loadSkills && !options.miraPrompt) throw new Error('Skill loading requires the Mira prompt');
     validateTools(options.tools ?? []);
+    contextBudget(options.model, options.autoCompaction);
     this.options = options;
     if (options.writer.signal.aborted) this.stop(options.writer.signal.reason ?? new Error('Writer lost'));
   }
@@ -129,6 +138,8 @@ export class PiDurableRuntime implements CognitionRuntime {
     const snapshot = await this.options.writer.load();
     this.gate();
     const entries = decodeRecords(snapshot.records);
+    // Reject cross-entry prompt/Memory corruption before any recovery repair.
+    currentMemory(entries);
     const executions = new Map<string, ToolExecution>();
     for (const execution of snapshot.executions) {
       if (executions.has(execution.intent.callId)) throw new RecoveryBlockedError('Duplicate execution record');
@@ -164,7 +175,9 @@ export class PiDurableRuntime implements CognitionRuntime {
         const firstKept = entries.slice(0, position).find(e => e.id === entry.firstKeptEntryId);
         if (!firstKept || (firstKept.type !== 'message' && firstKept.type !== 'custom_message') || (firstKept.type === 'message' && firstKept.message.role === 'toolResult')) throw new RecoveryBlockedError('Checkpoint tail is missing or splits a tool pair');
         const precedingSystem = getCurrentSystemMessage(buildSessionProjection(projectMiraPrompt(sanitizeEntries(entries.slice(0, position), operations))).messages);
-        const expectedSystem = precedingSystem ? { ...precedingSystem, timestamp: Date.parse(entry.timestamp) } : undefined;
+        const previousSystem = precedingSystem ? { ...precedingSystem, timestamp: Date.parse(entry.timestamp) } : undefined;
+        const memory = (entry as typeof entry & { miraMemory?: string }).miraMemory;
+        const expectedSystem = memory === undefined ? previousSystem : refreshMiraMemory(previousSystem, entries.slice(0, position), memory, (entry as typeof entry & { miraMemoryConfigured: boolean }).miraMemoryConfigured).systemMessage;
         if (!isDeepStrictEqual(entry.systemMessage, expectedSystem)) throw new RecoveryBlockedError('Checkpoint system state differs from preceding context');
         validateProjection(buildSessionProjection(projectMiraPrompt(sanitizeEntries(entries.slice(0, position + 1), operations))).messages);
         continue;
@@ -238,10 +251,10 @@ export class PiDurableRuntime implements CognitionRuntime {
   private async initializeEmpty(current: RecoveredContext): Promise<RecoveredContext> {
     if (!this.options.miraPrompt || current.snapshot.records.length) return current;
     if (current.snapshot.version !== 0) throw new RecoveryBlockedError('Empty context has a nonzero version');
-    const memory = await this.options.miraPrompt.loadInitialMemory?.(this.controller.signal) ?? '';
+    const memory = this.options.miraPrompt.loadMemory ? await this.options.miraPrompt.loadMemory(this.controller.signal) : '';
     if (typeof memory !== 'string') throw new Error('Initial Memory must be text');
     await this.verified();
-    const message = { role: 'system' as const, content: '', timestamp: Date.now(), miraMemory: memory };
+    const message = { role: 'system' as const, content: '', timestamp: Date.now(), miraMemory: memory, miraMemoryConfigured: this.options.miraPrompt.loadMemory !== undefined };
     const record = encodeEntry(messageEntry(message, null));
     await this.publish(() => this.options.writer.append(0, record, this.controller.signal));
     return this.recoverInternal();
@@ -303,9 +316,16 @@ export class PiDurableRuntime implements CognitionRuntime {
   }
 
   private async runInternal(input?: AgentMessage, turn?: CognitionTurn): Promise<RecoveredContext> {
+    let overflowRecovered = false;
     while (true) {
       try { return await this.runAttempt(input, turn); }
       catch (error) {
+        if (error instanceof ContextOverflowError && !overflowRecovered && contextBudget(this.options.model, this.options.autoCompaction).enabled) {
+          overflowRecovered = true;
+          await this.compactInternal({}, true);
+          input = undefined;
+          continue;
+        }
         if (!(error instanceof ToolInterruptionError)) throw error;
         await this.verified();
         // The interrupted Agent is discarded. Only new model-selected calls can
@@ -328,7 +348,7 @@ export class PiDurableRuntime implements CognitionRuntime {
       }
       const outcomes = new Map<string, ToolResultMessage>();
       let awaitingModelCompletion = false;
-      let interruption: ToolInterruptionError | undefined;
+      let interruption: ToolInterruptionError | ContextOverflowError | undefined;
       const attemptGate = (): void => { this.gate(); if (interruption) throw interruption; };
       const fail = (error: unknown): Error => interruption && !this.stopped ? interruption : this.stop(error);
       const continuedMessages = (state: RecoveredContext): AgentMessage[] => {
@@ -417,7 +437,9 @@ export class PiDurableRuntime implements CognitionRuntime {
             attemptGate();
             await this.verified();
             awaitingModelCompletion = true;
-            return await this.options.streamFn(model, context, options);
+            const budget = contextBudget(model, this.options.autoCompaction);
+            const stream = await this.options.streamFn(model, context, { ...options, maxTokens: Math.min(options?.maxTokens ?? budget.reserveTokens, budget.reserveTokens) });
+            return stream;
           } catch (error) { throw fail(error); }
         },
         prepareNextTurnWithContext: async (_context, signal) => {
@@ -441,31 +463,45 @@ export class PiDurableRuntime implements CognitionRuntime {
             if (config) {
               const state = await this.recoverInternal();
               if (state.snapshot.version !== version) throw new Error('Context changed during prompt preparation');
-              const memory = initialMemory(state.entries);
+              const memory = currentMemory(state.entries);
               if (memory === undefined) throw new Error('Missing initial Memory snapshot');
               // Take one immutable metadata rendering for this request. Changes
               // on disk do not wake Mira or alter a request already in flight.
               const skills = formatSkillsForPrompt(await this.options.loadSkills?.(this.controller.signal) ?? []);
               await this.verified();
               attemptGate();
-              const text = renderMiraPrompt({
+              const prompt: MiraPromptSnapshot = { values: {
                 MEMORY_ROOT: config.memoryRoot ?? 'Not configured', MEMORY_STATE: memory,
                 CURRENT_TIME: (config.now?.() ?? new Date()).toISOString(),
                 EXTENSIONS_ROOT: config.extensionsRoot ?? 'Not configured',
                 OTHER_ENVIRONMENT_CONTEXT: config.environmentContext,
                 DYNAMIC_TOOL_AND_EXTENSION_GUIDANCE: (context.tools ?? []).map(tool => `${tool.name}: ${tool.description}`).join('\n\n') || 'No tools are available',
                 CURRENT_AUTHORIZATION_CONTEXT: config.authorizationContext,
-              }) + skills;
+              }, skills };
+              const text = renderMiraPrompt(prompt.values) + skills;
               if (getCurrentSystemMessage(state.messages)?.sections?.[MIRA_PROMPT_SECTION] !== text) {
                 await this.verified();
-                const entry = messageEntry({ role: 'system', content: '', sections: { [MIRA_PROMPT_SECTION]: text }, timestamp: Date.now() }, parentId);
+                const message = { role: 'system' as const, content: '', sections: { [MIRA_PROMPT_SECTION]: text }, miraPrompt: prompt, timestamp: Date.now() };
+                const entry = messageEntry(message, parentId);
                 const record = encodeEntry(entry);
                 version = await this.publish(() => this.options.writer.append(version, record, this.controller.signal));
                 attemptGate();
                 parentId = entry.id;
               }
             }
-            return { context: { messages: await refreshMessages(), tools: context.tools ?? [] } };
+            let messages = await refreshMessages();
+            const budget = contextBudget(this.options.model, this.options.autoCompaction);
+            const estimate = estimateRequestTokens(messages, context.tools ?? []);
+            const history = messages.filter(message => message.role !== 'system');
+            const hasOlderHistory = history.length > 1 && estimateRequestTokens(history) > budget.keepRecentTokens;
+            if (budget.enabled && hasOlderHistory && estimate >= budget.inputTokens * budget.threshold) {
+              const compacted = await this.compactInternal({}, true, context.tools ?? []);
+              version = compacted.snapshot.version;
+              parentId = compacted.entries.at(-1)?.id ?? null;
+              messages = continuedMessages(compacted);
+            }
+            if (estimateRequestTokens(messages, context.tools ?? []) > budget.inputTokens) throw new Error('Context exceeds input budget after compaction');
+            return { context: { messages, tools: context.tools ?? [] } };
           } catch (error) { throw fail(error); }
         },
         beforeToolCall: async context => {
@@ -519,6 +555,11 @@ export class PiDurableRuntime implements CognitionRuntime {
           if (event.type === 'tool_execution_end' && !outcomes.has(event.toolCallId)) throw new Error(`Tool did not produce a durable outcome: ${event.toolCallId}`);
           if (event.type !== 'message_end') return;
           const message = event.message;
+          if (awaitingModelCompletion && message.role === 'assistant' && isContextOverflow(message, this.options.model.contextWindow) && !message.content.some(block => block.type === 'toolCall')) {
+            interruption = new ContextOverflowError();
+            this.agent?.abort();
+            throw interruption;
+          }
           // Input and tool-declaration message_end events precede streamFn. Once
           // a model request starts, its completion must actually be assistant;
           // generic transcript validation also accepts legitimate user/system
@@ -573,20 +614,40 @@ export class PiDurableRuntime implements CognitionRuntime {
   }
 
   compact(options: CompactionOptions = {}): Promise<RecoveredContext> {
-    return this.exclusive(async () => {
-      const before = await this.recoverInternal();
-      const checkpoint = await compactSnapshot(this.options.writer.miraId, before.projectionEntries, this.options.model,
-        async (model, context, streamOptions) => {
-          await this.verified();
-          return this.options.streamFn(model, context, streamOptions);
-        }, { ...options, signal: this.controller.signal }, before.recovery.operations);
-      await this.verified();
-      options.signal?.throwIfAborted();
-      const record = encodeEntry(checkpoint);
-      await this.publish(() => this.options.writer.append(before.snapshot.version, record, this.controller.signal));
-      return this.recoverInternal();
-    }, options.signal);
+    return this.exclusive(() => this.compactInternal(options), options.signal);
   }
+
+  private async compactInternal(options: CompactionOptions, requireReduction = false, tools: AgentTool[] = this.agent?.state.tools ?? this.options.tools ?? []): Promise<RecoveredContext> {
+    const before = await this.recoverInternal();
+    const budget = contextBudget(this.options.model, this.options.autoCompaction);
+    if (currentMemory(before.entries) !== undefined && (!this.options.miraPrompt || (memoryConfigured(before.entries) && !this.options.miraPrompt.loadMemory)))
+      throw new Error('Compaction of Mira context requires its configured Memory loader');
+    const checkpoint = await compactSnapshot(this.options.writer.miraId, before.projectionEntries, this.options.model,
+      async (model, context, streamOptions) => {
+        await this.verified();
+        return this.options.streamFn(model, context, streamOptions);
+      }, { keepRecentTokens: budget.keepRecentTokens, reserveTokens: budget.reserveTokens, ...options, signal: this.controller.signal }, before.recovery.operations);
+    // Memory is read only after summary succeeds, still before publication. The
+    // snapshot and its rendered system are one checkpoint/one fenced CAS append.
+    if (currentMemory(before.entries) !== undefined) {
+      if (!this.options.miraPrompt) throw new Error('Compaction of Mira context requires its Memory configuration');
+      const memory = this.options.miraPrompt.loadMemory ? await this.options.miraPrompt.loadMemory(this.controller.signal) : '';
+      Object.assign(checkpoint, refreshMiraMemory(checkpoint.systemMessage, before.entries, memory, memoryConfigured(before.entries) || this.options.miraPrompt.loadMemory !== undefined));
+    }
+    const candidateEntries = [...before.entries, checkpoint];
+    const messages = withRecoveryAdvisory(buildSessionProjection(projectMiraPrompt(sanitizeEntries(candidateEntries, before.recovery.operations))).messages,
+      before.recovery.operations, Date.parse(checkpoint.timestamp));
+    validateProjection(messages);
+    const afterTokens = estimateRequestTokens(messages, tools);
+    if (afterTokens > budget.inputTokens) throw new Error('Compacted context exceeds input budget');
+    if (requireReduction && afterTokens >= estimateRequestTokens(before.messages, tools)) throw new Error('Compaction cannot reduce this context');
+    await this.verified();
+    options.signal?.throwIfAborted();
+    const record = encodeEntry(checkpoint);
+    await this.publish(() => this.options.writer.append(before.snapshot.version, record, this.controller.signal));
+    return this.recoverInternal();
+  }
+
 }
 
 function validateTools(tools: AgentTool[]): void {

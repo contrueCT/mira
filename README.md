@@ -26,8 +26,11 @@
 - [生成扩展验收](docs/acceptance/generated-extensions.md)
 - [最小假模型演示](apps/server/README.md)
 - [安全的工具恢复诊断](docs/adr/0015-safe-tool-recovery-diagnostics.md)
+- [自动压缩与 Memory 原子刷新](docs/adr/0016-automatic-compaction-memory-refresh.md)
 
 项目仍处早期开发，只维护当前 Architecture v0.5 与 Prompt v0.2，不保留旧 State/Prompt 兼容层；原始设计存档仅作来源记录。当前格式的持久上下文、重启/压缩、原始历史和 Memory Git 完整性继续保证。
+
+自动压缩默认在自然模型请求的输入预算达到 80% 时尝试，保留 Pi 完整 SDK 压缩与工具恢复语义。每次成功压缩重新读取当前 MEMORY.md，并与 system、摘要及近期尾部原子保存；普通请求和文件修改不重读、不 Wake，重启恢复最新快照。具体预算、单次溢出恢复与失败边界见 ADR 0016。
 
 基础设施优先保证连续性、真实历史、执行完整性和故障恢复。主模型根据用户对话、上下文和自然语言 Prompt 决定工具调用或澄清，没有独立 authorize 回调或授权引擎；不建立数值情绪系统、不把每次 Wake 变成新会话。
 

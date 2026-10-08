@@ -16,7 +16,7 @@
 
 从仓库根运行 `pnpm test` 或 `pnpm check`。离线测试不需要服务或模型；`pnpm test:integration` 必须配置本地独立 `mira_test` PostgreSQL。CI 通过 `pnpm check:all` 跑真实数据库。使用独立临时目录，`finally` 清理，不使用用户 Memory 或生产数据库。
 
-Prompt 测试检查原始模板 hash、单次转义、实际请求上下文、当前上下文追加更新与恢复/压缩、能力更新同代一致、静默 Wake，以及 Memory 冻结快照不重读。
+Prompt 测试检查原始模板 hash、单次转义、实际请求上下文、当前上下文追加更新与恢复/压缩、能力更新同代一致、静默 Wake，以及普通请求/重启不重读 Memory、成功压缩原子刷新最新快照。ADR 0016 增加阈值/预算/工具 schema、实际输出上限、工具批次后压缩、单次溢出恢复、候选不能缩小/不能容纳、Memory 读取失败、CAS/取消/重启和未知结果不重放覆盖。
 
 ADR 0007 回归直接工具调用与模型普通澄清，保留 schema/参数、intent 先于执行、来源/去重/恢复/CAS 边界；不重新引入 authorize stub、合成批准证据或额外授权模型调用。
 
