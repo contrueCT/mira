@@ -7,7 +7,7 @@
 - `README.md` 描述职责；`package.json` 是包名和公开 exports 的事实来源
 - `src/index.ts` 保留 `writeWakeInput` 普通溢出文本接口；`src/memory.ts` 实现 `setupMemoryWorkspace`、`loadMemoryBootstrap` 与 `snapshotMemory`
 - 只强制 `MEMORY.md`；其余 Memory 是自由组织的普通文件；只维护当前 Memory-only 设计，不提供 State 配置或迁移兼容层
-- 只在首次上下文初始化读取 `MEMORY.md`；不实现变更通知、自动回注、autoWake 或固定 taxonomy/FSM
+- 由 runtime 在首次上下文初始化及成功压缩的刷新阶段读取 `MEMORY.md`；不实现变更通知、自动回注、autoWake 或固定 taxonomy/FSM
 - 测试使用源码及 HOME 外的独立临时目录，测试夹具结束后清理；生产写入函数不自动删除文件
 
 ## 本地约束与跨包陷阱

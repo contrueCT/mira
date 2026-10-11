@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { setImmediate } from 'node:timers/promises';
 import { Type, createAssistantMessageEventStream, getCurrentTools, toToolDeclaration, type TranscriptContext } from '@earendil-works/pi-ai';
-import { decodeRecords, encodeEntry, jsonValue, messageEntry, PiDurableRuntime } from '@mira/runtime-pi';
+import { decodeRecords, encodeEntry, jsonValue, messageEntry, PiDurableRuntime, renderMiraPrompt, MIRA_PROMPT_SECTION, type MiraPromptSnapshot } from '@mira/runtime-pi';
 import { assistant, deferred, effectTool, model, result, scripted, streamOf, toolCalls, MemoryWriter, input, runtime, seed, compactionMessages } from '../recovery/fixtures.mts';
 
 test('structured JSON roundtrip retains system sections, images, tool fields and opaque provider fields', async () => {
@@ -212,7 +212,7 @@ test('disposable full SDK compaction preserves raw history and tool tail, then r
   assert.deepEqual(writer.state.records.slice(0, beforeSecond.length), beforeSecond);
   assert.deepEqual(second.messages.slice(2), compactionMessages('second').slice(4));
   assert.match(JSON.stringify(second.messages[0]), /second system/);
-  assert.ok(requests.some(r => JSON.stringify(r).includes('<previous-summary>') && JSON.stringify(r).includes('First checkpoint')));
+  assert.ok(requests.some(r => JSON.stringify(r).includes('previous_summary') && JSON.stringify(r).includes('First checkpoint')));
 });
 
 test('compaction cancellation and length-limited summary never publish a checkpoint', async () => {
@@ -307,17 +307,17 @@ test('a live call mutated while assistant append awaits cannot cross the durable
 });
 
 
-test('every split-turn summary must contain nonempty text before any checkpoint is published', async () => {
-  for (const position of [0, 1]) for (const invalid of ['', ' \n\t ', null]) {
+test('the single split-turn summary must contain nonempty text before any checkpoint is published', async () => {
+  for (const invalid of ['', ' \n\t ', null]) {
     const writer = new MemoryWriter(); await seed(writer, compactionMessages()); const before = structuredClone(writer.state);
     let requests = 0;
     const instance = runtime(writer, () => {
       const message = assistant('valid summary');
-      if (requests++ === position) message.content = invalid === null ? [{ type: 'thinking', thinking: 'synthetic internal-only output' }] : [{ type: 'text', text: invalid }];
+      requests++; message.content = invalid === null ? [{ type: 'thinking', thinking: 'synthetic internal-only output' }] : [{ type: 'text', text: invalid }];
       return streamOf(message);
     });
     await assert.rejects(instance.compact({ keepRecentTokens: 1 }), /nonempty text/);
-    assert.ok(requests > position); assert.deepEqual(writer.state, before);
+    assert.equal(requests, 1); assert.deepEqual(writer.state, before);
   }
 });
 
@@ -443,7 +443,7 @@ test('compaction never resolves ambient credentials for recognized providers or 
       },
     });
     const result = JSON.parse(child.stdout) as { checks: Array<{ provider: string; requests: number }>; fileAttempts: string[] };
-    assert.deepEqual(result.checks, ['openai', 'anthropic', 'amazon-bedrock', 'google-vertex'].map(provider => ({ provider, requests: 2 })));
+    assert.deepEqual(result.checks, ['openai', 'anthropic', 'amazon-bedrock', 'google-vertex'].map(provider => ({ provider, requests: 1 })));
     assert.deepEqual(result.fileAttempts, []);
   } finally { await rm(home, { recursive: true, force: true }); }
 });
@@ -612,7 +612,7 @@ for (const boundary of ['input', 'final'] as const) test(`cognition recovers ${b
 
 test('finalized current-format Wake awaiting completion does not reload Memory or touch context', async () => {
   const writer = new AtomicWakeWriter();
-  await runtime(writer, scripted([assistant()]), { miraPrompt: { environmentContext: 'Synthetic test', authorizationContext: 'Synthetic test only', loadInitialMemory: async () => 'Frozen Memory' } }).continueTurn(turn(writer));
+  await runtime(writer, scripted([assistant()]), { miraPrompt: { environmentContext: 'Synthetic test', authorizationContext: 'Synthetic test only', loadMemory: async () => 'Frozen Memory' } }).continueTurn(turn(writer));
   assert.equal(writer.wake.status, 'running');
   assert.ok(writer.wake.finalRecordId);
   const before = structuredClone(writer.state);
@@ -621,7 +621,7 @@ test('finalized current-format Wake awaiting completion does not reload Memory o
   await runtime(writer, () => { requests++; return streamOf(assistant()); }, {
     miraPrompt: {
       environmentContext: 'Synthetic test', authorizationContext: 'Synthetic test only',
-      loadInitialMemory: async () => { loads++; return 'must not load Memory'; },
+      loadMemory: async () => { loads++; return 'must not load Memory'; },
     },
   }).continueTurn(turn(writer));
   assert.equal(writes, 0); assert.equal(loads, 0); assert.equal(requests, 0);
@@ -715,7 +715,7 @@ test('ordinary restart and file changes do not reload initial Memory', async () 
   const writer = new MemoryWriter();
   let loads = 0;
   let content = 'Initial ordinary MEMORY.md';
-  const miraPrompt = { environmentContext: 'Synthetic test', authorizationContext: 'Synthetic test only', loadInitialMemory: async () => { loads++; return content; } };
+  const miraPrompt = { environmentContext: 'Synthetic test', authorizationContext: 'Synthetic test only', loadMemory: async () => { loads++; return content; } };
   await runtime(writer, scripted([assistant()]), { miraPrompt }).run(input());
   const before = writer.state.records.length;
   content = 'Changed files are available via normal tools';
@@ -731,7 +731,7 @@ test('ordinary restart and file changes do not reload initial Memory', async () 
 test('crash after durable initial Memory does not reload snapshot on recovery', async () => {
   const writer = new MemoryWriter();
   let loads = 0;
-  const miraPrompt = { environmentContext: 'Synthetic test', authorizationContext: 'Synthetic test only', now: () => new Date(1000), loadInitialMemory: async () => { loads++; return 'Frozen Memory'; } };
+  const miraPrompt = { environmentContext: 'Synthetic test', authorizationContext: 'Synthetic test only', now: () => new Date(1000), loadMemory: async () => { loads++; return 'Frozen Memory'; } };
   await assert.rejects(runtime(writer, () => { throw Error('synthetic provider interruption'); }, { miraPrompt }).run(input()), /synthetic provider interruption/);
   await runtime(writer, scripted([assistant()]), { miraPrompt }).run();
   assert.equal(loads, 1);
@@ -758,4 +758,24 @@ test('history tools expose exact reader scope and honest errors without turning 
   assert.match(JSON.stringify(error), /too_large/);
   assert.match(JSON.stringify(error), /70000/);
   assert.deepEqual(seen, [{ query: '中文', mode: 'substring' }, { id: '10000000-0000-4000-8000-000000000001' }]);
+});
+
+
+test('stale natural prompt Memory with an unresolved tool call rejects before any repair write', async () => {
+  const writer = new MemoryWriter();
+  await runtime(writer, scripted([assistant()]), { miraPrompt: { environmentContext: 'Synthetic test', authorizationContext: 'Synthetic user', loadMemory: async () => 'committed Memory' } }).run(input());
+  await seed(writer, [toolCalls('unresolved-after-stale-prompt')]);
+  const promptRecord = writer.state.records.find(record => {
+    const entry = record.payload as unknown as { message?: { miraPrompt?: MiraPromptSnapshot } };
+    return entry.message?.miraPrompt !== undefined;
+  })!;
+  const promptMessage = (promptRecord.payload as unknown as { message: { miraPrompt: MiraPromptSnapshot; sections: Record<string, string> } }).message;
+  promptMessage.miraPrompt.values.MEMORY_STATE = 'stale Memory';
+  promptMessage.sections[MIRA_PROMPT_SECTION] = renderMiraPrompt(promptMessage.miraPrompt.values) + promptMessage.miraPrompt.skills;
+  const before = structuredClone(writer.state);
+  let writes = 0;
+  writer.beforeAppend = async () => { writes++; };
+  await assert.rejects(runtime(writer).recover(), /does not use current Memory snapshot/);
+  assert.equal(writes, 0);
+  assert.deepEqual(writer.state, before);
 });

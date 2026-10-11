@@ -135,7 +135,7 @@ for (const replaceRepository of [false, true]) test(`Git-before-PG crash ${repla
       createRuntime: () => new PiDurableRuntime({ writer: writer!, model: demoModel,
         miraPrompt: { memoryRoot: memory.memoryRoot, extensionsRoot: path.join(data, 'extensions'),
           environmentContext: 'Synthetic isolated checkpoint recovery test', authorizationContext: 'Synthetic test authorization only',
-          loadInitialMemory: () => readFile(path.join(memory.memoryRoot, 'MEMORY.md'), 'utf8') },
+          loadMemory: () => readFile(path.join(memory.memoryRoot, 'MEMORY.md'), 'utf8') },
         streamFn: (_model, context) => { models++; assert.match(assertMira(context), /Before checkpoint interruption/); return streamOf(assistant()); } }),
       beforeComplete: memoryCheckpointHook(writer, memory.memoryRoot, memory.repositoryId),
     });

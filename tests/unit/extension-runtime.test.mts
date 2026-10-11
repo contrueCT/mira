@@ -9,7 +9,7 @@ import { getCurrentSystemPrompt, getCurrentTools, toToolDeclaration, type Assist
 import { ExtensionHost, readExtensionConfiguration } from '@mira/extension-host';
 import { extensionManagementTools, extensionReceiver, extensionTools } from '@mira/server';
 import { decodeRecords } from '@mira/runtime-pi';
-import { assistant, deferred, effectTool, input, MemoryWriter, result, runtime, streamOf } from '../recovery/fixtures.mts';
+import { assistant, deferred, effectTool, input, MemoryWriter, model, result, runtime, streamOf } from '../recovery/fixtures.mts';
 import { createExtensionFixture, fixtureParameters } from '../recovery/extension-fixtures.mts';
 
 const call = (id: string, name: string, args: AgentToolCall['arguments']): AssistantMessage => ({
@@ -170,6 +170,9 @@ test('awaited configuration and disable skip unstarted stale siblings and publis
       assert.equal(host.inspect()[0]!.status, 'disabled');
       return streamOf(assistant('Configuration and disable settled before unstarted stale siblings'));
     }, {
+      // This lifecycle scenario retains its full multi-tool transcript; token
+      // pressure and compaction are covered by the dedicated runtime tests.
+      model: { ...model, contextWindow: 32768 },
       miraPrompt: { environmentContext: 'Synthetic real Cordis test', authorizationContext: 'Synthetic test intent', now: () => new Date('2026-10-05T12:00:00Z') },
       prepareTools: async () => prepared = [builtin, ...management, ...extensionTools(await host.prepare())], finishTools: () => host.finish(),
     }).run(input('Reconfigure then disable the synthetic extension'));

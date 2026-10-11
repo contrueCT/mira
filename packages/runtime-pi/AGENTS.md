@@ -31,12 +31,14 @@ Shared rules: [root AGENTS.md](../../AGENTS.md). Read `README.md` before changes
 - Optional recovery diagnostics use fixed allowlisted phase/category only, exact
   unknown-intent linkage and bounds; never copy raw errors or rejected values.
   Result validation may recover unknown; finishTool/writer faults stay fatal
+- Automatic compaction defaults on at safe `prepareRequest` after settled tools; budget includes Pi estimates, protocol overhead, current system and tool schemas. Reserve caps actual output; automatic candidates must reduce and fit. At most one overflow recovery retry per run (ADR 0016)
+- The approved `prompts/mira-compaction-v0.1.md` replaces coding-summary instructions via public `session_before_compact`: one initial/update/split_turn request; hook failure must fail closed without SDK default fallback. Include the full rendered persona reference (Memory placeholder), separate frozen Memory and JSON source/boundary data in the input budget; omit hidden thinking/provider internals, preserve original entry IDs/timestamps
 - Compaction snapshots are disposable. CAS and cancellation fence publication;
   COMMIT-dispatch ambiguity requires authoritative recovery
 - Compactor uses an unregistered disposable provider alias verified through public
   APIs. Pass the original model to the injected stream; never persist the alias,
   register a provider, or mutate process env to prevent ambient auth discovery
-- `miraPrompt.loadInitialMemory` loads only an empty version-zero durable stream; persist the first-record `miraMemory` snapshot and never reread after ordinary wake, restart, file change or compaction. No change-notice machinery
+- `miraPrompt.loadMemory` loads an empty version-zero stream and loads one frozen candidate Memory before each summary; that same snapshot enters the final checkpoint; publish refreshed system/Memory/summary/tail in one fenced CAS checkpoint. Ordinary requests, restart and file changes reuse the latest snapshot; no old loader alias or change notices
 - `miraPrompt` uses the full source template and `mira.system.v0.2` section at the actual request boundary; persist updates before requests under the same writer/CAS
 - `loadSkills` refreshes Pi metadata at natural requests only; append the public formatter after rendering in that same section. Bodies use ordinary read; no scanner during recover/compact, watcher, extra Wake or Memory reload
 - Maintain current v0.5/v0.2 only: no old initialization entrypoint, bootstrap parser or checkpoint migration; preserve current raw history, tool recovery and exact-system compaction checks

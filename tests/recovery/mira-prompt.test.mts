@@ -31,41 +31,43 @@ async function rawHistory(db: Awaited<ReturnType<typeof createTestDatabase>>, mi
   return (await db.admin.query('SELECT version, record_id, parent_id, envelope::text AS raw FROM context_records WHERE mira_id = $1 ORDER BY version', [miraId])).rows;
 }
 
-test('real PostgreSQL: full Mira prompt and frozen Memory survive restart and full SDK compaction', { timeout: 30_000 }, async () => {
+test('real PostgreSQL: full Mira prompt refreshes Memory atomically at compaction and preserves it across restart', { timeout: 30_000 }, async () => {
   const db = await createTestDatabase();
   try {
     let loads = 0; let requests = 0;
     const writer = await db.acquire('prompt-continuity');
-    const configured = { ...prompt, loadInitialMemory: async () => { loads++; return 'Frozen original Memory'; } };
+    const configured = { ...prompt, loadMemory: async () => { loads++; return 'Frozen original Memory'; } };
     await runtime(writer, (_model, context) => {
       requests++; assert.match(assertFullPrompt(context), /Frozen original Memory/);
       return streamOf(assistant('Earlier response '.repeat(150)));
-    }, { miraPrompt: configured }).run(input('Older discussion '.repeat(150)));
+    }, { miraPrompt: configured, autoCompaction: { enabled: false } }).run(input('Older discussion '.repeat(150)));
     assert.equal(loads, 1);
     const prefix = await rawHistory(db, writer.miraId);
     await writer.close();
     const restarted = await db.acquire('prompt-continuity');
-    const noRead = { ...prompt, loadInitialMemory: async () => { throw Error('normal restart/compaction must not reread Memory'); }, now: () => new Date('2026-10-05T13:00:00.000Z') };
+    const noRead = { ...prompt, loadMemory: async () => { throw Error('normal restart must not reread Memory'); }, now: () => new Date('2026-10-05T13:00:00.000Z') };
     await runtime(restarted, (_model, context) => {
       requests++;
       const text = assertFullPrompt(context);
       assert.match(text, /Frozen original Memory/); assert.match(text, /2026-10-05T13:00:00.000Z/);
       return streamOf(assistant('Latest answer'));
-    }, { miraPrompt: noRead }).run(input('Latest question'));
+    }, { miraPrompt: noRead, autoCompaction: { enabled: false } }).run(input('Latest question'));
     let summaries = 0;
+    const refresh = { ...noRead, loadMemory: async () => { loads++; return 'New Memory at compaction'; } };
     const compacted = await runtime(restarted, () => {
       summaries++; return streamOf(assistant('Synthetic SDK summary preserving the earlier discussion'));
-    }, { miraPrompt: noRead }).compact({ keepRecentTokens: 1 });
+    }, { miraPrompt: refresh, autoCompaction: { enabled: false } }).compact({ keepRecentTokens: 1 });
     assert.ok(summaries > 0, 'full public SDK compaction called the injected summarizer');
     assert.equal(compacted.entries.filter(entry => entry.type === 'compaction').length, 1);
     await restarted.close();
     const afterCompaction = await db.acquire('prompt-continuity');
     await runtime(afterCompaction, (_model, context) => {
       requests++;
-      assert.match(assertFullPrompt(context), /Frozen original Memory/);
+      const text = assertFullPrompt(context);
+      assert.match(text, /New Memory at compaction/); assert.doesNotMatch(text, /Frozen original Memory/);
       return streamOf(assistant());
-    }, { miraPrompt: noRead }).run(input('Continue after compaction'));
-    assert.equal(requests, 3); assert.equal(loads, 1);
+    }, { miraPrompt: noRead, autoCompaction: { enabled: false } }).run(input('Continue after compaction'));
+    assert.equal(requests, 3); assert.equal(loads, 2);
     assert.deepEqual((await rawHistory(db, writer.miraId)).slice(0, prefix.length), prefix, 'raw PostgreSQL envelope prefix is byte-for-byte immutable');
   } finally { await db.close(); }
 });

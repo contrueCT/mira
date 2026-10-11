@@ -108,7 +108,7 @@ test('skill add/change/remove refresh at each natural tool continuation with one
     }
     return result;
   });
-  const runtime = new PiDurableRuntime({ writer, model, tools: [tool], miraPrompt: { ...prompt, loadInitialMemory: async () => { memoryLoads++; return 'FROZEN_MEMORY'; } },
+  const runtime = new PiDurableRuntime({ writer, model, tools: [tool], miraPrompt: { ...prompt, loadMemory: async () => { memoryLoads++; return 'FROZEN_MEMORY'; } },
     loadSkills: async abort => { loads++; return loader(abort); }, streamFn: (_model, context) => {
       calls++; const text = getCurrentSystemPrompt(context.messages);
       assert.equal((JSON.stringify(context).match(/# Mira System Prompt v0.2/g) ?? []).length, 1);
@@ -188,14 +188,15 @@ test('formatter escapes metadata once and ordinary read alone loads skill body a
 test('recovery and compaction keep exact persisted skills without scanning; next natural request refreshes', async t => {
   const { sourceDirectory, miraHome } = await fixture(t); await skill(miraHome, 'continuity', 'SAVED_SKILLS');
   const writer = new MemoryWriter(); const loader = createSkillLoader({ sourceDirectory, miraHome }); let loads = 0; let memoryLoads = 0;
-  const options = { writer, model, loadSkills: async (abort: AbortSignal) => { loads++; return loader(abort); }, miraPrompt: { ...prompt, loadInitialMemory: async () => { memoryLoads++; return 'FROZEN_MEMORY'; } }, streamFn: () => streamOf(assistant('Synthetic long response '.repeat(100))) };
+  // Leave room for the full frozen persona/skills references and Mira summary instructions.
+  const options = { writer, model: { ...model, contextWindow: 32_768 }, autoCompaction: { enabled: false }, loadSkills: async (abort: AbortSignal) => { loads++; return loader(abort); }, miraPrompt: { ...prompt, loadMemory: async () => { memoryLoads++; return 'FROZEN_MEMORY'; } }, streamFn: () => streamOf(assistant('Synthetic long response '.repeat(100))) };
   await new PiDurableRuntime(options).run(input('Earlier discussion '.repeat(300)));
   await new PiDurableRuntime(options).run(input('Latest question'));
   const rawPrefix = structuredClone(writer.state.records); const before = await new PiDurableRuntime(options).recover();
   const system = getCurrentSystemMessage(before.messages);
   await skill(miraHome, 'continuity', 'DISK_CHANGED');
   const compacted = await new PiDurableRuntime(options).compact({ keepRecentTokens: 1 });
-  assert.equal(loads, 2); assert.equal(memoryLoads, 1);
+  assert.equal(loads, 2); assert.equal(memoryLoads, 2);
   const checkpoint = compacted.entries.findLast(item => item.type === 'compaction');
   assert.ok(checkpoint?.type === 'compaction');
   assert.deepEqual(checkpoint.systemMessage, { ...system, timestamp: Date.parse(checkpoint.timestamp) });
@@ -204,7 +205,7 @@ test('recovery and compaction keep exact persisted skills without scanning; next
     const text = getCurrentSystemPrompt(context.messages); assert.match(text, /DISK_CHANGED/); assert.doesNotMatch(text, /SAVED_SKILLS/);
     assert.equal((text.match(/<available_skills>/g) ?? []).length, 1); assert.match(text, /FROZEN_MEMORY/); return streamOf(assistant());
   } }).run(input('Continue after restart and compaction'));
-  assert.equal(loads, 3); assert.equal(memoryLoads, 1); assert.deepEqual(writer.state.records.slice(0, rawPrefix.length), rawPrefix);
+  assert.equal(loads, 3); assert.equal(memoryLoads, 2); assert.deepEqual(writer.state.records.slice(0, rawPrefix.length), rawPrefix);
 });
 
 test('committed skill prompt survives an uncertain append response without duplicate revision or Memory reload', async t => {
@@ -215,7 +216,7 @@ test('committed skill prompt survives an uncertain append response without dupli
     if (JSON.stringify(args[1].payload).includes(MIRA_PROMPT_SECTION)) throw Error('Lost skill prompt commit response');
     return version;
   } });
-  const options = { model, loadSkills: createSkillLoader({ sourceDirectory, miraHome }), miraPrompt: { ...prompt, loadInitialMemory: async () => { memoryLoads++; return 'ONCE'; } }, streamFn: () => { calls++; return streamOf(assistant()); } };
+  const options = { model, loadSkills: createSkillLoader({ sourceDirectory, miraHome }), miraPrompt: { ...prompt, loadMemory: async () => { memoryLoads++; return 'ONCE'; } }, streamFn: () => { calls++; return streamOf(assistant()); } };
   await assert.rejects(new PiDurableRuntime({ ...options, writer: crashed }).run(input()), /Lost skill prompt commit response/);
   assert.equal(calls, 0);
   const revisions = () => writer.state.records.filter(item => JSON.stringify(item.payload).includes(MIRA_PROMPT_SECTION));

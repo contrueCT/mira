@@ -35,7 +35,7 @@
 ## F3 工作空间、授权与 Timeline
 
 - Memory 位于源码仓库外并进入独立 Git；无独立 SemanticState，快照与 lineage 可恢复
-- 按 ADR 0006，普通文件修改不默认通知、不 Wake、不重注入；真正初始上下文才加载 MEMORY.md，普通恢复保留持久快照
+- 按 ADR 0016，普通文件修改不默认通知、不 Wake、不重注入；初始化及成功压缩刷新 MEMORY.md，普通请求/恢复保留最新持久快照
 - History 查询与原始记忆分开，Memory 文件不被强制塞入 provenance
 - 按 ADR 0007，主模型依据用户对话/Prompt 决定调用或澄清；无独立 authorize gate/替代引擎/额外模型调用，第三方内容无法授权
 - Timeline 不展示内部 Runtime Trace 为人生事件，没有 New Chat
@@ -54,7 +54,12 @@ Cordis 手工扩展、生成扩展与外部程序分别验收。生成扩展的�
 - 白名单单次替换、动态文本转义、未知/缺少占位符、Unicode 和对抗性标签均有测试
 - 具名更新走追加历史及 fenced writer/CAS；当前格式重启/崩溃恢复幂等，原始历史和工具声明保留；不维护旧 Prompt/State 兼容层
 - Memory 编辑不 Wake、不增加模型调用、普通恢复不重读；不引入用户数据清理或重置
-- 压缩保留有效 system，空终止输出可完成静默 Wake；不捏造真实模型质量结果
+- 摘要前只读一次候选 Memory，摘要和最终 checkpoint 使用同份冻结快照；公开 Pi hook 的 initial/update/split_turn 统一单次请求，错误或无效返回不能回退默认 coding-summary
+- 摘要请求保留原角色/来源 ID/时间与真实 unknown 操作，排除隐藏推理/provider 内部字段；完整人格参考、独立 Memory、边界、来源及输出预算均计入预算
+- 压缩保留合法 system/工具结构，并将刷新 Memory、system、摘要和尾部同一 fenced CAS 原子发布；读失败、取消或 CAS 失败不发布部分状态
+- 自动预算计入当前 system、工具 schema 和协议开销；验证阈值、输出 reserve、不可缩小/无法容纳、明确溢出单次恢复、未知结果不重放及重启最新快照
+- 六个原生模型质量探针已实际生成并独立判读，例 3 许可措辞及例 4 History ID 保留仍有局限，见 [连续上下文质量记录](compaction-continuity.md)；确定性假 provider、数据库及生产 provider 验收分开报告
+- 空终止输出可完成静默 Wake；不捏造真实模型质量结果
 
 
 ## 主模型动作判断增量

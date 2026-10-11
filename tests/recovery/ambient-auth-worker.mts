@@ -30,7 +30,7 @@ for (const provider of ['openai', 'anthropic', 'amazon-bedrock', 'google-vertex'
     requests.push({ selected: structuredClone(selected), options });
     return streamOf({ ...assistant('Synthetic recognized-provider summary'), provider });
   }, { model: selectedModel }).compact({ keepRecentTokens: 1 });
-  assert.equal(requests.length, 2);
+  assert.equal(requests.length, 1);
   for (const request of requests) {
     assert.deepEqual(request.selected, selectedModel);
     assert.equal(request.options?.apiKey, undefined);

@@ -26,7 +26,7 @@ test('real PostgreSQL skill revisions preserve raw history and exact compaction 
     const { sourceDirectory, miraHome, skill } = fileset;
     await skill(sourceDirectory, 'builtin', 'BUILTIN_METADATA'); await skill(miraHome, 'user-skill', 'FIRST_USER_METADATA');
     const loader = createSkillLoader({ sourceDirectory, miraHome }); let loads = 0; let memoryLoads = 0;
-    const configured = { loadSkills: async (signal: AbortSignal) => { loads++; return loader(signal); }, miraPrompt: { ...prompt, loadInitialMemory: async () => { memoryLoads++; return 'FROZEN_MEMORY'; } } };
+    const configured = { autoCompaction: { enabled: false }, loadSkills: async (signal: AbortSignal) => { loads++; return loader(signal); }, miraPrompt: { ...prompt, loadMemory: async () => { memoryLoads++; return 'FROZEN_MEMORY'; } } };
     const first = await db.acquire('skill-continuity');
     await runtime(first, (_model, context) => {
       assert.match(getCurrentSystemPrompt(context.messages), /BUILTIN_METADATA/); assert.match(getCurrentSystemPrompt(context.messages), /FIRST_USER_METADATA/);
@@ -46,7 +46,7 @@ test('real PostgreSQL skill revisions preserve raw history and exact compaction 
       const text = getCurrentSystemPrompt(context.messages); assert.match(text, /SECOND_USER_METADATA/); assert.doesNotMatch(text, /FIRST_USER_METADATA|BODY_NOT_IN_PROMPT/);
       assert.match(text, /FROZEN_MEMORY/); assert.equal((text.match(/<available_skills>/g) ?? []).length, 1); return streamOf(assistant());
     }, configured).run(input('Continue naturally'));
-    assert.equal(loads, 2); assert.equal(memoryLoads, 1);
+    assert.equal(loads, 2); assert.equal(memoryLoads, 2);
     assert.deepEqual((await db.admin.query('SELECT version, record_id, envelope::text AS raw FROM context_records ORDER BY version')).rows.slice(0, prefix.length), prefix);
   } finally { await db.close(); await rm(fileset.root, { recursive: true, force: true }); }
 });

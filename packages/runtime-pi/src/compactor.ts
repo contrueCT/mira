@@ -1,13 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { Agent, type StreamFn } from '@earendil-works/pi-agent-core';
-import { InMemoryCredentialStore, type Api, type Model } from '@earendil-works/pi-ai';
+import { InMemoryCredentialStore, normalizeContext, type Api, type Model } from '@earendil-works/pi-ai';
 import {
   AgentSession, convertToLlm, createExtensionRuntime, CURRENT_SESSION_VERSION,
-  ModelRuntime, SessionManager, SettingsManager,
-  type CompactionEntry, type ResourceLoader, type SessionEntry,
+  ModelRuntime, SessionManager, SettingsManager, createSyntheticSourceInfo,
+  type CompactionEntry, type ResourceLoader, type SessionEntry, type Extension, type SessionBeforeCompactEvent, type SessionBeforeCompactResult,
 } from '@earendil-works/pi-coding-agent';
+import { estimateRequestTokens } from './budget.ts';
 import { validateMessage } from './records.ts';
-import { observationText, type RecoveryOperation } from './observations.ts';
+import { type RecoveryOperation } from './observations.ts';
+import { compactionInput, MIRA_COMPACTION_MODES, MIRA_COMPACTION_PROMPT, type CompactionReferences } from './compaction-prompt.ts';
 
 export interface CompactionOptions {
   signal?: AbortSignal;
@@ -16,8 +18,13 @@ export interface CompactionOptions {
   instructions?: string;
 }
 
-function emptyResources(): ResourceLoader {
-  const extensions = { extensions: [], errors: [], runtime: createExtensionRuntime() };
+function compactionResources(handler: (event: SessionBeforeCompactEvent) => Promise<SessionBeforeCompactResult>): ResourceLoader {
+  const path = '<inline:mira-compaction>';
+  const extension: Extension = { path, resolvedPath: path, sourceInfo: createSyntheticSourceInfo(path, { source: 'inline' }),
+    handlers: new Map([['session_before_compact', [async (...args: unknown[]) => handler(args[0] as SessionBeforeCompactEvent)]]]),
+    tools: new Map(), messageRenderers: new Map(), commands: new Map(), flags: new Map(), shortcuts: new Map(),
+  };
+  const extensions = { extensions: [extension], errors: [], runtime: createExtensionRuntime() };
   return {
     getExtensions: () => extensions,
     getSkills: () => ({ skills: [], diagnostics: [] }),
@@ -31,13 +38,14 @@ function emptyResources(): ResourceLoader {
 }
 
 /** Disposable SDK owns full preparation. No filesystem history, credential
- * discovery, built-in tools, extensions, copied private compaction APIs or model
+ * discovery, built-in tools, external extensions, copied private APIs or model
  * network are used. Only the supplied stream can produce a summary. */
 export async function compactSnapshot(
   miraId: string, entries: SessionEntry[], model: Model<Api>, streamFn: StreamFn,
-  options: CompactionOptions = {}, recoveryOperations: RecoveryOperation[] = [],
+  options: CompactionOptions = {}, recoveryOperations: RecoveryOperation[] = [], references: CompactionReferences = { personaContext: null, memorySnapshot: null },
 ): Promise<CompactionEntry> {
   options.signal?.throwIfAborted();
+  for (const value of [options.reserveTokens ?? 512, options.keepRecentTokens ?? 1024]) if (!Number.isSafeInteger(value) || value < 1) throw new Error('Invalid compaction token setting');
   const cwd = process.cwd();
   const manager = SessionManager.inMemory(cwd, undefined, [
     { type: 'session', version: CURRENT_SESSION_VERSION, id: miraId, timestamp: new Date().toISOString(), cwd },
@@ -45,41 +53,61 @@ export async function compactSnapshot(
   ]);
   if (manager.getSessionFile() !== undefined) throw new Error('Compactor must remain in memory');
   const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false, allowModelNetwork: false });
-  // ModelRuntime has no public authContext injection. AgentSession still asks it
-  // for auth even with an injected stream. A disposable unregistered provider
-  // selects the public unknown-provider path, which returns before any credential,
-  // environment or file resolver. Never register it (registration refreshes auth).
+  // The custom hook calls only our injected stream, bypassing SDK auth lookup.
+  // Keep the disposable model unregistered as defense in depth; the Agent stream
+  // below rejects any accidental stock fallback before it can reach transport.
   const isolatedProvider = `mira-injected-compaction-${randomUUID()}`;
   if (modelRuntime.getProvider(isolatedProvider)) throw new Error('Compaction provider isolation collision');
   const isolatedModel = { ...model, provider: isolatedProvider };
-  const checkedSummaryStream: StreamFn = async (selected, context, requestOptions) => {
-    if (selected.provider !== isolatedProvider) throw new Error('Compaction escaped its isolated provider');
-    if (requestOptions?.apiKey !== undefined || requestOptions?.headers !== undefined || requestOptions?.env !== undefined) throw new Error('Compaction unexpectedly resolved request auth');
-    // The caller sees the original model in full, never the SDK-only identity.
-    const summaryContext = recoveryOperations.length ? { ...context, messages: [...context.messages, { role: 'user' as const, content: `Preserve these exact outstanding execution facts in the summary.\n${observationText(recoveryOperations)}`, timestamp: Date.now() }] } : context;
-    const stream = await streamFn(model, summaryContext, requestOptions);
-    // The public stream result is a cached promise. Checking it does not consume
-    // events or copy SDK preparation. Guard each split-turn response separately;
-    // otherwise SDK boilerplate can conceal an empty summary and discard history.
-    const response = await stream.result();
-    options.signal?.throwIfAborted();
-    if (response.role !== 'assistant') throw new Error('Compaction completion must have assistant role');
-    validateMessage(response);
-    if (response.stopReason !== 'stop') throw new Error(`Compaction summary is incomplete: ${response.stopReason}`);
-    if (!response.content.some(block => block.type === 'text' && block.text.trim().length > 0)) throw new Error('Compaction summary contains no nonempty text');
-    return stream;
+  let compactionFailure: unknown;
+  // The public hook owns only summary text; Pi still owns preparation, boundary,
+  // system preservation and checkpoint construction. Never invoke stock prompts.
+  const summarize = async (event: SessionBeforeCompactEvent): Promise<SessionBeforeCompactResult> => {
+    try {
+      options.signal?.throwIfAborted();
+      event.signal.throwIfAborted();
+      const maxTokens = Math.min(options.reserveTokens ?? 512, model.maxTokens);
+      const input = compactionInput(event, references, maxTokens, recoveryOperations);
+      const systemPrompt = MIRA_COMPACTION_PROMPT + '\n' + MIRA_COMPACTION_MODES[input.mode] +
+        (options.instructions ? `\n\nAdditional focus: ${options.instructions}` : '');
+      const context = normalizeContext({ systemPrompt, messages: [{ role: 'user', content: JSON.stringify(input), timestamp: Date.now() }] });
+      if (estimateRequestTokens(context.messages) + maxTokens > model.contextWindow) throw new Error('Compaction summary request exceeds model context budget');
+      // The caller sees the original model, no SDK auth lookup/provider routing.
+      const stream = await streamFn(model, context, { signal: event.signal, maxTokens, cacheRetention: 'none' });
+      const response = await stream.result();
+      options.signal?.throwIfAborted();
+      event.signal.throwIfAborted();
+      if (response.role !== 'assistant') throw new Error('Compaction completion must have assistant role');
+      validateMessage(response);
+      if (response.stopReason !== 'stop') throw new Error(`Compaction summary is incomplete: ${response.stopReason}`);
+      if (response.content.some(block => block.type === 'toolCall')) throw new Error('Compaction summary attempted a tool call');
+      const summary = response.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
+      if (!summary.trim()) throw new Error('Compaction summary contains no nonempty text');
+      return { compaction: { summary, firstKeptEntryId: event.preparation.firstKeptEntryId,
+        tokensBefore: event.preparation.tokensBefore, usage: response.usage,
+        details: { readFiles: [...event.preparation.fileOps.read].filter(file => !event.preparation.fileOps.written.has(file) && !event.preparation.fileOps.edited.has(file)).sort(),
+          modifiedFiles: [...new Set([...event.preparation.fileOps.written, ...event.preparation.fileOps.edited])].sort() },
+      } };
+    } catch (error) {
+      // Pi swallows extension throws and otherwise falls back to stock prompts.
+      // Return cancellation and rethrow the original failure outside the SDK.
+      compactionFailure = error;
+      return { cancel: true };
+    }
   };
-  const agent = new Agent({ streamFn: checkedSummaryStream, convertToLlm, initialState: { model: isolatedModel, tools: [], messages: manager.buildSessionContext().messages } });
+  const agent = new Agent({ streamFn: () => { throw new Error('Unexpected default SDK compaction fallback'); }, convertToLlm,
+    initialState: { model: isolatedModel, tools: [], messages: manager.buildSessionContext().messages } });
   const session = new AgentSession({
     agent, sessionManager: manager, modelRuntime, cwd,
     settingsManager: SettingsManager.inMemory({ compaction: { enabled: true, reserveTokens: options.reserveTokens ?? 512, keepRecentTokens: options.keepRecentTokens ?? 1024 }, retry: { enabled: false } }),
-    resourceLoader: emptyResources(), initialActiveToolNames: [], baseToolsOverride: {},
+    resourceLoader: compactionResources(summarize), initialActiveToolNames: [], baseToolsOverride: {},
   });
   const abort = () => session.abortCompaction();
   options.signal?.addEventListener('abort', abort, { once: true });
   try {
     options.signal?.throwIfAborted();
-    await session.compact(options.instructions);
+    try { await session.compact(); } catch (error) { throw compactionFailure ?? error; }
+    if (compactionFailure) throw compactionFailure;
     options.signal?.throwIfAborted();
     const candidate = manager.getEntries().at(-1);
     if (!candidate || candidate.type !== 'compaction' || manager.getEntries().length !== entries.length + 1) throw new Error('SDK did not produce one checkpoint');
