@@ -43,7 +43,8 @@ test('manual compaction refreshes an initially empty Memory file atomically and 
     }, { autoCompaction: disabled, miraPrompt }).run(input('Recent question'));
     assert.equal(loads, 1);
     const before = await writer.load();
-    const compacted = await runtime(writer, () => streamOf(assistant('Synthetic summary')), { autoCompaction: disabled, miraPrompt }).compact({ keepRecentTokens: 1 });
+    // The full persona plus the dedicated summary instructions exceed this fixture's 8k model.
+    const compacted = await runtime(writer, () => streamOf(assistant('Synthetic summary')), { model: largeModel, autoCompaction: disabled, miraPrompt }).compact({ keepRecentTokens: 1 });
     assert.equal(loads, 2);
     assert.equal(compacted.snapshot.version, before.version + 1, 'Memory refresh and checkpoint share one atomic append');
     assert.deepEqual(compacted.snapshot.records.slice(0, before.records.length), before.records);
@@ -62,11 +63,12 @@ for (const fault of ['summary', 'memory', 'cancel', 'cas'] as const) {
   test(`compaction ${fault} failure cannot publish refreshed Memory or a checkpoint`, async () => {
     const writer = await preparedMemoryWriter(); const before = await writer.load();
     const entered = deferred(), release = deferred(); const controller = new AbortController();
-    let memoryLoads = 0;
+    let memoryLoads = 0, summaries = 0;
     const instance = runtime(writer, async () => {
+      summaries++;
       if (fault === 'summary') return streamOf({ ...assistant('partial'), stopReason: 'length' });
       entered.resolve(); await release.promise; return streamOf(assistant('Candidate summary'));
-    }, { autoCompaction: disabled, miraPrompt: { ...prompt, loadMemory: async () => {
+    }, { model: largeModel, autoCompaction: disabled, miraPrompt: { ...prompt, loadMemory: async () => {
       memoryLoads++; if (fault === 'memory') throw Error('synthetic Memory read failure'); return 'UNPUBLISHED_MEMORY';
     } } });
     const work = instance.compact({ keepRecentTokens: 1, signal: controller.signal });
@@ -77,7 +79,8 @@ for (const fault of ['summary', 'memory', 'cancel', 'cas'] as const) {
     }
     release.resolve();
     await assert.rejects(work);
-    assert.ok(memoryLoads <= 1);
+    assert.equal(memoryLoads, 1, 'one frozen Memory candidate is read before summary generation');
+    assert.equal(summaries, fault === 'memory' ? 0 : 1);
     const after = await writer.load();
     assert.deepEqual(after.records.slice(0, before.records.length), before.records);
     assert.equal(after.records.length, before.records.length + (fault === 'cas' ? 1 : 0));
@@ -88,7 +91,7 @@ for (const fault of ['summary', 'memory', 'cancel', 'cas'] as const) {
 }
 
 function isSummary(context: TranscriptContext): boolean {
-  return systemText(context).startsWith('You are a context summarization assistant.');
+  return systemText(context).startsWith('你负责压缩 Mira 的 Working Context');
 }
 const largeModel = { ...model, contextWindow: 65536 };
 const automatic: NonNullable<PiRuntimeOptions['autoCompaction']> = { enabled: true, threshold: 0.3, reserveTokens: 512, keepRecentTokens: 1 };
@@ -256,7 +259,7 @@ test('a non-reducing automatic checkpoint is rejected once without publishing or
     if (isSummary(context)) { summaries++; return streamOf(assistant('Non-reducing summary '.repeat(1000))); }
     requests++; return streamOf(assistant());
   }, { autoCompaction: { ...automatic, threshold: 0.05 } }).run(input('Request after a non-reducing summary')), /reduce/i);
-  assert.ok(summaries >= 1 && summaries <= 2, 'at most the SDK main summary and split-turn prefix, never a repeated attempt');
+  assert.equal(summaries, 1, 'one Mira summary request, including a split-turn prefix, without repeated attempts');
   assert.equal(requests, 0);
   assert.equal((await runtime(writer).recover()).entries.filter(entry => entry.type === 'compaction').length, 0);
 });
@@ -296,10 +299,11 @@ for (const initial of ['', 'COMMITTED_MEMORY']) test(`a missing loader cannot er
 });
 
 for (const invalid of [undefined, null, 42]) test(`an invalid Memory loader result ${String(invalid)} cannot clear the committed snapshot`, async () => {
-  const writer = await preparedMemoryWriter(); const before = await writer.load();
-  await assert.rejects(runtime(writer, () => streamOf(assistant('Unpublished summary')), {
+  const writer = await preparedMemoryWriter(); const before = await writer.load(); let calls = 0;
+  await assert.rejects(runtime(writer, () => { calls++; return streamOf(assistant('Unpublished summary')); }, {
     autoCompaction: disabled, miraPrompt: { ...prompt, loadMemory: async () => invalid as unknown as string },
   }).compact({ keepRecentTokens: 1 }), /Memory snapshot/i);
+  assert.equal(calls, 0, 'invalid Memory must fail before summary generation');
   assert.deepEqual(await writer.load(), before);
 });
 

@@ -14,7 +14,7 @@ function systemText(context: TranscriptContext): string {
   return system ? getSystemMessageText(system) : '';
 }
 function isSummary(context: TranscriptContext): boolean {
-  return systemText(context).startsWith('You are a context summarization assistant.');
+  return systemText(context).startsWith('你负责压缩 Mira 的 Working Context');
 }
 const largeModel = { ...model, contextWindow: 65536 };
 const automatic = { enabled: true, threshold: 0.3, reserveTokens: 512, keepRecentTokens: 1 };

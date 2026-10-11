@@ -1,18 +1,19 @@
 import { isDeepStrictEqual } from 'node:util';
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type AgentToolCall, type StreamFn } from '@earendil-works/pi-agent-core';
-import { getCurrentSystemMessage, isContextOverflow, type Api, type Model, type ToolResultMessage } from '@earendil-works/pi-ai';
+import { getCurrentSystemMessage, getSystemMessageText, isContextOverflow, type Api, type Model, type ToolResultMessage } from '@earendil-works/pi-ai';
 import { buildSessionProjection, convertToLlm, formatSkillsForPrompt, type SessionEntry, type Skill } from '@earendil-works/pi-coding-agent';
 import type { DurableWriter, RecoverySnapshot, ToolExecution, WakeWriter } from '@mira/life';
 import { DurableOperationError } from '@mira/life';
 import type { CognitionRuntime, CognitionTurn } from '@mira/cognition';
 import { observationEntry, sanitizeEntries, validateObservation, withRecoveryAdvisory, type RecoveryOperation, type ToolDiagnostic } from './observations.ts';
 import { compactSnapshot, type CompactionOptions } from './compactor.ts';
-import { MIRA_PROMPT_SECTION, renderMiraPrompt, currentMemory, memoryConfigured, refreshMiraMemory, projectMiraPrompt, type MiraPromptOptions, type MiraPromptSnapshot } from './system-prompt.ts';
+import { MIRA_PROMPT_SECTION, renderMiraPrompt, currentMemory, currentPrompt, memoryConfigured, refreshMiraMemory, projectMiraPrompt, type MiraPromptOptions, type MiraPromptSnapshot } from './system-prompt.ts';
 export { MIRA_PROMPT_SECTION, MIRA_PROMPT_SHA256, MIRA_SYSTEM_TEMPLATE, MIRA_PLACEHOLDERS, renderMiraPrompt } from './system-prompt.ts';
 export { currentMemory, currentPrompt, memoryConfigured, refreshMiraMemory, projectMiraPrompt } from './system-prompt.ts';
 export type { MiraPromptSnapshot, MiraPromptOptions, MiraPromptValues } from './system-prompt.ts';
 import { decodeRecords, encodeEntry, jsonValue, messageEntry, normalizeToolResult, validateMessage, RuntimeJsonError } from './records.ts';
 export { decodeRecords, encodeEntry, jsonValue, messageEntry, PI_RUNTIME_VERSION } from './records.ts';
+export { MIRA_COMPACTION_PROMPT, MIRA_COMPACTION_PROMPT_SHA256, MIRA_COMPACTION_MODES } from './compaction-prompt.ts';
 export type { CompactionOptions } from './compactor.ts';
 export type { RecoveryOperation, ToolDiagnostic } from './observations.ts';
 
@@ -622,18 +623,31 @@ export class PiDurableRuntime implements CognitionRuntime {
     const budget = contextBudget(this.options.model, this.options.autoCompaction);
     if (currentMemory(before.entries) !== undefined && (!this.options.miraPrompt || (memoryConfigured(before.entries) && !this.options.miraPrompt.loadMemory)))
       throw new Error('Compaction of Mira context requires its configured Memory loader');
+    const priorMemory = currentMemory(before.entries);
+    const config = this.options.miraPrompt;
+    const memory = priorMemory === undefined ? null : config!.loadMemory ? await config!.loadMemory(this.controller.signal) : '';
+    if (priorMemory !== undefined && typeof memory !== 'string') throw new Error('Invalid checkpoint Memory snapshot');
+    await this.verified();
+    const frozenPrompt = currentPrompt(before.entries);
+    const priorSystem = getCurrentSystemMessage(before.messages);
+    // Persona is reference data, not the summarizer's system instructions. Its
+    // Memory slot is a pointer: the single chosen snapshot is supplied once.
+    const personaContext = frozenPrompt ? getSystemMessageText({ ...(priorSystem ?? { role: 'system' as const, content: '', timestamp: Date.now() }),
+      sections: { ...priorSystem?.sections, [MIRA_PROMPT_SECTION]: renderMiraPrompt({ ...frozenPrompt.values, MEMORY_STATE: '（Memory 由 memory_snapshot 单独提供）' }) + frozenPrompt.skills } }) :
+      config ? getSystemMessageText({ ...(priorSystem ?? { role: 'system' as const, content: '', timestamp: Date.now() }),
+        sections: { ...priorSystem?.sections, [MIRA_PROMPT_SECTION]: renderMiraPrompt({ MEMORY_ROOT: config.memoryRoot ?? 'Not configured', MEMORY_STATE: '（Memory 由 memory_snapshot 单独提供）',
+        CURRENT_TIME: (config.now?.() ?? new Date()).toISOString(), EXTENSIONS_ROOT: config.extensionsRoot ?? 'Not configured',
+        OTHER_ENVIRONMENT_CONTEXT: config.environmentContext, CURRENT_AUTHORIZATION_CONTEXT: config.authorizationContext,
+        DYNAMIC_TOOL_AND_EXTENSION_GUIDANCE: tools.map(tool => `${tool.name}: ${tool.description}`).join('\n\n') || 'No tools are available' }) } }) :
+      priorSystem ? getSystemMessageText(priorSystem) : null;
     const checkpoint = await compactSnapshot(this.options.writer.miraId, before.projectionEntries, this.options.model,
       async (model, context, streamOptions) => {
         await this.verified();
         return this.options.streamFn(model, context, streamOptions);
-      }, { keepRecentTokens: budget.keepRecentTokens, reserveTokens: budget.reserveTokens, ...options, signal: this.controller.signal }, before.recovery.operations);
-    // Memory is read only after summary succeeds, still before publication. The
+      }, { keepRecentTokens: budget.keepRecentTokens, reserveTokens: budget.reserveTokens, ...options, signal: this.controller.signal }, before.recovery.operations, { personaContext, memorySnapshot: memory });
+    // Reuse exactly the candidate read before summarization; never reread here. The
     // snapshot and its rendered system are one checkpoint/one fenced CAS append.
-    if (currentMemory(before.entries) !== undefined) {
-      if (!this.options.miraPrompt) throw new Error('Compaction of Mira context requires its Memory configuration');
-      const memory = this.options.miraPrompt.loadMemory ? await this.options.miraPrompt.loadMemory(this.controller.signal) : '';
-      Object.assign(checkpoint, refreshMiraMemory(checkpoint.systemMessage, before.entries, memory, memoryConfigured(before.entries) || this.options.miraPrompt.loadMemory !== undefined));
-    }
+    if (memory !== null) Object.assign(checkpoint, refreshMiraMemory(checkpoint.systemMessage, before.entries, memory, memoryConfigured(before.entries) || config!.loadMemory !== undefined));
     const candidateEntries = [...before.entries, checkpoint];
     const messages = withRecoveryAdvisory(buildSessionProjection(projectMiraPrompt(sanitizeEntries(candidateEntries, before.recovery.operations))).messages,
       before.recovery.operations, Date.parse(checkpoint.timestamp));

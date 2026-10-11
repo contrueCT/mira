@@ -212,7 +212,7 @@ test('disposable full SDK compaction preserves raw history and tool tail, then r
   assert.deepEqual(writer.state.records.slice(0, beforeSecond.length), beforeSecond);
   assert.deepEqual(second.messages.slice(2), compactionMessages('second').slice(4));
   assert.match(JSON.stringify(second.messages[0]), /second system/);
-  assert.ok(requests.some(r => JSON.stringify(r).includes('<previous-summary>') && JSON.stringify(r).includes('First checkpoint')));
+  assert.ok(requests.some(r => JSON.stringify(r).includes('previous_summary') && JSON.stringify(r).includes('First checkpoint')));
 });
 
 test('compaction cancellation and length-limited summary never publish a checkpoint', async () => {
@@ -307,17 +307,17 @@ test('a live call mutated while assistant append awaits cannot cross the durable
 });
 
 
-test('every split-turn summary must contain nonempty text before any checkpoint is published', async () => {
-  for (const position of [0, 1]) for (const invalid of ['', ' \n\t ', null]) {
+test('the single split-turn summary must contain nonempty text before any checkpoint is published', async () => {
+  for (const invalid of ['', ' \n\t ', null]) {
     const writer = new MemoryWriter(); await seed(writer, compactionMessages()); const before = structuredClone(writer.state);
     let requests = 0;
     const instance = runtime(writer, () => {
       const message = assistant('valid summary');
-      if (requests++ === position) message.content = invalid === null ? [{ type: 'thinking', thinking: 'synthetic internal-only output' }] : [{ type: 'text', text: invalid }];
+      requests++; message.content = invalid === null ? [{ type: 'thinking', thinking: 'synthetic internal-only output' }] : [{ type: 'text', text: invalid }];
       return streamOf(message);
     });
     await assert.rejects(instance.compact({ keepRecentTokens: 1 }), /nonempty text/);
-    assert.ok(requests > position); assert.deepEqual(writer.state, before);
+    assert.equal(requests, 1); assert.deepEqual(writer.state, before);
   }
 });
 
@@ -443,7 +443,7 @@ test('compaction never resolves ambient credentials for recognized providers or 
       },
     });
     const result = JSON.parse(child.stdout) as { checks: Array<{ provider: string; requests: number }>; fileAttempts: string[] };
-    assert.deepEqual(result.checks, ['openai', 'anthropic', 'amazon-bedrock', 'google-vertex'].map(provider => ({ provider, requests: 2 })));
+    assert.deepEqual(result.checks, ['openai', 'anthropic', 'amazon-bedrock', 'google-vertex'].map(provider => ({ provider, requests: 1 })));
     assert.deepEqual(result.fileAttempts, []);
   } finally { await rm(home, { recursive: true, force: true }); }
 });

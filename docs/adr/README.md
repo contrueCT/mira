@@ -41,7 +41,7 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 - [0015 安全的工具恢复诊断](0015-safe-tool-recovery-diagnostics.md)：Accepted，2026-10-07，现有 unknown operation 的白名单可选诊断、写入故障的临时状态提示及扩展契约测试；不添加日志表或自动重放
 
-- [0016 自动压缩与 Memory 原子刷新](0016-automatic-compaction-memory-refresh.md)：Accepted，2026-10-08，默认输入预算触发、完整 Pi SDK、单次溢出恢复、成功压缩原子刷新 Memory/system/摘要/尾部；取代 0006 的压缩不读取 Memory 约束
+- [0016 自动压缩与 Memory 原子刷新](0016-automatic-compaction-memory-refresh.md)：Accepted，2026-10-08，默认输入预算触发、完整 Pi SDK、单次溢出恢复、成功压缩原子刷新 Memory/system/摘要/尾部；取代 0006 的压缩不读取 Memory 约束；2026-10-11 批准 Mira 连续摘要、公开 hook 单次请求及摘要前冻结同份 Memory，六例 native 质量探针已完成并保留许可措辞/来源 ID 局限，生产 provider 验收未执行
 
 ## 后续范围
 

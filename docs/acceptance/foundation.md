@@ -54,8 +54,11 @@ Cordis 手工扩展、生成扩展与外部程序分别验收。生成扩展的�
 - 白名单单次替换、动态文本转义、未知/缺少占位符、Unicode 和对抗性标签均有测试
 - 具名更新走追加历史及 fenced writer/CAS；当前格式重启/崩溃恢复幂等，原始历史和工具声明保留；不维护旧 Prompt/State 兼容层
 - Memory 编辑不 Wake、不增加模型调用、普通恢复不重读；不引入用户数据清理或重置
+- 摘要前只读一次候选 Memory，摘要和最终 checkpoint 使用同份冻结快照；公开 Pi hook 的 initial/update/split_turn 统一单次请求，错误或无效返回不能回退默认 coding-summary
+- 摘要请求保留原角色/来源 ID/时间与真实 unknown 操作，排除隐藏推理/provider 内部字段；完整人格参考、独立 Memory、边界、来源及输出预算均计入预算
 - 压缩保留合法 system/工具结构，并将刷新 Memory、system、摘要和尾部同一 fenced CAS 原子发布；读失败、取消或 CAS 失败不发布部分状态
 - 自动预算计入当前 system、工具 schema 和协议开销；验证阈值、输出 reserve、不可缩小/无法容纳、明确溢出单次恢复、未知结果不重放及重启最新快照
+- 六个原生模型质量探针已实际生成并独立判读，例 3 许可措辞及例 4 History ID 保留仍有局限，见 [连续上下文质量记录](compaction-continuity.md)；确定性假 provider、数据库及生产 provider 验收分开报告
 - 空终止输出可完成静默 Wake；不捏造真实模型质量结果
 
 

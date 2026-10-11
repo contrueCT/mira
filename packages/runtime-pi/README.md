@@ -231,12 +231,34 @@ compaction; explicit `compact()` remains available and budgets remain enforced.
 
 ## Compaction and cancellation
 
-Every summary response must complete normally and contain nonempty text, including
-each split-turn response. This is a structural safety check, not a summary-quality
-guarantee. The SDK owns preparation, repeated summary handling, system-state preservation,
-cut selection and projection. No private compaction code is copied. The compactor
+The approved [`prompts/mira-compaction-v0.1.md`](prompts/mira-compaction-v0.1.md)
+replaces Pi coding-summary instructions through the public `session_before_compact`
+hook. One unified summary request handles `initial`, `update`, or `split_turn`,
+including an existing summary in split-turn mode. Every response must complete
+normally and contain nonempty text. Hook errors, cancellation, missing results and
+invalid results fail closed; Pi catching a hook exception must not enable its
+default summary fallback. This is a structural safety check, not a summary-quality
+guarantee. The SDK still owns preparation, system-state preservation,
+cut selection, checkpoint structure and projection. No private compaction code is copied. The compactor
 has no tools, external resources, credential discovery, or model-network fallback.
 It cannot modify Memory. A stale context version rejects publication.
+
+The summary system contains the approved main instructions and one mode instruction.
+A separate JSON user-data object carries `mode`, `persona_context`, `memory_snapshot`,
+`previous_summary`, `source_messages`, `retained_tail`, `boundary`,
+`summary_token_budget`, and `recovery_operations`. The persona is the full current
+effective rendered reference, with a `MEMORY_STATE` placeholder rather than a
+duplicate Memory body. Reference material is data, not new instructions or
+authorization; persona examples must not become actual user history. Messages
+retain original roles, existing source entry IDs and timestamps; hidden thinking
+and provider internals are excluded. No History IDs are invented. Retained-tail
+results must not be rewritten as events before the compaction boundary.
+
+The summary input budget includes the entire summary system, reference/persona,
+Memory, JSON data and protocol overhead, with an actual output cap. Oversized
+input fails rather than silently trimming the persona or Memory. Final candidate
+shrink/fit checks, legal tool pairing and exact unknown-operation recovery facts
+remain independent of summary wording. See the dated adjustment in ADR 0016.
 The SDK receives the sanitized snapshot with stable authoritative entry IDs. Exact
 outstanding-operation evidence also accompanies summary requests, and is
 rehydrated into later model projections if summary/tail selection omits its
@@ -288,12 +310,23 @@ failure-window coverage; `tests/recovery/tool-diagnostics.test.mts` requires the
 isolated PostgreSQL gate and independent processes. Do not count it as passed
 without running that gate for the exact code.
 
+`tests/unit/compaction-continuity.test.mts` exercises deterministic mechanism
+contracts, including prompt/mode selection, structured reference data and failure
+boundaries. Synthetic summary outputs do not establish continuity quality. Six actual native
+summary/continuation probes and independent review are documented in
+[the quality report](../../docs/acceptance/compaction-continuity.md). Case 3 retains
+a future-permission wording concern; case 4 drops source History IDs. The targeted
+revocation and changed-tail follow-ups do not eliminate those limitations. These
+are separate from offline/PostgreSQL tests and do not establish production-provider,
+exact-token-budget, real-tool or repeated-compaction behavior.
+
 ## Ordinary Memory bootstrap and history tools
 
 `miraPrompt.loadMemory(signal)` loads Memory for a genuinely empty version-zero
-durable stream, then again after each successful compaction summary. Initial text
+durable stream, then once before each compaction summary. Initial text
 is persisted as `miraMemory` before the first input/model call. Each compaction
-publishes refreshed Memory/system, summary and recent tail together in one fenced
+uses that immutable candidate snapshot for summarization and publishes the same
+Memory/system, summary and recent tail together in one fenced
 CAS checkpoint. Recovery, new runtime instances, ordinary requests/wakes and file
 changes reuse the latest persisted snapshot. No old `loadInitialMemory` alias,
 memory-change notices, new Wakes, separate `initialContext` entrypoint or
@@ -331,8 +364,9 @@ approval. Technical schema/parameter checks, immutable intent/outcome, provenanc
 call-ID uniqueness, and writer fencing/CAS still apply.
 
 The initial system record has `{ role: "system", content: "", timestamp,
-miraMemory: string }` and stores initial Memory text. `loadMemory` also runs after
-a successful compaction summary, before its checkpoint is published. Recovery
+miraMemory: string }` and stores initial Memory text. `loadMemory` also runs once
+before a compaction summary; the same frozen snapshot is used in the final
+checkpoint, even if the file changes while summarization is running. Recovery
 uses the latest committed Memory snapshot. Later named-section revisions use
 ordinary append-only updates, with one current prompt in the active projection.
 Compaction validates the exact prepared system, then refreshes only its Memory

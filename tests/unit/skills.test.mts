@@ -188,7 +188,8 @@ test('formatter escapes metadata once and ordinary read alone loads skill body a
 test('recovery and compaction keep exact persisted skills without scanning; next natural request refreshes', async t => {
   const { sourceDirectory, miraHome } = await fixture(t); await skill(miraHome, 'continuity', 'SAVED_SKILLS');
   const writer = new MemoryWriter(); const loader = createSkillLoader({ sourceDirectory, miraHome }); let loads = 0; let memoryLoads = 0;
-  const options = { writer, model, autoCompaction: { enabled: false }, loadSkills: async (abort: AbortSignal) => { loads++; return loader(abort); }, miraPrompt: { ...prompt, loadMemory: async () => { memoryLoads++; return 'FROZEN_MEMORY'; } }, streamFn: () => streamOf(assistant('Synthetic long response '.repeat(100))) };
+  // Leave room for the full frozen persona/skills references and Mira summary instructions.
+  const options = { writer, model: { ...model, contextWindow: 32_768 }, autoCompaction: { enabled: false }, loadSkills: async (abort: AbortSignal) => { loads++; return loader(abort); }, miraPrompt: { ...prompt, loadMemory: async () => { memoryLoads++; return 'FROZEN_MEMORY'; } }, streamFn: () => streamOf(assistant('Synthetic long response '.repeat(100))) };
   await new PiDurableRuntime(options).run(input('Earlier discussion '.repeat(300)));
   await new PiDurableRuntime(options).run(input('Latest question'));
   const rawPrefix = structuredClone(writer.state.records); const before = await new PiDurableRuntime(options).recover();
