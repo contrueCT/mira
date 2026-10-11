@@ -123,7 +123,7 @@ test('real PostgreSQL: repeated full SDK compaction retains history, updated sys
   try {
     const writer = await db.acquire(); await seed(writer, compactionMessages());
     const before = await writer.load();
-    await runtime(writer, scripted([assistant('First checkpoint'), assistant('First turn prefix')])).compact({ keepRecentTokens: 1 });
+    await runtime(writer, scripted([assistant('First checkpoint')])).compact({ keepRecentTokens: 1 });
     await seed(writer, compactionMessages('second'));
     const requests: TranscriptContext[] = [];
     const state = await runtime(writer, (_m, c) => { requests.push(structuredClone(c)); return streamOf(assistant('Second checkpoint')); }).compact({ keepRecentTokens: 1 });
@@ -131,7 +131,13 @@ test('real PostgreSQL: repeated full SDK compaction retains history, updated sys
     assert.equal(state.entries.filter(e => e.type === 'compaction').length, 2);
     assert.deepEqual(state.messages.slice(2), compactionMessages('second').slice(4));
     assert.match(JSON.stringify(state.messages[0]), /second system/);
-    assert.ok(requests.some(r => JSON.stringify(r).includes('<previous-summary>')));
+    assert.equal(requests.length, 1, 'split-turn compaction uses one Mira summary request');
+    const users = requests[0]!.messages.filter(message => message.role === 'user');
+    assert.equal(users.length, 1, 'compaction reference data uses one JSON user message');
+    const content = users[0]!.content;
+    const data = JSON.parse(typeof content === 'string' ? content : content.filter(block => block.type === 'text').map(block => block.text).join(''));
+    assert.equal(data.mode, 'split_turn');
+    assert.equal(data.previous_summary, 'First checkpoint');
     const continued = await runtime(writer).run();
     assert.equal(continued.snapshot.version, state.snapshot.version + 1);
   } finally { await db.close(); }
