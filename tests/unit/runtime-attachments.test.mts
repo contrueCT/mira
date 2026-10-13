@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { deflateSync } from 'node:zlib';
+import { resizeImage } from '@earendil-works/pi-coding-agent';
+import { normalizeContext } from '@earendil-works/pi-ai';
+import { createModelTransport } from '../../apps/server/src/model-transport.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { validateAttachmentReferences, type AttachmentReference } from '@mira/cognition';
 import { hydrateAttachments } from '../../packages/runtime-pi/src/attachments.ts';
@@ -7,7 +11,18 @@ import { encodeEntry, messageEntry, PiDurableRuntime, jsonValue } from '@mira/ru
 import type { UserMessage, ToolResultMessage, Model, Api } from '@earendil-works/pi-ai';
 import { model, assistant, streamOf, MemoryWriter } from '../recovery/fixtures.mts';
 const input = (text = 'hello'): UserMessage => ({role:'user',content:text,timestamp:1000});
-const bytes = Buffer.from('synthetic image bytes');
+// Real RGBA PNGs with correct CRCs exercise the actual Pi raster decoder.
+function png(width: number, height: number): Buffer {
+  const chunk = (name: string, data: Buffer): Buffer => {
+    const body = Buffer.concat([Buffer.from(name),data]); let crc = 0xffffffff;
+    for (const byte of body) { crc ^= byte; for (let bit=0;bit<8;bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0); }
+    const out = Buffer.alloc(data.length+12); out.writeUInt32BE(data.length); body.copy(out,4); out.writeUInt32BE((crc ^ 0xffffffff) >>> 0,out.length-4); return out;
+  };
+  const header = Buffer.alloc(13); header.writeUInt32BE(width); header.writeUInt32BE(height,4); header[8]=8; header[9]=6;
+  return Buffer.concat([Buffer.from('89504e470d0a1a0a','hex'),chunk('IHDR',header),chunk('IDAT',deflateSync(Buffer.alloc((width*4+1)*height))),chunk('IEND',Buffer.alloc(0))]);
+}
+const bytes = png(1,1);
+function referenceFor(data: Buffer, mimeType = 'image/png'): AttachmentReference { return {...ref(mimeType),size:data.length,sha256:createHash('sha256').update(data).digest('hex')}; }
 function ref(mimeType = 'image/png'): AttachmentReference { return { id:randomUUID(), name:'test.png', mimeType, size:bytes.length, sha256:createHash('sha256').update(bytes).digest('hex'), path:'/private/immutable/test' }; }
 const signal = new AbortController().signal;
 test('native images hydrate from stable refs in order but are never stored as base64', async () => {
@@ -98,4 +113,58 @@ test('ordinary Pi image results reserve the same byte budget before native video
  const output=await hydrateAttachments([image,read],google,()=>{throw Error('over-budget video must not be read');},signal);
  assert.match(JSON.stringify(output[1]),/bytes were NOT provided/);assert.ok(!JSON.stringify(output[1]).includes('miraNativeVideos'));
  assert.deepEqual(output[0],image);
+});
+
+test('large valid PNG is resized request-only and reaches the actual Anthropic SDK wire as a native image',async()=>{
+ const original=png(9000,10);const reference=referenceFor(original);const before=Buffer.from(original);let body:Record<string,unknown>|undefined;
+ const selected=createModelTransport({builtinCredentials:{anthropic:{apiKeyEnv:'SYNTHETIC_ANTHROPIC'}},customConnections:[]},{kind:'builtin',provider:'anthropic',model:'claude-sonnet-4-5'},{env:()=> 'synthetic-api-key',fetch:async(_url,init)=>{
+   body=JSON.parse(String(init?.body)) as Record<string,unknown>;
+   const events=[{type:'message_start',message:{id:'fixture',type:'message',role:'assistant',content:[],model:'claude-sonnet-4-5',stop_reason:null,stop_sequence:null,usage:{input_tokens:20,output_tokens:0}}},{type:'content_block_start',index:0,content_block:{type:'text',text:''}},{type:'content_block_delta',index:0,delta:{type:'text_delta',text:'Synthetic answer'}},{type:'content_block_stop',index:0},{type:'message_delta',delta:{stop_reason:'end_turn',stop_sequence:null},usage:{output_tokens:3}},{type:'message_stop'}];
+   return new Response(events.map(event=>`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''),{headers:{'content-type':'text/event-stream'}});
+ }});
+ const source=Object.assign(input('inspect'),{miraAttachments:[reference]});const frozen=structuredClone(source);
+ const hydrated=await hydrateAttachments([source],selected.model,async()=>original,signal);
+ const response=await(await selected.streamFn(selected.model,normalizeContext({messages:hydrated}),{maxTokens:100})).result();
+ assert.equal(response.stopReason,'stop',response.errorMessage);assert.ok(body);
+ const contents=(body['messages'] as Array<{content:Array<{type:string;source?:{type:string;media_type:string;data:string};text?:string}>}>)[0]!.content;
+ const native=contents.find(part=>part.type==='image')!;assert.ok(native?.source);assert.equal(native.source.type,'base64');assert.equal(native.source.media_type,'image/png');
+ const wire=Buffer.from(native.source.data,'base64');assert.equal(wire.readUInt32BE(16),2000);assert.equal(wire.readUInt32BE(20),2);
+ assert.ok(native.source.data.length<=selected.model.inputLimits!.images!.resize!.maxBytes!);assert.match(JSON.stringify(contents),/original 9000x10, displayed at 2000x2/);
+ assert.deepEqual(original,before);assert.deepEqual(source,frozen);assert.match(JSON.stringify(hydrated),new RegExp(reference.sha256));
+ const {estimateRequestTokens}=await import('../../packages/runtime-pi/src/budget.ts');assert.ok(estimateRequestTokens([source],[],selected.model)>=estimateRequestTokens(hydrated));
+ const restarted=await hydrateAttachments([structuredClone(source)],selected.model,async()=>Buffer.from(original),signal);assert.deepEqual(restarted,hydrated);
+});
+
+test('image decoder failure omits bytes honestly without changing refs or failing later requests',async()=>{
+ const corrupt=Buffer.from('not a decodable image');const reference=referenceFor(corrupt);const source=Object.assign(input(),{miraAttachments:[reference]});
+ const hydrated=await hydrateAttachments([source],{...model,input:['image']},async()=>corrupt,signal);
+ assert.match(JSON.stringify(hydrated),/image bytes were NOT provided because safe image preparation failed/);assert.ok(!JSON.stringify(hydrated).includes('"type":"image"'));assert.match(JSON.stringify(hydrated),new RegExp(reference.sha256));
+ const later=Object.assign(input('later valid image'),{miraAttachments:[ref()]});
+ const repeated=await hydrateAttachments([source,later],{...model,input:['image']},async item=>item.id===reference.id?corrupt:bytes,signal);
+ assert.ok(JSON.stringify(repeated[1]).includes(bytes.toString('base64')));
+ const {estimateRequestTokens}=await import('../../packages/runtime-pi/src/budget.ts');assert.ok(estimateRequestTokens([source],[],{...model,input:['image']})>=estimateRequestTokens(hydrated));
+});
+
+test('model registry image count limits reserve existing images and keep whole newest groups',async()=>{
+ const selected={...model,input:['image'] as ['image'],inputLimits:{images:{maxPerMessage:1,maxPerRequest:2}}};
+ const existing=input();existing.content=[{type:'image',mimeType:'image/png',data:bytes.toString('base64')}];
+ const old=Object.assign(input('old'),{miraAttachments:[ref()]});const newest=Object.assign(input('new'),{miraAttachments:[ref()]});let reads=0;
+ const hydrated=await hydrateAttachments([existing,old,newest],selected,async()=>{reads++;return bytes;},signal);
+ assert.equal(reads,1);assert.match(JSON.stringify(hydrated[1]),/image-count limits/);assert.ok(JSON.stringify(hydrated[2]).includes(bytes.toString('base64')));
+ const group=Object.assign(input('group of two'),{miraAttachments:[ref(),ref()]});
+ const skipped=await hydrateAttachments([group],selected,()=>{throw Error('over-count group must not resolve');},signal);assert.match(JSON.stringify(skipped),/image-count limits/);
+ const mixed=Object.assign(structuredClone(existing),{miraAttachments:[ref()]});
+ assert.match(JSON.stringify(await hydrateAttachments([mixed],selected,()=>{throw Error('existing image reserves per-message slot');},signal)),/image-count limits/);
+});
+
+test('post-resize byte growth is bounded in deterministic newest-first order',async()=>{
+ const original=png(2001,1);const resized=await resizeImage(original,'image/png');assert.ok(resized);
+ const outputBytes=Buffer.byteLength(resized.data,'base64');assert.ok(outputBytes>original.length,'fixture must expand during safe normalization');
+ const remaining=outputBytes+original.length-1;
+ const existing:ToolResultMessage={role:'toolResult',toolCallId:'image',toolName:'read',isError:false,timestamp:1,content:[{type:'image',mimeType:'image/png',data:Buffer.alloc(12*1024*1024-remaining).toString('base64')}]};
+ const old=Object.assign(input('old'),{miraAttachments:[referenceFor(original)]});const newest=Object.assign(input('new'),{miraAttachments:[referenceFor(original)]});const order:string[]=[];
+ const hydrated=await hydrateAttachments([existing,old,newest],{...model,input:['image']},async item=>{order.push(item.id);return original;},signal);
+ assert.deepEqual(order,[newest.miraAttachments[0]!.id,old.miraAttachments[0]!.id]);assert.match(JSON.stringify(hydrated[1]),/safely prepared complete message group exceeds/);
+ assert.ok(JSON.stringify(hydrated[2]).includes(resized.data));
+ const total=hydrated.reduce((sum,message)=>sum+(Array.isArray(message.content)?message.content.reduce((n,part)=>n+(part.type==='image'?Buffer.byteLength(part.data,'base64'):0),0):0),0);assert.ok(total<=12*1024*1024);
 });

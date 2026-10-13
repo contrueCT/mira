@@ -83,7 +83,7 @@ projected source records and points to the previous checkpoint for older referen
 An eight-compaction regression follows that bounded chain back to the original
 attachment source even when every synthetic summary omits the pointers.
 
-## Current local aggregate result
+## Local aggregate results before the final image-limit finding
 
 With the exact pinned pnpm directory prepended to PATH (including nested scripts),
 `pnpm check` passed: all typecheck projects, package boundaries, 727 Node tests,
@@ -110,7 +110,9 @@ attachment tests and the Pi typecheck passed locally.
 
 The fresh final review reproduced a P2 quiet-Timeline regression: an oversized
 private tool result hit the generic read-limit notice before publication filtering.
-The fallback now keeps unreadable tool/context records invisible rather than publishing a notice. It cannot verify an oversized context record is a public reply; the original remains retained. Event read-limit notices remain unchanged.
+The fallback now keeps unreadable tool/context records invisible rather than
+publishing a notice. It cannot verify an oversized context record is a public
+reply; the original remains retained. Event read-limit notices remain unchanged.
 Ordinary tools remain private; only explicit bounded send_attachment publications
 are intended for the conversation.
 
@@ -118,3 +120,22 @@ The same review found that re-sending an uploaded immutable `.../UUID/data` path
 lost its display name. Snapshotting now recognizes only verified paths owned by
 this attachment store and preserves the original name in a new immutable copy.
 The regression covers PDF names, unrelated lookalike paths, symlinks and tampering.
+
+On `11ea5a1fd99ffd66d96269abdd4088df79c8450b`, the complete local check
+passed 729 Node tests, 42 Web unit tests, all typechecks, boundaries and builds.
+The newly added oversized-read PostgreSQL regression still requires CI execution.
+
+A subsequent fresh independent review reproduced another P2 with a valid 9,000px
+PNG: storage accepted the image, and actual Anthropic Pi/SDK request serialization
+forwarded its original out-of-limit dimensions. The synthetic fetch intercepted
+the request; no live provider was called. The correction reuses Pi's public image
+resize helper on verified request-only bytes, keeping immutable originals intact,
+and honors model-declared image-count limits. Failed normalization must report
+omitted bytes rather than repeatedly failing the Wake.
+
+The image correction's 12 focused runtime attachment tests and 133 combined
+runtime/compaction/provider regressions passed locally. The real Anthropic SDK
+wire test now sees a 2,000×2 request image and coordinate note for a 9,000×10
+original, with identical original digest/bytes and repeatable restart hydration.
+Coverage includes failed image preparation, catalog count limits and deterministic
+post-resize accounting when an image's encoded representation grows.
