@@ -2,7 +2,7 @@ import { realpath, stat } from 'node:fs/promises';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { ExtensionHost, type LocalExtensionEntry } from '@mira/extension-host';
-import { HistoryError, WakeLoop, type HistoryEntry, type HistoryReader, type MemoryCheckpointWriter } from '@mira/life';
+import { HistoryError, WakeLoop, type HistoryEntry, type HistoryReader, type DreamingWriter } from '@mira/life';
 import { migrate, PostgresPersistence, PersistenceError } from '@mira/persistence';
 import { PiDurableRuntime, type AutoCompactionOptions, createHistoryTools, decodeRecords } from '@mira/runtime-pi';
 import { writeWakeInput, setupMemoryWorkspace, loadMemoryBootstrap } from '@mira/workspace';
@@ -13,11 +13,14 @@ import { ModelRequestFailure } from './model-errors.ts';
 import { PersistenceFailureNotice } from './persistence-errors.ts';
 import { WebHttpError, type WebBackend } from './http.ts';
 import { createSkillLoader } from './skills.ts';
+import { DreamingScheduler, dreamingInstruction, dreamingPolicy, type DreamingOptions } from './dreaming.ts';
 import { createExternalIngress, type ExternalIngress } from './external-ingress.ts';
 
 export interface WebServiceOptions {
   /** Runtime context budgets; omitted uses automatic compaction defaults. */
   autoCompaction?: AutoCompactionOptions;
+  /** Proactive memory housekeeping; enabled by default when Memory is configured. */
+  dreaming?: DreamingOptions;
   connectionString: string; schema: string; miraId: string;
   sourceDirectory: string; spoolDirectory: string; settingsFile: string;
   workingDirectory?: string; memoryRoot?: string;
@@ -62,11 +65,12 @@ function visible(entry: HistoryEntry): Timeline['items'][number] | null {
 export class LocalWebService implements WebBackend {
   readonly external: ExternalIngress;
   readonly #options: WebServiceOptions;
-  readonly #writer: MemoryCheckpointWriter;
+  readonly #writer: DreamingWriter;
   readonly #history: HistoryReader;
   readonly #settings: WebSettingsStore;
   readonly #loop: WakeLoop;
   readonly #host: ExtensionHost | undefined;
+  readonly #dreaming: DreamingScheduler | undefined;
   readonly #abort = new AbortController();
   #drain: Promise<void> | undefined;
   #error: string | ModelRequestFailure | PersistenceFailureNotice | null = null;
@@ -77,12 +81,24 @@ export class LocalWebService implements WebBackend {
   #settingsGeneration = 0;
   #kickRequested = false;
   readonly #cache = new Map<string, Timeline['items'][number] | null>();
-  private constructor(options: WebServiceOptions, writer: MemoryCheckpointWriter, history: HistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, host?: ExtensionHost) {
+  private constructor(options: WebServiceOptions, writer: DreamingWriter, history: HistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, host?: ExtensionHost) {
     this.#options = options; this.#writer = writer; this.#history = history; this.#settings = settings;
     this.#settingsValue = settingsValue; this.#loop = loop; this.#host = host;
     this.external = createExternalIngress(writer, () => this.#kick());
+    const policy = dreamingPolicy(options.dreaming);
+    if (options.memoryRoot && policy.enabled !== false) {
+      this.#dreaming = new DreamingScheduler(async () => {
+        if (this.#closed || writer.signal.aborted || this.#drain || this.#error || this.#configurationWrite
+          || (!options.synthetic && !hasSelectedWebApiKey(this.#settingsValue))) return null;
+        const result = await writer.requestDreaming({ idleMs: policy.idleMs, intervalMs: policy.intervalMs,
+          minCompactions: policy.minCompactions, instruction: dreamingInstruction });
+        if (result.status === 'inserted') { this.#kick(); return null; }
+        return result.nextCheckAt;
+      }, error => { if (!this.#closed) this.#error = PersistenceFailureNotice.from(error) ?? publicFailure; });
+    }
   }
   static async open(options: WebServiceOptions): Promise<LocalWebService> {
+    dreamingPolicy(options.dreaming);
     const cwd = await realpath(options.workingDirectory ?? process.cwd());
     if (!(await stat(cwd)).isDirectory()) throw Error('Working directory must exist');
     const loadSkills = createSkillLoader({ sourceDirectory: options.sourceDirectory, ...(options.miraHome === undefined ? {} : { miraHome: options.miraHome }) });
@@ -125,6 +141,7 @@ export class LocalWebService implements WebBackend {
           });
         },
       });
+      if (roots && options.dreaming?.enabled !== false) await writer.initializeDreaming();
       service = new LocalWebService(options, writer, persistence.history(writer.miraId), settings, settingsValue, loop, host);
       // Existing durable pending runs resume through the same recovery contracts.
       service.#kick();
@@ -145,6 +162,7 @@ export class LocalWebService implements WebBackend {
       // A concurrent arrival after the last empty claim needs one more drain.
       // A failed/unknown run is not automatically retried.
       if (again && !this.#error && !this.#closed) this.#kick();
+      else this.#dreaming?.schedule();
     });
   }
   async status(): Promise<Awaited<ReturnType<WebBackend['status']>>> {
@@ -160,6 +178,7 @@ export class LocalWebService implements WebBackend {
     if (generation === this.#settingsGeneration && !this.#closed && !this.#drain && !this.#configurationWrite) {
       this.#settingsValue = saved;
       if (this.#kickRequested && !this.#error) this.#kick();
+      else this.#dreaming?.schedule();
     }
     return structuredClone(this.#settingsValue);
   }
@@ -170,6 +189,7 @@ export class LocalWebService implements WebBackend {
     finally {
       this.#configurationWrite = false; this.#settingsGeneration++;
       if (this.#kickRequested && !this.#error) this.#kick();
+      else this.#dreaming?.schedule();
     }
   }
   async discover(connection: unknown, signal?: AbortSignal) {
@@ -212,6 +232,7 @@ export class LocalWebService implements WebBackend {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true; this.#abort.abort(new Error('Mira is stopping'));
+    await this.#dreaming?.close();
     await this.#drain;
     try { await this.#host?.close(); } finally { await this.#writer.close(); }
   }

@@ -32,6 +32,8 @@
 
 自动压缩默认在自然模型请求的输入预算达到 80% 时尝试，保留 Pi 完整 SDK 压缩与工具恢复语义。压缩前读取一次当前 MEMORY.md，摘要与最终 system/摘要/近期尾部原子 checkpoint 使用同一份冻结快照；普通请求和文件修改不重读、不 Wake，重启恢复最新快照。摘要使用已批准的 Mira 连续上下文提示词，公开 Pi hook 单次处理 initial/update/split_turn，失败不回退到 coding-summary。具体预算、单次溢出恢复与失败边界见 ADR 0016；确定性机制验证与[六例原生模型质量探针](docs/acceptance/compaction-continuity.md)分开报告；后者仍有许可措辞及来源 ID 局限，不代表生产 provider 验收。
 
+Dreaming 在本地 Web 配置 Memory 时默认启用：有新的显式用户/扩展/外部 Wake，连续空闲 30 分钟，且自上次触发已有 3 次成功上下文压缩或超过 24 小时，才运行一次普通整理 Wake。首次启用建立基线；无新经历、仅记录事件和外部通知不会空跑。模型使用普通工具安静修订 Memory，Git 与失败恢复沿用现有链路；不强制压缩或刷新 system Memory。详见 [ADR 0018](docs/adr/0018-dreaming-memory-housekeeping.md)。
+
 基础设施优先保证连续性、真实历史、执行完整性和故障恢复。主模型根据用户对话、上下文和自然语言 Prompt 决定工具调用或澄清，没有独立 authorize 回调或授权引擎；不建立数值情绪系统、不把每次 Wake 变成新会话。
 
 ## 目录
