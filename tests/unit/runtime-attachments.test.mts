@@ -90,3 +90,12 @@ test('attachment source indexes remain bounded across repeated compaction and ch
  while(id!==original) {const record=records.get(id)!;assert.ok(record);const entry=record.payload as {type:string;summary?:string};if(entry.type!=='compaction')break;const match=entry.summary!.match(/checkpoint History ID "([a-f0-9-]+)"/)??entry.summary!.match(/History ID "([a-f0-9-]+)"/);assert.ok(match);id=match[1]!;assert.ok(++traversed<10);}
  assert.equal(id,original);assert.equal(traversed,8);
 });
+test('ordinary Pi image results reserve the same byte budget before native video tool hydration',async()=>{
+ const google:Model<Api>={...model,provider:'google',api:'google-generative-ai',id:'gemini-2.5-flash',input:['text','image']};
+ const image:ToolResultMessage={role:'toolResult',toolCallId:'ordinary-image',toolName:'read',content:[{type:'image',mimeType:'image/png',data:Buffer.alloc(6*1024*1024).toString('base64')}],timestamp:1000,isError:false};
+ const video={...ref('video/mp4'),size:7*1024*1024};
+ const read:ToolResultMessage={role:'toolResult',toolCallId:'video',toolName:'read',content:[{type:'text',text:'explicit video read'}],timestamp:1001,isError:false,details:jsonValue({version:1,type:'attachment-read',attachments:[video]})};
+ const output=await hydrateAttachments([image,read],google,()=>{throw Error('over-budget video must not be read');},signal);
+ assert.match(JSON.stringify(output[1]),/bytes were NOT provided/);assert.ok(!JSON.stringify(output[1]).includes('miraNativeVideos'));
+ assert.deepEqual(output[0],image);
+});

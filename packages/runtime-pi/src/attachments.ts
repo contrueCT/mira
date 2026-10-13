@@ -41,7 +41,15 @@ function nativeMedia(message: unknown, model: Model<Api>): Array<{reference:Atta
 /** Keep complete user message groups, newest first; oversized old media cannot
  * suppress a later small upload. Skipped refs remain available through history. */
 export function selectInlineMedia(messages: readonly unknown[], model: Model<Api>): Set<number> {
-  const selected = new Set<number>(); let remaining = 12 * 1024 * 1024;
+  const selected = new Set<number>();
+  // Existing Pi image/tool-result blocks also enter the provider request; reserve
+  // their bytes before selecting any hydrated attachment media.
+  const existingImageBytes = messages.reduce<number>((total, value) => {
+    const message = value as Record<string, unknown>;
+    if (!Array.isArray(message['content'])) return total;
+    return total + message['content'].reduce((sum: number, block: Record<string, unknown>) => sum + (block['type'] === 'image' && typeof block['data'] === 'string' ? Buffer.byteLength(block['data'], 'base64') : 0), 0);
+  }, 0);
+  let remaining = Math.max(0, 12 * 1024 * 1024 - existingImageBytes);
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index] as Record<string, unknown>;
     const bytes = nativeMedia(message,model).reduce((sum,item)=>sum+item.reference.size,0);

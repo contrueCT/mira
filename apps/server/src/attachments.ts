@@ -155,9 +155,16 @@ export class AttachmentStore {
     if (!files.length || files.length > attachmentLimits.count) invalid();
     const result: AttachmentDescriptor[] = []; let size = 0;
     for (const file of files) {
-      const absolute = path.resolve(cwd, file); const bytes = await readRegular(absolute, attachmentLimits.file); size += bytes.length;
+      const absolute = path.resolve(cwd, file);
+      const relative = path.relative(this.directory, absolute).split(path.sep);
+      // Only our exact UUID/data layout carries stored display metadata. Verify
+      // the full object (including digest and no-symlink checks) before reuse;
+      // ordinary local files still get their own basename, not nearby metadata.
+      const owned = relative.length === 2 && uuid.test(relative[0]!) && relative[1] === 'data'
+        ? await this.read(relative[0]!) : null;
+      const bytes = owned?.bytes ?? await readRegular(absolute, attachmentLimits.file); size += bytes.length;
       if (size > attachmentLimits.total) throw new AttachmentError('too_large');
-      result.push(await this.stage(path.basename(absolute), bytes));
+      result.push(await this.stage(owned?.descriptor.name ?? path.basename(absolute), bytes));
     }
     return result;
   }

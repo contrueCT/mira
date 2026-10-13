@@ -247,7 +247,9 @@ export class LocalWebService implements WebBackend, ManagementBackend {
           if (entry?.kind !== 'tool' || entry.outcome !== null) this.#cache.set(key, entry ? visible(entry) : null);
         } catch (error) {
           if (!(error instanceof HistoryError) || error.code !== 'too_large') throw error;
-          this.#cache.set(key, { id: key, role: 'notice', text: '此历史记录超过界面读取上限，原始记录仍完整保存。', occurredAt: ref.occurredAt });
+          // An unreadable tool/context record cannot be verified as public. Keep
+          // private activity hidden; attachment publications are bounded descriptors.
+          this.#cache.set(key, ref.kind === 'tool' || ref.kind === 'context' ? null : { id: key, role: 'notice', text: '此历史记录超过界面读取上限，原始记录仍完整保存。', occurredAt: ref.occurredAt });
         }
         if (this.#cache.size > 1000) this.#cache.delete(this.#cache.keys().next().value!);
       }

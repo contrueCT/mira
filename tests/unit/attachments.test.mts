@@ -22,6 +22,25 @@ test('immutable copies survive source deletion, store reopening and original buf
   await assert.rejects(store.hydrate({ ...reference, path: original }), AttachmentError);
   assert.equal(Buffer.from(await store.hydrate(reference)).toString(), 'before');
 });
+test('resending a verified uploaded path preserves its original filename without trusting other paths', async t => {
+  const { root, store } = await fixture(t); const bytes = Buffer.from('%PDF-1.7\nimmutable invoice');
+  const uploaded = await store.stage('invoice.pdf', bytes); const [reference] = await store.resolve([uploaded.id]); assert.ok(reference);
+  const tool = createAttachmentTool(store, root);
+  const result = await tool.execute('resend', { paths: [reference.path] });
+  const entry = { id: 'history', kind: 'tool', intent: { toolName: 'send_attachment', callId: 'resend' }, outcome: { callId: 'resend', payload: { role: 'toolResult', toolName: 'send_attachment', toolCallId: 'resend', isError: false, ...result } } } as unknown as HistoryEntry;
+  const [resent] = attachmentPublication(entry)!.attachments; assert.ok(resent);
+  assert.equal(resent.name, 'invoice.pdf'); assert.equal(resent.mimeType, 'application/pdf'); assert.equal(resent.sha256, uploaded.sha256);
+  assert.deepEqual((await store.read(resent.id)).bytes, bytes);
+  // A lookalike layout outside this store never supplies display metadata.
+  const lookalike = path.join(root, 'other', uploaded.id); await mkdir(lookalike, { recursive: true });
+  await writeFile(path.join(lookalike, 'data'), bytes); await writeFile(path.join(lookalike, 'metadata.json'), JSON.stringify(uploaded));
+  assert.equal((await store.snapshot([path.join(lookalike, 'data')], root))[0]!.name, 'data');
+  await symlink(reference.path, path.join(root, 'alias.pdf'));
+  await assert.rejects(store.snapshot([path.join(root, 'alias.pdf')], root), AttachmentError);
+  // The owned-path shortcut must retain digest verification, not just its name.
+  await chmod(reference.path, 0o600); await writeFile(reference.path, '%PDF-tampered');
+  await assert.rejects(tool.execute('resend-tampered', { paths: [reference.path] }), AttachmentError);
+});
 test('signature MIME never trusts names and files, images and message limits are bounded', async t => {
   const { store } = await fixture(t);
   assert.equal((await store.stage('fake.png', Buffer.from('<svg onload="alert(1)">'))).mimeType, 'application/octet-stream');

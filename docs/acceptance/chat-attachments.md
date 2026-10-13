@@ -90,3 +90,31 @@ With the exact pinned pnpm directory prepended to PATH (including nested scripts
 42 Web unit tests, tool build and production Vite build. The final compaction-index
 change also passed a separate Pi typecheck and its focused seven-test suite.
 PostgreSQL/browser/live-model stages are separate and not included in this claim.
+
+
+## First CI run and follow-up
+
+Run `38416989302` failed in the old hidden-tool timeline recovery test: its
+hand-built cursor used only event/context kinds, while the timeline now includes
+tool records to expose explicit attachment publications. History correctly rejected
+that mismatched cursor (HTTP 400). The fixture now uses all three timeline kinds;
+privacy assertions and the strict cursor validation remain intact. The other 171
+PostgreSQL integration/recovery tests passed, including attachment recovery. Browser
+stages did not run because the earlier stage failed.
+
+A further budget regression reserves bytes already present in ordinary Pi image
+blocks before selecting attachment media. A 6 MiB ordinary image plus a 7 MiB
+explicit video read now retains the file reference and reports omitted video,
+rather than exceeding the provider request budget. All eight focused runtime
+attachment tests and the Pi typecheck passed locally.
+
+The fresh final review reproduced a P2 quiet-Timeline regression: an oversized
+private tool result hit the generic read-limit notice before publication filtering.
+The fallback now keeps unreadable tool/context records invisible rather than publishing a notice. It cannot verify an oversized context record is a public reply; the original remains retained. Event read-limit notices remain unchanged.
+Ordinary tools remain private; only explicit bounded send_attachment publications
+are intended for the conversation.
+
+The same review found that re-sending an uploaded immutable `.../UUID/data` path
+lost its display name. Snapshotting now recognizes only verified paths owned by
+this attachment store and preserves the original name in a new immutable copy.
+The regression covers PDF names, unrelated lookalike paths, symlinks and tampering.
