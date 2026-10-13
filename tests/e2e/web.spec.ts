@@ -145,7 +145,7 @@ test('built-in selection writes a password key once and receives only saved stat
   const fixture = settingsFixture(); const { writes } = await mockSettings(page, fixture);
   await openSettings(page);
   await page.getByLabel('服务商', { exact: true }).selectOption('openai');
-  await page.getByLabel('模型', { exact: true }).selectOption('fixture-builtin');
+  await page.getByRole('combobox', { name: '模型', exact: true }).selectOption('fixture-builtin');
   await page.getByLabel('API Key', { exact: true }).fill('dummy-web-openai-key');
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await expect(page.getByText(/配置已保存/u)).toBeVisible();
