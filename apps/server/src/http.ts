@@ -72,7 +72,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   let interval = performance.now(); let reads = 0; let writes = 0; let discoveries = 0; let discovering = false;
   const methods = new Map<string, readonly string[]>([
     ['/api/status', ['GET']], ['/api/timeline', ['GET', 'POST']], ['/api/messages', ['POST']], ['/api/settings', ['GET', 'PUT']],
-    ['/api/memory', ['GET']], ['/api/messages/:id/status', ['GET']], ['/api/extensions', ['GET']], ['/api/extensions/:id', ['POST']], ['/api/runs', ['GET']], ['/api/runs/:id', ['GET']],
+    ['/api/memory', ['GET']], ['/api/messages/:id/status', ['GET']], ['/api/extensions', ['GET']], ['/api/extensions/:id', ['POST']], ['/api/runs', ['GET']], ['/api/runs/:id', ['GET']], ['/api/runs/:id/requests', ['GET']],
     ['/api/models/catalog', ['GET']], ['/api/models/discover', ['POST']],
     ['/api/external/events', ['POST']], ['/api/external/wake', ['POST']], ['/api/external/notifications', ['POST']],
   ]);

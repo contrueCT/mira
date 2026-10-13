@@ -59,6 +59,13 @@ export function registerManagementHttp(app: FastifyInstance, backend: Partial<Ma
     const result = await requireMethod('runs')(request.query.before);
     return { items: result.items.map(summaryView), nextCursor: result.nextCursor };
   });
+  app.get<{ Params: { id: string }; Querystring: { before?: string } }>('/api/runs/:id/requests', {
+    schema: { ...page, params: runParams },
+  }, async (request, reply) => {
+    const result = await requireMethod('runRequests')(request.params.id, request.query.before);
+    if (!result) return reply.code(404).send({ error: 'Run not found' });
+    return { items: result.items.map(item => ({ eventId: item.eventId, source: item.source, type: item.type, reason: item.reason })), nextCursor: result.nextCursor };
+  });
   app.get<{ Params: { id: string }; Querystring: { before?: string } }>('/api/runs/:id', {
     schema: { ...page, params: runParams },
   }, async (request, reply) => {
@@ -67,6 +74,6 @@ export function registerManagementHttp(app: FastifyInstance, backend: Partial<Ma
     return { ...summaryView(result), requests: result.requests.map(item => ({ eventId: item.eventId, source: item.source, type: item.type, reason: item.reason })),
       assistant: replyView(result.assistant), memory: memoryView(result.memory),
       executions: result.executions.map(item => ({ id: item.id, occurredAt: item.occurredAt, kind: item.kind, name: item.name, status: item.status, error: item.error === null ? null : privateError })),
-      nextCursor: result.nextCursor, compactionErrors: 'not-recorded', error: result.error === null ? null : privateError };
+      nextCursor: result.nextCursor, nextRequestsCursor: result.nextRequestsCursor, compactionErrors: 'not-recorded', error: result.error === null ? null : privateError };
   });
 }

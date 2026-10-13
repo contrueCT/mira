@@ -47,6 +47,7 @@ export interface RunExecutionView {
 }
 export interface RunDetailView extends RunSummaryView {
   requests: Array<{ eventId: string; source: string; type: string; reason: string | null }>;
+  nextRequestsCursor: string | null;
   assistant: AssistantReplyView | null; memory: MemoryReceiptView;
   executions: RunExecutionView[]; nextCursor: string | null;
   /** Compaction failures are not durably recorded by the current runtime. */
@@ -60,4 +61,5 @@ export interface ManagementBackend {
   changeExtension(id: string, mutation: ExtensionMutation): Promise<ExtensionMutationView>;
   runs(before?: string): Promise<RunsView>;
   run(id: string, before?: string): Promise<RunDetailView | null>;
+  runRequests(id: string, before?: string): Promise<{ items: RunDetailView['requests']; nextCursor: string | null } | null>;
 }

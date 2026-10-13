@@ -20,7 +20,7 @@ const run: RunDetailView = { id, occurredAt: now, status: 'completed', requestCo
   assistant: { id, text: 'Visible reply', occurredAt: now, thinking: secret } as never,
   memory: { state: 'changed', commit: 'b'.repeat(40), payload: secret } as never,
   executions: [{ id, occurredAt: now, kind: 'tool', name: 'read', status: 'failed', error: secret, arguments: secret, outcome: secret } as never],
-  nextCursor: null, compactionErrors: 'not-recorded', error: secret,
+  nextCursor: null, nextRequestsCursor: 'members-next', compactionErrors: 'not-recorded', error: secret,
   payload: secret } as RunDetailView;
 function backend(overrides: Partial<WebBackend> = {}): WebBackend {
   return { status: async () => ({ state: 'idle', mode: 'synthetic', model: null, error: null }), timeline: async () => ({ items: [], nextCursor: null }),
@@ -31,12 +31,12 @@ function backend(overrides: Partial<WebBackend> = {}): WebBackend {
     messageStatus: async requested => ({ id: requested, eventId: id, runId: id, state: 'completed', assistant: run.assistant, memory: run.memory, error: secret, trace: secret }),
     extensions: async () => ({ available: true, extensions: [extension], releases: [{ digest: revision, path: secret, config: secret }], error: secret }),
     changeExtension: async (_id, change) => ({ id, extensionId: 'example', action: change.action, status: 'applied', persistence: 'saved', runtime: extension, error: secret, config: secret }),
-    runs: async () => ({ items: [run], nextCursor: 'next' }), run: async () => run, ...overrides };
+    runs: async () => ({ items: [run], nextCursor: 'next' }), run: async () => run, runRequests: async () => ({ items: run.requests, nextCursor: null }), ...overrides };
 }
 
 test('management HTTP projections discard secret-bearing extra fields and raw errors recursively', async t => {
   const app = createLocalHttp({ backend: backend(), port }); t.after(() => app.close());
-  for (const url of ['/api/memory', '/api/messages/request-1/status', '/api/extensions', '/api/runs', `/api/runs/${id}`]) {
+  for (const url of ['/api/memory', '/api/messages/request-1/status', '/api/extensions', '/api/runs', `/api/runs/${id}`, `/api/runs/${id}/requests`]) {
     const response = await app.inject({ url, headers: readHeaders });
     assert.equal(response.statusCode, 200, response.body); assert.doesNotMatch(response.body, new RegExp(secret));
     assert.equal(response.headers['cache-control'], 'private, no-store');
@@ -44,14 +44,14 @@ test('management HTTP projections discard secret-bearing extra fields and raw er
   const response = await app.inject({ method: 'POST', url: '/api/extensions/example', headers: writeHeaders, payload: { action: 'configure', expectedRevision: revision, config: { password: secret } } });
   assert.equal(response.statusCode, 200); assert.doesNotMatch(response.body, new RegExp(secret));
   const detail = (await app.inject({ url: `/api/runs/${id}`, headers: readHeaders })).json();
-  assert.equal(detail.assistant.text, 'Visible reply'); assert.equal(detail.memory.commit, 'b'.repeat(40)); assert.equal(detail.compactionErrors, 'not-recorded');
+  assert.equal(detail.assistant.text, 'Visible reply'); assert.equal(detail.memory.commit, 'b'.repeat(40)); assert.equal(detail.compactionErrors, 'not-recorded'); assert.equal(detail.nextRequestsCursor, 'members-next');
 });
 
 test('management routes preserve local-origin protection, strict methods, bounded schema, and write-only mutation contract', async t => {
   let mutations = 0; const received: ExtensionMutation[] = [];
   const app = createLocalHttp({ backend: backend({ changeExtension: async (_id, change) => { mutations++; received.push(change); return { id, extensionId: 'example', action: change.action, status: 'applied', persistence: 'saved', runtime: extension, error: null }; } }), port });
   t.after(() => app.close());
-  for (const url of ['/api/memory', '/api/messages/request/status', '/api/extensions', '/api/runs', `/api/runs/${id}`]) {
+  for (const url of ['/api/memory', '/api/messages/request/status', '/api/extensions', '/api/runs', `/api/runs/${id}`, `/api/runs/${id}/requests`]) {
     assert.equal((await app.inject({ url, headers: { ...readHeaders, origin: 'https://evil.example' } })).statusCode, 403);
     assert.equal((await app.inject({ url, headers: { host: readHeaders.host } })).statusCode, 403);
   }

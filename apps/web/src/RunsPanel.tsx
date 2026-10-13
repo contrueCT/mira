@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, errorText, isAbort } from './api.ts';
 import { memoryReceiptText } from './MemoryPanel.tsx';
-import type { RunDetail, RunExecution, RunSummary, RunsView } from './types.ts';
+import type { RunDetail, RunExecution, RunRequestsPage, RunSummary, RunsView } from './types.ts';
 import { useVisiblePoll } from './useVisiblePoll.ts';
 import { acceptRunRecords, emptyRunRecords, nextRunRecords } from './run-records.ts';
+import { acceptRunRequests, beginRunRequests, cancelRunRequests, emptyRunRequests, finishRunRequests, matchesRunRequests, seedRunRequests } from './run-requests.ts';
 
 function dateTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? '时间未记录' : new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(date); }
 const kindLabel: Record<RunExecution['kind'], string> = { model: '模型', tool: '工具', compaction: '压缩', recovery: '恢复', unavailable: '记录不可用' };
@@ -18,14 +19,24 @@ function RunRecord({ id, active, onBack }: { id: string; active: boolean; onBack
   const olderRef = useRef<AbortController | null>(null);
   const pagingRef = useRef(false);
   const recordsRef = useRef(emptyRunRecords());
-  useEffect(() => () => { olderRef.current?.abort(); }, []);
-  useEffect(() => { if (!active) { olderRef.current?.abort(); pagingRef.current = false; setLoadingOlder(false); } }, [active]);
+  const [requests, setRequests] = useState(() => emptyRunRequests(id));
+  const requestsRef = useRef(requests);
+  const requestsAbort = useRef<AbortController | null>(null);
+  const [requestsError, setRequestsError] = useState<string | null>(null);
+  useEffect(() => () => { olderRef.current?.abort(); requestsAbort.current?.abort(); requestsRef.current = cancelRunRequests(requestsRef.current); }, []);
+  useEffect(() => {
+    if (!active) {
+      olderRef.current?.abort(); pagingRef.current = false; setLoadingOlder(false);
+      requestsAbort.current?.abort(); requestsRef.current = cancelRunRequests(requestsRef.current); setRequests(requestsRef.current);
+    }
+  }, [active]);
   useVisiblePoll(active, async signal => {
     try {
       const next = await api<RunDetail>(`/api/runs/${encodeURIComponent(id)}`, { signal });
       if (signal.aborted) return;
       if (next.id !== id) throw new Error('读取到其他 Wake 的记录，当前详情尚未确认');
       recordsRef.current = acceptRunRecords(recordsRef.current, next);
+      requestsRef.current = seedRunRequests(requestsRef.current, next.id, next.requests, next.nextRequestsCursor); setRequests(requestsRef.current);
       setDetail({ ...next, executions: recordsRef.current.executions, nextCursor: nextRunRecords(recordsRef.current)?.cursor ?? null }); setError(null);
     } catch (cause) { if (!signal.aborted && !isAbort(cause)) setError(errorText(cause)); }
   }, 5000, version);
@@ -43,6 +54,24 @@ function RunRecord({ id, active, onBack }: { id: string; active: boolean; onBack
     } catch (cause) { if (!controller.signal.aborted && !isAbort(cause)) setOlderError(errorText(cause)); }
     finally { if (olderRef.current === controller) { pagingRef.current = false; if (!controller.signal.aborted) setLoadingOlder(false); } }
   };
+  const moreRequests = async () => {
+    const nextState = beginRunRequests(requestsRef.current);
+    if (nextState === requestsRef.current || !nextState.reading || !active) return;
+    requestsRef.current = nextState; setRequests(nextState); setRequestsError(null);
+    const request = nextState.reading;
+    const controller = new AbortController(); requestsAbort.current = controller;
+    try {
+      const page = await api<RunRequestsPage>(`/api/runs/${encodeURIComponent(request.runId)}/requests?before=${encodeURIComponent(request.cursor)}`, { signal: controller.signal });
+      if (controller.signal.aborted || !matchesRunRequests(requestsRef.current, request)) return;
+      requestsRef.current = acceptRunRequests(requestsRef.current, request, page); setRequests(requestsRef.current);
+    } catch (cause) {
+      if (!controller.signal.aborted && matchesRunRequests(requestsRef.current, request) && !isAbort(cause)) setRequestsError(errorText(cause));
+    } finally {
+      if (!controller.signal.aborted && matchesRunRequests(requestsRef.current, request)) {
+        requestsRef.current = finishRunRequests(requestsRef.current, request); setRequests(requestsRef.current);
+      }
+    }
+  };
   return <>
     <div className="management-heading"><button type="button" className="text-button" onClick={onBack}>返回运行列表</button><button type="button" className="text-button" onClick={() => setVersion(value => value + 1)}>刷新详情</button></div>
     {error && <p className="inline-error" role="alert">{error}</p>}
@@ -50,7 +79,10 @@ function RunRecord({ id, active, onBack }: { id: string; active: boolean; onBack
     {detail && <article className="run-detail" aria-label="运行详情">
       <h3>Wake 运行</h3><p className="technical-id">{detail.id}</p><p className="field-hint">{dateTime(detail.occurredAt)} · {detail.status === 'completed' ? '已完成' : '尚未记录完成'}</p>
       {detail.error && <p className="field-notice">{detail.error}</p>}
-      <section><h4>触发来源</h4>{detail.requests.length ? <ul className="run-requests">{detail.requests.map(request => <li key={request.eventId}><strong>{request.source} · {request.type}</strong><span className="technical-id">{request.eventId}</span>{request.reason && <p>{request.reason}</p>}</li>)}</ul> : <p className="field-hint">没有可读取的触发来源记录。</p>}</section>
+      <section aria-label="触发请求"><h4>触发来源</h4><p className="field-hint">共 {detail.requestCount} 个触发请求，已读取 {requests.items.length} 个。</p>{requests.items.length ? <ul className="run-requests">{requests.items.map(request => <li key={request.eventId}><strong>{request.source === 'unavailable' && request.type === 'unavailable' ? '触发描述未展示' : `${request.source} · ${request.type}`}</strong><span className="technical-id">{request.eventId}</span>{request.source === 'unavailable' && request.type === 'unavailable' ? <p>原始触发描述超出展示大小限制，完整记录仍保留在 History 中。</p> : request.reason && <p>{request.reason}</p>}</li>)}</ul> : <p className="field-hint">没有可读取的触发来源记录。</p>}
+        {requests.nextCursor && <button className="text-button" type="button" disabled={!!requests.reading} onClick={() => { void moreRequests(); }}>{requests.reading ? '正在读取触发请求…' : '更多触发请求'}</button>}
+        {requestsError && <p className="inline-error" role="alert">{requestsError}</p>}
+      </section>
       <section><h4>Memory</h4><p className="field-hint">{memoryReceiptText(detail.memory)}</p>{detail.memory.commit && <p className="technical-id">{detail.memory.commit}</p>}</section>
       <section><h4>模型、工具与压缩</h4><p className="field-hint">只展示已记录的名称、状态和安全诊断，不展示原始参数、工具结果或思考内容。</p>
         {!detail.executions.length ? <p className="management-empty">没有可展示的执行记录。</p> : <ol className="execution-list">{detail.executions.map(execution => <li key={execution.id}><div><span className="management-badge">{kindLabel[execution.kind]}</span><strong>{execution.name ?? '名称未记录'}</strong><span>{execution.status}</span></div><time dateTime={execution.occurredAt}>{dateTime(execution.occurredAt)}</time>{execution.error && <p className="inline-error">{execution.error}</p>}</li>)}</ol>}

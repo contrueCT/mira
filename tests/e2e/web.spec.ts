@@ -12,7 +12,7 @@ test('desktop and narrow layouts render the single Mira timeline without console
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('mira-narrow.png'), fullPage: true });
   await page.getByRole('button', { name: '模型设置', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: '模型设置' })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: '设置', exact: true })).toBeVisible();
   await expect(page.getByLabel('服务商', { exact: true })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('mira-settings-narrow.png'), fullPage: true });
   expect(errors).toEqual([]);

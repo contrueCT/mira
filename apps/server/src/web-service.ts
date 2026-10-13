@@ -299,27 +299,17 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     }
   }
   async runs(before?: string) {
-    const page = await this.#history.page({ kinds: ['wake'], limit: 30, ...(before ? { before } : {}) });
-    const items = [];
-    for (const hit of page.hits) {
-      const entry = await this.#history.read({ id: hit.id, maxBytes: 1_048_576 });
-      if (entry?.kind === 'wake') items.push({ id: entry.id, occurredAt: entry.occurredAt, status: entry.status, requestCount: entry.requests.length });
-    }
-    return { items, nextCursor: page.nextCursor };
+    const page = await this.#history.pageRuns({ limit: 30, ...(before ? { before } : {}) });
+    return { items: page.items.map(({ id, occurredAt, status, requestCount }) => ({ id, occurredAt, status, requestCount })), nextCursor: page.nextCursor };
+  }
+  async runRequests(id: string, before?: string) {
+    return this.#history.readRunRequests({ id, ...(before ? { before } : {}) });
   }
   async run(id: string, before?: string): Promise<RunDetailView | null> {
     const page = await this.#history.readRun({ id, ...(before ? { before } : {}) });
     if (!page) return null;
-    const requests: RunDetailView['requests'] = [];
-    for (const member of page.run.requests) {
-      try {
-        const entry = await this.#history.read({ id: member.eventId, maxBytes: 1_048_576 });
-        if (entry?.kind === 'event') requests.push({ eventId: member.eventId, source: entry.event.source, type: entry.event.type, reason: entry.requestedWake?.reason ?? null });
-      } catch (error) {
-        if (!(error instanceof HistoryError) || error.code !== 'too_large') throw error;
-        requests.push({ eventId: member.eventId, source: 'unavailable', type: 'unavailable', reason: null });
-      }
-    }
+    const requestsPage = await this.#history.readRunRequests({ id });
+    if (!requestsPage) return null;
     const executions: RunDetailView['executions'] = [];
     for (const ref of page.records) {
       try {
@@ -330,8 +320,8 @@ export class LocalWebService implements WebBackend, ManagementBackend {
         executions.push({ id: ref.id, occurredAt: ref.occurredAt, kind: 'unavailable', name: null, status: 'unavailable', error: 'This durable record exceeds the display read limit; the original is still preserved.' });
       }
     }
-    return { id, occurredAt: page.run.occurredAt, status: page.run.status, requestCount: page.run.requests.length,
-      requests, assistant: await this.#reply(page.run.finalRecordId), memory: memoryReceipt(page.memory), executions,
+    return { id, occurredAt: page.run.occurredAt, status: page.run.status, requestCount: page.run.requestCount,
+      requests: requestsPage.items, nextRequestsCursor: requestsPage.nextCursor, assistant: await this.#reply(page.run.finalRecordId), memory: memoryReceipt(page.memory), executions,
       nextCursor: page.nextCursor, compactionErrors: 'not-recorded',
       error: page.run.status === 'running' && !this.#drain && this.#error ? publicFailure : null };
   }

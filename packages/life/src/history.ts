@@ -114,8 +114,16 @@ export class HistoryError extends Error {
  * run log and no runtime interpretation belong in this storage contract. */
 export interface HistoryEventRun { eventId: string; runId: string | null }
 export interface HistoryRunPageRequest { id: string; before?: string; limit?: number }
+export interface HistoryRunHeader extends HistoryBase {
+  kind: 'wake'; claimedVersion: number; inputRecordId: string | null; finalRecordId: string | null;
+  status: 'running' | 'completed'; requestCount: number;
+}
+export interface HistoryRunRequestsPage {
+  items: Array<{ eventId: string; source: string; type: string; reason: string | null }>;
+  nextCursor: string | null;
+}
 export interface HistoryRunPage {
-  run: HistoryWake;
+  run: HistoryRunHeader;
   memory: { preparedAt: string; receipt: { commit: string | null } | null } | null;
   /** Existing context/tool IDs within this Wake's durable version interval. */
   records: Array<HistoryMetadata & { occurredAt: string }>;
@@ -123,5 +131,7 @@ export interface HistoryRunPage {
 }
 export interface RunHistoryReader extends HistoryReader {
   findEventRun(externalEventId: string): Promise<HistoryEventRun | null>;
+  pageRuns(request?: Pick<HistoryPageRequest, 'before' | 'limit'>): Promise<{ items: HistoryRunHeader[]; nextCursor: string | null }>;
+  readRunRequests(request: HistoryRunPageRequest): Promise<HistoryRunRequestsPage | null>;
   readRun(request: HistoryRunPageRequest): Promise<HistoryRunPage | null>;
 }

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { Client } from 'pg';
 import { assertJson, assertRecord } from '@mira/context';
 import { HistoryError } from '@mira/life';
-import type { HistoryEntry, HistoryKind, HistoryPageHit, HistoryPageRequest, HistoryPageResult, RunHistoryReader, HistoryEventRun, HistoryRunPage, HistoryRunPageRequest, HistoryReadRequest, HistorySearchRequest, HistorySearchResult } from '@mira/life';
+import type { HistoryEntry, HistoryKind, HistoryPageHit, HistoryPageRequest, HistoryPageResult, RunHistoryReader, HistoryEventRun, HistoryRunPage, HistoryRunPageRequest, HistoryRunHeader, HistoryRunRequestsPage, HistoryReadRequest, HistorySearchRequest, HistorySearchResult } from '@mira/life';
 import type { PostgresOptions } from './index.ts';
 
 const FULL_TEXT_PREFIX_CHARS = 65_536;
@@ -44,6 +44,22 @@ const sources: Record<HistoryKind, Source> = {
     integrity: 'true',
   },
 };
+/** Fixed management metadata, independent of coalesced membership size. */
+const runHeaderBody = `'kind', 'wake', 'id', s.run_id, 'miraId', s.mira_id, 'occurredAt', s.claimed_at,
+  'claimedVersion', s.claimed_version, 'inputRecordId', s.input_record_id, 'finalRecordId', s.final_record_id,
+  'status', CASE WHEN s.completed THEN 'completed' ELSE 'running' END,
+  'requestCount', (SELECT count(*) FROM wake_run_requests members WHERE members.mira_id = s.mira_id AND members.run_id = s.run_id)`;
+function validateRunHeader(run: HistoryRunHeader, miraId: string): void {
+  try {
+    historyId(run.id);
+    if (run.kind !== 'wake' || run.miraId !== miraId || !['running', 'completed'].includes(run.status)
+      || !Number.isFinite(Date.parse(run.occurredAt))) throw Error();
+    integer(run.claimedVersion, 0, Number.MAX_SAFE_INTEGER, 'claimed version');
+    integer(run.requestCount, 1, Number.MAX_SAFE_INTEGER, 'request count');
+    if (run.inputRecordId !== null) historyId(run.inputRecordId);
+    if (run.finalRecordId !== null) historyId(run.finalRecordId);
+  } catch { throw new HistoryError('corrupt', 'Invalid run history metadata'); }
+}
 function invalid(message: string): never { throw new HistoryError('invalid', message); }
 function string(value: unknown, name: string, maxBytes?: number): asserts value is string {
   if (typeof value !== 'string' || !value.length || value.includes('\0') || (maxBytes !== undefined && Buffer.byteLength(value, 'utf8') > maxBytes)) invalid(`Invalid history ${name}`);
@@ -192,6 +208,63 @@ export class PostgresHistoryReader implements RunHistoryReader {
       LEFT JOIN wake_run_requests r ON r.mira_id = w.mira_id AND r.wake_id = w.wake_id
       WHERE e.mira_id = $1 AND e.event_id = $2`, '$3'), [this.miraId, externalEventId, MAX_PAGE_BYTES]));
   }
+  async pageRuns(request: Pick<HistoryPageRequest, 'before' | 'limit'> = {}): Promise<{ items: HistoryRunHeader[]; nextCursor: string | null }> {
+    const page = await this.page({ ...request, kinds: ['wake'] });
+    if (!page.hits.length) return { items: [], nextCursor: page.nextCursor };
+    // page() carries only immutable reference metadata. Never read the original
+    // unbounded Wake envelope to show a fixed-size management summary.
+    const sql = `SELECT json_build_object('items', coalesce(json_agg(json_build_object(${runHeaderBody}) ORDER BY ids.n), '[]'::json)) AS body,
+      count(s.run_id) = cardinality($2::uuid[]) AS valid
+      FROM unnest($2::uuid[]) WITH ORDINALITY ids(id, n)
+      JOIN wake_runs s ON s.mira_id = $1 AND s.run_id = ids.id`;
+    const result = response<{ items: HistoryRunHeader[] }>(await this.#query(bound(sql, '$3'),
+      [this.miraId, page.hits.map(hit => hit.id), MAX_PAGE_BYTES]));
+    if (!result) throw new HistoryError('corrupt', 'Missing run metadata page');
+    result.items.forEach(run => validateRunHeader(run, this.miraId));
+    return { items: result.items, nextCursor: page.nextCursor };
+  }
+  async readRunRequests(request: HistoryRunPageRequest): Promise<HistoryRunRequestsPage | null> {
+    object(request); historyId(request.id);
+    const limit = request.limit ?? 50; integer(limit, 1, 100, 'limit');
+    const scope = createHash('sha256').update(JSON.stringify([this.miraId, request.id, 'run-requests'])).digest('hex');
+    let boundary: string | null = null;
+    if (request.before !== undefined) {
+      string(request.before, 'run requests cursor', 1024);
+      try {
+        if (!/^[A-Za-z0-9_-]+$/.test(request.before)) throw Error();
+        const bytes = Buffer.from(request.before, 'base64url');
+        if (bytes.toString('base64url') !== request.before) throw Error();
+        const value: unknown = JSON.parse(bytes.toString('utf8'));
+        if (!Array.isArray(value) || value.length !== 2 || value[0] !== scope || typeof value[1] !== 'string'
+          || !/^[1-9][0-9]{0,18}$/.test(value[1]) || BigInt(value[1]) > 9223372036854775807n) throw Error();
+        boundary = value[1];
+      } catch { invalid('Invalid run requests cursor'); }
+    }
+    type Result = { items: Array<HistoryRunRequestsPage['items'][number] & { receiptOrder: string }>; hasMore: boolean };
+    // Bound both membership count and each public trigger description, without
+    // loading event payloads. Oversized descriptions remain explicit unavailable
+    // references; the complete original stays accessible through History.read.
+    const description = `json_build_object('source', e.event->>'source', 'type', e.event->>'type', 'reason', w.wake->>'reason')`;
+    const sql = `WITH members AS MATERIALIZED (
+      SELECT e.history_id AS event_id, w.receipt_order, ${description} AS description
+      FROM wake_run_requests r JOIN wake_requests w ON w.mira_id = r.mira_id AND w.wake_id = r.wake_id
+      JOIN life_events e ON e.mira_id = w.mira_id AND e.event_id = w.event_id
+      WHERE r.mira_id = $1 AND r.run_id = $2::uuid AND ($4::bigint IS NULL OR w.receipt_order < $4::bigint)
+      ORDER BY w.receipt_order DESC LIMIT $3 + 1),
+      numbered AS (SELECT *, row_number() OVER (ORDER BY receipt_order DESC) AS n FROM members)
+      SELECT json_build_object('hasMore', (SELECT count(*) > $3 FROM numbered),
+        'items', (SELECT coalesce(json_agg(json_build_object('eventId', event_id, 'receiptOrder', receipt_order::text,
+          'source', CASE WHEN octet_length(description::text) <= 2048 THEN description->>'source' ELSE 'unavailable' END,
+          'type', CASE WHEN octet_length(description::text) <= 2048 THEN description->>'type' ELSE 'unavailable' END,
+          'reason', CASE WHEN octet_length(description::text) <= 2048 THEN description->>'reason' ELSE NULL END)
+          ORDER BY n DESC) FILTER (WHERE n <= $3), '[]'::json) FROM numbered)) AS body, true AS valid
+      FROM wake_runs s WHERE s.mira_id = $1 AND s.run_id = $2::uuid`;
+    const result = response<Result>(await this.#query(bound(sql, '$5'), [this.miraId, request.id, limit, boundary, MAX_PAGE_BYTES]));
+    if (!result) return null;
+    const oldest = result.items[0];
+    return { items: result.items.map(({ eventId, source, type, reason }) => ({ eventId, source, type, reason })),
+      nextCursor: result.hasMore && oldest ? Buffer.from(JSON.stringify([scope, oldest.receiptOrder])).toString('base64url') : null };
+  }
   async readRun(request: HistoryRunPageRequest): Promise<HistoryRunPage | null> {
     object(request); historyId(request.id);
     const limit = request.limit ?? 50; integer(limit, 1, 100, 'limit');
@@ -211,15 +284,11 @@ export class PostgresHistoryReader implements RunHistoryReader {
         boundary = [value[1], value[2], value[3]];
       } catch { invalid('Invalid run history cursor'); }
     }
-    const source = sources.wake;
-    const runBody = source.body.replace("'claimedVersion', claimed_version", "'claimedVersion', s.claimed_version")
-      .replace("'inputRecordId', input_record_id", "'inputRecordId', s.input_record_id")
-      .replace("'finalRecordId', final_record_id", "'finalRecordId', s.final_record_id")
-      .replace('CASE WHEN completed THEN', 'CASE WHEN s.completed THEN');
     type Result = Omit<HistoryRunPage, 'nextCursor' | 'records'> & { records: Array<HistoryRunPage['records'][number] & { version: number }>; hasMore: boolean };
     // Claimed version excludes the previous Wake; final version closes a
     // completed Wake even after later requests or compaction append new records.
-    // All metadata/checkpoint/membership fields share one read-only snapshot.
+    // All header/checkpoint fields share one read-only snapshot. Trigger
+    // membership is independently paginated; it never expands this response.
     const sql = `WITH run AS MATERIALIZED (SELECT s.*, f.version AS final_version FROM wake_runs s
         LEFT JOIN context_records f ON f.mira_id = s.mira_id AND f.record_id = s.final_record_id
         WHERE s.mira_id = $1 AND s.run_id = $2::uuid),
@@ -235,8 +304,7 @@ export class PostgresHistoryReader implements RunHistoryReader {
         (version, kind COLLATE "C", id) < ($4::bigint, $5::text COLLATE "C", $6::uuid)
         ORDER BY version DESC, kind COLLATE "C" DESC, id DESC LIMIT $3 + 1),
       numbered AS (SELECT *, row_number() OVER (ORDER BY version DESC, kind COLLATE "C" DESC, id DESC) AS n FROM limited)
-      SELECT json_build_object('run', json_build_object('kind', 'wake', 'id', s.run_id, 'miraId', s.mira_id,
-        'occurredAt', s.claimed_at, ${runBody}),
+      SELECT json_build_object('run', json_build_object(${runHeaderBody}),
         'memory', CASE WHEN c.run_id IS NULL THEN NULL ELSE json_build_object('preparedAt', c.prepared_at,
           'receipt', CASE WHEN receipt.run_id IS NULL THEN NULL ELSE json_build_object('commit', receipt.commit_id) END) END,
         'hasMore', (SELECT count(*) > $3 FROM numbered),
@@ -248,7 +316,7 @@ export class PostgresHistoryReader implements RunHistoryReader {
     const result = response<Result>(await this.#query(bound(sql, '$7'),
       [this.miraId, request.id, limit, boundary?.[0] ?? null, boundary?.[1] ?? null, boundary?.[2] ?? null, MAX_PAGE_BYTES]));
     if (!result) return null;
-    validateEntry(result.run, this.miraId, { id: request.id });
+    validateRunHeader(result.run, this.miraId);
     for (const record of result.records) { historyId(record.id); integer(record.version, 1, Number.MAX_SAFE_INTEGER, 'version'); }
     const oldest = result.records[0];
     return { run: result.run, memory: result.memory,

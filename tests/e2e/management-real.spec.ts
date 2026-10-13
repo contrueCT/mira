@@ -63,8 +63,24 @@ test('settings Memory follows browser → HTTP → PostgreSQL → ordinary tools
     await app.listen({ port, host: '127.0.0.1' });
     await page.goto(origin);
     await page.getByRole('button', { name: '模型设置', exact: true }).click();
+    await page.getByRole('tab', { name: '运行记录', exact: true }).click();
+    await expect(page.getByRole('dialog')).toContainText('还没有可读取的 Wake 运行');
+    await page.getByRole('tab', { name: '扩展', exact: true }).click();
+    await expect(page.getByRole('dialog')).toContainText('此服务未启用扩展管理');
     await page.getByRole('tab', { name: 'Memory', exact: true }).click();
     const summary = page.getByLabel('记忆摘要', { exact: true });
+    await expect(summary).toContainText('你喜欢红茶');
+    expect(contexts).toHaveLength(0);
+    // Exercise real read-only empty/oversize/error states, without a mock API.
+    await writeFile(file, '');
+    await page.getByRole('button', { name: '刷新摘要', exact: true }).click();
+    await expect(summary).toContainText('还没有记忆内容');
+    await writeFile(file, 'x'.repeat(1_048_577));
+    await page.getByRole('button', { name: '刷新摘要', exact: true }).click();
+    await expect(summary).toContainText('暂时无法读取记忆');
+    expect(await page.content()).not.toContain(root);
+    await writeFile(file, initialMemory);
+    await page.getByRole('button', { name: '刷新摘要', exact: true }).click();
     await expect(summary).toContainText('你喜欢红茶');
     expect(contexts).toHaveLength(0);
     await page.getByLabel('修改记忆', { exact: true }).fill('请把喝茶偏好更新为我现在喜欢绿茶。');
@@ -210,6 +226,23 @@ test('extension settings apply real lifecycle/configuration and staged update/ro
     const beforeReload = (await readFile(log, 'utf8')).split('\n').filter(line => line === 'apply:one:initial').length;
     await card.getByRole('button', { name: '重载', exact: true }).click();
     await expect.poll(async () => (await readFile(log, 'utf8')).split('\n').filter(line => line === 'apply:one:initial').length).toBe(beforeReload + 1);
+    // Lose one response only after production HTTP/lifecycle has applied it.
+    // route.fetch reaches the real server; no response body is fabricated.
+    let droppedReload = false;
+    await page.route(`${origin}/api/extensions/fixture`, async route => {
+      if (!droppedReload && route.request().method() === 'POST' && route.request().postDataJSON().action === 'reload') {
+        droppedReload = true;
+        const response = await route.fetch(); expect(response.status()).toBe(200);
+        await route.abort('connectionreset');
+      } else await route.continue();
+    });
+    await card.getByRole('button', { name: '重载', exact: true }).click();
+    await expect(page.getByRole('dialog')).toContainText('尚未确认此次操作的结果');
+    await expect.poll(async () => (await readFile(log, 'utf8')).split('\n').filter(line => line === 'apply:one:initial').length).toBe(beforeReload + 2);
+    await page.getByRole('button', { name: '重新读取并核对', exact: true }).click();
+    await expect(card.getByRole('button', { name: '重载', exact: true })).toBeEnabled();
+    expect((await readFile(log, 'utf8')).split('\n').filter(line => line === 'apply:one:initial').length).toBe(beforeReload + 2);
+    await page.unroute(`${origin}/api/extensions/fixture`);
     await card.getByRole('button', { name: '替换配置', exact: true }).click();
     await card.getByLabel('完整扩展配置', { exact: true }).fill('{"label":"updated","secret":"REPLACED_CONFIG_SENTINEL"}');
     await card.getByRole('button', { name: '保存配置', exact: true }).click();
@@ -245,4 +278,58 @@ test('extension settings apply real lifecycle/configuration and staged update/ro
     expect(await page.content()).not.toContain('RAW_PRIVATE_DIAGNOSTIC_SENTINEL');
     expect(await page.content()).not.toContain('REPLACED_CONFIG_SENTINEL');
   } finally { await app?.close(); await service?.close(); await db?.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('a real merged Wake paginates trigger requests separately from execution records through the settings UI', async ({ page }) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mira-management-members-'));
+  const hold = deferred();
+  let db: Awaited<ReturnType<typeof createTestDatabase>> | undefined;
+  let service: LocalWebService | undefined;
+  let app: ReturnType<typeof createLocalHttp> | undefined;
+  let modelRequests = 0;
+  let memberPageReads = 0;
+  page.on('request', request => { if (/\/api\/runs\/[^/]+\/requests\?before=/u.test(request.url())) memberPageReads++; });
+  try {
+    db = await createTestDatabase();
+    service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'management-members', sourceDirectory,
+      workingDirectory: root, miraHome: root, spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true,
+      dreaming: { enabled: false }, autoCompaction: { enabled: false }, syntheticStream: async () => {
+        modelRequests++;
+        if (modelRequests === 1) await hold.promise;
+        return streamOf(assistant(`批次 ${modelRequests} 已处理。`));
+      } });
+    app = createLocalHttp({ backend: service, port, assetsDirectory: path.join(sourceDirectory, 'apps/web/dist') });
+    await app.listen({ port, host: '127.0.0.1' });
+    await page.goto(origin);
+    const composer = page.getByLabel('给 Mira 发消息', { exact: true });
+    const send = page.getByRole('button', { name: '发送消息', exact: true });
+    await composer.fill('先保持这轮处理中，后面会继续发送信息。'); await send.click();
+    await expect.poll(() => modelRequests).toBe(1);
+    // Every source request originates in the real composer. The first model is
+    // held so production Wake coalescing, rather than fixture rows, forms batch 2.
+    for (let i = 0; i < 55; i++) {
+      await composer.fill(`真实合并请求 ${i + 1}`);
+      await send.click();
+      await expect(composer).toHaveValue('');
+    }
+    hold.resolve();
+    await expect.poll(async () => (await service!.status()).state).toBe('idle');
+    expect(modelRequests).toBe(2);
+    const memberRun = (await db.admin.query<{ run_id: string; n: number }>('SELECT run_id, count(*)::int AS n FROM wake_run_requests GROUP BY run_id HAVING count(*) = 55')).rows;
+    expect(memberRun).toHaveLength(1);
+    await page.getByRole('button', { name: '模型设置', exact: true }).click();
+    await page.getByRole('tab', { name: '运行记录', exact: true }).click();
+    await page.getByRole('button', { name: new RegExp(memberRun[0]!.run_id) }).click();
+    const triggers = page.getByRole('heading', { name: '触发来源', exact: true }).locator('..');
+    await expect(triggers.locator('li')).toHaveCount(50);
+    await page.getByRole('button', { name: '更多触发请求', exact: true }).dblclick();
+    await expect(triggers.locator('li')).toHaveCount(55);
+    await expect(page.getByRole('button', { name: '更多触发请求', exact: true })).toHaveCount(0);
+    expect(memberPageReads).toBe(1);
+    const renderedIds = await triggers.locator('.technical-id').allTextContents();
+    expect(new Set(renderedIds).size).toBe(55);
+    const members = (await db.admin.query<{ history_id: string }>(`SELECT e.history_id FROM wake_run_requests q JOIN wake_requests w ON w.mira_id=q.mira_id AND w.wake_id=q.wake_id JOIN life_events e ON e.mira_id=w.mira_id AND e.event_id=w.event_id WHERE q.run_id=$1`, [memberRun[0]!.run_id])).rows;
+    expect([...renderedIds].sort()).toEqual(members.map(member => member.history_id).sort());
+    expect((await db.admin.query('SELECT count(*)::int AS n FROM life_events')).rows[0].n).toBe(56);
+  } finally { hold.resolve(); await app?.close(); await service?.close(); await db?.close(); await rm(root, { recursive: true, force: true }); }
 });
