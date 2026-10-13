@@ -475,3 +475,23 @@ test('a landscape error banner leaves the expanded composer and send button in t
   await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeInViewport({ ratio: 1 });
   await page.screenshot({ path: testInfo.outputPath('mira-model-error-landscape.png'), fullPage: true });
 });
+
+test('external notification is a source-labelled Timeline notice with time, survives refresh and never masquerades as Mira', async ({ page }, testInfo) => {
+  const text = '外部程序 backup-worker\n备份已完成。<script>window.externalNoticeExecuted=true</script>';
+  const occurredAt = '2026-10-13T03:24:00.000Z';
+  await page.route('**/api/status', route => route.fulfill({ json: { state: 'idle', mode: 'synthetic', model: 'Fixture model', error: null } }));
+  await page.route('**/api/timeline', route => route.fulfill({ json: { items: [{ id: '10000000-0000-4000-8000-000000000099', role: 'notice', text, occurredAt }], nextCursor: null } }));
+  await page.goto('/');
+  const notice = page.getByRole('article', { name: '服务通知', exact: true });
+  await expect(notice).toHaveCount(1); await expect(notice).toContainText('外部程序 backup-worker');
+  await expect(notice.locator('time')).toHaveAttribute('datetime', occurredAt);
+  await expect(page.getByRole('article', { name: 'Mira 的消息', exact: true })).toHaveCount(0);
+  await expect(page.getByText('Mira 正在处理', { exact: true })).toHaveCount(0);
+  expect(await page.evaluate(() => Object.hasOwn(window, 'externalNoticeExecuted'))).toBe(false);
+  await page.screenshot({ path: testInfo.outputPath('external-notification-desktop.png'), fullPage: true });
+  await page.reload(); await expect(notice).toHaveCount(1);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(notice).toContainText('备份已完成');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('external-notification-narrow.png'), fullPage: true });
+});

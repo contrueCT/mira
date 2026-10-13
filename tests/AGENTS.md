@@ -25,3 +25,5 @@ ADR 0007 回归直接工具调用与模型普通澄清，保留 schema/参数、
 引入需要 PostgreSQL/模型的测试时明确服务版本、启动命令、环境变量、费用授权、隔离策略、跳过条件和 CI 是否实际执行。不能将被跳过的测试记为通过。
 
 `pnpm test:e2e` 只给子进程传入显式测试环境，不加载用户凭据；浏览器 fixture 不代表真实数据库。截图覆盖桌面与窄屏，必须检查实际渲染。
+
+- External SDK：`unit/external-*.test.mts` 覆盖协议、客户端、真实回环 HTTP 与私有文件；`recovery/external-*.test.mts` 为真实 PostgreSQL。`deny-model-network.mts` 的 scoped 测试许可只放行显式登记的精确 127.0.0.1 HTTP origin，禁止重定向，清理后立即撤销；其余 fetch 及 http/https 外发仍拒绝。

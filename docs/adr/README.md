@@ -46,3 +46,5 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 ## 后续范围
 
 不提前引入部署、付费模型调用、第三方账户、新凭据或不必要的框架。阶段临近时给出具体方案、取舍和验证结果。
+
+- [0017 External SDK 与本地接入](0017-external-sdk-local-ingress.md)：Accepted，2026-10-13；Timeline 通知、本机默认关闭、普通 Shell 管理私有凭据，保持原有 Event/Wake 与来源边界。

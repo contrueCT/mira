@@ -28,3 +28,7 @@
 ## 本地 Web
 
 固定 127.0.0.1/精确 Host、Origin 和请求头检查不可放宽；HTTP 来源防护不等于自然语言工具授权。Web 模型设置接收 write-only API Key，源码外的私有文件保存明文密钥并限制权限；公开响应仅返回 hasApiKey。禁止密钥进入日志、数据库、Prompt 或历史。CLI 仍使用显式环境变量引用；revision 冲突不能静默覆盖。Timeline 只返回白名单展示字段，不发送 system/thinking/原始工具参数。界面通过确定性 fixture 测试，真实 PostgreSQL 恢复单独验收。
+
+## External SDK 接入
+
+见 ADR 0017。`external-http.ts` 和 `http.ts` 在既有 127.0.0.1 listener 上提供三条 `/api/external/*` 路由，Web 同源规则不变。外部请求拒绝浏览器来源，逐次校验 sender/token；`external-access.ts`/`external-access-cli.mts` 管理源码、Memory、artifacts 外的私有配置，默认关闭、CLI 无 token 输出、下次认证生效。`external-ingress.ts` 绑定 external 来源并使用同一 writer；事件与 Wake 保持完整不可变信封。sendNotification 仅保存并投影带来源/时间的 notice，不发模型请求。Secrets 不进入 Event/Context/日志；普通 Shell 与同 OS 账户边界不变。

@@ -22,3 +22,5 @@
 - `tool-usability.mts` 从空测试 home 通过 Web 默认配置 loader 启动真实 Host；不预写扩展配置，不要求评估者另造 adapter。数据库/HTTP 不在该工具级 fixture 的验证范围
 - CI 保持最小权限和无凭据测试，新增 workflow 权限或 secrets 使用前先确认
 - 包管理器/TypeScript 升级要验证 API、锁文件格式、真实干净安装、测试和工具构建
+
+- `external-sdk-usability.mts` 使用真实本机 HTTP、生产认证与 ingress、隔离临时 home，持久化明确为内存 fixture；输出/evidence 不含 token。独立作者使用正常 CLI/SDK，不读取实现；不能以此代替 PostgreSQL gate。

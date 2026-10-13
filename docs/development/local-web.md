@@ -183,3 +183,7 @@ Linux 缺少系统库时，使用 Playwright 官方 `pnpm exec playwright instal
 ## 全局 History ID 版本的启动
 
 此早期开发版本直接定义当前数据库结构。使用新空数据库（或新空 schema）和新的 Mira 数据目录、Memory 工作空间进行测试；旧数据库和旧 Memory 可留在原位置，不复用其待完成 checkpoint。程序不添加旧库识别、转换、映射、别名解析或自动清理逻辑。Timeline 的 `id` 是完整 History UUID，用户条目的 `externalEventId` 单独用于匹配浏览器尚未确认的原始请求，不能替代 History ID。
+
+## 外部程序接入
+
+普通启动在同一 127.0.0.1 端口提供默认关闭的 `/api/external/*` 接入。运行 `pnpm external-access --help` 查看 agent/用户通过普通 Shell 可用的启用、身份创建、轮换与撤销命令；必须与 server 使用同一 MIRA_HOME。正常输出不含 token，改动对后续认证生效，不必重启。详见 [External SDK](../../packages/external-sdk/README.md)。通知在本条 Timeline 显示为带外部程序来源和时间的 notice，不调用模型或第三方推送。

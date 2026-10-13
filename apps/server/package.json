@@ -18,6 +18,7 @@
     "@earendil-works/pi-coding-agent": "1.0.2",
     "@mira/extension-host": "workspace:*",
     "fastify": "5.12.5",
-    "@fastify/static": "10.1.5"
+    "@fastify/static": "10.1.5",
+    "@mira/external-sdk": "workspace:*"
   }
 }
