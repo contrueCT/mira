@@ -123,3 +123,24 @@ test('tool outcomes advance unknown to failed through older pages and never regr
   assert.equal(state.executions[0]?.status, 'failed');
   assert.equal(state.executions[0]?.error, 'Recorded safe failure');
 });
+
+test('an oversized durable result in an older gap page replaces unknown after leaving the latest 50 records', () => {
+  const newer = Array.from({ length: 51 }, (_, index) => execution(`new-${index + 1}`, 'succeeded'));
+  const unavailable: RunExecution = { id: 'old-tool', occurredAt: '2026-10-13T00:00:00Z', kind: 'unavailable', name: null, status: 'unavailable', error: 'This durable record exceeds the display read limit; the original is still preserved.' };
+  let state = acceptRunRecords(emptyRunRecords(), { executions: [execution('old-tool')], nextCursor: null });
+  const latest = { executions: newer.slice(1), nextCursor: 'before-new-2' };
+  state = acceptRunRecords(state, latest);
+  const gap = nextRunRecords(state)!;
+  state = acceptRunRecords(state, { executions: [unavailable, newer[0]!], nextCursor: null }, gap);
+  assert.deepEqual(state.executions.find(item => item.id === 'old-tool'), unavailable);
+  assert.equal(nextRunRecords(state), null);
+  state = acceptRunRecords(state, latest);
+  assert.deepEqual(state.executions.find(item => item.id === 'old-tool'), unavailable);
+  // These reads started while the original tool was still pending. Neither an
+  // old page nor a late latest-page response may restore that stale unknown.
+  state = acceptRunRecords(state, { executions: [execution('old-tool')], nextCursor: null }, gap);
+  assert.deepEqual(state.executions.find(item => item.id === 'old-tool'), unavailable);
+  state = acceptRunRecords(state, { executions: [execution('old-tool')], nextCursor: null });
+  assert.deepEqual(state.executions.find(item => item.id === 'old-tool'), unavailable);
+  assert.deepEqual(state.executions.map(item => item.id), ['old-tool', ...newer.map(item => item.id)]);
+});
