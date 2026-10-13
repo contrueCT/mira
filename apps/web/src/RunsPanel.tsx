@@ -41,7 +41,7 @@ function RunRecord({ id, active, onBack }: { id: string; active: boolean; onBack
       recordsRef.current = acceptRunRecords(recordsRef.current, next, request);
       setDetail(current => current ? { ...current, executions: recordsRef.current.executions, nextCursor: nextRunRecords(recordsRef.current)?.cursor ?? null } : next);
     } catch (cause) { if (!controller.signal.aborted && !isAbort(cause)) setOlderError(errorText(cause)); }
-    finally { pagingRef.current = false; if (!controller.signal.aborted) setLoadingOlder(false); }
+    finally { if (olderRef.current === controller) { pagingRef.current = false; if (!controller.signal.aborted) setLoadingOlder(false); } }
   };
   return <>
     <div className="management-heading"><button type="button" className="text-button" onClick={onBack}>返回运行列表</button><button type="button" className="text-button" onClick={() => setVersion(value => value + 1)}>刷新详情</button></div>
@@ -86,7 +86,7 @@ export function RunsPanel({ active }: { active: boolean }) {
     const controller = new AbortController(); olderAbort.current = controller;
     try { const next = await api<RunsView>(`/api/runs?before=${encodeURIComponent(nextCursor)}`, { signal: controller.signal }); if (!controller.signal.aborted) { setItems(current => mergeById(current, next.items)); setNextCursor(next.nextCursor); } }
     catch (cause) { if (!controller.signal.aborted && !isAbort(cause)) setError(errorText(cause)); }
-    finally { busyRef.current = false; if (!controller.signal.aborted) setLoadingOlder(false); }
+    finally { if (olderAbort.current === controller) { busyRef.current = false; if (!controller.signal.aborted) setLoadingOlder(false); } }
   };
   return <div className="settings-body management-body">
     {selected ? <RunRecord key={selected} id={selected} active={active} onBack={() => setSelected(null)} /> : <>

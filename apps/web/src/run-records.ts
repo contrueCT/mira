@@ -5,8 +5,9 @@ import type { RunExecution } from './types.ts';
 export interface RunRecordsState { executions: RunExecution[]; pagination: HistoryPagination; initialized: boolean }
 export const emptyRunRecords = (): RunRecordsState => ({ executions: [], pagination: { latestCursor: null, oldestCursor: null, gaps: [] }, initialized: false });
 /** Pages are ordered by durable version by the server; wall-clock time may move
- * backwards. New latest values replace old outcomes, older in-flight pages never
- * overwrite newer values, and independent gap frontiers remain reachable. */
+ * backwards. Tool outcomes advance from unknown to a fixed durable outcome,
+ * including in older pages. Stale reads cannot regress those known outcomes,
+ * and independent gap frontiers remain reachable. */
 export function acceptRunRecords(current: RunRecordsState, page: { executions: RunExecution[]; nextCursor: string | null }, request: HistoryRequest | null = null): RunRecordsState {
   const executions = [...current.executions];
   const gap = request?.gapId ? current.pagination.gaps.find(item => item.id === request.gapId) : null;
@@ -16,7 +17,16 @@ export function acceptRunRecords(current: RunRecordsState, page: { executions: R
   for (let i = 0; i < page.executions.length; i += 1) {
     const incoming = page.executions[i]!;
     const known = executions.findIndex(item => item.id === incoming.id);
-    if (known >= 0) { if (!request) executions[known] = incoming; insertion = known + 1; continue; }
+    if (known >= 0) {
+      const previous = executions[known]!;
+      const durableToolOutcome = previous.kind === 'tool' && (previous.status === 'succeeded' || previous.status === 'failed');
+      const resolvedTool = previous.kind === 'tool' && previous.status === 'unknown' && incoming.kind === 'tool' && (incoming.status === 'succeeded' || incoming.status === 'failed');
+      // Tool outcomes are immutable after persistence. A later page can learn
+      // one after the tool has aged out of the latest page; any stale response
+      // must still leave an already-known outcome unchanged.
+      if (!durableToolOutcome && (!request || resolvedTool)) executions[known] = incoming;
+      insertion = known + 1; continue;
+    }
     const nextKnown = page.executions.slice(i + 1).map(item => executions.findIndex(existing => existing.id === item.id)).find(index => index >= 0);
     const at = nextKnown ?? insertion;
     executions.splice(at, 0, incoming); insertion = at + 1;

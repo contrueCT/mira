@@ -110,6 +110,11 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
     return () => controller.abort();
   }, [loadVersion]);
 
+  useEffect(() => {
+    if (tab === 'model') return;
+    discoveryAbortRef.current?.abort(); discoveryAbortRef.current = null; setDiscovering(false);
+  }, [tab]);
+
   const touch = () => { editVersionRef.current += 1; setDirty(true); setSaved(false); setError(null); };
   const stopDiscovery = () => { discoveryAbortRef.current?.abort(); discoveryAbortRef.current = null; setDiscovering(false); setDiscovery(null); setDiscoveryError(null); setCandidateId(''); };
   const change = (update: (value: SettingsWrite) => SettingsWrite) => { touch(); setDraft(current => current ? update(current) : current); };

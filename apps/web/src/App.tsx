@@ -3,7 +3,7 @@ import type { FormEvent, KeyboardEvent } from 'react';
 import { api, errorText, isAbort } from './api.ts';
 import { ArrowUp, ChevronDown, SettingsIcon } from './icons.tsx';
 import { SettingsDialog } from './SettingsDialog.tsx';
-import { createMemoryRequest, MEMORY_REQUEST_PREFIX, readMemoryRequest, writeMemoryRequest } from './management.ts';
+import { createMemoryRequest, readMemoryRequest, recoverMemoryRequest, writeMemoryRequest } from './management.ts';
 import type { MemoryRequestIdentity } from './management.ts';
 import { latestPagination, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
 import type { HistoryPagination, HistoryRequest } from './timeline.ts';
@@ -21,7 +21,7 @@ function dateLabel(value: string): string {
 function initialPending(): { messages: PendingMessage[]; memoryRequest: MemoryRequestIdentity | null; error: string | null } {
   try {
     const messages = readPending(window.sessionStorage);
-    const memoryRequest = readMemoryRequest(window.sessionStorage) ?? [...messages].reverse().find(message => message.text.startsWith(MEMORY_REQUEST_PREFIX)) ?? null;
+    const memoryRequest = recoverMemoryRequest(readMemoryRequest(window.sessionStorage), messages);
     return { messages, memoryRequest, error: null };
   }
   catch { return { messages: [], memoryRequest: null, error: '浏览器中的待确认消息无法读取。为避免丢失或重复发送，请先恢复此标签页的存储访问，再刷新页面。' }; }

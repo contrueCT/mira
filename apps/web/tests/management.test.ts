@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createMemoryRequest, MEMORY_REQUEST_KEY, MEMORY_REQUEST_PREFIX, memoryBlocks, parseConfig, readMemoryRequest, writeMemoryRequest } from '../src/management.ts';
+import { createMemoryRequest, MEMORY_REQUEST_KEY, MEMORY_REQUEST_PREFIX, memoryBlocks, parseConfig, readMemoryRequest, recoverMemoryRequest, writeMemoryRequest } from '../src/management.ts';
 import { acceptRunRecords, emptyRunRecords, nextRunRecords } from '../src/run-records.ts';
 import type { RunExecution } from '../src/types.ts';
 
@@ -85,4 +85,41 @@ test('interior run gap pages preserve server version order without relying on ti
   state = acceptRunRecords(state, { executions: [execution('one'), execution('two')], nextCursor: null }, nextRunRecords(state)!);
   assert.deepEqual(state.executions.map(item => item.id), ['one', 'two', 'three', 'four', 'five']);
   assert.equal(nextRunRecords(state), null);
+});
+
+
+test('pending Memory identity survives an interrupted identity-store write without replacing a newer saved request', () => {
+  const saved = { id: '10000000-0000-4000-8000-000000000001', occurredAt: '2026-10-13T00:00:00Z' };
+  const pending = { id: '20000000-0000-4000-8000-000000000002', occurredAt: '2026-10-13T00:01:00Z', text: MEMORY_REQUEST_PREFIX + 'change' };
+  assert.deepEqual(recoverMemoryRequest(saved, [pending]), { id: pending.id, occurredAt: pending.occurredAt });
+  assert.deepEqual(recoverMemoryRequest({ ...saved, occurredAt: '2026-10-13T00:02:00Z' }, [pending]), { ...saved, occurredAt: '2026-10-13T00:02:00Z' });
+  assert.deepEqual(recoverMemoryRequest(null, [pending]), { id: pending.id, occurredAt: pending.occurredAt });
+});
+
+test('a tool outcome arriving through an older gap page advances after it has left the latest 50 records', () => {
+  const newer = Array.from({ length: 51 }, (_, index) => execution(`new-${index + 1}`, 'succeeded'));
+  let state = acceptRunRecords(emptyRunRecords(), { executions: [execution('old-tool')], nextCursor: null });
+  const latest = { executions: newer.slice(1), nextCursor: 'before-new-2' };
+  state = acceptRunRecords(state, latest);
+  assert.equal(state.executions.find(item => item.id === 'old-tool')?.status, 'unknown');
+  const gap = nextRunRecords(state)!;
+  assert.equal(gap.cursor, 'before-new-2');
+  state = acceptRunRecords(state, { executions: [execution('old-tool', 'succeeded'), newer[0]!], nextCursor: null }, gap);
+  assert.equal(state.executions.find(item => item.id === 'old-tool')?.status, 'succeeded');
+  assert.equal(nextRunRecords(state), null);
+  state = acceptRunRecords(state, latest);
+  assert.equal(state.executions.find(item => item.id === 'old-tool')?.status, 'succeeded');
+  assert.deepEqual(state.executions.map(item => item.id), ['old-tool', ...newer.map(item => item.id)]);
+});
+
+test('tool outcomes advance unknown to failed through older pages and never regress to unknown', () => {
+  let state = acceptRunRecords(emptyRunRecords(), { executions: [execution('tool')], nextCursor: 'older' });
+  const request = nextRunRecords(state)!;
+  state = acceptRunRecords(state, { executions: [{ ...execution('tool', 'failed'), error: 'Recorded safe failure' }], nextCursor: null }, request);
+  assert.equal(state.executions[0]?.status, 'failed');
+  state = acceptRunRecords(state, { executions: [execution('tool')], nextCursor: null }, request);
+  assert.equal(state.executions[0]?.status, 'failed');
+  state = acceptRunRecords(state, { executions: [execution('tool')], nextCursor: null });
+  assert.equal(state.executions[0]?.status, 'failed');
+  assert.equal(state.executions[0]?.error, 'Recorded safe failure');
 });

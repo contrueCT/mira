@@ -19,6 +19,11 @@ export function readMemoryRequest(storage: Pick<Storage, 'getItem'>): MemoryRequ
   if (typeof item['id'] !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(item['id']) || typeof item['occurredAt'] !== 'string' || !Number.isFinite(Date.parse(item['occurredAt']))) throw new Error('无法读取 Memory 请求标识');
   return { id: item['id'], occurredAt: item['occurredAt'] };
 }
+export function recoverMemoryRequest(saved: MemoryRequestIdentity | null, pending: MessageEnvelope[]): MemoryRequestIdentity | null {
+  const latest = [...pending].reverse().find(message => message.text.startsWith(MEMORY_REQUEST_PREFIX));
+  if (latest && (!saved || Date.parse(latest.occurredAt) >= Date.parse(saved.occurredAt))) return { id: latest.id, occurredAt: latest.occurredAt };
+  return saved;
+}
 export function writeMemoryRequest(storage: Pick<Storage, 'setItem'>, request: MemoryRequestIdentity): void {
   // Only the correlation identity belongs here. The immutable message envelope
   // lives in the existing pending queue; credentials and config never do.
