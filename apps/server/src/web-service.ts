@@ -1,7 +1,10 @@
+import { withVideoRead } from './video-read-tool.ts';
+import path from 'node:path';
+import { AttachmentStore, attachmentDescriptor, attachmentPublication, createAttachmentTool } from './attachments.ts';
 import { createHash } from 'node:crypto';
 import { assertJson } from '@mira/context';
 import { realpath, stat } from 'node:fs/promises';
-import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
+import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Api } from '@earendil-works/pi-ai';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { ExtensionHost, ExtensionRevisionConflictError, type LocalExtensionEntry, type RegisteredContextProvider, type ExtensionChange } from '@mira/extension-host';
 import { HistoryError, WakeLoop, type HistoryEntry, type RunHistoryReader, type DreamingWriter } from '@mira/life';
@@ -27,13 +30,15 @@ export interface WebServiceOptions {
   dreaming?: DreamingOptions;
   connectionString: string; schema: string; miraId: string;
   sourceDirectory: string; spoolDirectory: string; settingsFile: string;
-  workingDirectory?: string; memoryRoot?: string;
+  workingDirectory?: string; memoryRoot?: string; attachmentsDirectory?: string;
   /** User skills live under this directory; defaults to MIRA_HOME or ~/.mira. */
   miraHome?: string;
   extensions?: { entries: LocalExtensionEntry[]; hmr?: boolean; configurationFile?: string; artifactsDirectory?: string };
   synthetic?: boolean;
   /** Deterministic test injection only; never obtains ambient credentials. */
   syntheticStream?: StreamFn;
+  /** Deterministic model capability fixture; used only in synthetic mode. */
+  syntheticModel?: Model<Api>;
 }
 const syntheticStream: StreamFn = () => {
   const stream = createAssistantMessageEventStream();
@@ -58,8 +63,10 @@ function visible(entry: HistoryEntry): Timeline['items'][number] | null {
       return { id: entry.id, role: 'notice', text: `外部程序 ${payload['senderId']}\n${payload['text']}`, occurredAt: entry.occurredAt };
     }
     if (entry.event.source !== 'user' || entry.event.type !== 'web.message' || !object(entry.event.payload) || typeof entry.event.payload['text'] !== 'string') return null;
-    return { id: entry.id, externalEventId: entry.event.id, role: 'user', text: entry.event.payload['text'], occurredAt: entry.occurredAt };
+    return { id: entry.id, externalEventId: entry.event.id, role: 'user', text: entry.event.payload['text'], ...(Array.isArray(entry.event.payload['attachments']) ? { attachments: entry.event.payload['attachments'].map(attachmentDescriptor) } : {}), occurredAt: entry.occurredAt };
   }
+  const publication = attachmentPublication(entry);
+  if (publication) return { id: entry.id, role: 'assistant', ...publication, occurredAt: entry.occurredAt };
   if (entry.kind !== 'context') return null;
   const [record] = decodeRecords([entry.record], entry.record.parentId);
   if (record?.type !== 'message' || record.message.role !== 'assistant') return null;
@@ -69,6 +76,7 @@ function visible(entry: HistoryEntry): Timeline['items'][number] | null {
 export class LocalWebService implements WebBackend, ManagementBackend {
   readonly external: ExternalIngress;
   readonly #options: WebServiceOptions;
+  readonly #attachments: AttachmentStore;
   readonly #writer: DreamingWriter;
   readonly #history: RunHistoryReader;
   readonly #settings: WebSettingsStore;
@@ -85,8 +93,8 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   #settingsGeneration = 0;
   #kickRequested = false;
   readonly #cache = new Map<string, Timeline['items'][number] | null>();
-  private constructor(options: WebServiceOptions, writer: DreamingWriter, history: RunHistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, host?: ExtensionHost) {
-    this.#options = options; this.#writer = writer; this.#history = history; this.#settings = settings;
+  private constructor(options: WebServiceOptions, writer: DreamingWriter, history: RunHistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, attachments: AttachmentStore, host?: ExtensionHost) {
+    this.#attachments = attachments; this.#options = options; this.#writer = writer; this.#history = history; this.#settings = settings;
     this.#settingsValue = settingsValue; this.#loop = loop; this.#host = host;
     this.external = createExternalIngress(writer, () => this.#kick());
     const policy = dreamingPolicy(options.dreaming);
@@ -106,6 +114,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     const cwd = await realpath(options.workingDirectory ?? process.cwd());
     if (!(await stat(cwd)).isDirectory()) throw Error('Working directory must exist');
     const loadSkills = createSkillLoader({ sourceDirectory: options.sourceDirectory, ...(options.miraHome === undefined ? {} : { miraHome: options.miraHome }) });
+    const attachments = await AttachmentStore.open(options.attachmentsDirectory ?? path.join(path.dirname(options.settingsFile), 'attachments'), [options.sourceDirectory, options.memoryRoot, options.extensions?.artifactsDirectory].filter((value): value is string => value !== undefined));
     const settings = new WebSettingsStore(options.settingsFile, options.sourceDirectory, [options.memoryRoot, options.extensions?.artifactsDirectory].filter((directory): directory is string => directory !== undefined));
     const settingsValue = await settings.get();
     await migrate({ connectionString: options.connectionString, schema: options.schema, direction: 'up' });
@@ -115,7 +124,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     let service: LocalWebService | undefined;
     try {
       const roots = options.memoryRoot ? await setupMemoryWorkspace({ memoryRoot: options.memoryRoot, sourceDirectory: options.sourceDirectory }) : undefined;
-      const baseTools = [...createWorkspaceTools(cwd), ...createHistoryTools(persistence.history(writer.miraId))];
+      const baseTools = [createAttachmentTool(attachments, cwd), ...createWorkspaceTools(cwd).map(tool => withVideoRead(tool, attachments, cwd)), ...createHistoryTools(persistence.history(writer.miraId))];
       if (options.extensions) {
         host = new ExtensionHost({ ...options.extensions, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage'], receive: async (extensionId, event, wake) => {
           const receipt = await extensionReceiver(writer)(extensionId, event, wake);
@@ -126,16 +135,17 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       }
       const extensionHost = host;
       const management = extensionHost ? extensionManagementTools(extensionHost) : [];
+      const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content });
       const loop = new WakeLoop({ writer,
-        writeOverflowInput: (runId, content) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content }),
+        writeOverflowInput,
         ...(roots ? { beforeComplete: memoryCheckpointHook(writer, roots.memoryRoot, roots.repositoryId) } : {}),
         createRuntime: () => {
           service!.#modelFailure = null;
           const current = service!.#settingsValue;
           if (!options.synthetic && !hasSelectedWebApiKey(current)) throw Error('Choose a model with a saved API key first');
-          const transport = options.synthetic ? { model: demoModel, streamFn: options.syntheticStream ?? syntheticStream } : settings.transport(current, { onFailure: failure => { service!.#modelFailure = failure; } });
+          const transport = options.synthetic ? { model: options.syntheticModel ?? demoModel, streamFn: options.syntheticStream ?? syntheticStream } : settings.transport(current, { onFailure: failure => { service!.#modelFailure = failure; } });
           let contextProviders: RegisteredContextProvider[] = [];
-          return new PiDurableRuntime({ ...(options.autoCompaction ? { autoCompaction: options.autoCompaction } : {}), writer, ...transport, tools: baseTools, loadSkills,
+          return new PiDurableRuntime({ ...(options.autoCompaction ? { autoCompaction: options.autoCompaction } : {}), writer, ...transport, writeOverflowInput, resolveAttachment: reference => attachments.hydrate(reference), tools: baseTools, loadSkills,
             ...(extensionHost ? { prepareTools: async () => {
               const capabilities = await extensionHost.prepareCapabilities(); contextProviders = capabilities.contextProviders;
               return [...baseTools, ...management, ...extensionTools(capabilities.tools)];
@@ -150,7 +160,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
         },
       });
       if (roots && options.dreaming?.enabled !== false) await writer.initializeDreaming();
-      service = new LocalWebService(options, writer, persistence.history(writer.miraId), settings, settingsValue, loop, host);
+      service = new LocalWebService(options, writer, persistence.history(writer.miraId), settings, settingsValue, loop, attachments, host);
       // Existing durable pending runs resume through the same recovery contracts.
       service.#kick();
       return service;
@@ -203,12 +213,19 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   async discover(connection: unknown, signal?: AbortSignal) {
     return this.#settings.discover(connection, { ...(signal ? { signal } : {}) });
   }
-  async submit(input: { id: string; text: string; occurredAt: string }): Promise<{ id: string; receipt: 'inserted' | 'duplicate' }> {
+  async uploadAttachment(name: string, bytes: Uint8Array) {
+    if (this.#closed || this.#writer.signal.aborted) throw new WebHttpError('unavailable');
+    return this.#attachments.stage(name, bytes);
+  }
+  async readAttachment(id: string) { return this.#attachments.read(id); }
+  async submit(input: { id: string; text: string; occurredAt: string; attachmentIds?: string[] }): Promise<{ id: string; receipt: 'inserted' | 'duplicate' }> {
     if (this.#closed || this.#writer.signal.aborted) throw new WebHttpError('unavailable');
     if (this.#configurationWrite) throw new WebHttpError('busy');
     if (!this.#options.synthetic && !hasSelectedWebApiKey(this.#settingsValue)) throw new WebHttpError('invalid_input');
+    const attachments = await this.#attachments.resolve(input.attachmentIds ?? []);
+    if (!input.text.trim() && !attachments.length) throw new WebHttpError('invalid_input');
     let receipt: 'inserted' | 'duplicate';
-    try { receipt = await this.#writer.receive({ id: input.id, type: 'web.message', source: 'user', occurredAt: input.occurredAt, payload: { text: input.text } }, { id: `web:${input.id}`, reason: 'User message from the local web interface' });
+    try { receipt = await this.#writer.receive({ id: input.id, type: 'web.message', source: 'user', occurredAt: input.occurredAt, payload: { text: input.text, ...(attachments.length ? { attachments: attachments.map(item => ({ ...item })) } : {}) } }, { id: `web:${input.id}`, reason: 'User message from the local web interface' });
     } catch (error) {
       if (error instanceof PersistenceError && error.code === 'duplicate') throw new WebHttpError('conflict');
       throw error;
@@ -219,17 +236,21 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     return { id: input.id, receipt };
   }
   async timeline(before?: string): Promise<Timeline> {
-    const page = await this.#history.page({ kinds: ['event', 'context'], limit: 50, ...(before ? { before } : {}) });
+    const page = await this.#history.page({ kinds: ['event', 'context', 'tool'], limit: 50, ...(before ? { before } : {}) });
     const items: Timeline['items'] = [];
     for (const ref of page.hits) {
       const key = ref.id;
       if (!this.#cache.has(key)) {
         try {
           const entry = await this.#history.read({ id: ref.id, maxBytes: 1_048_576 });
-          this.#cache.set(key, entry ? visible(entry) : null);
+          // Tool intents are visible to history before their outcome commits. Do not
+          // cache an absent publication while the immutable outcome is pending.
+          if (entry?.kind !== 'tool' || entry.outcome !== null) this.#cache.set(key, entry ? visible(entry) : null);
         } catch (error) {
           if (!(error instanceof HistoryError) || error.code !== 'too_large') throw error;
-          this.#cache.set(key, { id: key, role: 'notice', text: '此历史记录超过界面读取上限，原始记录仍完整保存。', occurredAt: ref.occurredAt });
+          // An unreadable tool/context record cannot be verified as public. Keep
+          // private activity hidden; attachment publications are bounded descriptors.
+          this.#cache.set(key, ref.kind === 'tool' || ref.kind === 'context' ? null : { id: key, role: 'notice', text: '此历史记录超过界面读取上限，原始记录仍完整保存。', occurredAt: ref.occurredAt });
         }
         if (this.#cache.size > 1000) this.#cache.delete(this.#cache.keys().next().value!);
       }

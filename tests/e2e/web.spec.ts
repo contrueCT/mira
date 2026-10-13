@@ -6,7 +6,7 @@ test('desktop and narrow layouts render the single Mira timeline without console
   await expect(page.getByText('Mira，我们从这里开始吧', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '模型设置', exact: true })).toBeVisible();
   await expect(page.getByLabel('给 Mira 发消息', { exact: true })).toBeVisible();
-  await expect(page.locator('.mira-app button')).toHaveCount(2); // Existing gear and send only; no new management entry.
+  await expect(page.locator('.mira-app button')).toHaveCount(3); // Existing gear/send plus the approved attachment picker; no new management entry.
   await expect(page.getByRole('tab')).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath('mira-desktop.png'), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -498,4 +498,103 @@ test('external notification is a source-labelled Timeline notice with time, surv
   await expect(notice).toContainText('备份已完成');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('external-notification-narrow.png'), fullPage: true });
+});
+
+// Attachment UI fixtures below mock HTTP only; these do not establish the real service/model chain.
+test('mocked attachments show compact odd-left image grid and protected preview with history, focus and URL cleanup', async ({ page }, testInfo) => {
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j8S8AAAAASUVORK5CYII=', 'base64');
+  const files = [1, 2, 3].map(index => ({ id: `10000000-0000-4000-8000-00000000000${index}`, name: `image-${index}.png`, mimeType: 'image/png', size: png.length, sha256: 'a'.repeat(64) }));
+  const protectedReads: string[] = [];
+  await page.addInitScript(() => {
+    const created = URL.createObjectURL.bind(URL); const revoked = URL.revokeObjectURL.bind(URL);
+    const live = new Set<string>(); Object.assign(window, { attachmentUrls: live });
+    URL.createObjectURL = blob => { const url = created(blob); live.add(url); return url; };
+    URL.revokeObjectURL = url => { live.delete(url); revoked(url); };
+  });
+  await page.route('**/api/attachments/*', route => { protectedReads.push(route.request().headers()['x-mira-client'] ?? 'missing'); return route.fulfill({ body: png, contentType: 'image/png' }); });
+  await page.route('**/api/timeline', route => route.fulfill({ json: { items: [{ id: 'fixture-images', role: 'assistant', text: '三张图片', occurredAt: '2026-10-13T00:00:00Z', attachments: files }], nextCursor: null } }));
+  await page.goto('/');
+  const tiles = page.locator('.message-row .attachment-image'); await expect(tiles).toHaveCount(3);
+  await expect.poll(() => tiles.first().locator('img').evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    const boxes = await tiles.evaluateAll(elements => elements.map(element => { const rect = element.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width }; }));
+    expect(boxes[0]!.y).toBe(boxes[1]!.y); expect(boxes[2]!.x).toBe(boxes[0]!.x); expect(boxes[2]!.y).toBeGreaterThan(boxes[0]!.y);
+    expect(boxes[0]!.width).toBeLessThanOrEqual(148);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`mira-attachments-fixture-${width}.png`), fullPage: true });
+  }
+  const tile = page.getByRole('button', { name: '预览图片 image-1.png', exact: true }); await tile.click();
+  await expect(page.getByRole('dialog')).toBeVisible(); await expect(page.getByRole('link', { name: '下载文件' })).toBeVisible();
+  await expect(page.getByRole('dialog').locator('img')).toHaveAttribute('src', /^blob:/u);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { attachmentUrls: Set<string> }).attachmentUrls.size)).toBe(8);
+  await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { attachmentUrls: Set<string> }).attachmentUrls.size)).toBe(6);
+  await expect(tile).toBeFocused();
+  await page.goForward(); await expect(page.getByRole('dialog')).toBeVisible();
+  await page.goBack(); await expect(page.getByRole('dialog')).toHaveCount(0);
+  await tile.click(); await page.getByRole('button', { name: '关闭附件预览' }).click(); await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(protectedReads.every(header => header === 'web')).toBe(true);
+});
+
+test('mocked attachment-only uncertain send retains the ordered envelope across refresh and explicit retry', async ({ page }) => {
+  const uploaded: Array<{ id: string; name: string; mimeType: string; size: number; sha256: string }> = [];
+  const posts: unknown[] = [];
+  await page.route('**/api/timeline', route => route.fulfill({ json: { items: [], nextCursor: null } }));
+  await page.route('**/api/attachments?*', route => {
+    expect(route.request().headers()['x-mira-client']).toBe('web');
+    const file = { id: `10000000-0000-4000-8000-00000000000${uploaded.length + 1}`, name: new URL(route.request().url()).searchParams.get('name')!, mimeType: 'application/pdf', size: route.request().postDataBuffer()!.length, sha256: 'b'.repeat(64) };
+    uploaded.push(file); return route.fulfill({ json: file });
+  });
+  await page.route('**/api/messages', route => { posts.push(route.request().postDataJSON()); return route.abort('failed'); });
+  await page.goto('/');
+  await page.getByLabel('选择附件', { exact: true }).setInputFiles([{ name: 'one.pdf', mimeType: 'application/pdf', buffer: Buffer.from('one') }, { name: 'two.pdf', mimeType: 'application/pdf', buffer: Buffer.from('two') }]);
+  await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: '发送消息', exact: true }).click();
+  await expect(page.getByRole('button', { name: '核对并重试' })).toBeVisible();
+  expect(posts).toHaveLength(1); expect(posts[0]).toMatchObject({ text: '', attachmentIds: uploaded.map(file => file.id) });
+  await page.reload(); await expect(page.getByRole('button', { name: '核对并重试' })).toBeVisible(); expect(posts).toHaveLength(1);
+  await page.getByRole('button', { name: '核对并重试' }).click(); await expect.poll(() => posts.length).toBe(2); expect(posts[1]).toEqual(posts[0]);
+  expect(await page.evaluate(() => localStorage.length)).toBe(0);
+  const storage = await page.evaluate(() => sessionStorage.getItem('mira.pending-messages.v1'));
+  expect(storage).toContain('attachmentIds'); expect(storage).not.toContain('base64');
+});
+
+test('mocked upload failures support explicit retry/removal and paste/drop; active documents are download-only', async ({ page }) => {
+  let uploads = 0; const content = Buffer.from('<svg onload="alert(1)"/>');
+  const file = { id: '10000000-0000-4000-8000-000000000001', name: 'unsafe.svg', mimeType: 'image/svg+xml', size: content.length, sha256: 'c'.repeat(64) };
+  await page.route('**/api/timeline', route => route.fulfill({ json: { items: [], nextCursor: null } }));
+  await page.route('**/api/attachments?*', route => { uploads++; return uploads === 1 ? route.fulfill({ status: 500, json: { error: '上传未完成' } }) : route.fulfill({ json: file }); });
+  await page.route(`**/api/attachments/${file.id}`, route => route.fulfill({ body: content, contentType: file.mimeType }));
+  await page.goto('/');
+  await page.locator('.composer').evaluate(element => { const clipboardData = new DataTransfer(); clipboardData.items.add(new File(['<svg onload="alert(1)"/>'], 'unsafe.svg', { type: 'image/svg+xml' })); element.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true })); });
+  await expect(page.getByText('上传未完成', { exact: false })).toBeVisible();
+  await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: '重新上传' }).click(); await expect(page.getByRole('button', { name: '查看附件 unsafe.svg' })).toBeVisible();
+  await page.getByRole('button', { name: '查看附件 unsafe.svg' }).click();
+  await expect(page.getByRole('link', { name: '下载文件' })).toBeVisible(); await expect(page.getByRole('dialog').locator('img, video, iframe, object, embed')).toHaveCount(0);
+  await page.getByRole('button', { name: '关闭附件预览' }).click();
+  await page.getByRole('button', { name: '移除附件 unsafe.svg' }).click(); await expect(page.getByLabel('待发送附件')).toHaveCount(0);
+  await page.locator('.composer').evaluate(element => { const dataTransfer = new DataTransfer(); dataTransfer.items.add(new File(['<svg onload="alert(1)"/>'], 'unsafe.svg')); element.dispatchEvent(new DragEvent('drop', { dataTransfer, bubbles: true, cancelable: true })); });
+  await expect(page.getByLabel('待发送附件')).toBeVisible(); expect(uploads).toBe(3);
+});
+
+test('mocked historical thumbnails load only near viewport and release bytes when scrolled away', async ({ page }) => {
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j8S8AAAAASUVORK5CYII=', 'base64');
+  const file = { id: '10000000-0000-4000-8000-000000000001', name: 'historical.png', mimeType: 'image/png', size: png.length, sha256: 'd'.repeat(64) };
+  let reads = 0;
+  await page.route('**/api/attachments/*', route => { reads++; return route.fulfill({ body: png, contentType: 'image/png' }); });
+  await page.route('**/api/timeline', route => route.fulfill({ json: { items: [
+    { id: 'old-image', role: 'assistant', text: '较早的图片', occurredAt: '2026-10-12T00:00:00Z', attachments: [file] },
+    ...Array.from({ length: 30 }, (_, index) => ({ id: `text-${index}`, role: 'assistant', text: `较新的消息 ${index}\n用于检验离屏图片按需加载\n消息记录依然保留`, occurredAt: `2026-10-13T00:00:${String(index).padStart(2, '0')}Z` })),
+  ], nextCursor: null } }));
+  await page.goto('/'); await expect(page.getByText('较新的消息 29', { exact: false })).toBeVisible();
+  const tile = page.getByRole('button', { name: '预览图片 historical.png', exact: true });
+  await expect(tile.locator('img')).toHaveCount(0); expect(reads).toBe(0);
+  await page.locator('.timeline-scroll').evaluate(element => { element.scrollTop = 0; });
+  await expect(tile.locator('img')).toHaveAttribute('src', /^blob:/u); expect(reads).toBe(1);
+  await page.locator('.timeline-scroll').evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect(tile.locator('img')).toHaveCount(0);
+  await page.locator('.timeline-scroll').evaluate(element => { element.scrollTop = 0; });
+  await expect(tile.locator('img')).toHaveAttribute('src', /^blob:/u); expect(reads).toBe(2);
 });

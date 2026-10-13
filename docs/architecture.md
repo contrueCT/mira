@@ -100,3 +100,7 @@ History 使用 `history_records` 薄表维护四类原始记录的全局 UUID，
 [ADR 0019](adr/0019-extension-context-providers.md) 定义 Extension SDK 的 sourced ContextProvider。Host 同时捕获工具/Provider activation；自然请求采样后与 Skills 一起通过既有 Mira system section 的 fenced CAS 持久化。正文是观察数据，不是新指令或授权；失败/超限/旧代有明确状态，取消不发布部分结果，压缩使用同一冻结采样。Memory 读取规则保持不变。
 
 [ADR 0020](adr/0020-settings-management.md) 把管理入口限定在既有设置窗口。Memory 页读当前总览并提交普通自然语言用户请求，按真实 Event/Wake/Memory receipt 显示状态；扩展操作复用既有生命周期与版本核对；运行记录为现有 History 的只读有界关联投影，没有另造日志、语义状态、原始工具/思考公开接口或强制刷新。完整配置只写入，不回显秘密。
+
+## 聊天附件
+
+[ADR 0021](adr/0021-chat-attachments.md) 定义双向不可变本地快照、消息原子绑定、显式 send_attachment 发布和 provider 中立持久引用。请求边界加载图片；视频初始只给普通文件引用，模型显式 read 后才可由内置 Google Gemini 经 Pi payload hook 原生理解，PDF/Word由模型普通工具按需解析。浏览器仍走受保护 fetch/Blob，压缩与恢复保留引用，不增加第二套 runtime。

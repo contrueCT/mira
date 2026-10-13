@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
+import { crc32, deflateSync } from 'node:zlib';
 import { createLocalHttp, LocalWebService, WebHttpError, WebSettingsStore, listBuiltinCatalog, type WebSettings } from '@mira/server';
 import { createAssistantMessageEventStream, getCurrentTools, type TranscriptContext } from '@earendil-works/pi-ai';
 import { readWebExtensionConfiguration } from '../../apps/server/src/web-extensions.ts';
@@ -120,14 +121,14 @@ test('tool activity stays out of both timeline routes while durable execution an
     assert.match(JSON.stringify(timeline), /Visible reply 2/);
     // The ordinary opaque cursor can request an empty older page; both HTTP
     // response paths must omit all tool-display fields.
-    const cursor = (await db.store.history('hidden-tools').page({ kinds: ['event', 'context'], limit: 1 })).nextCursor;
+    const cursor = (await db.store.history('hidden-tools').page({ kinds: ['event', 'context', 'tool'], limit: 1 })).nextCursor;
     assert.ok(cursor);
     const http = createLocalHttp({ backend: service, port: httpPort }); app = http;
     for (const request of [
       { url: '/api/timeline', headers: readHeaders },
       { method: 'POST' as const, url: '/api/timeline', headers: writeHeaders, payload: { before: cursor } },
     ]) {
-      const response = await http.inject(request); assert.equal(response.statusCode, 200);
+      const response = await http.inject(request); assert.equal(response.statusCode, 200, response.body);
       assert.deepEqual(Object.keys(response.json()).sort(), ['items', 'nextCursor']);
       assert.doesNotMatch(response.body, /PRIVATE_TOOL_|PRIVATE_THINKING/);
     }
@@ -144,6 +145,95 @@ test('tool activity stays out of both timeline routes while durable execution an
       assert.ok(call); assert.ok(result); assert.match(JSON.stringify(result), /PRIVATE_TOOL_RESULT_SENTINEL/);
     }
     assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM tool_executions')).rows[0].n, 1);
+  } finally { await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+
+// A valid deterministic RGB PNG that stays below Pi's resize limits while its
+// native image result exceeds the 1 MiB public History read budget. This is
+// generated test material, not a padded fake response or injected timeline row.
+function oversizedPrivateReadPng(): Buffer {
+  const width = 768; const height = 512;
+  const rows = Buffer.alloc((width * 3 + 1) * height); let state = 0x6d697261;
+  for (let y = 0; y < height; y++) for (let x = 1; x <= width * 3; x++) {
+    state ^= state << 13; state ^= state >>> 17; state ^= state << 5;
+    rows[y * (width * 3 + 1) + x] = state & 255;
+  }
+  const chunk = (type: string, data: Buffer): Buffer => {
+    const header = Buffer.alloc(4); header.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type), data]); const checksum = Buffer.alloc(4); checksum.writeUInt32BE(crc32(body));
+    return Buffer.concat([header, body, checksum]);
+  };
+  const dimensions = Buffer.alloc(13); dimensions.writeUInt32BE(width, 0); dimensions.writeUInt32BE(height, 4); dimensions[8] = 8; dimensions[9] = 2;
+  return Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), chunk('IHDR', dimensions), chunk('IDAT', deflateSync(rows)), chunk('IEND', Buffer.alloc(0))]);
+}
+
+test('oversized ordinary image read stays private in both HTTP timeline routes and after PostgreSQL restart', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-private-large-image-');
+  let service: LocalWebService | undefined; let app: ReturnType<typeof createLocalHttp> | undefined; let calls = 0;
+  try {
+    const file = path.join(root, 'PRIVATE_OVERSIZED_IMAGE.png'); const png = oversizedPrivateReadPng();
+    assert.ok(png.length > 1_048_576); await writeFile(file, png);
+    const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'private-large-read', sourceDirectory: process.cwd(),
+      workingDirectory: root, miraHome: root, spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'),
+      synthetic: true, dreaming: { enabled: false }, autoCompaction: { enabled: false },
+      syntheticStream: async (_model: unknown, context: TranscriptContext) => {
+        calls++;
+        if (calls === 1) return streamOf({ ...assistant(), stopReason: 'toolUse' as const, content: [
+          { type: 'toolCall' as const, id: 'PRIVATE_OVERSIZED_READ_CALL', name: 'read', arguments: { path: file } },
+        ] });
+        const result = context.messages.find(message => message.role === 'toolResult' && message.toolCallId === 'PRIVATE_OVERSIZED_READ_CALL');
+        assert.ok(result?.role === 'toolResult' && !result.isError);
+        const image = result.content.find(block => block.type === 'image');
+        assert.ok(image?.type === 'image' && Buffer.byteLength(image.data) > 1_048_576, 'actual read must produce an oversized native image outcome');
+        assert.deepEqual(Buffer.from(image.data, 'base64'), png);
+        // Give the final context record a strictly later timestamp so the
+        // real older-page cursor still includes both oversized private records.
+        await new Promise(resolve => setTimeout(resolve, 10));
+        return streamOf(assistant('Private image inspected.'));
+      } };
+    service = await LocalWebService.open(options); await settled(service);
+    await service.submit({ id: 'private-large-image-request', text: 'Inspect the local image privately.', occurredAt: '2000-01-01T00:00:00.000Z' });
+    await settled(service); assert.equal((await service.status()).state, 'idle'); assert.equal(calls, 2);
+    const executions = (await db.admin.query<{ history_id: string; intent: unknown; outcome: unknown; bytes: number }>(
+      'SELECT history_id, intent, outcome, octet_length(outcome::text)::int AS bytes FROM tool_executions')).rows;
+    assert.equal(executions.length, 1); assert.ok(executions[0]!.bytes > 1_048_576);
+    assert.match(JSON.stringify(executions[0]!.intent), /PRIVATE_OVERSIZED_IMAGE|PRIVATE_OVERSIZED_READ_CALL/);
+    assert.ok(executions[0]!.outcome, 'the complete real tool outcome remains durable');
+    const contextRows = (await db.admin.query<{ record_id: string; envelope: unknown; bytes: number }>(
+      "SELECT record_id, envelope, octet_length(envelope::text)::int AS bytes FROM context_records WHERE envelope->'payload'->'message'->>'role'='toolResult' ORDER BY version")).rows;
+    assert.equal(contextRows.length, 1); assert.ok(contextRows[0]!.bytes > 1_048_576);
+    const history = db.store.history('private-large-read');
+    // Both identities really cross the public History size limit. A private
+    // context toolResult must not leak a generic size notice either.
+    for (const id of [executions[0]!.history_id, contextRows[0]!.record_id]) {
+      await assert.rejects(history.read({ id, maxBytes: 1_048_576 }), { code: 'too_large' });
+    }
+    const cursor = (await history.page({ kinds: ['event', 'context', 'tool'], limit: 1 })).nextCursor; assert.ok(cursor);
+    const olderIds = (await history.page({ kinds: ['event', 'context', 'tool'], limit: 50, before: cursor })).hits.map(hit => hit.id);
+    assert.ok(olderIds.includes(executions[0]!.history_id)); assert.ok(olderIds.includes(contextRows[0]!.record_id));
+    const verifyRoutes = async () => {
+      const http = createLocalHttp({ backend: service!, port: httpPort }); app = http;
+      for (const request of [
+        { url: '/api/timeline', headers: readHeaders },
+        { method: 'POST' as const, url: '/api/timeline', headers: writeHeaders, payload: { before: cursor } },
+      ]) {
+        const response = await http.inject(request); assert.equal(response.statusCode, 200, response.body);
+        const items = response.json().items as Array<{ role: string; text: string; attachments?: unknown[] }>;
+        assert.deepEqual(items.filter(item => item.role === 'user').map(item => item.text), ['Inspect the local image privately.']);
+        assert.ok(items.every(item => item.role === 'user' || (item.role === 'assistant' && item.text === 'Private image inspected.')), 'ordinary private tool records must not become timeline notices');
+        assert.ok(items.every(item => !item.attachments?.length));
+        assert.doesNotMatch(response.body, /PRIVATE_OVERSIZED|超过界面读取上限|"role":"notice"|image\/png/);
+        if (request.method === undefined) assert.equal(items.length, 2);
+      }
+      await app.close(); app = undefined;
+    };
+    await verifyRoutes(); const timeline = await service.timeline();
+    await service.close(); service = undefined;
+    service = await LocalWebService.open(options); await settled(service); assert.equal(calls, 2, 'restart must not replay the completed private read');
+    await verifyRoutes(); assert.deepEqual(await service.timeline(), timeline);
+    assert.deepEqual((await db.admin.query('SELECT history_id, intent, outcome, octet_length(outcome::text)::int AS bytes FROM tool_executions')).rows, executions);
+    assert.deepEqual((await db.admin.query("SELECT record_id, envelope, octet_length(envelope::text)::int AS bytes FROM context_records WHERE envelope->'payload'->'message'->>'role'='toolResult' ORDER BY version")).rows, contextRows);
   } finally { await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
 

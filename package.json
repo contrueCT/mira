@@ -21,7 +21,8 @@
     "test:e2e": "node scripts/run-web-tests.mts",
     "external-access": "node apps/server/src/external-access-cli.mts",
     "test:external:e2e": "node scripts/run-real-web-tests.mts external",
-    "test:management:e2e": "node scripts/run-real-web-tests.mts management"
+    "test:management:e2e": "node scripts/run-real-web-tests.mts management",
+    "test:attachments:e2e": "node scripts/run-real-web-tests.mts attachments"
   },
   "devDependencies": {
     "@types/node": "24.19.1",

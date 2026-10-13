@@ -1,5 +1,7 @@
 /** Read DTOs contain no runtime trace, raw tool data or stored credentials. */
+export interface Attachment { id: string; name: string; mimeType: string; size: number; sha256: string }
 export interface TimelineItem {
+  attachments?: Attachment[];
   /** Original request identity for pending-message acknowledgement only. */
   externalEventId?: string;
   id: string;
@@ -9,7 +11,7 @@ export interface TimelineItem {
 }
 export interface TimelinePage { items: TimelineItem[]; nextCursor: string | null }
 export interface ServerStatus { state: 'idle' | 'working' | 'error' | 'stopped'; mode: 'synthetic' | 'live'; model: string | null; error: string | null }
-export interface MessageEnvelope { id: string; text: string; occurredAt: string }
+export interface MessageEnvelope { id: string; text: string; occurredAt: string; attachmentIds?: string[] }
 export interface PendingMessage extends MessageEnvelope { state: 'sending' | 'uncertain' | 'queued'; error?: string }
 export type CustomProtocol = 'openai-completions' | 'openai-responses' | 'anthropic-messages';
 export interface CustomModel {

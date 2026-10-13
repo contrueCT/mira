@@ -27,12 +27,14 @@ export function readPending(storage: Pick<Storage, 'getItem'>): PendingMessage[]
   return parsed.map((value: unknown) => {
     if (!value || typeof value !== 'object') throw new Error('无法读取尚未确认的消息');
     const item = value as Record<string, unknown>;
-    if (typeof item['id'] !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(item['id']) || typeof item['text'] !== 'string' || !item['text'].trim() || typeof item['occurredAt'] !== 'string' || !Number.isFinite(Date.parse(item['occurredAt']))) throw new Error('无法读取尚未确认的消息');
-    return { id: item['id'], text: item['text'], occurredAt: item['occurredAt'], state: item['state'] === 'queued' ? 'queued' : 'uncertain' };
+    const attachmentIds = item['attachmentIds'];
+    if (attachmentIds !== undefined && (!Array.isArray(attachmentIds) || attachmentIds.length > 10 || attachmentIds.some(id => typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(id)) || new Set(attachmentIds).size !== attachmentIds.length)) throw new Error('无法读取尚未确认的消息附件');
+    if (typeof item['id'] !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(item['id']) || typeof item['text'] !== 'string' || (!item['text'].trim() && !(attachmentIds as string[] | undefined)?.length) || typeof item['occurredAt'] !== 'string' || !Number.isFinite(Date.parse(item['occurredAt']))) throw new Error('无法读取尚未确认的消息');
+    return { id: item['id'], text: item['text'], occurredAt: item['occurredAt'], ...(attachmentIds !== undefined ? { attachmentIds: [...attachmentIds as string[]] } : {}), state: item['state'] === 'queued' ? 'queued' : 'uncertain' };
   });
 }
 export function writePending(storage: Pick<Storage, 'setItem' | 'removeItem'>, messages: PendingMessage[]): void {
-  if (messages.length) storage.setItem(PENDING_KEY, JSON.stringify(messages.map(({ id, text, occurredAt, state }) => ({ id, text, occurredAt, state }))));
+  if (messages.length) storage.setItem(PENDING_KEY, JSON.stringify(messages.map(({ id, text, occurredAt, attachmentIds, state }) => ({ id, text, occurredAt, ...(attachmentIds !== undefined ? { attachmentIds: [...attachmentIds] } : {}), state }))));
   else storage.removeItem(PENDING_KEY);
 }
 

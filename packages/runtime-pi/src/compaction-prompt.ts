@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { buildSessionProjection, type SessionBeforeCompactEvent } from '@earendil-works/pi-coding-agent';
+import { messageAttachments } from './attachments.ts';
 import { jsonValue } from './records.ts';
 import type { RecoveryOperation } from './observations.ts';
 
@@ -27,6 +28,7 @@ function sourceMessage(message: AgentMessage, historyId: string) {
     throw new Error('Unsupported content in compaction reference');
   }) : value['content'];
   return jsonValue({ history_id: historyId, role: message.role, timestamp: message.timestamp, content,
+    ...(messageAttachments(message).length ? { attachment_source_history_id: historyId, attachment_count: messageAttachments(message).length, media_bytes_omitted: true } : {}),
     ...(message.role === 'toolResult' ? { toolCallId: message.toolCallId, toolName: message.toolName, isError: message.isError } : {}),
     ...(message.role === 'custom' ? { customType: message.customType } : {}) });
 }

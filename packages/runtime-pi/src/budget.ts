@@ -1,6 +1,7 @@
+import { attachmentRequestPlans } from './attachments.ts';
 import type { AgentMessage, AgentTool } from '@earendil-works/pi-agent-core';
 import { toToolDeclaration, type Api, type Model } from '@earendil-works/pi-ai';
-import { estimateTokens } from '@earendil-works/pi-coding-agent';
+import { estimateTokens, convertToLlm } from '@earendil-works/pi-coding-agent';
 
 export interface AutoCompactionOptions {
   enabled?: boolean;
@@ -24,7 +25,8 @@ export function contextBudget(model: Model<Api>, options: AutoCompactionOptions 
 /** Pi's public heuristic, plus protocol overhead and the actual current tool
  * schemas. It is an estimate, not a tokenizer or a provider usage guarantee.
  * Declarations already present in system deltas may be counted twice, safely. */
-export function estimateRequestTokens(messages: AgentMessage[], tools: AgentTool[] = []): number {
-  return messages.reduce((total, message) => total + estimateTokens(message) + 8, 0) +
-    Math.ceil(JSON.stringify(tools.map(tool => toToolDeclaration(tool))).length / 4) + 32;
+export function estimateRequestTokens(messages: AgentMessage[], tools: AgentTool[] = [], model?: Model<Api>): number {
+  const plans = model ? attachmentRequestPlans(convertToLlm(messages), model) : messages.map(message => ({message,media:[]}));
+  return plans.reduce((total, plan) => total + estimateTokens(plan.message) + 8 + plan.media.reduce((sum,item)=>sum+(item.kind==='image'?4096:16384),0), 0)
+    + Math.ceil(JSON.stringify(tools.map(tool => toToolDeclaration(tool))).length / 4) + 32;
 }
