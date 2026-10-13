@@ -4,7 +4,7 @@ export type { ArtifactManifest, ArtifactTestCommand, ArtifactTestResult } from '
 import { ConfigurationWriter } from './configuration.ts';
 export { readExtensionConfiguration } from './configuration.ts';
 export type { ExtensionConfiguration } from './configuration.ts';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -13,7 +13,7 @@ import { Context, type Fiber, type Disposable } from 'cordis';
 import Loader, { type EntryOptions } from '@cordisjs/plugin-loader';
 import Hmr from '@cordisjs/plugin-hmr';
 import Timer from '@cordisjs/plugin-timer';
-import { serviceKey, type Cleanup, type ExtensionContext, type ExtensionEvent, type ExtensionTool, type ExtensionWake, type Json } from '@mira/extension-sdk';
+import { serviceKey, type Cleanup, type ContextProvider, type ExtensionContext, type ExtensionEvent, type ExtensionTool, type ExtensionWake, type Json } from '@mira/extension-sdk';
 
 export interface LocalExtensionEntry {
   id: string;
@@ -37,17 +37,31 @@ export interface ExtensionHostOptions {
   artifactsDirectory?: string;
 }
 export interface RegisteredTool { extensionId: string; activation: string; digest?: string; tool: ExtensionTool }
+export interface ContextProviderSample {
+  extensionId: string; activation: string; providerId: string; digest?: string;
+  status: 'ok' | 'empty' | 'failed' | 'stale' | 'too-large' | 'budget-exceeded';
+  text?: string;
+}
+export interface RegisteredContextProvider {
+  extensionId: string; activation: string; providerId: string; digest?: string;
+  sample(signal: AbortSignal): Promise<ContextProviderSample>;
+}
+export interface ExtensionCapabilities { tools: RegisteredTool[]; contextProviders: RegisteredContextProvider[] }
 export interface ExtensionStatus {
   id: string; path: string; enabled: boolean; config: Json;
   status: 'disabled' | 'import-failed' | 'waiting' | 'loading' | 'active' | 'failed' | 'disposed' | 'unloading';
   generated?: GeneratedVersion;
-  activation: string | null; tools: string[]; diagnostic: string | null;
+  activation: string | null; tools: string[]; contextProviders: string[]; diagnostic: string | null;
 }
 export type ExtensionChange = { action: 'enable' | 'disable' | 'reload' | 'activate' | 'remove' }
   | { action: 'configure'; config: Json }
   | { action: 'install' | 'update'; digest: string; config?: Json }
   | { action: 'rollback'; revision: string };
 export interface ChangeStatus { id: string; extensionId: string; action: ExtensionChange['action']; status: 'applied' | 'failed'; runtime: ExtensionStatus | null; persistence: 'saved' | 'failed' | 'not-required' | 'not-attempted'; error?: string; digest?: string; revision?: string; artifact?: 'verified' | 'failed'; test?: 'passed' | 'failed' | 'not-run' | 'invalidated'; cleanup?: 'failed' }
+export class ExtensionRevisionConflictError extends Error {
+  override name = 'ExtensionRevisionConflictError';
+  constructor() { super('Extension state changed; refresh before retrying'); }
+}
 interface Instance { id: string; activation: string; context: ExtensionContext; fiber: Fiber; executions: Set<Promise<void>>; dependencies: string[]; provided: Set<string> }
 interface CleanupScope { extensionId: string; activations: Set<string>; services: Set<string>; errors: string[] }
 
@@ -59,6 +73,8 @@ export class ExtensionHost {
   private readonly instances = new WeakMap<Fiber, Instance>();
   private readonly latest = new Map<string, Instance>();
   private readonly tools = new Map<string, RegisteredTool>();
+  private readonly contextProviders = new Map<string, RegisteredContextProvider>();
+  private readonly contextProviderDiagnostics = new Map<string, { activation: string; status: string }>();
   private readonly consumers = new Map<string, Set<Promise<void>>>();
   private readonly listeners = new Map<string, Set<(payload: Json) => void>>();
   private readonly diagnostics = new Map<string, string>();
@@ -280,6 +296,41 @@ export class ExtensionHost {
         resourceDrains.push(releaseResource(() => { if (this.tools.get(name) === registered) this.tools.delete(name); }));
         this.tools.set(name, registered);
       },
+      registerContextProvider: provider => {
+        canRegister();
+        const providerId = provider.id, provide = provider.provide;
+        if (typeof providerId !== 'string' || !/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(providerId) || typeof provide !== 'function') throw new Error('Invalid context provider');
+        if (id.length > 128) throw new Error('Context provider extension ID exceeds 128 characters');
+        const key = `${id}/${providerId}`;
+        if (this.contextProviders.has(key)) throw new Error(`Duplicate context provider: ${key}`);
+        if (this.contextProviders.size >= 32) throw new Error('Context provider registry exceeds 32 providers');
+        const source = { extensionId: id, activation, providerId, ...(this.entries.get(id)?.generated ? { digest: this.entries.get(id)!.generated!.digest } : {}) };
+        const registered: RegisteredContextProvider = { ...source, sample: async signal => {
+          signal.throwIfAborted();
+          if (retired || this.closed || this.closing || ctx.fiber.state !== 2 || this.contextProviders.get(key) !== registered) return { ...source, status: 'stale' };
+          const lease = Promise.withResolvers<void>();
+          executions.add(lease.promise);
+          // Cancellation stops request preparation promptly, but cannot preempt
+          // trusted code. Keep its resource lease until the callback really ends.
+          const task = (async (): Promise<ContextProviderSample> => {
+            try {
+              const result = await provide.call(provider, { signal });
+              if (result === null) return { ...source, status: 'empty' };
+              if (!result || typeof result !== 'object') return { ...source, status: 'failed' };
+              const text = result.text;
+              if (typeof text !== 'string') return { ...source, status: 'failed' };
+              if (!text.length) return { ...source, status: 'empty' };
+              const sample: ContextProviderSample = { ...source, status: 'ok', text };
+              if (Buffer.byteLength(JSON.stringify(sample), 'utf8') > 16_384) return { ...source, status: 'too-large' };
+              return sample;
+            } catch { return { ...source, status: 'failed' }; }
+            finally { executions.delete(lease.promise); lease.resolve(); }
+          })();
+          return await cancellable(task, signal);
+        } };
+        resourceDrains.push(releaseResource(() => { if (this.contextProviders.get(key) === registered) { this.contextProviders.delete(key); this.contextProviderDiagnostics.delete(key); } }));
+        this.contextProviders.set(key, registered);
+      },
       emitEvent: async event => { alive(); return this.options.receive(id, validatedEvent(event)); },
       requestWake: async request => {
         alive();
@@ -329,14 +380,19 @@ export class ExtensionHost {
   }
 
   /** Save desired configuration, then await the actual lifecycle outcome. */
-  async requestChange(id: string, change: ExtensionChange): Promise<ChangeStatus> {
+  async requestChange(id: string, change: ExtensionChange, options?: { expectedRevision: string }): Promise<ChangeStatus> {
     this.assertOpen();
     if (!/^[a-zA-Z][\w-]*$/.test(id)) throw new Error('Invalid extension ID');
     if (!['enable', 'disable', 'reload', 'configure', 'install', 'activate', 'update', 'rollback', 'remove'].includes(change.action)) throw new Error('Unknown extension action');
     if (change.action === 'configure' || ((change.action === 'install' || change.action === 'update') && change.config !== undefined)) validateConfig(change.config!);
     if (change.action === 'install' || change.action === 'update') validateDigest(change.digest);
     const snapshot = structuredClone(change);
+    const expectedRevision = options?.expectedRevision;
     return this.serialize(async () => {
+      // Settle an already-started HMR replacement before comparing the state the
+      // client saw. The check and dispatch below have no intervening await.
+      await this.ctx.loader.await();
+      if (expectedRevision !== undefined && this.managementRevision(id) !== expectedRevision) throw new ExtensionRevisionConflictError();
       if (snapshot.action === 'install') {
         if (this.entries.has(id)) throw new Error(`Extension already installed: ${id}`);
         if (!this.artifacts) throw new Error('Generated extensions require artifactsDirectory');
@@ -351,6 +407,14 @@ export class ExtensionHost {
       this.receipts.push(receipt);
       return structuredClone(receipt);
     });
+  }
+  /** Opaque revision of private desired/runtime state, never raw config data. */
+  managementRevision(id: string): string {
+    this.assertOpen();
+    const entry = this.entries.get(id);
+    const runtime = this.snapshot().find(item => item.id === id) ?? null;
+    const receipt = this.receipts.findLast(item => item.extensionId === id)?.id ?? null;
+    return createHash('sha256').update(JSON.stringify({ entry: entry ?? null, runtime, receipt })).digest('hex');
   }
   changeStatus(): ChangeStatus[] { return structuredClone(this.receipts); }
   diagnosticsLog(): string[] { return [...this.hostDiagnostics]; }
@@ -367,7 +431,9 @@ export class ExtensionHost {
         status: entry.enabled === false ? 'disabled' : cordis?.fiber ? names[cordis.fiber.state]! : 'import-failed',
         activation: this.latest.get(entry.id)?.activation ?? null,
         tools: [...this.tools.values()].filter(tool => tool.extensionId === entry.id).map(tool => tool.tool.name),
-        diagnostic: this.diagnostics.get(entry.id) ?? (entry.enabled !== false && !cordis?.fiber ? 'Import did not create a plugin; see host diagnostics' : null) };
+        contextProviders: [...this.contextProviders.values()].filter(provider => provider.extensionId === entry.id).map(provider => provider.providerId),
+        diagnostic: this.diagnostics.get(entry.id) ?? ([...this.contextProviders.entries()].filter(([, provider]) => provider.extensionId === entry.id)
+          .map(([key]) => this.contextProviderDiagnostics.get(key)).find(Boolean) ? 'Context provider sampling failed or exceeded its data budget.' : undefined) ?? (entry.enabled !== false && !cordis?.fiber ? 'Import did not create a plugin; see host diagnostics' : null) };
     });
   }
 
@@ -506,12 +572,51 @@ export class ExtensionHost {
   }
   /** Settle known lifecycle work and snapshot declarations. Only actual tool
    * execution leases resources; an old declaration never pins an activation. */
-  async prepare(): Promise<RegisteredTool[]> {
+  async prepare(): Promise<RegisteredTool[]> { return (await this.prepareCapabilities()).tools; }
+  /** One declaration snapshot for tools and context providers. Capturing it does
+   * not lease resources; each actual call checks its original activation. */
+  async prepareCapabilities(): Promise<ExtensionCapabilities> {
     this.assertOpen();
     return this.serialize(async () => {
       await this.ctx.loader.await();
-      return [...this.tools.values()].map(tool => ({ ...tool, tool: { ...tool.tool, parameters: structuredClone(tool.tool.parameters) } }));
+      return {
+        tools: [...this.tools.values()].map(tool => ({ ...tool, tool: { ...tool.tool, parameters: structuredClone(tool.tool.parameters) } })),
+        contextProviders: [...this.contextProviders.values()].map(provider => ({ ...provider })),
+      };
     });
+  }
+  /** Sample each pinned provider once; unavailable data replaces old successes.
+   * Budgets bound serialized JSON bytes and never silently truncate content. */
+  async sampleContextProviders(providers: readonly RegisteredContextProvider[], signal: AbortSignal): Promise<ContextProviderSample[]> {
+    this.assertOpen(); signal.throwIfAborted();
+    if (providers.length > 32) throw new Error('Context provider registry exceeds 32 providers');
+    const seen = new Set<string>();
+    for (const provider of providers) {
+      const key = `${provider.extensionId}/${provider.providerId}`;
+      if (seen.has(key)) throw new Error('Duplicate context provider declaration');
+      seen.add(key);
+    }
+    const samples: ContextProviderSample[] = [];
+    // Reserve room for every source/status so aggregate overflow stays explicit.
+    let remaining = 65_536 - Buffer.byteLength(JSON.stringify(providers.map(({ extensionId, activation, providerId, digest }) => ({ extensionId, activation, providerId, ...(digest === undefined ? {} : { digest }), status: 'budget-exceeded' }))), 'utf8');
+    for (const provider of providers) {
+      signal.throwIfAborted();
+      const sample = await provider.sample(signal);
+      signal.throwIfAborted();
+      const fallback: ContextProviderSample = { extensionId: sample.extensionId, activation: sample.activation, providerId: sample.providerId, ...(sample.digest === undefined ? {} : { digest: sample.digest }), status: 'budget-exceeded' };
+      const extra = Buffer.byteLength(JSON.stringify(sample), 'utf8') - Buffer.byteLength(JSON.stringify(fallback), 'utf8');
+      const selected = extra > remaining ? fallback : sample;
+      if (selected === sample) remaining -= extra;
+      samples.push(selected);
+      const key = `${sample.extensionId}/${sample.providerId}`;
+      // Process-local health only. A late result from a retired request cannot
+      // overwrite a replacement activation's diagnostic or expose raw errors.
+      if (this.contextProviders.get(key)?.activation === sample.activation && sample.status !== 'stale') {
+        if (['failed', 'too-large', 'budget-exceeded'].includes(selected.status)) this.contextProviderDiagnostics.set(key, { activation: sample.activation, status: selected.status });
+        else this.contextProviderDiagnostics.delete(key);
+      }
+    }
+    return samples;
   }
   /** Terminal/error cleanup never reopens a finished cognition turn. */
   async finish(): Promise<void> {
@@ -532,7 +637,7 @@ function validatedEvent(event: ExtensionEvent): ExtensionEvent {
   if (!event.id || !event.type || !Number.isFinite(Date.parse(event.occurredAt))) throw new Error('Event requires a stable ID, type and timestamp');
   return { id: event.id, type: event.type, occurredAt: event.occurredAt, payload: structuredClone(event.payload) };
 }
-export type { ExtensionEvent, ExtensionWake, ExtensionTool, Json };
+export type { ExtensionEvent, ExtensionWake, ExtensionTool, ContextProvider, Json };
 
 function validateConfig(value: Json): void {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
@@ -560,4 +665,13 @@ function validateGenerated(value: GeneratedVersion): void {
   }
   const current = value.history.find(item => item.id === value.revision);
   if (!current || current.digest !== value.digest) throw new Error('Generated version does not match revision');
+}
+
+/** Observe cancellation without abandoning the underlying resource lease. */
+async function cancellable<T>(task: Promise<T>, signal: AbortSignal): Promise<T> {
+  const stopped = Promise.withResolvers<never>();
+  const abort = (): void => stopped.reject(signal.reason);
+  signal.addEventListener('abort', abort, { once: true });
+  try { signal.throwIfAborted(); return await Promise.race([task, stopped.promise]); }
+  finally { signal.removeEventListener('abort', abort); }
 }

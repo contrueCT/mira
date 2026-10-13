@@ -23,6 +23,8 @@
 - Pi 通用文件/search/bash 工具无应用工作目录限制，无产品隔离环境要求；cwd 不是沙箱，OS 权限与自然语言意图判断仍有效
 - [ADR 0018](docs/adr/0018-dreaming-memory-housekeeping.md)：Web Memory 默认启用 Dreaming，持久触发条件为新有效经历、空闲 30 分钟、三次成功压缩或超过 24 小时；触发时原子消费游标，失败恢复同一 Wake，不自动热重试，不强制压缩或刷新 Memory。
 - [ADR 0017](docs/adr/0017-external-sdk-local-ingress.md)：External SDK 通过本机默认关闭的入口发 Event/Wake/Timeline notice；普通 Shell CLI 管理私有身份/凭据，配置逐次认证生效。认证绑定来源，不构成模型动作审批；通知不 Wake，不接外部推送渠道
+- [ADR 0019](docs/adr/0019-extension-context-providers.md)：扩展 ContextProvider 与工具捕获同一代，在自然模型请求采样有来源/预算的观察，复用现有 system 持久快照；失败/取消/旧代不复用旧数据，不额外 Wake 或改变 Memory 加载。
+- [ADR 0020](docs/adr/0020-settings-management.md)：既有设置窗口内增加 Memory 总览/自然语言请求、扩展管理及按 Wake 的只读历史；主聊天不加入口，接收与完成分开，不回填配置或原始诊断，不新增日志。
 - 实际允许依赖和出口以 `scripts/boundaries.json` 与各包 `package.json` 为准；新增时最小开放
 
 ## 按需指引

@@ -1,4 +1,4 @@
-import { ExtensionHost, type LocalExtensionEntry } from '@mira/extension-host';
+import { ExtensionHost, type LocalExtensionEntry, type RegisteredContextProvider } from '@mira/extension-host';
 import { extensionManagementTools, extensionReceiver, extensionTools } from './extensions.ts';
 export { extensionManagementTools, extensionReceiver, extensionTools } from './extensions.ts';
 import { realpath, stat } from 'node:fs/promises';
@@ -86,9 +86,14 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
       writeOverflowInput: (runId, content) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content }),
       ...(options.maxInlineBytes === undefined ? {} : { maxInlineBytes: options.maxInlineBytes }),
       ...(roots ? { beforeComplete: memoryCheckpointHook(writer, roots.memoryRoot, roots.repositoryId) } : {}),
-      createRuntime: () => new PiDurableRuntime({ ...(options.autoCompaction ? { autoCompaction: options.autoCompaction } : {}), writer, model: demoModel, streamFn: stream,
+      createRuntime: () => {
+        let contextProviders: RegisteredContextProvider[] = [];
+        return new PiDurableRuntime({ ...(options.autoCompaction ? { autoCompaction: options.autoCompaction } : {}), writer, model: demoModel, streamFn: stream,
         tools: baseTools, loadSkills,
-        ...(host ? { prepareTools: async () => [...baseTools, ...managementTools, ...extensionTools(await host.prepare())], finishTools: () => host.finish() } : {}),
+        ...(host ? { prepareTools: async () => {
+          const capabilities = await host.prepareCapabilities(); contextProviders = capabilities.contextProviders;
+          return [...baseTools, ...managementTools, ...extensionTools(capabilities.tools)];
+        }, loadContextProviders: (signal: AbortSignal) => host.sampleContextProviders(contextProviders, signal), finishTools: () => host.finish() } : {}),
         miraPrompt: {
           ...(roots ? { memoryRoot: roots.memoryRoot,
             loadMemory: async (signal: AbortSignal) => (await loadMemoryBootstrap({ memoryRoot: roots.memoryRoot, signal })).memory.content } : {}),
@@ -98,7 +103,7 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
         },
         // The fake provider scripts demo responses; a live main model would interpret
         // user intent in this same conversation and prompt, with no separate decision callback.
-      }),
+      }); },
     });
     const completedRuns = await loop.drain();
     return { completedRuns, modelCalls, miraId: writer.miraId, version: (await writer.load()).version };
@@ -147,3 +152,5 @@ export { ExternalAccessStore, ExternalAccessError, externalAccessMaxBytes, type 
 export type { ExternalHttpOptions } from './external-http.ts';
 
 export { dreamingDefaults, type DreamingOptions } from './dreaming.ts';
+
+export type { MemoryView, MemoryReceiptView, AssistantReplyView, MessageStatusView, ExtensionView, ExtensionsView, ExtensionMutation, ExtensionMutationView, RunSummaryView, RunsView, RunExecutionView, RunDetailView, ManagementBackend } from './management.ts';

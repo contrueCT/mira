@@ -1,17 +1,21 @@
+import { createHash } from 'node:crypto';
+import { assertJson } from '@mira/context';
 import { realpath, stat } from 'node:fs/promises';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
-import { ExtensionHost, type LocalExtensionEntry } from '@mira/extension-host';
-import { HistoryError, WakeLoop, type HistoryEntry, type HistoryReader, type DreamingWriter } from '@mira/life';
+import { ExtensionHost, ExtensionRevisionConflictError, type LocalExtensionEntry, type RegisteredContextProvider, type ExtensionChange } from '@mira/extension-host';
+import { HistoryError, WakeLoop, type HistoryEntry, type RunHistoryReader, type DreamingWriter } from '@mira/life';
 import { migrate, PostgresPersistence, PersistenceError } from '@mira/persistence';
 import { PiDurableRuntime, type AutoCompactionOptions, createHistoryTools, decodeRecords } from '@mira/runtime-pi';
-import { writeWakeInput, setupMemoryWorkspace, loadMemoryBootstrap } from '@mira/workspace';
+import { writeWakeInput, setupMemoryWorkspace, loadMemoryBootstrap, MemoryReadLimitError } from '@mira/workspace';
 import { createWorkspaceTools, demoModel, memoryCheckpointHook } from './index.ts';
 import { extensionManagementTools, extensionReceiver, extensionTools } from './extensions.ts';
 import { WebSettingsStore, hasSelectedWebApiKey, type WebSettings } from './web-settings.ts';
 import { ModelRequestFailure } from './model-errors.ts';
 import { PersistenceFailureNotice } from './persistence-errors.ts';
 import { WebHttpError, type WebBackend } from './http.ts';
+import type { ManagementBackend, MessageStatusView, RunDetailView, ExtensionMutation, ExtensionMutationView, ExtensionsView } from './management.ts';
+import { assistantReply, extensionView, memoryReceipt, runExecution } from './management-projections.ts';
 import { createSkillLoader } from './skills.ts';
 import { DreamingScheduler, dreamingInstruction, dreamingPolicy, type DreamingOptions } from './dreaming.ts';
 import { createExternalIngress, type ExternalIngress } from './external-ingress.ts';
@@ -62,11 +66,11 @@ function visible(entry: HistoryEntry): Timeline['items'][number] | null {
   const text = record.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
   return text ? { id: entry.id, role: 'assistant', text, occurredAt: entry.occurredAt } : null;
 }
-export class LocalWebService implements WebBackend {
+export class LocalWebService implements WebBackend, ManagementBackend {
   readonly external: ExternalIngress;
   readonly #options: WebServiceOptions;
   readonly #writer: DreamingWriter;
-  readonly #history: HistoryReader;
+  readonly #history: RunHistoryReader;
   readonly #settings: WebSettingsStore;
   readonly #loop: WakeLoop;
   readonly #host: ExtensionHost | undefined;
@@ -81,7 +85,7 @@ export class LocalWebService implements WebBackend {
   #settingsGeneration = 0;
   #kickRequested = false;
   readonly #cache = new Map<string, Timeline['items'][number] | null>();
-  private constructor(options: WebServiceOptions, writer: DreamingWriter, history: HistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, host?: ExtensionHost) {
+  private constructor(options: WebServiceOptions, writer: DreamingWriter, history: RunHistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, host?: ExtensionHost) {
     this.#options = options; this.#writer = writer; this.#history = history; this.#settings = settings;
     this.#settingsValue = settingsValue; this.#loop = loop; this.#host = host;
     this.external = createExternalIngress(writer, () => this.#kick());
@@ -130,8 +134,12 @@ export class LocalWebService implements WebBackend {
           const current = service!.#settingsValue;
           if (!options.synthetic && !hasSelectedWebApiKey(current)) throw Error('Choose a model with a saved API key first');
           const transport = options.synthetic ? { model: demoModel, streamFn: options.syntheticStream ?? syntheticStream } : settings.transport(current, { onFailure: failure => { service!.#modelFailure = failure; } });
+          let contextProviders: RegisteredContextProvider[] = [];
           return new PiDurableRuntime({ ...(options.autoCompaction ? { autoCompaction: options.autoCompaction } : {}), writer, ...transport, tools: baseTools, loadSkills,
-            ...(extensionHost ? { prepareTools: async () => [...baseTools, ...management, ...extensionTools(await extensionHost.prepare())], finishTools: () => extensionHost.finish() } : {}),
+            ...(extensionHost ? { prepareTools: async () => {
+              const capabilities = await extensionHost.prepareCapabilities(); contextProviders = capabilities.contextProviders;
+              return [...baseTools, ...management, ...extensionTools(capabilities.tools)];
+            }, loadContextProviders: (signal: AbortSignal) => extensionHost.sampleContextProviders(contextProviders, signal), finishTools: () => extensionHost.finish() } : {}),
             miraPrompt: {
               ...(roots ? { memoryRoot: roots.memoryRoot, loadMemory: async (signal: AbortSignal) => (await loadMemoryBootstrap({ memoryRoot: roots.memoryRoot, signal })).memory.content } : {}),
               ...(options.extensions?.artifactsDirectory ? { extensionsRoot: options.extensions.artifactsDirectory } : {}),
@@ -228,6 +236,94 @@ export class LocalWebService implements WebBackend {
       const item = this.#cache.get(key); if (item) items.push(item);
     }
     return { items, nextCursor: page.nextCursor };
+  }
+  async memory() {
+    if (!this.#options.memoryRoot) return { configured: false, content: null, revision: null };
+    const { memory } = await loadMemoryBootstrap({ memoryRoot: this.#options.memoryRoot, maxBytes: 1_048_576 }).catch(error => {
+      if (error instanceof MemoryReadLimitError) throw new WebHttpError('too_large'); throw error;
+    });
+    // A display read only. Never feeds a runtime, creates a Wake, or refreshes
+    // the frozen context snapshot; the file remains the only content authority.
+    return { configured: true, content: memory.content, revision: createHash('sha256').update(memory.content).digest('hex') };
+  }
+  async messageStatus(id: string): Promise<MessageStatusView> {
+    const empty: MessageStatusView = { id, eventId: null, runId: null, state: 'unknown', assistant: null,
+      memory: { state: 'unavailable', commit: null }, error: null };
+    const link = await this.#history.findEventRun(id);
+    if (!link) return empty;
+    const event = await this.#history.read({ id: link.eventId, maxBytes: 1_048_576 });
+    if (event?.kind !== 'event' || event.event.source !== 'user' || event.event.type !== 'web.message') return empty;
+    if (!link.runId) return { ...empty, eventId: link.eventId, state: 'submitted' };
+    const detail = await this.#history.readRun({ id: link.runId, limit: 1 });
+    if (!detail) return { ...empty, eventId: link.eventId, runId: link.runId };
+    const failure = detail.run.status === 'running' && !this.#drain && this.#error !== null;
+    return { id, eventId: link.eventId, runId: link.runId,
+      state: detail.run.status === 'completed' ? 'completed' : failure ? 'failed' : 'processing',
+      assistant: await this.#reply(detail.run.finalRecordId), memory: memoryReceipt(detail.memory), error: failure ? publicFailure : null };
+  }
+  async #reply(id: string | null) {
+    if (!id) return null;
+    try { return assistantReply(await this.#history.read({ id, maxBytes: 1_048_576 })); }
+    catch (error) { if (error instanceof HistoryError && error.code === 'too_large') return null; throw error; }
+  }
+  async extensions(): Promise<ExtensionsView> {
+    if (!this.#host) return { available: false, extensions: [], releases: [], error: null };
+    let releases: ExtensionsView['releases'] = []; let error: string | null = null;
+    try { releases = (await this.#host.releases()).map(release => ({ digest: release.digest })); }
+    catch { error = 'Staged releases could not be read. Raw diagnostics are hidden.'; }
+    return { available: true, extensions: this.#host.inspect().map(entry => extensionView(entry, this.#host!)), releases, error };
+  }
+  async changeExtension(id: string, mutation: ExtensionMutation): Promise<ExtensionMutationView> {
+    if (!this.#host || this.#closed || this.#writer.signal.aborted) throw new WebHttpError('unavailable');
+    if (this.#drain || this.#configurationWrite) throw new WebHttpError('busy');
+    this.#configurationWrite = true;
+    try {
+      let change: ExtensionChange;
+      if (mutation.action === 'configure') {
+        try { assertJson(mutation.config); } catch { throw new WebHttpError('invalid_input'); }
+        change = { action: 'configure', config: mutation.config };
+      } else if (mutation.action === 'update') change = { action: 'update', digest: mutation.digest };
+      else if (mutation.action === 'rollback') change = { action: 'rollback', revision: mutation.revision };
+      else change = { action: mutation.action };
+      if (!this.#host.inspect().some(entry => entry.id === id)) throw new WebHttpError('invalid_input');
+      const receipt = await this.#host.requestChange(id, change, { expectedRevision: mutation.expectedRevision });
+      return { id: receipt.id, extensionId: receipt.extensionId, action: mutation.action, status: receipt.status,
+        persistence: receipt.persistence, runtime: receipt.runtime ? extensionView(receipt.runtime, this.#host) : null,
+        error: receipt.status === 'failed' ? 'Extension change failed. Saved configuration and runtime may differ; inspect the current state.' : null };
+    } catch (error) {
+      if (error instanceof ExtensionRevisionConflictError) throw new WebHttpError('conflict');
+      throw error;
+    } finally {
+      this.#configurationWrite = false;
+      if (this.#kickRequested && !this.#error) this.#kick(); else this.#dreaming?.schedule();
+    }
+  }
+  async runs(before?: string) {
+    const page = await this.#history.pageRuns({ limit: 30, ...(before ? { before } : {}) });
+    return { items: page.items.map(({ id, occurredAt, status, requestCount }) => ({ id, occurredAt, status, requestCount })), nextCursor: page.nextCursor };
+  }
+  async runRequests(id: string, before?: string) {
+    return this.#history.readRunRequests({ id, ...(before ? { before } : {}) });
+  }
+  async run(id: string, before?: string): Promise<RunDetailView | null> {
+    const page = await this.#history.readRun({ id, ...(before ? { before } : {}) });
+    if (!page) return null;
+    const requestsPage = await this.#history.readRunRequests({ id });
+    if (!requestsPage) return null;
+    const executions: RunDetailView['executions'] = [];
+    for (const ref of page.records) {
+      try {
+        const entry = await this.#history.read({ id: ref.id, maxBytes: 1_048_576 });
+        const visible = entry ? runExecution(entry) : null; if (visible) executions.push(visible);
+      } catch (error) {
+        if (!(error instanceof HistoryError) || error.code !== 'too_large') throw error;
+        executions.push({ id: ref.id, occurredAt: ref.occurredAt, kind: 'unavailable', name: null, status: 'unavailable', error: 'This durable record exceeds the display read limit; the original is still preserved.' });
+      }
+    }
+    return { id, occurredAt: page.run.occurredAt, status: page.run.status, requestCount: page.run.requestCount,
+      requests: requestsPage.items, nextRequestsCursor: requestsPage.nextCursor, assistant: await this.#reply(page.run.finalRecordId), memory: memoryReceipt(page.memory), executions,
+      nextCursor: page.nextCursor, compactionErrors: 'not-recorded',
+      error: page.run.status === 'running' && !this.#drain && this.#error ? publicFailure : null };
   }
   async close(): Promise<void> {
     if (this.#closed) return;

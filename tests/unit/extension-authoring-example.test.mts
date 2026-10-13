@@ -19,7 +19,7 @@ async function start(source: WatchSource, delivery?: (kind: 'event' | 'wake') =>
     id: 'synthetic-watcher',
     service: <T,>(name: string): T => { assert.equal(name, 'watch-source'); serviceReads++; return source as T; },
     onCleanup: cleanup => { cleanups.push(cleanup); },
-    registerTool: tool => { tools.push(tool); },
+    registerTool: tool => { tools.push(tool); }, registerContextProvider: unexpected,
     interval: (callback, milliseconds) => { assert.equal(milliseconds, 1000); tick = callback; },
     emitEvent: async event => { events.push(event); return delivery ? delivery('event') : 'inserted'; },
     requestWake: async wake => { wakes.push(wake); return delivery ? delivery('wake') : 'inserted'; },
@@ -169,7 +169,7 @@ test('unrelated delivery errors during stopping are not swallowed as cancellatio
 
 test('invalid config fails before any resource or source is touched', async () => {
   const context: ExtensionContext = {
-    id: 'invalid', registerTool: unexpected, emitEvent: unexpected, requestWake: unexpected,
+    id: 'invalid', registerTool: unexpected, registerContextProvider: unexpected, emitEvent: unexpected, requestWake: unexpected,
     provideService: unexpected, service: unexpected, onCleanup: unexpected,
     onEvent: unexpected, publish: unexpected, interval: unexpected,
   };

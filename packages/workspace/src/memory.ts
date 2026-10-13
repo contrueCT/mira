@@ -13,6 +13,8 @@ export interface MemoryWorkspaceOptions {
 export interface MemoryWorkspace { memoryRoot: string; repositoryId: string }
 export interface MemoryBootstrapOptions extends Pick<MemoryWorkspace, 'memoryRoot'> {
   signal?: AbortSignal;
+  /** Optional display-read ceiling. Overflow rejects; never returns partial text. */
+  maxBytes?: number;
 }
 export interface BootstrapFile { path: string; content: string }
 export interface MemoryBootstrap { memory: BootstrapFile }
@@ -34,6 +36,10 @@ export interface MemorySnapshot {
   recovered: boolean;
   /** Paths changed since the prior Git revision, not claims of authorship. */
   changedPaths: string[];
+}
+
+export class MemoryReadLimitError extends Error {
+  constructor() { super('MEMORY.md exceeds the requested read limit'); this.name = 'MemoryReadLimitError'; }
 }
 
 const REGISTRATION = 'mira-memory-workspace.json';
@@ -79,11 +85,26 @@ async function assertNoGitAncestor(root: string, allowRootGit: boolean): Promise
     if (path.dirname(current) === current) break;
   }
 }
-async function regularText(location: string, signal?: AbortSignal): Promise<string> {
+async function regularText(location: string, signal?: AbortSignal, maxBytes?: number): Promise<string> {
   signal?.throwIfAborted();
   const file = await open(location, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
-    if (!(await file.stat()).isFile()) throw new Error('Bootstrap inputs must be ordinary files');
+    const info = await file.stat();
+    if (!info.isFile()) throw new Error('Bootstrap inputs must be ordinary files');
+    if (maxBytes !== undefined) {
+      if (info.size > maxBytes) throw new MemoryReadLimitError();
+      // Read at most ceiling + one byte, including a file growing after stat.
+      const bytes = Buffer.alloc(maxBytes + 1); let used = 0;
+      while (used < bytes.length) {
+        signal?.throwIfAborted();
+        const { bytesRead } = await file.read(bytes, used, bytes.length - used, null);
+        if (!bytesRead) break;
+        used += bytesRead;
+      }
+      signal?.throwIfAborted();
+      if (used > maxBytes) throw new MemoryReadLimitError();
+      return bytes.subarray(0, used).toString('utf8');
+    }
     return await file.readFile({ encoding: 'utf8', ...(signal ? { signal } : {}) });
   } finally { await file.close(); }
 }
@@ -179,13 +200,14 @@ export async function setupMemoryWorkspace(options: MemoryWorkspaceOptions): Pro
   return registration;
 }
 
-/** Called by the runtime only for genuine first-context initialization.
- * No directory scanning, per-wake refresh, watcher or context injection occurs.
+/** Reads the one ordinary bootstrap file for initialization/compaction or the
+ * read-only management view. No directory scanning, watcher or injection occurs.
  */
 export async function loadMemoryBootstrap(options: MemoryBootstrapOptions): Promise<MemoryBootstrap> {
+  if (options.maxBytes !== undefined && (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 1 || options.maxBytes > 16_777_216)) throw new Error('Invalid Memory display read limit');
   const { memoryRoot } = await registeredRoot(options.memoryRoot, options.signal);
   const memoryPath = path.join(memoryRoot, 'MEMORY.md');
-  return { memory: { path: memoryPath, content: await regularText(memoryPath, options.signal) } };
+  return { memory: { path: memoryPath, content: await regularText(memoryPath, options.signal, options.maxBytes) } };
 }
 
 function identifier(value: string, label: string): void {

@@ -211,3 +211,43 @@ test('writer-accepted timestamps PostgreSQL cannot normalize remain pageable wit
   await reader.page({ kinds: ['event'], limit: 1, before: page.nextCursor });
   assert.deepEqual(mock.queries.filter(query => query.parameters)[1]!.parameters, ['mira-a', 1, 0, '0', occurredAt, 'event', secondId, 262_144]);
 });
+
+test('management run headers omit unbounded membership while preserving exact total and checkpoint metadata', async t => {
+  const run = { kind: 'wake', id, miraId: 'mira-a', occurredAt: now, claimedVersion: 0, inputRecordId: null, finalRecordId: null, status: 'running', requestCount: 6501 };
+  const mock = mockDatabase(t, { run, memory: null, records: [], hasMore: false });
+  const result = await store().history('mira-a').readRun({ id, limit: 1 });
+  assert.equal(result?.run.requestCount, 6501); assert.equal(Object.hasOwn(result!.run, 'requests'), false);
+  const query = mock.queries.find(item => item.parameters)!;
+  assert.match(query.sql, /SELECT count\(\*\) FROM wake_run_requests members/);
+  assert.doesNotMatch(query.sql, /externalEventId|wakeReceiptId|receiptOrder|json_agg\(json_build_object\('wakeReceiptId'/);
+  assert.deepEqual(query.parameters, ['mira-a', id, 1, null, null, null, 262_144]);
+  assert.equal(mock.queries[0]!.sql, 'BEGIN READ ONLY');
+});
+
+test('management run list reads only fixed headers instead of original large Wake records', async t => {
+  const run = { kind: 'wake', id, miraId: 'mira-a', occurredAt: now, claimedVersion: 0, inputRecordId: null, finalRecordId: null, status: 'running', requestCount: 6501 };
+  const mock = mockDatabase(t, { items: [run] }); const history = store().history('mira-a');
+  t.mock.method(history, 'page', async () => ({ hits: [{ kind: 'wake', id, miraId: 'mira-a', occurredAt: now }], nextCursor: 'older' }));
+  assert.deepEqual(await history.pageRuns(), { items: [run], nextCursor: 'older' });
+  const query = mock.queries.find(item => item.parameters)!;
+  assert.match(query.sql, /unnest\(\$2::uuid\[\]\) WITH ORDINALITY/);
+  assert.doesNotMatch(query.sql, /externalEventId|wakeReceiptId|requested_wake|event::text/);
+  assert.deepEqual(query.parameters, ['mira-a', [id], 262_144]);
+});
+
+test('trigger-member pages have independent scoped cursors and bounded descriptions without event payloads', async t => {
+  const member = { eventId: secondId, source: 'user', type: 'web.message', reason: 'Synthetic reason', receiptOrder: '6501' };
+  const mock = mockDatabase(t, { items: [member], hasMore: true }); const history = store().history('mira-a');
+  const first = await history.readRunRequests({ id, limit: 1 }); assert(first?.nextCursor);
+  assert.deepEqual(first.items, [{ eventId: secondId, source: 'user', type: 'web.message', reason: 'Synthetic reason' }]);
+  const query = mock.queries.find(item => item.parameters)!;
+  assert.match(query.sql, /ORDER BY w.receipt_order DESC LIMIT \$3 \+ 1/);
+  assert.match(query.sql, /octet_length\(description::text\) <= 2048/);
+  assert.doesNotMatch(query.sql, /->'payload'|event::text|requestedArguments/);
+  assert.deepEqual(query.parameters, ['mira-a', id, 1, null, 262_144]);
+  await history.readRunRequests({ id, limit: 1, before: first.nextCursor });
+  assert.equal(mock.queries.filter(item => item.parameters).at(-1)!.parameters![3], '6501');
+  await assert.rejects(history.readRunRequests({ id: contextId, before: first.nextCursor }), HistoryError);
+  await assert.rejects(store().history('mira-b').readRunRequests({ id, before: first.nextCursor }), HistoryError);
+  await assert.rejects(history.readRun({ id, before: first.nextCursor }), HistoryError);
+});

@@ -203,3 +203,80 @@ button:disabled { opacity: .48; }
   .connection-notice { flex-shrink: 1; min-height: 32px; max-height: min(28dvh, max(32px, calc(100dvh - 230px))); }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } }
+
+/* Management stays within the original settings entry point. */
+.settings-tabs { flex-shrink: 0; display: flex; gap: 4px; padding: 8px 20px; border-bottom: 1px solid var(--line); }
+.settings-tabs button { flex: 1; min-width: 0; border: 0; border-radius: 8px; padding: 10px 6px; background: transparent; color: #8d929d; font-size: 12px; white-space: nowrap; }
+.settings-tabs button[aria-selected="true"] { background: #eff3f9; color: #5e779b; }
+.settings-panel { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.settings-panel[hidden] { display: none; }
+.management-body { font-size: 13px; min-height: 0; overflow-wrap: anywhere; }
+.management-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; margin-bottom: 18px; }
+.management-heading h3, .extension-heading h3, .request-result h3, .run-detail h3 { font-size: 15px; font-weight: 550; color: #535d6d; margin: 0 0 8px; }
+.management-heading p { color: #9097a3; font-size: 12px; line-height: 1.8; margin: 0; }
+.management-heading > .text-button { flex-shrink: 0; }
+.management-empty { color: #959ca9; line-height: 1.8; padding: 20px 0; margin: 0; }
+.memory-content { border: 1px solid #e9ecf1; background: #fbfcfe; padding: 18px; border-radius: 13px; }
+.memory-content > .management-empty { padding: 6px 0; }
+.memory-summary { color: #616b7b; font-size: 13px; line-height: 1.85; white-space: normal; }
+.memory-summary p, .memory-summary pre { white-space: pre-wrap; margin: 0 0 13px; overflow-wrap: anywhere; }
+.memory-summary h3, .memory-summary h4, .memory-summary h5 { color: #515d70; margin: 19px 0 9px; line-height: 1.5; font-weight: 550; }
+.memory-summary h3 { font-size: 17px; }
+.memory-summary h4 { font-size: 15px; }
+.memory-summary h5 { font-size: 13px; }
+.memory-summary > :first-child { margin-top: 0; }
+.memory-summary > :last-child { margin-bottom: 0; }
+.memory-summary ul, .memory-summary ol { padding-left: 22px; margin: 9px 0 15px; }
+.memory-summary pre { background: #f0f3f8; padding: 12px; border-radius: 7px; font-size: 12px; }
+.settings-dialog textarea { width: 100%; min-width: 0; max-width: 100%; resize: vertical; border: 1px solid #e3e5eb; color: #50586a; padding: 11px 12px; border-radius: 10px; background: #fff; font-size: 13px; line-height: 1.7; }
+.settings-dialog textarea::placeholder { color: #a5adba; }
+.memory-request-form { margin-top: 22px; border-top: 1px solid var(--line); }
+.management-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 15px; }
+.request-result { background: #f7f9fc; border-radius: 12px; padding: 16px; margin-top: 22px; }
+.request-result .secondary-button { margin-top: 12px; }
+.request-reply { margin-top: 18px; }
+.request-reply h4, .run-detail h4 { font-weight: 550; font-size: 13px; color: #687589; margin: 17px 0 9px; }
+.request-reply > p:not(.field-hint), .run-reply { white-space: pre-wrap; color: #667083; line-height: 1.9; }
+.technical-id { overflow-wrap: anywhere; word-break: break-word; font-size: 11px; }
+.extension-card { border: 1px solid #e7ebf2; border-radius: 13px; padding: 17px; margin-top: 16px; }
+.extension-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.extension-heading h3 { margin: 3px 0 0; }
+.management-badge { display: inline-block; flex-shrink: 0; color: #8c8494; background: #f2eff7; border-radius: 6px; padding: 4px 7px; font-size: 10px; line-height: 1.5; }
+.management-badge.positive { color: #698c7b; background: #edf5f1; }
+.management-facts { margin: 15px 0; color: #7b8596; font-size: 11px; }
+.management-facts > div { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; line-height: 1.8; margin: 5px 0; }
+.management-facts dt { color: #a0a7b3; }
+.management-facts dd { margin: 0; }
+.capability-section h4 { color: #788397; font-size: 11px; font-weight: 550; margin: 15px 0 6px; }
+.capability-section p { margin: 0; font-size: 11px; color: #a4aab4; }
+.capability-list { display: flex; flex-wrap: wrap; gap: 5px; padding: 0; list-style: none; margin: 0; }
+.capability-list li { color: #7d8a9e; background: #f2f5f9; border-radius: 6px; padding: 4px 7px; font-size: 11px; }
+.extension-config { border-top: 1px solid var(--line); margin-top: 18px; }
+.extension-config .secondary-button { margin-top: 12px; }
+.extension-versions { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 15px; color: #7b8798; font-size: 12px; }
+.extension-versions summary { cursor: pointer; }
+.extension-versions .secondary-button { margin-top: 12px; }
+.runs-list { list-style: none; padding: 0; margin: 0; }
+.run-list-button { width: 100%; border: 1px solid #e8ecf2; background: #fff; border-radius: 12px; text-align: left; padding: 15px; margin-bottom: 10px; }
+.run-list-button:hover { background: #f9fbfd; border-color: #d4dfec; }
+.run-list-button > span:first-child { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.run-list-button strong { font-size: 12px; font-weight: 500; color: #68758a; }
+.run-list-button span { font-size: 11px; color: #9aa3b1; }
+.run-detail section { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 2px; }
+.run-requests { list-style: none; padding: 0; font-size: 12px; line-height: 1.8; color: #818c9d; }
+.run-requests li { margin-bottom: 12px; }
+.run-requests strong { display: block; color: #708096; font-weight: 500; }
+.run-requests p { margin: 4px 0 0; }
+.execution-list { list-style: none; padding: 0; margin: 15px 0; }
+.execution-list li { border-left: 2px solid #e6ecf4; padding: 3px 0 13px 12px; }
+.execution-list li > div { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; color: #8791a1; font-size: 11px; }
+.execution-list strong { color: #687a92; font-size: 12px; font-weight: 500; }
+.execution-list time { font-size: 10px; color: #a1a9b5; display: block; margin-top: 5px; }
+@media (max-width: 600px) {
+  .settings-tabs { padding: 7px 12px; }
+  .settings-tabs button { font-size: 12px; padding: 10px 3px; }
+  .settings-dialog textarea { font-size: 16px; }
+  .memory-content, .extension-card { padding: 14px; }
+  .run-list-button > span:first-child { flex-direction: column; gap: 5px; }
+  .management-heading { gap: 10px; }
+}

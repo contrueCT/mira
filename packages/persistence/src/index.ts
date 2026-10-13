@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 import { PostgresHistoryReader } from './history.ts';
-import type { HistoryReader } from '@mira/life';
+import type { RunHistoryReader } from '@mira/life';
 import { DurableOperationError, type DurableFailureCategory } from '@mira/life';
 import { assertJson, assertRecord } from '@mira/context';
 import type { RuntimeRecord } from '@mira/context';
@@ -105,7 +105,7 @@ export class PostgresPersistence {
   }
 
   /** Scoped read-only access does not acquire or displace the durable writer. */
-  history(miraId: string): HistoryReader { return new PostgresHistoryReader(this.#options, miraId); }
+  history(miraId: string): RunHistoryReader { return new PostgresHistoryReader(this.#options, miraId); }
 
   async acquire(miraId: string): Promise<DreamingWriter> {
     text(miraId, 'Mira ID');

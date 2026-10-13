@@ -6,15 +6,19 @@ test('desktop and narrow layouts render the single Mira timeline without console
   await expect(page.getByText('Mira，我们从这里开始吧', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '模型设置', exact: true })).toBeVisible();
   await expect(page.getByLabel('给 Mira 发消息', { exact: true })).toBeVisible();
+  await expect(page.locator('.mira-app button')).toHaveCount(2); // Existing gear and send only; no new management entry.
+  await expect(page.getByRole('tab')).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath('mira-desktop.png'), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByLabel('给 Mira 发消息', { exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('mira-narrow.png'), fullPage: true });
   await page.getByRole('button', { name: '模型设置', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: '模型设置' })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: '设置', exact: true })).toBeVisible();
   await expect(page.getByLabel('服务商', { exact: true })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('mira-settings-narrow.png'), fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.screenshot({ path: testInfo.outputPath('mira-settings-desktop.png'), fullPage: true });
   expect(errors).toEqual([]);
 });
 
@@ -145,7 +149,7 @@ test('built-in selection writes a password key once and receives only saved stat
   const fixture = settingsFixture(); const { writes } = await mockSettings(page, fixture);
   await openSettings(page);
   await page.getByLabel('服务商', { exact: true }).selectOption('openai');
-  await page.getByLabel('模型', { exact: true }).selectOption('fixture-builtin');
+  await page.getByRole('combobox', { name: '模型', exact: true }).selectOption('fixture-builtin');
   await page.getByLabel('API Key', { exact: true }).fill('dummy-web-openai-key');
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await expect(page.getByText(/配置已保存/u)).toBeVisible();

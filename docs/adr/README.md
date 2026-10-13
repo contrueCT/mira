@@ -50,3 +50,7 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 - [0017 External SDK 与本地接入](0017-external-sdk-local-ingress.md)：Accepted，2026-10-13；Timeline 通知、本机默认关闭、普通 Shell 管理私有凭据，保持原有 Event/Wake 与来源边界。
 
 - [0018 Dreaming 主动整理 Memory](0018-dreaming-memory-housekeeping.md)：Accepted，2026-10-13；新有效经历、空闲 30 分钟及三次成功压缩或超过 24 小时的合取条件，触发原子消费游标，复用普通 Wake/工具/Git 和现有恢复。
+
+- [0019 扩展 ContextProvider](0019-extension-context-providers.md)：Accepted，2026-10-13；有来源和字节预算的自然请求采样，复用既有 system 快照与扩展生命周期，不额外 Wake。
+
+- [0020 设置管理界面](0020-settings-management.md)：Accepted，2026-10-13；现有设置内展示真实 Memory 总览、普通自然语言请求、扩展生命周期与按 Wake 的安全历史投影，主聊天布局不变。

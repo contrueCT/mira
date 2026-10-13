@@ -2,6 +2,9 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import fastifyStatic from '@fastify/static';
 import { lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { HistoryError } from '@mira/life';
+import { registerManagementHttp } from './management-http.ts';
+import type { ManagementBackend } from './management.ts';
 import { ModelRequestFailure } from './model-errors.ts';
 import { PersistenceFailureNotice } from './persistence-errors.ts';
 import { listBuiltinCatalog } from './model-catalog.ts';
@@ -12,7 +15,7 @@ import { parseWebConnectionWrite } from './web-model-config.ts';
 import type { ModelDiscoveryResult } from './model-discovery.ts';
 import { parseWebSettings, parseWebSettingsWrite, WebSettingsError, webSettingsMaxBytes, type WebSettings } from './web-settings.ts';
 
-export interface WebBackend {
+export interface WebBackend extends Partial<ManagementBackend> {
   status(): Promise<{ state: 'idle' | 'working' | 'error' | 'stopped'; mode: 'synthetic' | 'live'; model: string | null; error: string | ModelRequestFailure | PersistenceFailureNotice | null }>;
   timeline(before?: string): Promise<{
     items: Array<{ id: string; externalEventId?: string; role: 'user' | 'assistant' | 'notice'; text: string; occurredAt: string }>;
@@ -24,7 +27,7 @@ export interface WebBackend {
   discover(connection: unknown, signal?: AbortSignal): Promise<ModelDiscoveryResult>;
 }
 export class WebHttpError extends Error {
-  readonly code: 'busy' | 'conflict' | 'unavailable' | 'invalid_input';
+  readonly code: 'too_large' | 'busy' | 'conflict' | 'unavailable' | 'invalid_input';
   constructor(code: WebHttpError['code']) { super(code); this.name = 'WebHttpError'; this.code = code; }
 }
 const objectSchema = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', additionalProperties: false, properties, required });
@@ -45,6 +48,7 @@ const securityHeaders = {
   'permissions-policy': 'camera=(), microphone=(), geolocation=()', 'cache-control': 'private, no-store',
 };
 const safeErrors = {
+  too_large: { status: 413, text: 'MEMORY.md exceeds the 1 MiB display limit. The original is unchanged; no partial content was returned.' },
   busy: { status: 409, text: 'Mira is working; retry when it is idle' },
   conflict: { status: 409, text: 'The request conflicts with previously saved data' },
   unavailable: { status: 503, text: 'Mira is unavailable; check the local server' },
@@ -68,6 +72,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   let interval = performance.now(); let reads = 0; let writes = 0; let discoveries = 0; let discovering = false;
   const methods = new Map<string, readonly string[]>([
     ['/api/status', ['GET']], ['/api/timeline', ['GET', 'POST']], ['/api/messages', ['POST']], ['/api/settings', ['GET', 'PUT']],
+    ['/api/memory', ['GET']], ['/api/messages/:id/status', ['GET']], ['/api/extensions', ['GET']], ['/api/extensions/:id', ['POST']], ['/api/runs', ['GET']], ['/api/runs/:id', ['GET']], ['/api/runs/:id/requests', ['GET']],
     ['/api/models/catalog', ['GET']], ['/api/models/discover', ['POST']],
     ['/api/external/events', ['POST']], ['/api/external/wake', ['POST']], ['/api/external/notifications', ['POST']],
   ]);
@@ -101,7 +106,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
         if (protectedNames.has(name) && seen.has(name)) return reply.code(403).send({ error: 'Invalid external credentials' });
         seen.add(name);
       }
-      const allowed = methods.get(pathname);
+      const allowed = methods.get(pathname) ?? (typeof route === 'string' ? methods.get(route) : undefined);
       if (allowed && !allowed.includes(request.method)) return reply.code(405).header('allow', allowed.join(', ')).send({ error: 'Method not allowed' });
       if (!/^application\/json(?:\s*;\s*charset\s*=\s*utf-8)?$/iu.test(request.headers['content-type'] ?? '')) return reply.code(415).send({ error: 'JSON content type is required' });
       const now = performance.now();
@@ -121,7 +126,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     if (request.headers['x-mira-client'] !== 'web') return reply.code(403).send({ error: 'The local web client header is required' });
     const mode = request.headers['sec-fetch-mode']; const destination = request.headers['sec-fetch-dest'];
     if ((mode !== undefined && mode !== 'cors' && mode !== 'same-origin') || (destination !== undefined && destination !== 'empty')) return reply.code(403).send({ error: 'Only local API fetches are allowed' });
-    const allowed = methods.get(pathname);
+    const allowed = methods.get(pathname) ?? (typeof route === 'string' ? methods.get(route) : undefined);
     if (allowed && !allowed.includes(request.method)) return reply.code(405).header('allow', allowed.join(', ')).send({ error: 'Method not allowed' });
     const write = request.method !== 'GET' && request.method !== 'HEAD';
     if (write && requestOrigin !== origin) return reply.code(403).send({ error: 'A same-origin write is required' });
@@ -136,6 +141,8 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   app.addHook('onRequestAbort', release);
   app.addHook('onTimeout', release);
   app.setErrorHandler((error: Error & { statusCode?: number; validation?: unknown }, _request, reply) => {
+    if (error instanceof HistoryError && error.code === 'invalid') return reply.code(400).send({ error: 'Invalid history request' });
+    if (error instanceof HistoryError && error.code === 'too_large') return reply.code(413).send({ error: 'The durable record exceeds the display limit; the original is preserved' });
     if (error instanceof ExternalProtocolError) return reply.code(400).send({ error: 'Invalid external request' });
     if (error instanceof PersistenceError && error.code === 'duplicate') return reply.code(409).send({ error: 'The request conflicts with previously saved data' });
     const persistence = PersistenceFailureNotice.from(error);
@@ -155,6 +162,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     if (!sender) throw new WebHttpError('unavailable');
     return sender;
   });
+  registerManagementHttp(app, backend);
   app.setNotFoundHandler((_request, reply) => reply.code(404).send({ error: 'Not found' }));
   app.get('/api/status', { schema: { querystring: noQuery } }, async () => {
     const result = await backend.status();
