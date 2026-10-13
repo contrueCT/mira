@@ -216,3 +216,17 @@ test('extension SDK stays platform-independent while host and server use only ap
     for (const expected of ['platform-independent package', 'external import not allowed cordis', 'external import not allowed @earendil-works/pi-agent-core', 'forbidden import @mira/persistence']) assert.ok(errors.some(error => error.includes(expected)), expected);
   });
 });
+
+test('external SDK stays platform independent and server uses only its public contract', async () => {
+  await fixture(async root => {
+    await writeFile(path.join(root, 'apps/server/sdk-public.ts'), "import type { ExternalEvent } from '@mira/external-sdk'; export type { ExternalEvent };\n");
+    assert.deepEqual(await checkBoundaries(root), []);
+    await mkdir(path.join(root, 'packages/external-sdk/src'), { recursive: true });
+    await writeFile(path.join(root, 'packages/external-sdk/src/invalid.ts'), "import 'node:fs'; import '@mira/life'; import 'fastify';\n");
+    await writeFile(path.join(root, 'apps/server/sdk-internal.ts'), "import '@mira/external-sdk/src/protocol.ts';\n");
+    const errors = await checkBoundaries(root);
+    for (const expected of ['platform-independent package', 'forbidden import @mira/life', 'external import not allowed fastify', 'non-public import @mira/external-sdk/src/protocol.ts']) {
+      assert.ok(errors.some(error => error.includes(expected)), expected);
+    }
+  });
+});

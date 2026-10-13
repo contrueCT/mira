@@ -32,7 +32,10 @@
     "tests/unit/extension-result-contract.test.mts",
     "tests/unit/auto-compaction.test.mts",
     "tests/unit/memory-checkpoint.test.mts",
-    "tests/unit/compaction-continuity.test.mts"
+    "tests/unit/compaction-continuity.test.mts",
+    "tests/unit/external-http.test.mts",
+    "scripts/external-sdk-usability.mts",
+    "tests/unit/external-access.test.mts"
   ],
   "exclude": [
     "node_modules",

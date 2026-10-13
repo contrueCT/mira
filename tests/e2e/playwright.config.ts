@@ -1,7 +1,7 @@
 import { defineConfig } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
 export default defineConfig({
-  testDir: '.', testMatch: '*.spec.ts', fullyParallel: false, workers: 1, retries: 0, timeout: 30_000,
+  testDir: '.', testMatch: 'web.spec.ts', fullyParallel: false, workers: 1, retries: 0, timeout: 30_000,
   reporter: [['list']], outputDir: '../../test-results',
   use: { baseURL: 'http://127.0.0.1:3211', headless: true,
     launchOptions: process.env['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'] ? { executablePath: process.env['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'] } : {},

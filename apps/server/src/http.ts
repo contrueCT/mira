@@ -5,6 +5,9 @@ import path from 'node:path';
 import { ModelRequestFailure } from './model-errors.ts';
 import { PersistenceFailureNotice } from './persistence-errors.ts';
 import { listBuiltinCatalog } from './model-catalog.ts';
+import { ExternalProtocolError } from '@mira/external-sdk';
+import { PersistenceError } from '@mira/persistence';
+import { registerExternalHttp, type ExternalHttpOptions } from './external-http.ts';
 import { parseWebConnectionWrite } from './web-model-config.ts';
 import type { ModelDiscoveryResult } from './model-discovery.ts';
 import { parseWebSettings, parseWebSettingsWrite, WebSettingsError, webSettingsMaxBytes, type WebSettings } from './web-settings.ts';
@@ -48,7 +51,7 @@ const safeErrors = {
   invalid_input: { status: 400, text: 'Invalid request' },
 } as const;
 /** Fastify composition only. The CLI binds 127.0.0.1 and owns backend shutdown. */
-export function createLocalHttp(options: { backend: WebBackend; port: number; assetsDirectory?: string }): FastifyInstance {
+export function createLocalHttp(options: { backend: WebBackend; port: number; assetsDirectory?: string; external?: ExternalHttpOptions }): FastifyInstance {
   if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65_535) throw Error('A fixed local HTTP port from 1 to 65535 is required');
   const host = `127.0.0.1:${options.port}`; const origin = `http://${host}`;
   const app = Fastify({
@@ -60,11 +63,13 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     frameworkErrors: (_error, request, reply: FastifyReply) => reply.headers(securityHeaders).code(request.headers.host === host ? 400 : 403).send({ error: 'Invalid local request' }),
   });
   const backend = options.backend;
+  const externalSenders = new WeakMap<FastifyRequest, string>();
   const active = new WeakSet<FastifyRequest>(); let inFlight = 0;
   let interval = performance.now(); let reads = 0; let writes = 0; let discoveries = 0; let discovering = false;
   const methods = new Map<string, readonly string[]>([
     ['/api/status', ['GET']], ['/api/timeline', ['GET', 'POST']], ['/api/messages', ['POST']], ['/api/settings', ['GET', 'PUT']],
     ['/api/models/catalog', ['GET']], ['/api/models/discover', ['POST']],
+    ['/api/external/events', ['POST']], ['/api/external/wake', ['POST']], ['/api/external/notifications', ['POST']],
   ]);
   app.addHook('onRequest', async (request, reply) => {
     reply.headers(securityHeaders);
@@ -82,6 +87,37 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     // aliases before any handler so raw-path classification cannot bypass API guards.
     if (pathname.includes('%')) return reply.code(400).send({ error: 'Use canonical local paths' });
     if (!api) return;
+    const external = pathname === '/api/external' || pathname.startsWith('/api/external/');
+    if (external) {
+      if (!options.external) return reply.code(404).send({ error: 'Not found' });
+      if (requestOrigin !== undefined || site !== undefined || request.headers['sec-fetch-dest'] !== undefined
+        || request.headers['x-mira-client'] !== 'external') return reply.code(403).send({ error: 'External programs only' });
+      const mode = request.headers['sec-fetch-mode'];
+      if (mode !== undefined && mode !== 'cors') return reply.code(403).send({ error: 'External programs only' });
+      const protectedNames = new Set(['host', 'authorization', 'x-mira-sender', 'x-mira-client']);
+      const seen = new Set<string>();
+      for (let index = 0; index < request.raw.rawHeaders.length; index += 2) {
+        const name = request.raw.rawHeaders[index]!.toLowerCase();
+        if (protectedNames.has(name) && seen.has(name)) return reply.code(403).send({ error: 'Invalid external credentials' });
+        seen.add(name);
+      }
+      const allowed = methods.get(pathname);
+      if (allowed && !allowed.includes(request.method)) return reply.code(405).header('allow', allowed.join(', ')).send({ error: 'Method not allowed' });
+      if (!/^application\/json(?:\s*;\s*charset\s*=\s*utf-8)?$/iu.test(request.headers['content-type'] ?? '')) return reply.code(415).send({ error: 'JSON content type is required' });
+      const now = performance.now();
+      if (now - interval >= 60_000) { interval = now; reads = 0; writes = 0; discoveries = 0; }
+      if (inFlight >= 32 || ++writes > 60) return reply.code(429).header('retry-after', '60').send({ error: 'Too many local requests; retry shortly' });
+      active.add(request); inFlight++;
+      const sender = request.headers['x-mira-sender']; const authorization = request.headers.authorization;
+      if (typeof sender !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(sender)
+        || typeof authorization !== 'string' || !/^Bearer [A-Za-z0-9_-]{43}$/.test(authorization)) return reply.code(401).send({ error: 'Invalid external credentials' });
+      let authenticated: boolean;
+      try { authenticated = await options.external.access.authenticate(sender, authorization.slice(7)); }
+      catch { return reply.code(503).send({ error: 'External access configuration is unavailable' }); }
+      if (!authenticated) return reply.code(401).send({ error: 'Invalid external credentials' });
+      externalSenders.set(request, sender);
+      return;
+    }
     if (request.headers['x-mira-client'] !== 'web') return reply.code(403).send({ error: 'The local web client header is required' });
     const mode = request.headers['sec-fetch-mode']; const destination = request.headers['sec-fetch-dest'];
     if ((mode !== undefined && mode !== 'cors' && mode !== 'same-origin') || (destination !== undefined && destination !== 'empty')) return reply.code(403).send({ error: 'Only local API fetches are allowed' });
@@ -100,6 +136,8 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   app.addHook('onRequestAbort', release);
   app.addHook('onTimeout', release);
   app.setErrorHandler((error: Error & { statusCode?: number; validation?: unknown }, _request, reply) => {
+    if (error instanceof ExternalProtocolError) return reply.code(400).send({ error: 'Invalid external request' });
+    if (error instanceof PersistenceError && error.code === 'duplicate') return reply.code(409).send({ error: 'The request conflicts with previously saved data' });
     const persistence = PersistenceFailureNotice.from(error);
     if (persistence) return reply.code(503).send({ error: PersistenceFailureNotice.text(persistence) });
     if (error instanceof WebHttpError) { const safe = safeErrors[error.code]; return reply.code(safe.status).send({ error: safe.text }); }
@@ -111,6 +149,11 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     if (error.statusCode === 413) return reply.code(413).send({ error: 'Request body is too large' });
     if (error.statusCode === 415) return reply.code(415).send({ error: 'JSON content type is required' });
     return reply.code(500).send({ error: protectedError });
+  });
+  if (options.external) registerExternalHttp(app, options.external.ingress, request => {
+    const sender = externalSenders.get(request);
+    if (!sender) throw new WebHttpError('unavailable');
+    return sender;
   });
   app.setNotFoundHandler((_request, reply) => reply.code(404).send({ error: 'Not found' }));
   app.get('/api/status', { schema: { querystring: noQuery } }, async () => {

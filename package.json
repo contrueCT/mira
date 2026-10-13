@@ -18,7 +18,9 @@
     "demo": "node apps/server/src/cli.mts",
     "models": "node apps/server/src/models-cli.mts",
     "start": "pnpm --filter @mira/web build && node apps/server/src/web-cli.mts",
-    "test:e2e": "node scripts/run-web-tests.mts"
+    "test:e2e": "node scripts/run-web-tests.mts",
+    "external-access": "node apps/server/src/external-access-cli.mts",
+    "test:external:e2e": "node scripts/run-external-web-tests.mts"
   },
   "devDependencies": {
     "@types/node": "24.19.1",
@@ -37,6 +39,7 @@
     "@mira/server": "workspace:*",
     "@mira/extension-sdk": "workspace:*",
     "@mira/extension-host": "workspace:*",
-    "@playwright/test": "1.63.0"
+    "@playwright/test": "1.63.0",
+    "@mira/external-sdk": "workspace:*"
   }
 }

@@ -21,6 +21,7 @@
 - 用户数据、Memory 的独立 Git、生成扩展、日志、凭据均在源码仓库之外；不再配置、创建或自动读取独立 SemanticState
 - 普通文件变化不通知上下文、不 Wake、不重注入；初始上下文读取 Memory；压缩摘要前读取一次当前 MEMORY.md，摘要和最终 system/摘要/尾部使用同份冻结快照，同一 fenced CAS checkpoint 原子发布；正常恢复/重启沿用最新持久快照，见 ADR 0016
 - Pi 通用文件/search/bash 工具无应用工作目录限制，无产品隔离环境要求；cwd 不是沙箱，OS 权限与自然语言意图判断仍有效
+- [ADR 0017](docs/adr/0017-external-sdk-local-ingress.md)：External SDK 通过本机默认关闭的入口发 Event/Wake/Timeline notice；普通 Shell CLI 管理私有身份/凭据，配置逐次认证生效。认证绑定来源，不构成模型动作审批；通知不 Wake，不接外部推送渠道
 - 实际允许依赖和出口以 `scripts/boundaries.json` 与各包 `package.json` 为准；新增时最小开放
 
 ## 按需指引

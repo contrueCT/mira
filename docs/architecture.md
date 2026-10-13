@@ -89,3 +89,7 @@ Runtime 默认启用自动压缩，位于已完成工具批次并持久化结果
 Skills 直接复用 Pi 公共加载器，明确扫描源码 skills/ 与 Mira home skills/。每次自然请求只更新技能目录，正文用 read 按需加载，文件修改不产生 Wake。目录附在同一个持久 Mira system section，Memory 和压缩边界不变。内置扩展作者技能引用当前 SDK、模板及生命周期说明。普通聊天纯文本的批准修订只改变 Prompt 对话格式指导，不影响文件格式。
 
 History 使用 `history_records` 薄表维护四类原始记录的全局 UUID，`history_read({id})` 由数据库返回类型；来源事件/工具调用的原始标识独立保留。Memory commit 的 History-Id 可直接读取，内部回执键不用于引用。早期开发只定义当前初始 schema，需新空库和新数据目录，不增加旧库检测、映射、兼容或清理逻辑，见 [ADR 0012](adr/0012-global-history-identities.md)。
+
+## 外部程序
+
+[ADR 0017](adr/0017-external-sdk-local-ingress.md) 与 [External SDK](../packages/external-sdk/README.md) 定义独立程序的事件、原子 Event/Wake 和 Timeline 通知。所有入口复用同一 writer/History/主循环；认证只绑定外部来源，通知不启动认知。本机接口缺省关闭，普通 Shell CLI 管理私有凭据，每次认证读取当前配置，无管理服务或额外模型审批门禁。

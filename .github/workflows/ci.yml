@@ -49,6 +49,8 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
       - name: Verify browser interactions and render screenshots
         run: pnpm test:e2e
+      - name: Verify the joined external SDK, PostgreSQL, runtime and browser chain
+        run: pnpm test:external:e2e
       - name: Keep synthetic browser verification evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

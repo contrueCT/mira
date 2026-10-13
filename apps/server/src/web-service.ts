@@ -13,6 +13,7 @@ import { ModelRequestFailure } from './model-errors.ts';
 import { PersistenceFailureNotice } from './persistence-errors.ts';
 import { WebHttpError, type WebBackend } from './http.ts';
 import { createSkillLoader } from './skills.ts';
+import { createExternalIngress, type ExternalIngress } from './external-ingress.ts';
 
 export interface WebServiceOptions {
   /** Runtime context budgets; omitted uses automatic compaction defaults. */
@@ -42,6 +43,13 @@ type Timeline = Awaited<ReturnType<WebBackend['timeline']>>;
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
 function visible(entry: HistoryEntry): Timeline['items'][number] | null {
   if (entry.kind === 'event') {
+    const payload = entry.event.payload;
+    if (entry.event.source === 'external' && entry.event.type === 'external.notification' && object(payload)
+      && payload['operation'] === 'notification' && typeof payload['senderId'] === 'string'
+      && typeof payload['notificationId'] === 'string' && typeof payload['text'] === 'string'
+      && entry.event.id === JSON.stringify(['external-notification', payload['senderId'], payload['notificationId']])) {
+      return { id: entry.id, role: 'notice', text: `外部程序 ${payload['senderId']}\n${payload['text']}`, occurredAt: entry.occurredAt };
+    }
     if (entry.event.source !== 'user' || entry.event.type !== 'web.message' || !object(entry.event.payload) || typeof entry.event.payload['text'] !== 'string') return null;
     return { id: entry.id, externalEventId: entry.event.id, role: 'user', text: entry.event.payload['text'], occurredAt: entry.occurredAt };
   }
@@ -52,6 +60,7 @@ function visible(entry: HistoryEntry): Timeline['items'][number] | null {
   return text ? { id: entry.id, role: 'assistant', text, occurredAt: entry.occurredAt } : null;
 }
 export class LocalWebService implements WebBackend {
+  readonly external: ExternalIngress;
   readonly #options: WebServiceOptions;
   readonly #writer: MemoryCheckpointWriter;
   readonly #history: HistoryReader;
@@ -71,6 +80,7 @@ export class LocalWebService implements WebBackend {
   private constructor(options: WebServiceOptions, writer: MemoryCheckpointWriter, history: HistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, host?: ExtensionHost) {
     this.#options = options; this.#writer = writer; this.#history = history; this.#settings = settings;
     this.#settingsValue = settingsValue; this.#loop = loop; this.#host = host;
+    this.external = createExternalIngress(writer, () => this.#kick());
   }
   static async open(options: WebServiceOptions): Promise<LocalWebService> {
     const cwd = await realpath(options.workingDirectory ?? process.cwd());
