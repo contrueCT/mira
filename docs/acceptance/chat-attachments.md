@@ -176,5 +176,23 @@ model or PostgreSQL acceptance.
 
 The correction passed 92 combined offline tests across the new overflow/index
 suite, runtime attachments, runtime recovery and Wake-loop tests. Root and Pi
-TypeScript checks and package-boundary checks also passed. The full aggregate,
-PostgreSQL and browser gates still need their separate post-correction runs.
+TypeScript checks and package-boundary checks also passed. The post-correction full aggregate passed: 742 Node tests, 42 Web tests, all
+TypeScript projects, package boundaries and builds. PostgreSQL and browser gates
+still need their separate exact-commit CI runs.
+
+
+## Final independent code re-review
+
+A fresh independent `gpt-6.1-sol` maximum-effort reviewer inspected
+`3d9bdaa2ad965a48d27223f5eb4da35296c802aa` against `844e062`, including
+the actual reference image, and reported no actionable P1/P2 blockers. It
+independently passed 52 focused tests, Pi/E2E typechecks and boundaries, and
+inspected the completed aggregate log. It found the bounded index-file approach
+justified by the reproduced failures, without a new runtime/database, copied
+Memory or lifetime-growing index.
+
+The real-video browser gate now verifies decoder metadata, playback progression,
+no media error and exact downloaded MP4 bytes, rather than only a controls
+attribute. This test has typechecked and been discovered but still requires
+browser execution. Final PostgreSQL/browser CI, screenshots and visual pixel
+inspection remain pending. No live-provider semantic quality pass is claimed.
