@@ -123,6 +123,12 @@ test('settings Memory follows browser → HTTP → PostgreSQL → ordinary tools
     await expect(page.getByRole('dialog').getByText('read', { exact: true })).toBeVisible();
     await expect(page.getByRole('dialog').getByText('edit', { exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath('management-real-runs.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.getByRole('heading', { name: 'Mira 回复', exact: true }).scrollIntoViewIfNeeded();
+    await expect(page.getByRole('heading', { name: 'Mira 回复', exact: true })).toBeInViewport();
+    await page.screenshot({ path: testInfo.outputPath('management-real-runs-narrow.png'), fullPage: true });
+    await page.setViewportSize({ width: 1440, height: 1000 });
 
     await page.getByRole('tab', { name: 'Memory', exact: true }).click();
     await page.getByLabel('修改记忆', { exact: true }).fill('请删除那条记忆。');
@@ -136,6 +142,9 @@ test('settings Memory follows browser → HTTP → PostgreSQL → ordinary tools
     await expect(summary).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath('management-real-memory-narrow.png'), fullPage: true });
+    await result.getByText('你希望删除哪条记忆？这次还没有修改。', { exact: true }).scrollIntoViewIfNeeded();
+    await expect(result.getByText('你希望删除哪条记忆？这次还没有修改。', { exact: true })).toBeInViewport();
+    await page.screenshot({ path: testInfo.outputPath('management-real-memory-result-narrow.png'), fullPage: true });
     await page.goBack();
     await expect(page.getByRole('dialog')).not.toBeVisible();
     await expect(page.getByRole('article', { name: 'Mira 的消息', exact: true }).getByText('已把偏好改为绿茶。', { exact: true })).toBeVisible();
@@ -262,6 +271,12 @@ test('extension settings apply real lifecycle/configuration and staged update/ro
     await card.getByRole('button', { name: '回滚到所选修订', exact: true }).click();
     await expect.poll(async () => JSON.parse(await readFile(config, 'utf8')).entries[0].generated.digest).toBe(first.digest);
     await page.screenshot({ path: testInfo.outputPath('management-real-extensions.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await card.getByRole('button', { name: '回滚到所选修订', exact: true }).scrollIntoViewIfNeeded();
+    await expect(card.getByRole('button', { name: '回滚到所选修订', exact: true })).toBeInViewport();
+    await page.screenshot({ path: testInfo.outputPath('management-real-extensions-narrow.png'), fullPage: true });
+    await page.setViewportSize({ width: 1440, height: 1000 });
     await page.getByRole('button', { name: '关闭设置', exact: true }).click();
     await page.getByLabel('给 Mira 发消息', { exact: true }).fill('请执行测试扩展工具。');
     await page.getByRole('button', { name: '发送消息', exact: true }).click();

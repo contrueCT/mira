@@ -1,6 +1,6 @@
 # 设置管理与 ContextProvider 验收
 
-状态：实现与独立审查进行中，尚未完成最终确切提交验收；本页会随修复和 CI 结果更新。依据 ADR 0019/0020，主聊天保持原布局，管理只进入原设置窗口。
+状态：实现及修复后独立审查已完成，已执行结果见下文。合入仍须 [PR22](https://github.com/contrueCT/mira/pull/22) 最终 HEAD 的完整检查及用户确认。依据 ADR 0019/0020，主聊天保持原布局，管理只进入原设置窗口。
 
 ## 真实边界
 
@@ -12,7 +12,7 @@ ContextProvider 通过 SDK、真实 Cordis 宿主、同代工具/Provider 快照
 
 ## 验证层级
 
-- `pnpm check`：类型、包边界、离线 Node 测试、Web 状态测试和生产构建。初轮通过 702 个 Node 测试；UI 修复增至 35 个 Web 测试，最终数量以最终确切提交执行为准。
+- `pnpm check`：类型、包边界、离线 Node 测试、Web 状态测试和生产构建。最终实现提交 `f0aea7d` 在本地实际通过 705 个 Node 测试、36 个 Web 测试及类型/边界/构建。
 - ContextProvider 专项及既有 Host/HMR/runtime/压缩/Skills/Memory checkpoint/SDK 组合：166 项离线机制检查通过；其中 HMR 是真实官方宿主子进程，模型和 writer 为明确的合成夹具。
 - `pnpm test:integration`：新增真实 PG 的精确消息关联、版本区间/成员分页、checkpoint/receipt、只读性、当前磁盘总览与冻结上下文、重启以及失败隔离；并包含生产 service/Host 配置变更的 HTTP 注入验证。
 - `pnpm test:management:e2e`：独立真实 Chromium → 生产 HTTP → PostgreSQL → Wake/runtime → read/edit 等普通工具 → 实际 Memory 文件与 Git。模型响应为确定性脚本，不是实际模型质量或生产 provider 联通验收。测试不是 route.fulfill 或内存数据库；丢响应用 route.fetch 完成真实请求后断开回包，核对真实副作用仅发生一次。
@@ -25,6 +25,18 @@ ContextProvider 通过 SDK、真实 Cordis 宿主、同代工具/Provider 快照
 
 1. 运行详情补中间页时错误前插，破坏持久版本顺序。改为按已知边界/锚点插入，不按可能倒退的 wall-clock 时间排序。
 2. unknown 工具被新记录挤出最新页后，补旧页不能提升为已知结果。新增超过 50 条记录的直接复现，先失败、修复后通过；持久 outcome 仅能 unknown → 固定成功/失败，旧响应不能回退已知结果。
-3. 执行记录虽分页，Wake 成员仍整批读取，大批合并输入会冲破管理响应预算。已将元信息/计数与有界成员分页分离，保留原始 History 完整读取语义；新增 1,500/6,501 成员的 PG 回归，等待 CI 真跑。
+3. 执行记录虽分页，Wake 成员仍整批读取，大批合并输入会冲破管理响应预算。已将元信息/计数与有界成员分页分离，保留原始 History 完整读取语义；新增 1,500/6,501 成员的 PG 回归，已在 `f9c828a` 的真实 CI 执行通过。
 
-修复后的新鲜复审与最终 CI 尚待记录。未经用户另行确认，不合并、不部署、不修改真实用户配置。
+4. 第二轮审查补充：大工具结果超过展示预算时，旧页的 unavailable 投影同样需替换之前的 unknown；增加超过 50 条记录与迟到响应回归，先失败后通过，不扩大原始读取预算。
+
+修复后第三轮全新 `gpt-6.1-sol` / `max` 复审基于 `cb445a6→f0aea7d`，未发现有证据的新 P1/P2。审查者独立通过 83 项后端专项、36 项 Web 测试、相关类型与边界检查，以及 1,500 组分页随机交错的顺序/唯一性/可达性检查。没有把审查者未执行的 PG/浏览器当作通过。
+
+## 真实 CI 与视觉检查
+
+[`f9c828a` 完整 CI](https://github.com/contrueCT/mira/actions/runs/38392279779) 实际全过：705 Node、35 Web、171 PostgreSQL 集成/恢复、30 原浏览器、1 External SDK 真实浏览器链路、3 管理真实浏览器链路。随后 `f0aea7d` 只修复上述 oversized 旧页投影；它本地完整检查通过。最终文档/截图断言提交的确切 HEAD 门禁以 PR22 检查和验证说明为准，不能只凭较早 green 合入。
+
+已实际查看这次 CI 的 Memory 桌面/窄屏、扩展桌面、运行记录桌面、模型窄屏和主聊天桌面/窄屏截图：管理仅在设置窗口内，主聊天无新增按钮/图标；长内容在窗口内滚动，窄屏无横向溢出。后续截图断言覆盖模型桌面、各管理页窄屏底部控件/结果可滚动触达，以及初始主聊天只有原设置和发送按钮。
+
+用户要求优先本地截图后，实际尝试当前云开发环境的 HTTP 前端（可启动）及已安装 Chromium；Chromium 在 Unix socket 创建时报 `Operation not permitted`，因此未绕过限制，改交付上述真实 CI 截图。样例数据和模型响应均为合成测试内容，不是用户的真实记忆或凭据。[截图 artifact](https://github.com/contrueCT/mira/actions/runs/38392279779/artifacts/11810551998) 有 GitHub 保留期；最终截图也由 PR 的对应 CI artifact 保存。
+
+未经用户另行确认，不合并、不部署、不修改真实用户配置。
