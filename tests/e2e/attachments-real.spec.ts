@@ -139,8 +139,27 @@ test('real bidirectional attachments preserve ordered model input, immutable pub
     await page.getByRole('button', { name: '预览图片 generated-gold.png', exact: true }).click();
     await page.goBack(); await expect(page.getByRole('dialog')).not.toBeVisible();
     await page.getByRole('button', { name: '预览视频 generated-clip.mp4', exact: true }).click();
-    await expect(page.getByRole('dialog').locator('video')).toHaveAttribute('controls', '');
+    const videoPreview = page.getByRole('dialog').locator('video');
+    await expect(videoPreview).toHaveAttribute('controls', '');
+    // Exercise the actual decoder and playback clock, not merely a rendered
+    // control or a fabricated loadedmetadata/play event.
+    await expect.poll(() => videoPreview.evaluate((video: HTMLVideoElement) => ({
+      metadataReady: video.readyState >= HTMLMediaElement.HAVE_METADATA,
+      width: video.videoWidth, height: video.videoHeight,
+      finiteDuration: Number.isFinite(video.duration) && video.duration > 0,
+      error: video.error?.code ?? null,
+    }))).toEqual({ metadataReady: true, width: 160, height: 90, finiteDuration: true, error: null });
+    await videoPreview.evaluate(async (video: HTMLVideoElement) => { video.muted = true; await video.play(); });
+    await expect.poll(() => videoPreview.evaluate((video: HTMLVideoElement) => video.currentTime)).toBeGreaterThan(0);
+    await videoPreview.evaluate((video: HTMLVideoElement) => video.pause());
+    expect(await videoPreview.evaluate((video: HTMLVideoElement) => video.error?.code ?? null)).toBeNull();
+    await page.screenshot({ path: testInfo.outputPath('attachments-real-video-preview-desktop.png'), fullPage: true });
     await expect(page.getByRole('link', { name: '下载文件', exact: true })).toBeVisible();
+    const videoDownloadEvent = page.waitForEvent('download');
+    await page.getByRole('link', { name: '下载文件', exact: true }).click();
+    const videoDownload = await videoDownloadEvent;
+    expect(videoDownload.suggestedFilename()).toBe('generated-clip.mp4');
+    expect(await readFile((await videoDownload.path())!)).toEqual(shortVideo);
     await page.getByRole('button', { name: '关闭附件预览', exact: true }).click();
     await page.getByRole('button', { name: '查看附件 generated-notes.pdf', exact: true }).click();
     await expect(page.getByRole('dialog')).toContainText('不会在这里解析或预览内容');

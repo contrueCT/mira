@@ -173,3 +173,8 @@ cancellation, ownership loss, CAS conflict or an invalid byte count. The eight-n
 chain regression checks bounded node and summary sizes; recovery tests reject changed
 or missing typed Wake spool pointers. These are offline mechanism tests, not live
 model or PostgreSQL acceptance.
+
+The correction passed 92 combined offline tests across the new overflow/index
+suite, runtime attachments, runtime recovery and Wake-loop tests. Root and Pi
+TypeScript checks and package-boundary checks also passed. The full aggregate,
+PostgreSQL and browser gates still need their separate post-correction runs.
