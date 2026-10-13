@@ -1,5 +1,5 @@
 import type { CognitionRuntime, CognitionTurn, WriteOverflowInput } from '@mira/cognition';
-import { validateAttachmentReferences, type AttachmentReference } from '@mira/cognition';
+import { validateAttachmentReferences, validateWakeInputArtifact, type WakeInputArtifact, type AttachmentReference } from '@mira/cognition';
 import type { WakeRun, WakeWriter } from './index.ts';
 
 export interface WakeLoopOptions {
@@ -47,10 +47,13 @@ export async function prepareWakeTurn(run: WakeRun, writeOverflowInput: WriteOve
   if (!Number.isSafeInteger(maxInlineBytes) || maxInlineBytes < 1) throw new Error('maxInlineBytes must be a positive safe integer');
   const full = renderWakeBatch(run);
   let input = full;
+  let overflowInput: WakeInputArtifact | undefined;
   if (encoder.encode(full).byteLength > maxInlineBytes) {
     // Repeat even after input publication: a missing local file is reconstructed
     // from the same immutable database batch before cognition resumes.
     const artifact = await writeOverflowInput(run.id, full);
+    validateWakeInputArtifact(artifact);
+    overflowInput = { path: artifact.path, bytes: artifact.bytes };
     const sources = new Map<string, number>();
     for (const { event } of run.requests) sources.set(event.source, (sources.get(event.source) ?? 0) + 1);
     input = [
@@ -70,7 +73,7 @@ export async function prepareWakeTurn(run: WakeRun, writeOverflowInput: WriteOve
     attachments.push(...references);
   }
   return { id: run.id, input, occurredAt: run.claimedAt, inputRecordId: run.inputRecordId, finalRecordId: run.finalRecordId,
-    ...(attachments.length ? { attachments } : {}) };
+    ...(attachments.length ? { attachments } : {}), ...(overflowInput ? { overflowInput } : {}) };
 }
 
 /** Drain only explicit wake requests, never event-only history. Arrivals during

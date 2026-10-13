@@ -7,3 +7,7 @@
 `CognitionTurn.attachments` carries ordered validated `AttachmentReference` values
 (name, opaque ID, detected MIME, bytes, SHA-256, immutable local path). These are
 provider-neutral references; runtime hydration never changes the original turn.
+
+`CognitionTurn.overflowInput` preserves the validated `{path, bytes}` returned by
+that same ordinary-file writer. Runtime recovery compares this typed pointer;
+compaction need not infer it by parsing a model-facing notice.

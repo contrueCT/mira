@@ -75,10 +75,21 @@ provider Files API upload, remote URL fetch, extra credential, dependency upgrad
 or paid call is added.
 
 Compaction passes each attachment-bearing original History ID/count to the summary
-request, explicitly omitting media bytes. A deterministic compact source-History-ID
-index remains in the checkpoint, with a pointer to the previous checkpoint for older references rather than lifetime-growing duplicate entries: `history_read` retrieves exact immutable attachment
-IDs, names, paths and digests from their authoritative original records. It does not
-reinject every full filename/path from an overflowed Wake into the summary. The
+request, explicitly omitting media bytes. The runtime reuses the existing immutable
+ordinary-file spool writer for a derived index node keyed by the new checkpoint ID.
+Each node holds only current source references and a pointer to the previous index
+file; it never copies a lifetime list or Memory history. Overflow sources retain the
+validated original Wake file pointer (`CognitionTurn.overflowInput` / user metadata
+`miraOverflowInput`); other sources include their exact attachment references.
+Validated checkpoint metadata `miraAttachmentIndex` and a short summary instruction
+point directly to this file, readable with ordinary line pagination. Both merged
+source records and Memory-heavy checkpoints may exceed `history_read` limits, so
+neither is required to traverse this file chain. File contents remain source material,
+not permission. A programmatic runtime must provide `writeOverflowInput` before
+attachment compaction; Web and demo assemblies reuse their existing spool writer.
+Missing files return ordinary read errors; differing content is never overwritten,
+and completed derived files have no automatic cleanup. File-write failures,
+cancellation, ownership loss and CAS conflicts cannot publish the checkpoint. The
 request text projection is shared by hydration and token estimation, including all
 added native labels and omission notices; documents already represented by the
 Wake's original text or overflow file are not injected a second time. Media token

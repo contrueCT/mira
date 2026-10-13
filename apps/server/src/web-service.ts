@@ -135,8 +135,9 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       }
       const extensionHost = host;
       const management = extensionHost ? extensionManagementTools(extensionHost) : [];
+      const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content });
       const loop = new WakeLoop({ writer,
-        writeOverflowInput: (runId, content) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content }),
+        writeOverflowInput,
         ...(roots ? { beforeComplete: memoryCheckpointHook(writer, roots.memoryRoot, roots.repositoryId) } : {}),
         createRuntime: () => {
           service!.#modelFailure = null;
@@ -144,7 +145,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
           if (!options.synthetic && !hasSelectedWebApiKey(current)) throw Error('Choose a model with a saved API key first');
           const transport = options.synthetic ? { model: options.syntheticModel ?? demoModel, streamFn: options.syntheticStream ?? syntheticStream } : settings.transport(current, { onFailure: failure => { service!.#modelFailure = failure; } });
           let contextProviders: RegisteredContextProvider[] = [];
-          return new PiDurableRuntime({ ...(options.autoCompaction ? { autoCompaction: options.autoCompaction } : {}), writer, ...transport, resolveAttachment: reference => attachments.hydrate(reference), tools: baseTools, loadSkills,
+          return new PiDurableRuntime({ ...(options.autoCompaction ? { autoCompaction: options.autoCompaction } : {}), writer, ...transport, writeOverflowInput, resolveAttachment: reference => attachments.hydrate(reference), tools: baseTools, loadSkills,
             ...(extensionHost ? { prepareTools: async () => {
               const capabilities = await extensionHost.prepareCapabilities(); contextProviders = capabilities.contextProviders;
               return [...baseTools, ...management, ...extensionTools(capabilities.tools)];

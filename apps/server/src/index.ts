@@ -81,14 +81,15 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
     }
     const host = extensions;
     const managementTools = host ? extensionManagementTools(host) : [];
+    const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content });
     const loop = new WakeLoop({
       writer,
-      writeOverflowInput: (runId, content) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content }),
+      writeOverflowInput,
       ...(options.maxInlineBytes === undefined ? {} : { maxInlineBytes: options.maxInlineBytes }),
       ...(roots ? { beforeComplete: memoryCheckpointHook(writer, roots.memoryRoot, roots.repositoryId) } : {}),
       createRuntime: () => {
         let contextProviders: RegisteredContextProvider[] = [];
-        return new PiDurableRuntime({ ...(options.autoCompaction ? { autoCompaction: options.autoCompaction } : {}), writer, model: demoModel, streamFn: stream,
+        return new PiDurableRuntime({ ...(options.autoCompaction ? { autoCompaction: options.autoCompaction } : {}), writer, writeOverflowInput, model: demoModel, streamFn: stream,
         tools: baseTools, loadSkills,
         ...(host ? { prepareTools: async () => {
           const capabilities = await host.prepareCapabilities(); contextProviders = capabilities.contextProviders;

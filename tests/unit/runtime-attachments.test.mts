@@ -1,3 +1,5 @@
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { writeWakeInput } from '@mira/workspace';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { deflateSync } from 'node:zlib';
@@ -59,16 +61,22 @@ test('invalid reference metadata, corrupted bytes and request-size overflows fai
  await assert.rejects(hydrateAttachments([Object.assign(input(),{miraAttachments:[reference]})],{...model,input:['image']},async()=>Buffer.from('changed'),signal),/differ/);
  const huge={...reference,size:13*1024*1024}; const over=await hydrateAttachments([Object.assign(input(),{miraAttachments:[huge]})],{...model,input:['image']},async()=>{throw Error('must not read');},signal);assert.match(JSON.stringify(over),/bytes were NOT provided/);
 });
-test('repeated compaction preserves immutable references even when summary model omits them',async()=>{
+test('repeated compaction preserves immutable references even when summary model omits them',async t=>{
+ const root=await mkdtemp('/tmp/mira-attachment-index-');t.after(()=>rm(root,{recursive:true,force:true}));
+ const writeOverflowInput=(runId:string,content:string)=>writeWakeInput({rootDirectory:root,sourceDirectory:process.cwd(),runId,content});
  const writer=new MemoryWriter(); const reference=ref();
  const {seed}=await import('../recovery/fixtures.mts');
  await seed(writer,[Object.assign(input('old image'),{miraAttachments:[reference]}),assistant('old response'),input('recent tail')]);
  for(let i=0;i<2;i++) {
-  const runtime=new PiDurableRuntime({writer,model:{...model,contextWindow:65536},autoCompaction:{enabled:false},streamFn:()=>streamOf(assistant('Summary deliberately omits the image identity.'))});
+  const runtime=new PiDurableRuntime({writer,writeOverflowInput,model:{...model,contextWindow:65536},autoCompaction:{enabled:false},streamFn:()=>streamOf(assistant('Summary deliberately omits the image identity.'))});
   if(i) await runtime.run(input('new material before second compaction'));
   const state=await runtime.compact({keepRecentTokens:1});
   const checkpoints=state.entries.filter(e=>e.type==='compaction');
-  assert.ok(checkpoints.at(-1)?.summary.includes(i ? checkpoints.at(-2)!.id : writer.state.records[0]!.id));assert.ok(checkpoints.at(-1)?.summary.includes('history_read'));
+  const pointer=(checkpoints.at(-1) as unknown as {miraAttachmentIndex:{path:string}}).miraAttachmentIndex;
+  assert.ok(checkpoints.at(-1)?.summary.includes(pointer.path)); assert.ok(checkpoints.at(-1)?.summary.includes('ordinary read'));
+  const index=JSON.parse(await readFile(pointer.path,'utf8'));
+  if(i) assert.equal(index.previous.path,(checkpoints.at(-2) as unknown as {miraAttachmentIndex:{path:string}}).miraAttachmentIndex.path);
+  else assert.deepEqual(index.sources[0].attachments,[reference]);
  }
  const restored=await new PiDurableRuntime({writer,model,streamFn:()=>streamOf(assistant())}).recover();
  assert.ok(JSON.stringify(restored.entries).includes(reference.sha256));
@@ -91,19 +99,24 @@ test('overflow document references remain spooled and request-local projection i
  assert.ok(estimateRequestTokens([direct],[],model)>=estimateRequestTokens(actual));
 });
 
-test('attachment source indexes remain bounded across repeated compaction and chain back to original IDs',async()=>{
+test('attachment source indexes remain bounded across repeated compaction and chain back to original IDs',async t=>{
+ const root=await mkdtemp('/tmp/mira-attachment-chain-');t.after(()=>rm(root,{recursive:true,force:true}));
+ const writeOverflowInput=(runId:string,content:string)=>writeWakeInput({rootDirectory:root,sourceDirectory:process.cwd(),runId,content});
  const writer=new MemoryWriter();const {seed}=await import('../recovery/fixtures.mts');let previous:string|undefined;
  await seed(writer,[Object.assign(input('first refs'),{miraAttachments:[ref('application/pdf')]}),assistant('reply'),input('tail')]);
  const original=writer.state.records[0]!.id;
  for(let i=0;i<8;i++) {
-  const runtime=new PiDurableRuntime({writer,model:{...model,contextWindow:65536},autoCompaction:{enabled:false},streamFn:()=>streamOf(assistant('Omit all old pointers in synthetic summary.'))});
+  const runtime=new PiDurableRuntime({writer,writeOverflowInput,model:{...model,contextWindow:65536},autoCompaction:{enabled:false},streamFn:()=>streamOf(assistant('Omit all old pointers in synthetic summary.'))});
   if(i) await runtime.run(Object.assign(input(`new docs ${i}`),{miraAttachments:[ref('application/pdf')]}));
   const state=await runtime.compact({keepRecentTokens:1});const checkpoint=state.entries.findLast(entry=>entry.type==='compaction')!;assert.equal(checkpoint.type,'compaction');
-  assert.ok(checkpoint.summary.includes(previous??original));assert.ok(checkpoint.summary.length<1300);previous=checkpoint.id;
+  const pointer=(checkpoint as unknown as {miraAttachmentIndex:{path:string}}).miraAttachmentIndex;
+  assert.ok(checkpoint.summary.includes(pointer.path));assert.ok(checkpoint.summary.length<1300);
+  const index=JSON.parse(await readFile(pointer.path,'utf8'));assert.equal(index.previous?.path,previous);
+  assert.ok((await readFile(pointer.path,'utf8')).length<2500);previous=pointer.path;
  }
- const records=new Map(writer.state.records.map(record=>[record.id,record]));let id=previous!;let traversed=0;
- while(id!==original) {const record=records.get(id)!;assert.ok(record);const entry=record.payload as {type:string;summary?:string};if(entry.type!=='compaction')break;const match=entry.summary!.match(/checkpoint History ID "([a-f0-9-]+)"/)??entry.summary!.match(/History ID "([a-f0-9-]+)"/);assert.ok(match);id=match[1]!;assert.ok(++traversed<10);}
- assert.equal(id,original);assert.equal(traversed,8);
+ let file=previous!;let traversed=0;let found=false;
+ for(;;) {const index=JSON.parse(await readFile(file,'utf8'));assert.ok(++traversed<10);if(index.sources.some((source:{historyId:string})=>source.historyId===original))found=true;if(!index.previous)break;file=index.previous.path;}
+ assert.ok(found);assert.equal(traversed,8);
 });
 test('ordinary Pi image results reserve the same byte budget before native video tool hydration',async()=>{
  const google:Model<Api>={...model,provider:'google',api:'google-generative-ai',id:'gemini-2.5-flash',input:['text','image']};

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { assertRecord, type Json, type RuntimeRecord } from '@mira/context';
 import type { AgentMessage, AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { SystemMessage } from '@earendil-works/pi-ai';
+import { validateWakeInputArtifact, type WakeInputArtifact } from '@mira/cognition';
 import { messageAttachments } from './attachments.ts';
 import { validateObservation } from './observations.ts';
 import { validateMiraPromptSnapshot } from './system-prompt.ts';
@@ -93,6 +94,7 @@ export function decodeRecords(records: readonly RuntimeRecord[], initialParent: 
     if (!entry || typeof entry !== 'object' || !['message', 'compaction', 'custom_message'].includes(entry.type)) throw new Error('Unsupported Pi entry');
     if (seen.has(record.id) || record.parentId !== parentId || entry.id !== record.id || entry.parentId !== record.parentId || entry.timestamp !== record.occurredAt) throw new Error('Broken Pi record chain');
     if ((entry.type === 'compaction' ? 'checkpoint' : 'message') !== record.kind) throw new Error('Pi record kind mismatch');
+    checkpointAttachmentIndex(entry);
     if (entry.type !== 'compaction' && Object.hasOwn(entry, 'miraMemoryConfigured')) throw new Error('Invalid Memory configuration marker placement');
     if (entry.type === 'message') {
       validateMessage(entry.message);
@@ -130,11 +132,26 @@ function validateUsage(value: unknown): void {
       !['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens'].every(key => typeof value[key] === 'number' && Number.isFinite(value[key]) && value[key] >= 0) ||
       !['input', 'output', 'cacheRead', 'cacheWrite', 'total'].every(key => typeof cost[key] === 'number' && Number.isFinite(cost[key]) && cost[key] >= 0)) throw new Error('Invalid Pi usage');
 }
+/** Derived attachment index is an ordinary immutable file in the existing spool. */
+export function checkpointAttachmentIndex(value: unknown): WakeInputArtifact | undefined {
+  if (!object(value) || !Object.hasOwn(value, 'miraAttachmentIndex')) return undefined;
+  if (value['type'] !== 'compaction') throw new Error('Attachment index requires a checkpoint');
+  validateWakeInputArtifact(value['miraAttachmentIndex']);
+  return value['miraAttachmentIndex'];
+}
+/** Optional typed pointer to the existing Wake spool, never inferred from text. */
+export function messageOverflowInput(value: unknown): WakeInputArtifact | undefined {
+  if (!object(value) || !Object.hasOwn(value, 'miraOverflowInput')) return undefined;
+  if (value['role'] !== 'user') throw new Error('Wake overflow input requires a user message');
+  validateWakeInputArtifact(value['miraOverflowInput']);
+  return value['miraOverflowInput'];
+}
 /** Validate required provider-facing structure without dropping unknown JSON fields. */
 export function validateMessage(value: unknown): asserts value is AgentMessage {
   if (!object(value) || typeof value['role'] !== 'string' || !['system', 'user', 'assistant', 'toolResult'].includes(value['role']) || typeof value['timestamp'] !== 'number' || !Number.isFinite(value['timestamp'])) throw new Error('Unsupported Pi message');
   const role = value['role'];
   messageAttachments(value);
+  messageOverflowInput(value);
   if (Object.hasOwn(value, 'miraNativeVideos')) throw new Error('Hydrated media must never be persisted');
   if (role !== 'system' && (Object.hasOwn(value, 'miraMemory') || Object.hasOwn(value, 'miraPrompt') || Object.hasOwn(value, 'miraMemoryConfigured'))) throw new Error('Invalid Mira metadata placement');
   const content = value['content'];

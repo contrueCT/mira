@@ -790,3 +790,20 @@ test('lost attachment input commit recovers exact ordered refs and rejects chang
  assert.equal(calls,0);await runtime(writer,stream).continueTurn(original);assert.equal(calls,1);
  assert.equal(writer.state.records.filter(record=>(record.payload as {message?:{role:string}}).message?.role==='user').length,1);
 });
+
+test('Wake overflow source pointer persists exactly and changed recovery pointer fails closed', async () => {
+  const writer = new AtomicWakeWriter(); writer.afterInput = true;
+  const original = {...turn(writer),overflowInput:{path:'/ordinary/spool/batch.txt',bytes:1234567}};
+  await assert.rejects(runtime(writer).continueTurn(original),/after input commit/);
+  const persisted = writer.state.records.find(record=>record.id===writer.wake.inputRecordId)!;
+  assert.deepEqual((persisted.payload as {message?:{miraOverflowInput?:unknown}}).message?.miraOverflowInput,original.overflowInput);
+  for(const overflowInput of [{...original.overflowInput,path:'/changed/batch.txt'},{...original.overflowInput,bytes:1234568},undefined]) {
+    const changed: import('@mira/cognition').CognitionTurn={...original}; if(overflowInput) changed.overflowInput=overflowInput; else delete changed.overflowInput;
+    await assert.rejects(runtime(writer).continueTurn(changed),/differs from its durable input/);
+  }
+  await runtime(writer).continueTurn(original); assert.ok(writer.wake.finalRecordId);
+  for(const value of [{path:'relative',bytes:1},{path:'/path',bytes:-1},{path:'/path',bytes:1,extra:true}]) {
+    assert.throws(()=>encodeEntry(messageEntry(Object.assign(input(),{miraOverflowInput:value}),null)),/Invalid Wake input artifact/);
+  }
+  assert.throws(()=>encodeEntry(messageEntry(Object.assign(assistant(),{miraOverflowInput:original.overflowInput}),null)),/requires a user/);
+});

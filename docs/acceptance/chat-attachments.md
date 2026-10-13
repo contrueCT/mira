@@ -66,7 +66,7 @@ The first review's fourth P2 exposed unbudgeted reference-text injection: a
 200-document overflow Wake grew from a small spool notice to an over-window
 provider request. Production Wake records now mark that refs are already in the
 input/spool; documents are not reinjected. Native labels/notices and estimates use
-one shared text projection. Compaction keeps compact original History-ID pointers,
+one shared text projection. The earlier compaction implementation kept compact original History-ID pointers,
 with exact refs still available from authoritative records via history_read.
 A 200-document overflow regression verifies the provider projection stays bounded.
 
@@ -78,8 +78,9 @@ messages must make zero byte-resolver calls for all model types.
 A later review found a duplicate directory-fsync declaration introduced during
 integration; it caused module-import/typecheck failures before execution. The
 duplicate was removed and the focused store/read tests passed. The same review
-identified lifetime growth of the compaction attachment index. It now indexes only
-projected source records and points to the previous checkpoint for older references.
+identified lifetime growth of the compaction attachment index. That intermediate implementation indexed only
+projected source records and pointed to the previous checkpoint for older references.
+The oversized-record findings below supersede that History-based chain.
 An eight-compaction regression follows that bounded chain back to the original
 attachment source even when every synthetic summary omits the pointers.
 
@@ -139,3 +140,36 @@ wire test now sees a 2,000×2 request image and coordinate note for a 9,000×10
 original, with identical original digest/bytes and repeatable restart hydration.
 Coverage includes failed image preparation, catalog count limits and deterministic
 post-resize accounting when an image's encoded representation grows.
+
+
+## Oversized attachment-source and checkpoint recovery corrections
+
+A fresh independent review retained two failing offline repros from the intermediate
+History-ID index implementation. A legal batch of 101 Web messages, each with ten
+PDFs named using 250 Chinese characters plus a suffix and long immutable paths,
+produced a 1,177,789-byte merged context record. `history_read` has a 1 MiB limit,
+and the summary had discarded the original ordinary Wake spool path. Separately,
+660,000 bytes of frozen Memory produced a 2,092,186-byte checkpoint envelope; a
+later summary pointing only to that prior checkpoint could not recover its index.
+Neither case is fixed by merely retaining the underlying raw History.
+
+The correction preserves the existing Wake overflow `{path, bytes}` as validated
+turn/user metadata and compares it on recovery. Attachment compaction reuses the
+same immutable `writeWakeInput` writer for one derived index node per checkpoint:
+current source references (or their existing Wake spool pointers), plus the previous
+index-file pointer. The checkpoint retains a validated bounded file pointer and
+an ordinary-read instruction. Nodes contain no frozen Memory or lifetime-growing
+copy of prior nodes. No new reader, tool, persistence table, background cleanup,
+History projection or increased History limit is introduced. Missing/unreadable or
+malformed source files must be reported as incomplete references rather than guessed.
+
+`tests/unit/overflow-attachment-recovery.test.mts` uses the production attachment
+store and ordinary spool writer, verifies both original records exceed 1 MiB,
+restarts after repeated compaction, and uses paginated native Pi `read` calls to
+recover exact attachment metadata through index files. It also checks explicit
+failure without a configured writer, conflicting immutable writes, missing-file
+read errors, and absence of checkpoint publication after file-write failure,
+cancellation, ownership loss, CAS conflict or an invalid byte count. The eight-node
+chain regression checks bounded node and summary sizes; recovery tests reject changed
+or missing typed Wake spool pointers. These are offline mechanism tests, not live
+model or PostgreSQL acceptance.

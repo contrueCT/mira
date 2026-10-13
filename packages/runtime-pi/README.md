@@ -418,4 +418,16 @@ Google Gemini MP4/WebM only after an explicit ordinary read tool result uses req
 existing transport; that property is explicitly forbidden in durable records.
 Video user input always stays an ordinary file reference; only explicit read may hydrate video. Other models receive an explicit unviewed-media notice for that read, and documents stay file references. The 12 MiB inline media budget is separate from file storage limits;
 over-budget context gets an explicit unviewed-media notice rather than a permanently
-blocked Wake. No media bytes enter compaction; compact original History ID pointers survive summaries and resolve exact immutable refs through history_read.
+blocked Wake. No media bytes enter compaction. Attachment compaction requires the
+`writeOverflowInput` callback already used for ordinary Wake spool files (the Web
+and demo assemblies provide it). It writes one immutable, pretty-printed index
+node containing only current source references and the previous index-file pointer.
+Overflow sources reuse their typed original `miraOverflowInput` pointer; other
+sources retain exact current attachment metadata. The checkpoint stores validated
+`miraAttachmentIndex` metadata and a short ordinary-read instruction in its summary.
+Repeated compaction never copies the lifetime index or frozen Memory into these
+files, and does not rely on a potentially oversized `history_read` envelope.
+Publication remains fenced after the file write; write, cancellation, ownership,
+byte-count or CAS failures cannot publish the checkpoint. Completed derived files
+are retained, with no automatic cleanup or additional storage service. Missing files
+produce ordinary read errors; file contents remain source material, not authority.

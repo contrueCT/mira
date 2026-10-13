@@ -8,6 +8,8 @@ export interface CognitionTurn {
   finalRecordId: string | null;
   /** Ordered immutable local attachments, independent of a provider's wire format. */
   attachments?: AttachmentReference[];
+  /** Existing ordinary file containing the complete rendered coalesced Wake. */
+  overflowInput?: WakeInputArtifact;
 }
 export interface CognitionRuntime {
   /** Input and terminal reply must be durably associated with this turn exactly
@@ -17,6 +19,12 @@ export interface CognitionRuntime {
 
 /** Files contain a reconstructible view of canonical batch records. */
 export interface WakeInputArtifact { path: string; bytes: number }
+export function validateWakeInputArtifact(value: unknown): asserts value is WakeInputArtifact {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).sort().join(',') !== 'bytes,path'
+    || !('path' in value) || typeof value.path !== 'string' || !value.path.startsWith('/') || value.path.length > 4096 || value.path.includes('\0')
+    || !('bytes' in value) || typeof value.bytes !== 'number' || !Number.isSafeInteger(value.bytes) || value.bytes < 0) throw new Error('Invalid Wake input artifact');
+}
 export type WriteOverflowInput = (runId: string, content: string) => Promise<WakeInputArtifact>;
 
 export interface AttachmentReference {
