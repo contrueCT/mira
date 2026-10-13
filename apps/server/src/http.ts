@@ -1,3 +1,4 @@
+import { AttachmentError, attachmentDescriptor, attachmentLimits, type AttachmentDescriptor } from './attachments.ts';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { lstat, realpath } from 'node:fs/promises';
@@ -18,10 +19,12 @@ import { parseWebSettings, parseWebSettingsWrite, WebSettingsError, webSettingsM
 export interface WebBackend extends Partial<ManagementBackend> {
   status(): Promise<{ state: 'idle' | 'working' | 'error' | 'stopped'; mode: 'synthetic' | 'live'; model: string | null; error: string | ModelRequestFailure | PersistenceFailureNotice | null }>;
   timeline(before?: string): Promise<{
-    items: Array<{ id: string; externalEventId?: string; role: 'user' | 'assistant' | 'notice'; text: string; occurredAt: string }>;
+    items: Array<{ id: string; externalEventId?: string; role: 'user' | 'assistant' | 'notice'; text: string; occurredAt: string; attachments?: AttachmentDescriptor[] }>;
     nextCursor: string | null;
   }>;
-  submit(input: { id: string; text: string; occurredAt: string }): Promise<{ id: string; receipt: 'inserted' | 'duplicate' }>;
+  uploadAttachment?(name: string, bytes: Uint8Array): Promise<AttachmentDescriptor>;
+  readAttachment?(id: string): Promise<{ descriptor: AttachmentDescriptor; bytes: Uint8Array }>;
+  submit(input: { id: string; text: string; occurredAt: string; attachmentIds?: string[] }): Promise<{ id: string; receipt: 'inserted' | 'duplicate' }>;
   settings(): Promise<WebSettings>;
   saveSettings(value: unknown): Promise<WebSettings>;
   discover(connection: unknown, signal?: AbortSignal): Promise<ModelDiscoveryResult>;
@@ -42,7 +45,7 @@ const selectionSchema = { anyOf: [
 const settingsSchema = objectSchema({ revision: { type: 'string', pattern: '^[a-f0-9]{64}$' }, configuration: { type: 'object' }, selection: selectionSchema }, ['revision', 'configuration', 'selection']);
 const protectedError = 'Mira could not complete the operation. Check the local server and model configuration.';
 const securityHeaders = {
-  'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer',
   'cross-origin-resource-policy': 'same-origin', 'cross-origin-opener-policy': 'same-origin',
   'permissions-policy': 'camera=(), microphone=(), geolocation=()', 'cache-control': 'private, no-store',
@@ -71,7 +74,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   const active = new WeakSet<FastifyRequest>(); let inFlight = 0;
   let interval = performance.now(); let reads = 0; let writes = 0; let discoveries = 0; let discovering = false;
   const methods = new Map<string, readonly string[]>([
-    ['/api/status', ['GET']], ['/api/timeline', ['GET', 'POST']], ['/api/messages', ['POST']], ['/api/settings', ['GET', 'PUT']],
+    ['/api/attachments', ['POST']], ['/api/attachments/:id', ['GET']], ['/api/status', ['GET']], ['/api/timeline', ['GET', 'POST']], ['/api/messages', ['POST']], ['/api/settings', ['GET', 'PUT']],
     ['/api/memory', ['GET']], ['/api/messages/:id/status', ['GET']], ['/api/extensions', ['GET']], ['/api/extensions/:id', ['POST']], ['/api/runs', ['GET']], ['/api/runs/:id', ['GET']], ['/api/runs/:id/requests', ['GET']],
     ['/api/models/catalog', ['GET']], ['/api/models/discover', ['POST']],
     ['/api/external/events', ['POST']], ['/api/external/wake', ['POST']], ['/api/external/notifications', ['POST']],
@@ -130,7 +133,8 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     if (allowed && !allowed.includes(request.method)) return reply.code(405).header('allow', allowed.join(', ')).send({ error: 'Method not allowed' });
     const write = request.method !== 'GET' && request.method !== 'HEAD';
     if (write && requestOrigin !== origin) return reply.code(403).send({ error: 'A same-origin write is required' });
-    if (write && !/^application\/json(?:\s*;\s*charset\s*=\s*utf-8)?$/iu.test(request.headers['content-type'] ?? '')) return reply.code(415).send({ error: 'JSON content type is required' });
+    if (write && pathname === '/api/attachments' && request.headers['content-type'] !== 'application/octet-stream') return reply.code(415).send({ error: 'Binary content type is required' });
+    if (write && pathname !== '/api/attachments' && !/^application\/json(?:\s*;\s*charset\s*=\s*utf-8)?$/iu.test(request.headers['content-type'] ?? '')) return reply.code(415).send({ error: 'JSON content type is required' });
     const now = performance.now();
     if (now - interval >= 60_000) { interval = now; reads = 0; writes = 0; discoveries = 0; }
     if (inFlight >= 32 || (write ? ++writes > 60 : ++reads > 600) || (pathname === '/api/models/discover' && ++discoveries > 6)) return reply.code(429).header('retry-after', '60').send({ error: 'Too many local requests; retry shortly' });
@@ -141,6 +145,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   app.addHook('onRequestAbort', release);
   app.addHook('onTimeout', release);
   app.setErrorHandler((error: Error & { statusCode?: number; validation?: unknown }, _request, reply) => {
+    if (error instanceof AttachmentError) return reply.code(error.code === 'too_large' ? 413 : error.code === 'invalid' ? 400 : 404).send({ error: error.code === 'too_large' ? 'Attachment exceeds the file or message size limit' : 'Attachment unavailable or invalid' });
     if (error instanceof HistoryError && error.code === 'invalid') return reply.code(400).send({ error: 'Invalid history request' });
     if (error instanceof HistoryError && error.code === 'too_large') return reply.code(413).send({ error: 'The durable record exceeds the display limit; the original is preserved' });
     if (error instanceof ExternalProtocolError) return reply.code(400).send({ error: 'Invalid external request' });
@@ -173,7 +178,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   }, async request => {
     const result = await backend.timeline(request.query.before);
     return {
-      items: result.items.map(item => ({ id: item.id, role: item.role, text: item.text, occurredAt: item.occurredAt, ...(item.role === 'user' && item.externalEventId !== undefined ? { externalEventId: item.externalEventId } : {}) })),
+      items: result.items.map(item => ({ id: item.id, role: item.role, text: item.text, occurredAt: item.occurredAt, ...(item.attachments?.length ? { attachments: item.attachments.map(attachmentDescriptor) } : {}), ...(item.role === 'user' && item.externalEventId !== undefined ? { externalEventId: item.externalEventId } : {}) })),
       nextCursor: result.nextCursor,
     };
   });
@@ -183,14 +188,28 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     schema: { querystring: noQuery, body: objectSchema({ before: { type: 'string', minLength: 1, maxLength: 524_288, pattern: '^[A-Za-z0-9_=-]+$' } }, ['before']) },
   }, async request => {
     const result = await backend.timeline(request.body.before);
-    return { items: result.items.map(item => ({ id: item.id, role: item.role, text: item.text, occurredAt: item.occurredAt, ...(item.role === 'user' && item.externalEventId !== undefined ? { externalEventId: item.externalEventId } : {}) })), nextCursor: result.nextCursor };
+    return { items: result.items.map(item => ({ id: item.id, role: item.role, text: item.text, occurredAt: item.occurredAt, ...(item.attachments?.length ? { attachments: item.attachments.map(attachmentDescriptor) } : {}), ...(item.role === 'user' && item.externalEventId !== undefined ? { externalEventId: item.externalEventId } : {}) })), nextCursor: result.nextCursor };
   });
-  app.post<{ Body: { id: string; text: string; occurredAt: string } }>('/api/messages', {
-    schema: { querystring: noQuery, body: objectSchema({ id: identifier, text: { type: 'string', minLength: 1, maxLength: 65_536 }, occurredAt: { type: 'string', format: 'date-time', maxLength: 40 } }, ['id', 'text', 'occurredAt']) },
+  app.post<{ Body: { id: string; text: string; occurredAt: string; attachmentIds?: string[] } }>('/api/messages', {
+    schema: { querystring: noQuery, body: objectSchema({ id: identifier, text: { type: 'string', maxLength: 65_536 }, attachmentIds: { type: 'array', maxItems: 10, uniqueItems: true, items: { type: 'string', format: 'uuid' } }, occurredAt: { type: 'string', format: 'date-time', maxLength: 40 } }, ['id', 'text', 'occurredAt']) },
   }, async (request, reply) => {
-    if (!request.body.text.trim() || Buffer.byteLength(request.body.text) > 65_536 || !Number.isFinite(Date.parse(request.body.occurredAt))) throw new WebHttpError('invalid_input');
-    const result = await backend.submit({ id: request.body.id, text: request.body.text, occurredAt: request.body.occurredAt });
+    if ((!request.body.text.trim() && !request.body.attachmentIds?.length) || Buffer.byteLength(request.body.text) > 65_536 || !Number.isFinite(Date.parse(request.body.occurredAt))) throw new WebHttpError('invalid_input');
+    const result = await backend.submit({ id: request.body.id, text: request.body.text, occurredAt: request.body.occurredAt, ...(request.body.attachmentIds ? { attachmentIds: request.body.attachmentIds } : {}) });
     return reply.code(result.receipt === 'inserted' ? 201 : 200).send({ id: result.id, receipt: result.receipt });
+  });
+  app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer', bodyLimit: attachmentLimits.file }, (_request, body, done) => done(null, body));
+  app.post<{ Querystring: { name: string }; Body: Buffer }>('/api/attachments', {
+    bodyLimit: attachmentLimits.file, schema: { querystring: objectSchema({ name: { type: 'string', minLength: 1, maxLength: 255 } }, ['name']) },
+  }, async (request, reply) => {
+    if (!backend.uploadAttachment || !Buffer.isBuffer(request.body)) throw new WebHttpError('invalid_input');
+    return reply.code(201).send(attachmentDescriptor(await backend.uploadAttachment(request.query.name, request.body)));
+  });
+  app.get<{ Params: { id: string } }>('/api/attachments/:id', {
+    schema: { querystring: noQuery, params: objectSchema({ id: { type: 'string', format: 'uuid' } }, ['id']) },
+  }, async (request, reply) => {
+    if (!backend.readAttachment) throw new WebHttpError('unavailable');
+    const result = await backend.readAttachment(request.params.id); const descriptor = attachmentDescriptor(result.descriptor);
+    return reply.type(descriptor.mimeType).header('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(descriptor.name).replace(/['()*]/g, character => '%' + character.charCodeAt(0).toString(16))}`).send(Buffer.from(result.bytes));
   });
   app.get('/api/settings', { schema: { querystring: noQuery } }, async () => parseWebSettings(await backend.settings()));
   app.put('/api/settings', { bodyLimit: webSettingsMaxBytes, schema: { querystring: noQuery, body: settingsSchema } }, async request => {

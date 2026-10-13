@@ -3,6 +3,7 @@ import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completio
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
 import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messages.lazy';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
+import { prepareNativeVideoRequest } from './model-video-transport.ts';
 import { ModelRequestFailure, containsPercentEncodedSecret, providerFailureReason, secretVariants, transportFailureReason, type ModelFailureContext } from './model-errors.ts';
 import { builtinApiKeySupport, createBuiltinCatalog, protocolDescription } from './model-catalog.ts';
 import { parseModelConfiguration, validateBaseUrl, type CustomProtocol, type ModelConfiguration } from './model-config.ts';
@@ -177,6 +178,7 @@ export function createModelTransport(configuration: ModelConfiguration, selectio
       if (requested.id !== canonicalModel.id || requested.provider !== canonicalModel.provider || requested.api !== canonicalModel.api) throw Error('Injected transport is bound to a different model');
       checkSdkEnvironment(canonicalModel);
       options.onFailure?.(null);
+      const nativeVideo = prepareNativeVideoRequest(canonicalModel, context);
       const failure: ModelFailureContext = {};
       let key: string | undefined;
       let betas: string[] = [];
@@ -218,6 +220,7 @@ export function createModelTransport(configuration: ModelConfiguration, selectio
       requestOptions.onPayload = payload => {
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw Error('Invalid model request payload');
         const body = payload as Record<string, unknown>;
+        nativeVideo.apply(body);
         let limits: unknown[];
         switch (canonicalModel.api) {
           case 'openai-completions': limits = [body['max_tokens'], body['max_completion_tokens']].filter(value => value !== undefined); break;
@@ -236,7 +239,7 @@ export function createModelTransport(configuration: ModelConfiguration, selectio
         if (Array.isArray(body['betas']) && body['betas'].every(value => typeof value === 'string')) betas = [...body['betas']] as string[];
         return undefined;
       };
-      return maskProviderErrors(collection.streamSimple(structuredClone(canonicalModel), context, requestOptions), canonicalModel, () => key, streamOptions?.signal, failure, options.onFailure);
+      return maskProviderErrors(collection.streamSimple(structuredClone(canonicalModel), nativeVideo.context, requestOptions), canonicalModel, () => key, streamOptions?.signal, failure, options.onFailure);
     },
   };
 }

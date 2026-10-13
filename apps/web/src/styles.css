@@ -280,3 +280,52 @@ button:disabled { opacity: .48; }
   .run-list-button > span:first-child { flex-direction: column; gap: 5px; }
   .management-heading { gap: 10px; }
 }
+
+/* Attachments remain part of the one continuous conversation. */
+.attachment-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 148px)); gap: 8px; width: min(304px, 100%); margin-top: 6px; align-self: flex-start; }
+.message-row.user .attachment-grid { align-self: flex-end; }
+.attachment-tile { display: flex; position: relative; min-width: 0; border: 1px solid #e2e6ec; border-radius: 14px; overflow: hidden; background: #f0f2f5; padding: 0; color: #61718a; text-align: left; }
+.attachment-image { aspect-ratio: 1; align-items: center; justify-content: center; }
+.attachment-image img { width: 100%; height: 100%; object-fit: cover; }
+.attachment-image-status { position: absolute; left: 7px; right: 7px; bottom: 8px; font-size: 10px; text-align: center; }
+.attachment-symbol { font-size: 28px; padding: 15px; }
+.attachment-file, .attachment-video { grid-column: 1 / -1; align-items: center; min-height: 70px; }
+.attachment-file-label { min-width: 0; display: flex; flex-direction: column; padding: 12px 10px 12px 0; gap: 6px; }
+.attachment-file-label strong { font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
+.attachment-file-label > span { font-size: 10px; color: #8f98a6; }
+.pending-attachments { font-size: 12px; color: #8794a5; }
+.composer { display: grid; grid-template-columns: 36px minmax(0, 1fr) 38px; align-items: end; padding-left: 10px; }
+.composer textarea { grid-column: 2; grid-row: 1; }
+.add-attachment-button { grid-column: 1; grid-row: 1; width: 36px; height: 38px; font-size: 29px; font-weight: 300; line-height: 1; color: #8996a8; }
+.composer .send-button { grid-column: 3; grid-row: 1; }
+.composer.expanded textarea { grid-column: 1 / -1; grid-row: 2; padding-left: 8px; }
+.composer.expanded .add-attachment-button { grid-column: 1; grid-row: 3; }
+.composer.expanded .send-button { grid-column: 3; grid-row: 3; }
+.composer.dragging { outline: 2px dashed #86a4c8; background: #f0f5fb; }
+.draft-attachments { grid-column: 1 / -1; grid-row: 1; display: flex; gap: 9px; overflow-x: auto; max-height: 230px; padding: 4px 0 8px; }
+.draft-attachment { width: 135px; flex: 0 0 135px; min-width: 0; font-size: 11px; }
+.draft-attachment .attachment-grid { grid-template-columns: minmax(0, 1fr); width: 100%; margin: 0; }
+.draft-attachment .attachment-image { height: 92px; aspect-ratio: auto; }
+.draft-attachment .attachment-file { height: 92px; }
+.draft-attachment .attachment-symbol { padding: 8px; }
+.draft-file-name { display: block; border: 1px solid #e3e7ee; border-radius: 12px; padding: 12px; height: 92px; overflow: hidden; overflow-wrap: anywhere; }
+.draft-attachment-detail { display: flex; gap: 3px; align-items: center; margin-top: 3px; }
+.draft-attachment-detail > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.draft-attachment-detail button { border: 0; background: transparent; color: #8b94a3; width: 26px; height: 26px; font-size: 19px; }
+.attachment-dialog { border: 1px solid #e5e8ee; border-radius: 20px; width: min(900px, calc(100vw - 28px)); max-width: none; max-height: calc(100dvh - 28px); padding: 0; color: var(--ink); }
+.attachment-dialog[open] { display: flex; flex-direction: column; }
+.attachment-dialog::backdrop { background: #202838aa; }
+.attachment-preview-header, .attachment-preview-footer { display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; padding: 12px 17px; gap: 12px; }
+.attachment-preview-header h2 { font-size: 14px; font-weight: 500; margin: 0; overflow-wrap: anywhere; }
+.attachment-preview-header button { flex-shrink: 0; font-size: 26px; }
+.attachment-preview-content { overflow: auto; min-height: 0; text-align: center; padding: 8px 16px; }
+.attachment-preview-content img, .attachment-preview-content video { display: block; width: 100%; max-height: calc(100dvh - 190px); object-fit: contain; }
+.attachment-preview-content p { font-size: 13px; line-height: 1.7; }
+.attachment-preview-footer { color: #8a94a2; font-size: 12px; }
+.attachment-preview-footer a { text-decoration: none; }
+@media (max-width: 600px) {
+  .attachment-grid { width: min(280px, 100%); grid-template-columns: repeat(2, minmax(0, 136px)); }
+  .composer { grid-template-columns: 32px minmax(0, 1fr) 35px; padding-left: 8px; }
+  .add-attachment-button { width: 32px; height: 35px; }
+  .draft-attachments { max-height: 180px; }
+}

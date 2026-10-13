@@ -25,6 +25,7 @@
 - [ADR 0017](docs/adr/0017-external-sdk-local-ingress.md)：External SDK 通过本机默认关闭的入口发 Event/Wake/Timeline notice；普通 Shell CLI 管理私有身份/凭据，配置逐次认证生效。认证绑定来源，不构成模型动作审批；通知不 Wake，不接外部推送渠道
 - [ADR 0019](docs/adr/0019-extension-context-providers.md)：扩展 ContextProvider 与工具捕获同一代，在自然模型请求采样有来源/预算的观察，复用现有 system 持久快照；失败/取消/旧代不复用旧数据，不额外 Wake 或改变 Memory 加载。
 - [ADR 0020](docs/adr/0020-settings-management.md)：既有设置窗口内增加 Memory 总览/自然语言请求、扩展管理及按 Wake 的只读历史；主聊天不加入口，接收与完成分开，不回填配置或原始诊断，不新增日志。
+- [ADR 0021](docs/adr/0021-chat-attachments.md)：聊天共用不可变附件存储与引用，正文/有序附件原子绑定既有 Event/Wake；send_attachment 仅显式已知发布投影。图片原生输入，视频统一普通文件，只有模型显式 read 后内置 Google Gemini 的 MP4/WebM 才通过公开 payload hook 原生理解；PDF/Word只给工具引用，历史不存媒体 base64。
 - 实际允许依赖和出口以 `scripts/boundaries.json` 与各包 `package.json` 为准；新增时最小开放
 
 ## 按需指引

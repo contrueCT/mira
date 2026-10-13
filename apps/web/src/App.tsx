@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent } from 'react';
+import { AttachmentList, AttachmentPreview } from './Attachments.tsx';
+import { useAttachments } from './useAttachments.ts';
+import { attachmentSize } from './attachments.ts';
 import { api, errorText, isAbort } from './api.ts';
 import { ArrowUp, ChevronDown, SettingsIcon } from './icons.tsx';
 import { SettingsDialog } from './SettingsDialog.tsx';
@@ -7,7 +10,7 @@ import { createMemoryRequest, readMemoryRequest, recoverMemoryRequest, writeMemo
 import type { MemoryRequestIdentity } from './management.ts';
 import { latestPagination, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
 import type { HistoryPagination, HistoryRequest } from './timeline.ts';
-import type { MessageEnvelope, PendingMessage, ServerStatus, TimelineItem, TimelinePage } from './types.ts';
+import type { Attachment, MessageEnvelope, PendingMessage, ServerStatus, TimelineItem, TimelinePage } from './types.ts';
 
 const timeFormat = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' });
 function timeLabel(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? '' : timeFormat.format(date); }
@@ -41,6 +44,13 @@ export function App() {
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasHistoryGap, setHasHistoryGap] = useState(false);
+  const attachments = useAttachments();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const previewRegistry = useRef(new Map<string, Attachment>());
+  const [previewId, setPreviewId] = useState(() => window.location.hash.startsWith('#attachment=') ? window.location.hash.slice(12) : null);
+  const closingPreviewRef = useRef(false);
+  const previewFocusRef = useRef<HTMLElement | null>(null);
+  const [dragging, setDragging] = useState(false);
   const [composer, setComposer] = useState('');
   const [composerError, setComposerError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -141,7 +151,7 @@ export function App() {
   }, [refresh]);
 
   useEffect(() => {
-    const sync = () => { closingSettingsRef.current = false; setSettingsOpen(window.location.hash === '#settings'); };
+    const sync = () => { closingSettingsRef.current = false; closingPreviewRef.current = false; setSettingsOpen(window.location.hash === '#settings'); setPreviewId(window.location.hash.startsWith('#attachment=') ? window.location.hash.slice(12) : null); };
     window.addEventListener('hashchange', sync); window.addEventListener('popstate', sync);
     return () => { window.removeEventListener('hashchange', sync); window.removeEventListener('popstate', sync); };
   }, []);
@@ -198,7 +208,7 @@ export function App() {
       }
       if (!updatePending(current => [...current.filter(message => message.id !== envelope.id), { ...envelope, state: 'sending' }], true)) return;
       if (fromMemory) writeMemoryRequest(window.sessionStorage, envelope);
-      if (!retry && !fromMemory) setComposer('');
+      if (!retry && !fromMemory) { setComposer(''); attachments.clear(); }
       const receipt = await api<{ id: string; receipt: 'inserted' | 'duplicate' }>('/api/messages', { method: 'POST', body: JSON.stringify(envelope), signal: controller.signal });
       if (!activeRef.current) return;
       if (receipt.id !== envelope.id || !['inserted', 'duplicate'].includes(receipt.receipt)) throw new Error('无法确认服务端的接收回执');
@@ -226,8 +236,8 @@ export function App() {
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
     const text = composer.trim();
-    if (!text || sendingRef.current || recovered.error) return;
-    const envelope = { id: crypto.randomUUID(), text, occurredAt: new Date().toISOString() };
+    if ((!text && !attachments.drafts.length) || !attachments.ready || sendingRef.current || recovered.error) return;
+    const envelope: MessageEnvelope = { id: crypto.randomUUID(), text, occurredAt: new Date().toISOString(), ...(attachments.attachments.length ? { attachmentIds: attachments.attachments.map(item => item.id) } : {}) };
     if (new TextEncoder().encode(JSON.stringify(envelope)).byteLength > 65_536) { setComposerError('消息太长，请缩短后再发送（上限约 64 KB）'); return; }
     setComposerError(null);
     scrollToLatest();
@@ -243,12 +253,26 @@ export function App() {
     if (window.history.state?.miraSettings) window.history.back();
     else { window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}`); closingSettingsRef.current = false; setSettingsOpen(false); }
   };
+  const addFiles = (files: File[]) => { if (sendingRef.current || recovered.error) return; setComposerError(attachments.add(files)); };
+  for (const item of items) for (const attachment of item.attachments ?? []) previewRegistry.current.set(attachment.id, attachment);
+  for (const attachment of attachments.attachments) previewRegistry.current.set(attachment.id, attachment);
+  const preview = previewId ? previewRegistry.current.get(previewId) : undefined;
+  const openPreview = (attachment: Attachment) => {
+    previewRegistry.current.set(attachment.id, attachment); closingPreviewRef.current = false;
+    previewFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    window.history.pushState({ ...window.history.state, miraAttachment: true }, '', `#attachment=${attachment.id}`); setPreviewId(attachment.id);
+  };
+  const closePreview = () => {
+    if (closingPreviewRef.current) return; closingPreviewRef.current = true;
+    if (window.history.state?.miraAttachment) window.history.back();
+    else { window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}`); closingPreviewRef.current = false; setPreviewId(null); }
+  };
   const stateLabel = connectionError ? '连接中断' : !status ? '正在连接' : ({ idle: '在这里', working: '正在处理', error: '需要留意', stopped: '已停止' } as const)[status.state];
   const showEmpty = !loading && !items.length && !pending.length && !connectionError;
   let lastDate = '';
 
   return <>
-    <div className="mira-app" inert={settingsOpen}>
+    <div className="mira-app" inert={settingsOpen || !!preview}>
       <header className="app-header">
         <div className="identity" aria-label="Mira">
           <div className="mira-ring" aria-hidden="true" />
@@ -271,16 +295,18 @@ export function App() {
               return <div key={item.id}>
                 {showDate && <p className="date-divider">{date}</p>}
                 <article data-message-id={item.id} className={`message-row ${item.role}`} aria-label={item.role === 'user' ? '你的消息' : item.role === 'assistant' ? 'Mira 的消息' : '服务通知'}>
-                  <div className="message-bubble">{item.text}</div>
+                  {item.text && <div className="message-bubble">{item.text}</div>}
+                  {!!item.attachments?.length && <AttachmentList attachments={item.attachments} onPreview={openPreview} />}
                   <time className="message-time" dateTime={item.occurredAt}>{timeLabel(item.occurredAt)}</time>
                 </article>
               </div>;
             })}
             {pending.map(message => <article className="message-row user pending-message" key={message.id} aria-label="待确认的消息">
-              <div className="message-bubble">{message.text}</div>
+              {message.text && <div className="message-bubble">{message.text}</div>}
+              {!!message.attachmentIds?.length && <p className="pending-attachments">{message.attachmentIds.length} 个附件 · 已保留，等待消息确认</p>}
               <div className={`message-receipt ${message.state === 'uncertain' ? 'uncertain' : ''}`}>
                 {message.state === 'sending' ? '正在发送…' : message.state === 'queued' ? '已接收 · 等待处理' : '接收结果待确认'}
-                {message.state === 'uncertain' && <button className="text-button" disabled={sending} onClick={() => { void sendEnvelope({ id: message.id, text: message.text, occurredAt: message.occurredAt }, true); }}>核对并重试</button>}
+                {message.state === 'uncertain' && <button className="text-button" disabled={sending} onClick={() => { void sendEnvelope({ id: message.id, text: message.text, occurredAt: message.occurredAt, ...(message.attachmentIds !== undefined ? { attachmentIds: [...message.attachmentIds] } : {}) }, true); }}>核对并重试</button>}
               </div>
               {message.state === 'uncertain' && <p className="pending-help">{message.error ?? '刷新前的发送尚未确认'}。不会自动重发</p>}
             </article>)}
@@ -291,15 +317,27 @@ export function App() {
 
       <footer className="composer-section">
         {!nearBottom && <button className="latest-button" type="button" onClick={scrollToLatest}><ChevronDown />回到最新消息</button>}
-        <form className="composer" onSubmit={submit}>
+        <form className={`composer ${composer.includes('\n') || attachments.drafts.length ? 'expanded' : ''} ${dragging ? 'dragging' : ''}`} onSubmit={submit}
+          onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDragging(true); } }}
+          onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }}
+          onDrop={event => { event.preventDefault(); setDragging(false); addFiles([...event.dataTransfer.files]); }}
+          onPaste={event => { const files = [...event.clipboardData.files]; if (files.length) { event.preventDefault(); addFiles(files); } }}>
+          <input ref={fileInputRef} className="sr-only" type="file" multiple aria-label="选择附件" tabIndex={-1} onChange={event => { addFiles([...event.target.files ?? []]); event.target.value = ''; }} />
+          {!!attachments.drafts.length && <div className="draft-attachments" aria-label="待发送附件">{attachments.drafts.map(draft => <div className="draft-attachment" key={draft.key}>
+            {draft.attachment ? <AttachmentList attachments={[draft.attachment]} onPreview={openPreview} /> : <span className="draft-file-name">{draft.file.name}</span>}
+            <div className="draft-attachment-detail"><span>{draft.attachment ? draft.attachment.name : attachmentSize(draft.file.size)}</span><button type="button" aria-label={`移除附件 ${draft.file.name}`} disabled={sending} onClick={() => attachments.remove(draft.key)}>×</button></div>
+            {draft.error ? <div className="inline-error" role="alert">{draft.error}<button type="button" className="text-button" onClick={() => attachments.retry(draft.key)}>重新上传</button></div> : !draft.attachment && <span role="status">正在上传…</span>}
+          </div>)}</div>}
+          <button className="add-attachment-button icon-button" type="button" disabled={sending || !!recovered.error} onClick={() => fileInputRef.current?.click()} aria-label="添加附件" title="添加图片、视频或文件">+</button>
           <label className="sr-only" htmlFor="message-input">给 Mira 发消息</label>
           <textarea ref={textareaRef} id="message-input" placeholder="给 Mira 发消息…" value={composer} onChange={event => { setComposer(event.target.value); setComposerError(null); }} onKeyDown={onComposerKey} rows={1} disabled={sending || !!recovered.error} maxLength={50_000} />
-          <button className="send-button" type="submit" disabled={!composer.trim() || sending || !!recovered.error} aria-label={sending ? '正在发送' : '发送消息'} title="发送消息"><ArrowUp /></button>
+          <button className="send-button" type="submit" disabled={(!composer.trim() && !attachments.drafts.length) || !attachments.ready || sending || !!recovered.error} aria-label={sending ? '正在发送' : '发送消息'} title="发送消息"><ArrowUp /></button>
         </form>
         {composerError && <p className="composer-error" role="alert">{composerError}</p>}
         <p className="composer-caption">Enter 发送<span>·</span>Shift + Enter 换行{status?.mode === 'synthetic' && <><span>·</span>当前为模拟模型</>}</p>
       </footer>
     </div>
+    {preview && <AttachmentPreview key={preview.id} attachment={preview} onClose={closePreview} returnFocus={previewFocusRef.current} />}
     {settingsOpen && <SettingsDialog synthetic={status?.mode === 'synthetic'} onClose={closeSettings} onSaved={() => { void refresh(); }} returnFocus={settingsButtonRef} memoryRequest={memoryRequest} memoryPending={pending.find(message => message.id === memoryRequest?.id) ?? null} sending={sending} storageError={storageError} onMemorySubmit={submitMemory} onMemoryRetry={message => { void sendEnvelope(message, true, true); }} />}
   </>;
 }

@@ -409,3 +409,13 @@ actual provider request. No extra Wake, Memory load, hidden authorization gate o
 semantic state is introduced. Recovery/compaction preserve frozen observations;
 the next natural request replaces them, including removal or explicit failure.
 See [ADR 0019](../../docs/adr/0019-extension-context-providers.md).
+
+## Durable attachments
+
+See ADR 0021. User-message `miraAttachments` is validated metadata, compared during
+Wake recovery. Images are hydrated only for a model declaring image input. Built-in
+Google Gemini MP4/WebM only after an explicit ordinary read tool result uses request-local `miraNativeVideos` consumed by the server's
+existing transport; that property is explicitly forbidden in durable records.
+Video user input always stays an ordinary file reference; only explicit read may hydrate video. Other models receive an explicit unviewed-media notice for that read, and documents stay file references. The 12 MiB inline media budget is separate from file storage limits;
+over-budget context gets an explicit unviewed-media notice rather than a permanently
+blocked Wake. No media bytes enter compaction; compact original History ID pointers survive summaries and resolve exact immutable refs through history_read.

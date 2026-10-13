@@ -31,3 +31,5 @@ ADR 0007 回归直接工具调用与模型普通澄清，保留 schema/参数、
 - Dreaming：`unit/dreaming.test.mts` 验证 timer；`integration/dreaming.test.mts` 用真实 PG 验证条件/事务/COMMIT 前后进程死亡；`recovery/dreaming-service.test.mts` 走真实服务/普通工具/History/Git（仅 provider 合成）。质量探针及第一轮局限见 `docs/acceptance/dreaming-memory.md`。
 
 - 管理：`unit/management.test.mts` 与 `integration/management-history.test.mts` 验证脱敏投影、同源HTTP和真实PG关联；`test:management:e2e` 独立经过真实浏览器/HTTP/PG/runtime/普通工具/Memory Git。后者只模拟模型，不可被fixture gate替代。ContextProvider离线机制与真实数据库/浏览器门禁分开报告。
+
+- 附件：`test:attachments:e2e` 是独立真实浏览器→HTTP→PG→Wake/runtime→实际 `send_attachment`→不可变存储 gate（只替换 provider 返回），包括重启、重复 receipt、上传失败与截图。`recovery/attachments.test.mts` 为 PG 重启恢复，`unit/model-video-transport.test.mts` 为真实 SDK 请求的注入 fetch 验证，不可混称 live 模型。

@@ -23,6 +23,7 @@
     "tests/unit/model-tool-names.test.mts",
     "tests/unit/model-discovery.test.mts",
     "tests/unit/web-http.test.mts",
+    "tests/unit/attachments.test.mts",
     "tests/unit/web-settings.test.mts",
     "tests/unit/web-service.test.mts",
     "tests/unit/web-extension-startup.test.mts",
@@ -37,7 +38,11 @@
     "scripts/external-sdk-usability.mts",
     "tests/unit/external-access.test.mts",
     "tests/unit/management.test.mts",
-    "tests/unit/context-providers.test.mts"
+    "tests/unit/context-providers.test.mts",
+    "tests/unit/model-video-transport.test.mts",
+    "tests/unit/video-read-tool.test.mts",
+    "tests/unit/runtime-attachments.test.mts",
+    "tests/unit/attachments.test.mts"
   ],
   "exclude": [
     "node_modules",

@@ -211,3 +211,23 @@ test('ownership loss or caller cancellation during snapshot never completes the 
     assert.equal(f.completed.length, 0); assert.equal(f.inputs.length, 1);
   }
 });
+
+test('attachment-only coalesced Wake preserves ordered refs alongside reconstructible overflow input',async()=>{
+ const attachment=(id:string)=>({id,name:'picture.png',mimeType:'image/png',size:1,sha256:'a'.repeat(64),path:`/immutable/${id}`});
+ const a=attachment(randomUUID()),b=attachment(randomUUID());
+ const one=event('first'),two=event('second');
+ for(const request of [one,two]) request.event.type='web.message';
+ one.event.payload={text:'',attachments:[a]};two.event.payload={text:'compare',attachments:[b]};
+ const turn=await prepareWakeTurn(run([one,two]),async()=>({path:'/overflow/batch',bytes:4096}),1);
+ assert.deepEqual(turn.attachments,[a,b]);assert.match(turn.input,/overflow/);
+ const restored=await prepareWakeTurn(run([one,two]),async()=>({path:'/overflow/batch',bytes:4096}),1);
+ assert.deepEqual(restored,turn);
+});
+
+test('more than 1000 legal accumulated attachment refs do not brick the merged Wake',async()=>{
+ const requests=Array.from({length:101},(_,index)=>{
+  const request=event(`attachment-${index}`);request.event.type='web.message';request.event.payload={text:'',attachments:Array.from({length:10},()=>({id:randomUUID(),name:'file',mimeType:'application/octet-stream',size:0,sha256:'a'.repeat(64),path:'/immutable/empty'}))};return request;
+ });
+ const turn=await prepareWakeTurn(run(requests),async()=>({path:'/overflow/many',bytes:100000}),1);
+ assert.equal(turn.attachments?.length,1010);
+});

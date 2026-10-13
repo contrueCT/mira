@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { assertRecord, type Json, type RuntimeRecord } from '@mira/context';
 import type { AgentMessage, AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { SystemMessage } from '@earendil-works/pi-ai';
+import { messageAttachments } from './attachments.ts';
 import { validateObservation } from './observations.ts';
 import { validateMiraPromptSnapshot } from './system-prompt.ts';
 import type { SessionEntry, SessionMessageEntry } from '@earendil-works/pi-coding-agent';
@@ -133,6 +134,8 @@ function validateUsage(value: unknown): void {
 export function validateMessage(value: unknown): asserts value is AgentMessage {
   if (!object(value) || typeof value['role'] !== 'string' || !['system', 'user', 'assistant', 'toolResult'].includes(value['role']) || typeof value['timestamp'] !== 'number' || !Number.isFinite(value['timestamp'])) throw new Error('Unsupported Pi message');
   const role = value['role'];
+  messageAttachments(value);
+  if (Object.hasOwn(value, 'miraNativeVideos')) throw new Error('Hydrated media must never be persisted');
   if (role !== 'system' && (Object.hasOwn(value, 'miraMemory') || Object.hasOwn(value, 'miraPrompt') || Object.hasOwn(value, 'miraMemoryConfigured'))) throw new Error('Invalid Mira metadata placement');
   const content = value['content'];
   if (typeof content !== 'string' || (role !== 'user' && role !== 'system')) {
