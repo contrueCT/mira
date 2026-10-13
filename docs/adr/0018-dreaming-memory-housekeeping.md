@@ -49,3 +49,7 @@ Event 不等于 Wake。仅记录的事件和 External SDK 的 Timeline notificat
 验证入口：`tests/unit/dreaming.test.mts`（默认策略和 timer）、`tests/integration/dreaming.test.mts`（真实 PG 条件/事务/恢复）、`tests/recovery/dreaming-service.test.mts`（真实服务、普通文件/History 工具、Git、连续上下文及失败恢复）。使用合成 provider 的链路测试不代表生产模型理解质量；原生模型合成场景探针另行记录，不称 live-provider 端到端。
 
 本地禁止 socket 时遵守既有仓库规则，不通过其他协议绕过；真实 PostgreSQL/恢复门禁使用获准 CI。具体通过/失败/未执行以本次提交的验证记录为准，不把设计要求写成已通过结果。
+
+## 独立审查修订
+
+首次 fresh gpt-6.1-sol/max 审查指出三次压缩分支只在存储层用合成 checkpoint 测阈值，未连接实际 Pi 压缩与触发器。已补真实 LocalWebService→Pi 自动压缩→持久 checkpoint→timer Dreaming 用例，包括失败候选不计数及重启恢复；修订后另起 fresh review。数据库执行结果仍由 CI 验证。

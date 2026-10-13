@@ -6,7 +6,7 @@
 
 - 单 timer、默认策略、重复生命周期通知、失败不热重试、关闭等待在途检查由 `tests/unit/dreaming.test.mts` 覆盖。
 - `tests/integration/dreaming.test.mts` 包含 19 个真实 PostgreSQL 用例：首次基线、合取条件与严格时间边界、已提交 checkpoint、事件来源/原时间不可信、并发去重、计数跨重启、入库回滚、锁失效、COMMIT 回执丢失以及 COMMIT 前后真实子进程退出。
-- `tests/recovery/dreaming-service.test.mts` 的六例从真实 LocalWebService 调用生产持久化/Runtime/普通工具/History/Git。只有 provider 使用合成 StreamFn；检查实际整理 payload、read/search/read-original/write/edit、静默 final、History-Id、Memory 快照不重注入及后续自然压缩刷新、失败/关闭/重启与用户输入串行。
+- `tests/recovery/dreaming-service.test.mts` 的七例从真实 LocalWebService 调用生产持久化/Runtime/普通工具/History/Git。只有 provider 使用合成 StreamFn；检查实际整理 payload、read/search/read-original/write/edit、静默 final、History-Id、Memory 快照不重注入及后续自然压缩刷新、失败/关闭/重启与用户输入串行。第七例以真实 Pi 自动压缩检查 0/1/2 次不能触发、第三次摘要失败不计数、重启后第三次成功 checkpoint 才启动真实 timer Dreaming；不直接伪造 checkpoint。
 - 已通过本地完整 `pnpm check`，第一次结果为 674 个基础/离线测试及 19 个前端状态测试，包含严格类型、包边界和构建。随后补全测试和修订指令后的第二次完整 check 也通过；最终 CI 仍独立检查。
 - 本地 PostgreSQL/恢复测试未执行。此环境 Unix socket 受限，遵守既有仓库规则，不通过 TCP 替代运行集成测试；一次服务器版本查询不属于链路验收。真实 PostgreSQL/恢复结果以该 PR 的获准 CI 为准。
 - 本次没有 UI 控件或页面变动；服务 Timeline 投影通过真实服务恢复测试覆盖，既有浏览器 CI 仍是独立门禁。

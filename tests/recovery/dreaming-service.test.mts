@@ -302,3 +302,59 @@ test('real PostgreSQL shutdown cancels active Dreaming, then restart resumes its
     assert.equal(completed.input_record_id, pending.input_record_id); assert.equal(completed.completed, true);
   } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test('real PostgreSQL three actual automatic compactions unlock idle Dreaming before 24 hours, while two checkpoints and a failed summary do not', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-dreaming-compactions-');
+  let service: LocalWebService | undefined; let naturalRequests = 0, summaryAttempts = 0, successfulSummaries = 0, dreamingRequests = 0;
+  try {
+    const checkpoints = async () => (await db.admin.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM context_records WHERE envelope->>'kind' = 'checkpoint'")).rows[0]!.n;
+    const configuration = { ...options(db, root, 'dreaming-real-compactions'),
+      dreaming: { idleMs: 60, intervalMs: dreamingDefaults.intervalMs, minCompactions: 3 },
+      // The static system fits below this budget, while each large ordinary
+      // reply forces one genuine Pi compaction at the next natural request.
+      autoCompaction: { threshold: 0.02, reserveTokens: 512, keepRecentTokens: 1 },
+      syntheticStream: (_model: unknown, context: TranscriptContext) => {
+        if (systemText(context).startsWith('你负责压缩 Mira 的 Working Context')) {
+          summaryAttempts++;
+          if (summaryAttempts === 3) return streamOf({ ...assistant(), content: [], stopReason: 'error', errorMessage: 'Synthetic summary failure before checkpoint publication.' });
+          successfulSummaries++;
+          return streamOf(assistant(`Successful automatic continuity summary ${successfulSummaries}.`));
+        }
+        const latest = JSON.stringify(context.messages.filter(message => message.role === 'user').at(-1));
+        if (latest.includes('memory.dreaming')) {
+          dreamingRequests++; assert.equal(successfulSummaries, 3);
+          return streamOf(assistant(''));
+        }
+        naturalRequests++;
+        return streamOf(assistant(naturalRequests <= 3 ? 'Long natural answer for automatic compaction. '.repeat(4000) : 'Short answer after the recovered third checkpoint.'));
+      },
+    };
+    service = await LocalWebService.open(configuration); await settled(service);
+    const baseline = (await db.admin.query<{ last_triggered_at: Date }>('SELECT last_triggered_at FROM dreaming_progress')).rows[0]!.last_triggered_at;
+    for (let index = 0; index < 3; index++) {
+      await service.submit({ id: `real-compaction-${index}`, text: `New natural experience ${index}.`, occurredAt }); await settled(service);
+      assert.equal(naturalRequests, index + 1); assert.equal(successfulSummaries, index); assert.equal(await checkpoints(), index);
+      await pause(150); await service.settings(); await pause(25);
+      assert.equal((await dreamingEvents(db)).length, 0, `New experience and continuous idle are insufficient after only ${index} committed automatic compactions`);
+    }
+    await service.submit({ id: 'real-compaction-fails', text: 'This natural request reaches the third summary attempt.', occurredAt }); await settled(service, 'error');
+    assert.equal(summaryAttempts, 3); assert.equal(successfulSummaries, 2); assert.equal(naturalRequests, 3);
+    assert.equal(await checkpoints(), 2, 'A provider summary failure cannot publish or count a checkpoint');
+    const [failed] = (await db.admin.query<{ run_id: string; input_record_id: string }>('SELECT run_id, input_record_id FROM wake_runs WHERE NOT completed')).rows;
+    assert.ok(failed?.input_record_id);
+    await pause(150); await service.settings(); await pause(25);
+    assert.equal(summaryAttempts, 3, 'The Dreaming scheduler must not retry a failed compaction');
+    assert.equal((await dreamingEvents(db)).length, 0);
+    await service.close(); service = undefined;
+    service = await LocalWebService.open(configuration);
+    await until(() => dreamingRequests === 1, 'The third successful automatic checkpoint did not unlock the real Dreaming timer');
+    await settled(service);
+    assert.equal(naturalRequests, 4); assert.equal(summaryAttempts, 4); assert.equal(successfulSummaries, 3); assert.equal(await checkpoints(), 3);
+    const [recovered] = (await db.admin.query<{ input_record_id: string; completed: boolean }>('SELECT input_record_id, completed FROM wake_runs WHERE run_id = $1', [failed.run_id])).rows;
+    assert.equal(recovered!.input_record_id, failed.input_record_id); assert.equal(recovered!.completed, true, 'Restart finishes the same user Wake after publishing its real checkpoint');
+    const events = await dreamingEvents(db); assert.equal(events.length, 1);
+    assert.ok(Date.parse(events[0]!.event.occurredAt) - baseline.getTime() < dreamingDefaults.intervalMs, 'The real three-checkpoint branch triggered before the 24-hour alternative');
+    await pause(150); assert.equal(dreamingRequests, 1); assert.equal(await checkpoints(), 3);
+  } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
