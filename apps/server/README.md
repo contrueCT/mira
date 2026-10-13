@@ -67,3 +67,7 @@ enter this notice. Unrecognized errors remain generic. Recoverable tool reasons
 live only in the existing validated recovery observation for the model, and no
 tool activity/chips are added to normal Timeline output. See
 [ADR 0015](../../docs/adr/0015-safe-tool-recovery-diagnostics.md).
+
+## Dreaming
+
+配置 Memory 的 LocalWebService 默认启动轻量整理触发器，规则及失败语义见 [ADR 0018](../../docs/adr/0018-dreaming-memory-housekeeping.md)。新有效经历 AND 连续空闲 30 分钟 AND（三次成功压缩 OR 距上次触发超过 24 小时）。程序化 dreaming 选项可配置 enabled/idleMs/intervalMs/minCompactions；不新增设置页面或 CLI 开关。timer 只向同一 fenced writer 请求普通 system Wake，错误状态不自动重试；关闭时取消 timer 并等待在途检查。短命 runDemo 不启动后台 timer。

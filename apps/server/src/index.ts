@@ -145,3 +145,5 @@ export { parseWebConnectionWrite, type WebCredential, type WebCredentialWrite, t
 export { createExternalIngress, type ExternalIngress } from './external-ingress.ts';
 export { ExternalAccessStore, ExternalAccessError, externalAccessMaxBytes, type ExternalAccessStatus, type ExternalAccessStoreOptions, type ExternalSenderStatus, type ExternalSenderCredential, type ExternalAccessConfiguration } from './external-access.ts';
 export type { ExternalHttpOptions } from './external-http.ts';
+
+export { dreamingDefaults, type DreamingOptions } from './dreaming.ts';

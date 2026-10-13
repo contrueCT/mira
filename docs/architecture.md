@@ -34,7 +34,7 @@
 - Life History、Working Context、语义记忆和 Runtime Trace 分开保存与展示
 - 时间戳是事实；经过多久、跨日等提示在渲染时推导
 - Runtime Compaction 保留继续认知所需信息及合法工具边界，不自动写长期 Memory
-- Dreaming 是维护语义记忆的特殊 Wake，不替代压缩
+- Dreaming 是维护语义记忆的特殊 Wake，不替代压缩；Web Memory 默认使用 ADR 0018 的新经历/空闲/成功压缩或时间条件，触发原子消费游标并复用普通工具、Git 与恢复
 - 长期 Memory 使用普通文件；Memory Git 仓库与源码 Git 仓库独立。不存在独立 SemanticState，近期心理状态由 Working Context 及必要的普通压缩摘要承载
 
 ## 一致性与副作用

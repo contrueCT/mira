@@ -6,7 +6,7 @@ import type { HistoryReader } from '@mira/life';
 import { DurableOperationError, type DurableFailureCategory } from '@mira/life';
 import { assertJson, assertRecord } from '@mira/context';
 import type { RuntimeRecord } from '@mira/context';
-import type { LifeEvent, MemoryCheckpoint, MemoryCheckpointState, MemoryCheckpointWriter, MemorySnapshotReceipt, RecoverySnapshot, ToolIntent, ToolOutcome, WakeReceipt, WakeRun } from '@mira/life';
+import type { DreamingRequest, DreamingRequestResult, DreamingWriter, LifeEvent, MemoryCheckpoint, MemoryCheckpointState, MemorySnapshotReceipt, RecoverySnapshot, ToolIntent, ToolOutcome, WakeReceipt, WakeRun } from '@mira/life';
 export { migrate } from './migrate.ts';
 export type { MigrationOptions } from './migrate.ts';
 
@@ -38,6 +38,12 @@ interface WakeRunRow {
   completed: boolean;
 }
 interface WakeRequestRow { history_id: string; event_id: string; event: LifeEvent; requested_wake: WakeReceipt | null; wake_id: string; wake: WakeReceipt }
+interface DreamingProgressRow {
+  last_triggered_at: Date;
+  idle_since: Date;
+  consumed_receipt_order: string;
+  checkpoint_version: string;
+}
 interface MemoryCheckpointRow {
   run_id: string;
   final_record_id: string;
@@ -101,7 +107,7 @@ export class PostgresPersistence {
   /** Scoped read-only access does not acquire or displace the durable writer. */
   history(miraId: string): HistoryReader { return new PostgresHistoryReader(this.#options, miraId); }
 
-  async acquire(miraId: string): Promise<MemoryCheckpointWriter> {
+  async acquire(miraId: string): Promise<DreamingWriter> {
     text(miraId, 'Mira ID');
     const client = new Client({
       connectionString: this.#options.connectionString,
@@ -160,7 +166,7 @@ const heldExpression = `EXISTS (
 )`;
 const lockQuery = `SELECT ${heldExpression} AS held`;
 
-class PostgresWriter implements MemoryCheckpointWriter {
+class PostgresWriter implements DreamingWriter {
   readonly miraId: string;
   readonly epoch: string;
   readonly signal: AbortSignal;
@@ -399,6 +405,7 @@ class PostgresWriter implements MemoryCheckpointWriter {
       if (memory && !memory.receipt) fail('invalid', 'Pending Memory checkpoint must finish before Wake completion');
       const changed = await this.#client.query('UPDATE wake_runs SET completed = true WHERE mira_id = $1 AND run_id = $2 AND NOT completed', [this.miraId, runId]);
       if (changed.rowCount !== 1) fail('corrupt', 'Wake completion was not persisted');
+      await this.#touchDreamingIdle();
     });
   }
   async #readMemoryCheckpoint(run: WakeRunRow): Promise<MemoryCheckpointState | null> {
@@ -461,30 +468,98 @@ class PostgresWriter implements MemoryCheckpointWriter {
     const event = copy(input); const wake = optionalWake === undefined ? null : copy(optionalWake);
     validateEvent(event);
     if (wake) validateWake(wake);
-    return this.#transaction(async () => {
-      const previous = await this.#client.query<{ event: LifeEvent; requested_wake: WakeReceipt | null }>(
-        'SELECT event, requested_wake FROM life_events WHERE mira_id = $1 AND event_id = $2', [this.miraId, event.id]);
-      const old = previous.rows[0];
-      if (old) {
-        if (!isDeepStrictEqual(old.event, event) || !isDeepStrictEqual(old.requested_wake, wake)) throw new PersistenceError('duplicate', 'Event ID was reused with different data or wake', 'event-content-conflict');
-        const receipts = await this.#client.query<{ wake_id: string; wake: WakeReceipt }>(
-          'SELECT wake_id, wake FROM wake_requests WHERE mira_id = $1 AND event_id = $2', [this.miraId, event.id]);
-        if (wake === null ? receipts.rows.length !== 0 : receipts.rows.length !== 1 || receipts.rows[0]?.wake_id !== wake.id || !isDeepStrictEqual(receipts.rows[0]?.wake, wake)) fail('corrupt', 'Event and wake receipt disagree');
-        return 'duplicate';
-      }
-      const id = randomUUID();
-      await this.#reserveHistoryId(id, 'event');
-      await this.#client.query('INSERT INTO life_events(mira_id, event_id, event, requested_wake, history_id) VALUES ($1, $2, $3::json, $4::json, $5)',
-        [this.miraId, event.id, JSON.stringify(event), wake === null ? null : JSON.stringify(wake), id]);
-      if (wake) {
-        const existing = await this.#client.query('SELECT 1 FROM wake_requests WHERE mira_id = $1 AND wake_id = $2', [this.miraId, wake.id]);
-        if (existing.rowCount) throw new PersistenceError('duplicate', 'Wake ID already belongs to another event', 'event-content-conflict');
-        await this.#client.query('INSERT INTO wake_requests(mira_id, wake_id, event_id, wake) VALUES ($1, $2, $3, $4::json)',
-          [this.miraId, wake.id, event.id, JSON.stringify(wake)]);
-      }
-      return 'inserted';
+    return this.#transaction(() => this.#receive(event, wake));
+  }
+  /** Shared insertion path keeps scheduler Events/Wakes under the same history,
+   * identity and idempotency rules as all other ingress. */
+  async #receive(event: LifeEvent, wake: WakeReceipt | null): Promise<'inserted' | 'duplicate'> {
+    const previous = await this.#client.query<{ event: LifeEvent; requested_wake: WakeReceipt | null }>(
+      'SELECT event, requested_wake FROM life_events WHERE mira_id = $1 AND event_id = $2', [this.miraId, event.id]);
+    const old = previous.rows[0];
+    if (old) {
+      if (!isDeepStrictEqual(old.event, event) || !isDeepStrictEqual(old.requested_wake, wake)) throw new PersistenceError('duplicate', 'Event ID was reused with different data or wake', 'event-content-conflict');
+      const receipts = await this.#client.query<{ wake_id: string; wake: WakeReceipt }>(
+        'SELECT wake_id, wake FROM wake_requests WHERE mira_id = $1 AND event_id = $2', [this.miraId, event.id]);
+      if (wake === null ? receipts.rows.length !== 0 : receipts.rows.length !== 1 || receipts.rows[0]?.wake_id !== wake.id || !isDeepStrictEqual(receipts.rows[0]?.wake, wake)) fail('corrupt', 'Event and wake receipt disagree');
+      return 'duplicate';
+    }
+    const id = randomUUID();
+    await this.#reserveHistoryId(id, 'event');
+    await this.#client.query('INSERT INTO life_events(mira_id, event_id, event, requested_wake, history_id) VALUES ($1, $2, $3::json, $4::json, $5)',
+      [this.miraId, event.id, JSON.stringify(event), wake === null ? null : JSON.stringify(wake), id]);
+    if (wake) {
+      const existing = await this.#client.query('SELECT 1 FROM wake_requests WHERE mira_id = $1 AND wake_id = $2', [this.miraId, wake.id]);
+      if (existing.rowCount) throw new PersistenceError('duplicate', 'Wake ID already belongs to another event', 'event-content-conflict');
+      await this.#client.query('INSERT INTO wake_requests(mira_id, wake_id, event_id, wake) VALUES ($1, $2, $3, $4::json)',
+        [this.miraId, wake.id, event.id, JSON.stringify(wake)]);
+      await this.#touchDreamingIdle();
+    }
+    return 'inserted';
+  }
+  async #touchDreamingIdle(): Promise<void> {
+    await this.#client.query("UPDATE dreaming_progress SET idle_since = date_trunc('milliseconds', clock_timestamp()) WHERE mira_id = $1", [this.miraId]);
+  }
+  initializeDreaming(): Promise<void> {
+    return this.#transaction(async owner => {
+      await this.#client.query(
+        `INSERT INTO dreaming_progress(mira_id, last_triggered_at, idle_since, consumed_receipt_order, checkpoint_version)
+         SELECT $1, date_trunc('milliseconds', clock_timestamp()), date_trunc('milliseconds', clock_timestamp()), COALESCE(max(receipt_order), 0), $2
+         FROM wake_requests WHERE mira_id = $1 ON CONFLICT (mira_id) DO NOTHING`,
+        [this.miraId, owner.context_version]);
     });
   }
+  requestDreaming(input: DreamingRequest): Promise<DreamingRequestResult> {
+    const request = { ...input };
+    for (const duration of [request.idleMs, request.intervalMs]) {
+      if (!Number.isSafeInteger(duration) || duration < 1) fail('invalid', 'Invalid Dreaming duration');
+    }
+    if (!Number.isSafeInteger(request.minCompactions) || request.minCompactions < 1) fail('invalid', 'Invalid Dreaming compaction threshold');
+    text(request.instruction, 'Dreaming instruction');
+    return this.#transaction(async owner => {
+      const progress = (await this.#client.query<DreamingProgressRow>(
+        'SELECT * FROM dreaming_progress WHERE mira_id = $1', [this.miraId])).rows[0];
+      if (!progress) fail('invalid', 'Initialize Dreaming before requesting it');
+      if (BigInt(progress.checkpoint_version) > BigInt(owner.context_version)) fail('corrupt', 'Dreaming checkpoint baseline exceeds context version');
+      if (await this.#activeWakeRun()) return { status: 'waiting', nextCheckAt: null };
+      const pending = await this.#client.query(
+        `SELECT 1 FROM wake_requests AS w WHERE w.mira_id = $1 AND NOT EXISTS
+         (SELECT 1 FROM wake_run_requests AS r WHERE r.mira_id = w.mira_id AND r.wake_id = w.wake_id) LIMIT 1`, [this.miraId]);
+      if (pending.rowCount) return { status: 'waiting', nextCheckAt: null };
+      const fresh = (await this.#client.query<{ receipt_order: string | null }>(
+        `SELECT max(w.receipt_order) AS receipt_order FROM wake_requests AS w
+         JOIN life_events AS e ON e.mira_id = w.mira_id AND e.event_id = w.event_id
+         WHERE w.mira_id = $1 AND w.receipt_order > $2 AND e.event->>'source' IN ('user', 'extension', 'external')`,
+        [this.miraId, progress.consumed_receipt_order])).rows[0]?.receipt_order;
+      if (fresh === null || fresh === undefined) return { status: 'waiting', nextCheckAt: null };
+      const count = (await this.#client.query<{ count: string }>(
+        `SELECT count(*) FROM context_records WHERE mira_id = $1 AND version > $2 AND envelope->>'kind' = 'checkpoint'`,
+        [this.miraId, progress.checkpoint_version])).rows[0]?.count;
+      if (count === undefined) fail('corrupt', 'Dreaming checkpoint count is missing');
+      const now = (await this.#client.query<{ now: Date }>("SELECT date_trunc('milliseconds', clock_timestamp()) AS now")).rows[0]?.now;
+      if (!now || !Number.isFinite(now.getTime())) fail('corrupt', 'Invalid database clock');
+      if (!(progress.idle_since instanceof Date) || !(progress.last_triggered_at instanceof Date) ||
+        !Number.isFinite(progress.idle_since.getTime()) || !Number.isFinite(progress.last_triggered_at.getTime())) fail('corrupt', 'Invalid Dreaming timestamp');
+      const idleAt = progress.idle_since.getTime() + request.idleMs;
+      // Millisecond API uses strictly greater than the interval, not >=.
+      const timeAt = progress.last_triggered_at.getTime() + request.intervalMs + 1;
+      const enoughCompactions = BigInt(count) >= BigInt(request.minCompactions);
+      const nextAt = Math.max(idleAt, enoughCompactions ? now.getTime() : timeAt);
+      if (nextAt > now.getTime()) {
+        const nextCheck = new Date(nextAt);
+        if (!Number.isFinite(nextCheck.getTime())) fail('invalid', 'Dreaming duration exceeds timestamp range');
+        return { status: 'waiting', nextCheckAt: nextCheck.toISOString() };
+      }
+      const id = randomUUID();
+      await this.#receive({ id, type: 'memory.dreaming', source: 'system', occurredAt: now.toISOString(), payload: { instruction: request.instruction } },
+        { id, reason: 'Maintain long-term Memory after new experiences' });
+      const changed = await this.#client.query(
+        `UPDATE dreaming_progress SET last_triggered_at = $2, consumed_receipt_order = $3, checkpoint_version = $4
+         WHERE mira_id = $1`, [this.miraId, now, fresh, owner.context_version]);
+      if (changed.rowCount !== 1) fail('corrupt', 'Dreaming trigger progress was not persisted');
+      return { status: 'inserted' };
+    });
+  }
+
   beginTool(expectedVersion: number, input: ToolIntent): Promise<void> {
     const intent = copy(input); validateIntent(intent);
     return this.#transaction(async (owner) => {
