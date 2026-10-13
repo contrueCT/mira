@@ -187,3 +187,11 @@ Linux 缺少系统库时，使用 Playwright 官方 `pnpm exec playwright instal
 ## 外部程序接入
 
 普通启动在同一 127.0.0.1 端口提供默认关闭的 `/api/external/*` 接入。运行 `pnpm external-access --help` 查看 agent/用户通过普通 Shell 可用的启用、身份创建、轮换与撤销命令；必须与 server 使用同一 MIRA_HOME。正常输出不含 token，改动对后续认证生效，不必重启。详见 [External SDK](../../packages/external-sdk/README.md)。通知在本条 Timeline 显示为带外部程序来源和时间的 notice，不调用模型或第三方推送。
+
+## 设置内管理
+
+主聊天仍沿用原齿轮入口。窗口内的 Memory 页把当前 `MEMORY.md` 渲染成总览；详细普通文件不做目录编辑器，也不另调用摘要模型。自然语言修改作为普通用户请求进入同一条聊天和 Wake；接收回执与实际执行结果分开，页面按消息 ID 展示关联 Wake 的实际回复及 Memory Git 回执。文件展示刷新不刷新 runtime 冻结快照。
+
+扩展页使用既有宿主提供启停、重载、完整配置替换和已暂存生成版本的更新/回滚。配置只写不回填；关闭时丢弃未保存的输入。状态冲突或网络结果不明后先重读核对，不自动重复执行。运行记录只读现有 History，按 Wake 查看模型与工具结果、Memory 回执；不存在的持久压缩错误明确显示未记录。详见 [ADR 0020](../adr/0020-settings-management.md)。
+
+真实管理链路：构建后执行 `MIRA_TEST_DATABASE_URL=postgres://mira_test:synthetic-ci-only@127.0.0.1:5432/mira_test pnpm test:management:e2e`。与外部 SDK gate 共用 `scripts/run-real-web-tests.mts` 的凭据剥离/临时 HOME 运行器，只有模型响应合成，数据库和普通工具副作用均真实。无数据库、浏览器或监听权限时不能宣称通过，使用获准 CI 验证。

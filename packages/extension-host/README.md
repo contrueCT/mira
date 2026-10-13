@@ -181,3 +181,28 @@ directory or a missing subpath. An artifact store underneath an ambient same-nam
 package namespace is rejected even when a nearer private candidate exists;
 choose an independent data directory. This is snapshot consistency, not a limit
 on the general file/Shell tools or an OS execution sandbox.
+
+## Request context providers
+
+`prepareCapabilities()` captures `{ tools, contextProviders }` after settling known
+lifecycle work; `prepare()` keeps its existing tool-only interface. The server
+captures both at tool preparation, then calls
+`sampleContextProviders(contextProviders, signal)` once at the natural request
+boundary. Inspection includes `contextProviders` IDs without invoking providers.
+
+Samples bind extension/provider/activation/digest to the original registration.
+Only actual sampling holds the same execution-safe resource lease as a tool.
+Unloading rejects unsampled old callbacks with `stale`, never redirects by name.
+Failure is fixed `failed` data without raw exception text; empty, oversized and
+aggregate-budget failures are explicit. Cancellation returns promptly but keeps
+the real callback leased until settlement. There is no timeout/preemption promise
+for trusted code ignoring the signal. Limits and persisted request semantics are
+specified in [ADR 0019](../../docs/adr/0019-extension-context-providers.md).
+
+Management clients may read `managementRevision(id)` and pass
+`requestChange(id, change, { expectedRevision })`. The opaque SHA-256 covers private
+desired/runtime state, capabilities and the last management receipt. Inside the
+lifecycle queue, after awaiting known Loader tasks, a mismatch throws
+`ExtensionRevisionConflictError` before saving/applying. This guards a stale UI
+mutation, including repeated reload. The existing two-argument model-tool API is
+unchanged; a revision is a consistency token, not authorization.

@@ -1,3 +1,5 @@
+import { formatContextProviders, type ContextProviderSample } from './context-providers.ts';
+export type { ContextProviderSample } from './context-providers.ts';
 import { isDeepStrictEqual } from 'node:util';
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type AgentToolCall, type StreamFn } from '@earendil-works/pi-agent-core';
 import { getCurrentSystemMessage, getSystemMessageText, isContextOverflow, type Api, type Model, type ToolResultMessage } from '@earendil-works/pi-ai';
@@ -37,6 +39,9 @@ export interface PiRuntimeOptions {
   /** Refresh metadata before each natural model request. Requires miraPrompt;
    * bodies remain ordinary files read on demand, never bootstrap Memory. */
   loadSkills?: (signal: AbortSignal) => Promise<Skill[]>;
+  /** Sample once per natural model request. The host pins activation identity;
+   * bounded sourced observations share the existing persisted system snapshot. */
+  loadContextProviders?: (signal: AbortSignal) => Promise<ContextProviderSample[]>;
 }
 export interface RecoveredContext {
   snapshot: RecoverySnapshot; entries: SessionEntry[]; messages: AgentMessage[];
@@ -73,6 +78,7 @@ export class PiDurableRuntime implements CognitionRuntime {
   constructor(options: PiRuntimeOptions) {
     if (typeof options.streamFn !== 'function') throw new Error('Injected streamFn is required');
     if (options.loadSkills && !options.miraPrompt) throw new Error('Skill loading requires the Mira prompt');
+    if (options.loadContextProviders && !options.miraPrompt) throw new Error('Context providers require the Mira prompt');
     validateTools(options.tools ?? []);
     contextBudget(options.model, options.autoCompaction);
     this.options = options;
@@ -469,13 +475,14 @@ export class PiDurableRuntime implements CognitionRuntime {
               // Take one immutable metadata rendering for this request. Changes
               // on disk do not wake Mira or alter a request already in flight.
               const skills = formatSkillsForPrompt(await this.options.loadSkills?.(this.controller.signal) ?? []);
+              const observations = formatContextProviders(await this.options.loadContextProviders?.(this.controller.signal) ?? []);
               await this.verified();
               attemptGate();
               const prompt: MiraPromptSnapshot = { values: {
                 MEMORY_ROOT: config.memoryRoot ?? 'Not configured', MEMORY_STATE: memory,
                 CURRENT_TIME: (config.now?.() ?? new Date()).toISOString(),
                 EXTENSIONS_ROOT: config.extensionsRoot ?? 'Not configured',
-                OTHER_ENVIRONMENT_CONTEXT: config.environmentContext,
+                OTHER_ENVIRONMENT_CONTEXT: config.environmentContext + observations,
                 DYNAMIC_TOOL_AND_EXTENSION_GUIDANCE: (context.tools ?? []).map(tool => `${tool.name}: ${tool.description}`).join('\n\n') || 'No tools are available',
                 CURRENT_AUTHORIZATION_CONTEXT: config.authorizationContext,
               }, skills };

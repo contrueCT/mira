@@ -8,11 +8,20 @@ export interface ExtensionTool {
   parameters: { type: 'object'; properties?: { [key: string]: Json }; required?: string[]; additionalProperties?: boolean };
   execute(arguments_: Json, context: { callId: string; signal: AbortSignal }): Promise<{ text: string; details?: Json }>;
 }
+/** Read-only observation sampled once at a natural model-request boundary.
+ * Return null/empty text when unavailable. Honor cancellation; this is trusted
+ * in-process code, not a sandbox or a tool-effect transaction. */
+export interface ContextProvider {
+  /** Unique within this extension; same portable ID syntax as tool names. */
+  id: string;
+  provide(context: { signal: AbortSignal }): Promise<{ text: string } | null>;
+}
 export interface ExtensionEvent { id: string; type: string; occurredAt: string; payload: Json }
 export interface ExtensionWake { id: string; reason: string; event: ExtensionEvent }
 export interface ExtensionContext {
   readonly id: string;
   registerTool(tool: ExtensionTool): void;
+  registerContextProvider(provider: ContextProvider): void;
   emitEvent(event: ExtensionEvent): Promise<'inserted' | 'duplicate'>;
   requestWake(request: ExtensionWake): Promise<'inserted' | 'duplicate'>;
   provideService(name: string, value: unknown): void;

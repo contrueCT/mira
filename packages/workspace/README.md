@@ -49,3 +49,5 @@
 ## 验证
 
 从仓库根运行 `pnpm check`。`tests/unit/wake-spool.test.mts` 覆盖完整溢出输入、普通文件读取、重启/缺失重建、并发不可变发布、冲突保留、路径/链接防护和不自动清理。`tests/unit/memory-workspace.test.mts` 覆盖独立 Memory 配置、限定 bootstrap、Git 差异与无变更回执、重启恢复、身份范围、异常文件名、路径分离、锁失败和取消。均为独立临时目录离线测试，无数据库或模型调用。
+
+The read-only management view reuses `loadMemoryBootstrap({memoryRoot,maxBytes})` with an optional display ceiling. Reads reject `MemoryReadLimitError` before returning partial text, and read at most `maxBytes + 1` bytes even if the file grows after `stat`. Ordinary-file and no-symlink checks remain. The runtime omits this option and retains its existing initialization/compaction snapshot behavior; a display read never updates that snapshot or starts a Wake.

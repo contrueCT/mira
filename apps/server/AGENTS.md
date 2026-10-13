@@ -9,6 +9,7 @@
 - `src/model-catalog.ts` / `model-config.ts` / `model-discovery.ts` / `model-transport.ts` 负责 Pi 目录、独立显式密钥引用、受限模型发现和注入 runtime 的 transport；`pnpm models --help`，见 [模型说明](../../docs/development/models.md)。目录不是凭据状态，发现不猜 token 限额。
 - `src/extensions.ts` 绑定事件来源、把 SDK 工具映射到普通 Pi schema/intent/outcome 与来源路径，并提供 stage 与直接等待应用的生命周期管理工具
 - `dreaming.ts` 提供普通整理指令和单 timer；`web-service.ts` 只在空闲、无错误、有 Memory/模型时调用 DreamingWriter，关闭需等待在途检查，见 ADR 0018。不得把 timer 变成清错/自动重试路径。
+- `management.ts` / `management-http.ts` / `management-projections.ts` 提供 Memory、扩展与运行历史只读投影及同一宿主生命周期管理；配置 write-only、expectedRevision 队列内核对，历史不返回工具原始参数/结果或推理，详见本目录 README。
 - 本目录负责 API、技术来源边界、启动和依赖组装；框架为 Fastify。没有账号系统或工具批准 UI。
 
 ## 本地约束与跨包陷阱

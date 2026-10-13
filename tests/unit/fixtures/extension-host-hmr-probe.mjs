@@ -20,6 +20,10 @@ const source = version => `
     ctx.interval(() => { run.ticks++; }, 5);
     ctx.onEvent('lease-ping', () => { run.events++; });
     ctx.onCleanup(async () => { await new Promise(resolve => setTimeout(resolve, 10)); run.closed = true; });
+    ctx.registerContextProvider({ id: 'observation', async provide({signal}) {
+      signal.throwIfAborted(); await globalThis.extensionHostProbe.gate;
+      return { text: 'provider:' + ctx.service('lease-resource').read() };
+    } });
     ctx.registerTool({ name: 'lease', description: 'Use an execution-leased generation', parameters: { type: 'object' },
       async execute() {
         await globalThis.extensionHostProbe.gate;
@@ -46,7 +50,10 @@ try {
   await writeFile(entry, source(1));
   await host.start();
   assert.equal(host.hmrEnabled, true);
-  const first = (await host.prepare())[0];
+  const initial = await host.prepareCapabilities();
+  const first = initial.tools[0];
+  const firstProvider = initial.contextProviders[0];
+  assert.equal((await firstProvider.sample(new AbortController().signal)).text, 'provider:1');
   assert.ok(first);
   assert.equal((await execute(first)).text, '1:1');
   await until(() => state.runs[0].ticks > 0, 'initial timer should tick');
@@ -55,11 +62,13 @@ try {
   await sleep(200);
   state.gate = new Promise(resolve => { state.release = resolve; });
   const pending = execute(first);
+  const pendingSample = firstProvider.sample(new AbortController().signal);
   await writeFile(entry, source(2));
   await until(() => host.inspect()[0].status === 'unloading', 'HMR should reach the held generation');
   const old = state.runs[0];
   const ticksDuringUnload = old.ticks;
   assert.equal(old.closed, false);
+  assert.equal((await firstProvider.sample(new AbortController().signal)).status, 'stale');
   assert.equal(state.runs.length, 1, 'new apply must wait for the actual in-flight call');
   assert.deepEqual((await execute(first)).details, { status: 'stale', executed: false, extensionId: 'host-hmr', activation: first.activation, toolName: 'lease' });
   assert.equal(old.events, 1, 'unloading activation rejects new calls before entering its closure');
@@ -67,12 +76,18 @@ try {
   assert.equal(state.received.length, 1);
   state.release(); state.gate = null;
   assert.equal((await pending).text, '1:1', 'executing call can still use old service, listener and emit during disposal');
+  assert.equal((await pendingSample).text, 'provider:1', 'sampling retains its own generation through HMR');
   assert.equal(state.received.length, 2);
   assert.equal(state.received[1].source, 'host-hmr');
   assert.equal(state.received[1].wake, undefined);
   assert.deepEqual(state.received[1].event.payload, { version: 1 });
   await until(() => state.runs.length === 2 && old.closed, 'HMR must complete without another request boundary');
-  const second = (await host.prepare())[0];
+  const replacement = await host.prepareCapabilities();
+  const second = replacement.tools[0];
+  const secondProvider = replacement.contextProviders[0];
+  assert.notEqual(secondProvider.activation, firstProvider.activation);
+  assert.equal((await secondProvider.sample(new AbortController().signal)).text, 'provider:2');
+  assert.equal((await firstProvider.sample(new AbortController().signal)).status, 'stale');
   assert.ok(second, 'next boundary should publish the replacement tool');
   assert.equal(old.closed, true, 'boundary awaits async old cleanup');
   assert.notEqual(second.activation, first.activation);

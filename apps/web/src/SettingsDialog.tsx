@@ -4,9 +4,15 @@ import { ApiError, api, errorText } from './api.ts';
 import { ApiKeyField } from './ApiKeyField.tsx';
 import { hasUsableApiKey, sameCredentialTarget, validateApiKey, withApiKey } from './credentials.ts';
 import { CloseIcon } from './icons.tsx';
+import { MemoryPanel } from './MemoryPanel.tsx';
+import type { MemoryPanelProps } from './MemoryPanel.tsx';
+import { ExtensionsPanel } from './ExtensionsPanel.tsx';
+import { RunsPanel } from './RunsPanel.tsx';
 import type { BuiltinCatalog, CustomConnection, CustomConnectionWrite, CustomModel, CustomProtocol, Discovery, Settings, SettingsWrite } from './types.ts';
 
-interface Props { synthetic: boolean; onClose: () => void; onSaved: () => void; returnFocus: RefObject<HTMLButtonElement | null> }
+interface Props { synthetic: boolean; onClose: () => void; onSaved: () => void; returnFocus: RefObject<HTMLButtonElement | null>; memoryRequest: MemoryPanelProps['request']; memoryPending: MemoryPanelProps['pending']; sending: boolean; storageError: string | null; onMemorySubmit: MemoryPanelProps['onSubmit']; onMemoryRetry: MemoryPanelProps['onRetry'] }
+type SettingsTab = 'model' | 'memory' | 'extensions' | 'runs';
+const tabs: { id: SettingsTab; label: string }[] = [{ id: 'model', label: '模型' }, { id: 'memory', label: 'Memory' }, { id: 'extensions', label: '扩展' }, { id: 'runs', label: '运行记录' }];
 interface ModelDraft { originalId: string | null; id: string; name: string; contextWindow: string; maxTokens: string; reasoning: '' | 'true' | 'false'; input: '' | 'text' | 'image' | 'text-image' }
 const blankModel = (id = '', name = ''): ModelDraft => ({ originalId: null, id, name, contextWindow: '', maxTokens: '', reasoning: '', input: '' });
 function modelDraftFrom(model: CustomModel): ModelDraft {
@@ -35,7 +41,8 @@ function modelSummary(model: CustomModel): string {
   return `${model.contextWindow.toLocaleString()} 上下文 · ${model.maxTokens.toLocaleString()} 最大输出 · ${model.input.includes('image') ? '含图片输入' : '文本输入'}${model.reasoning ? ' · 推理' : ''}`;
 }
 
-export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus }: Props) {
+export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memoryRequest, memoryPending, sending, storageError, onMemorySubmit, onMemoryRetry }: Props) {
+  const [tab, setTab] = useState<SettingsTab>('model');
   const dialogRef = useRef<HTMLDialogElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const [draft, setDraft] = useState<SettingsWrite | null>(null);
@@ -245,6 +252,11 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus }: Pro
 
   return <dialog ref={dialogRef} className="settings-dialog" aria-labelledby="settings-title" onClick={event => { if (event.target === event.currentTarget) { const rect = event.currentTarget.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onClose(); } }}>
     <div className="settings-topbar"><div><span className="eyebrow">MIRA · PREFERENCES</span><h2 id="settings-title">模型设置</h2></div><button ref={closeRef} className="icon-button" type="button" aria-label="关闭设置" onClick={onClose}><CloseIcon /></button></div>
+    <div className="settings-tabs" role="tablist" aria-label="设置分类">{tabs.map((item, index) => <button key={item.id} id={`settings-tab-${item.id}`} type="button" role="tab" aria-selected={tab === item.id} aria-controls={`settings-panel-${item.id}`} tabIndex={tab === item.id ? 0 : -1} onClick={() => setTab(item.id)} onKeyDown={event => {
+      const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : null;
+      if (next !== null) { event.preventDefault(); const target = tabs[next]!; setTab(target.id); document.getElementById(`settings-tab-${target.id}`)?.focus(); }
+    }}>{item.label}</button>)}</div>
+    <section id="settings-panel-model" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-model" hidden={tab !== 'model'}>
     {loading ? <div className="settings-loading" role="status">正在读取配置…</div> : loadError ? <div className="settings-load-error" role="alert"><p>暂时无法读取模型设置</p><p className="muted">{loadError}</p><button className="secondary-button" onClick={reloadSettings}>重新读取</button></div> : draft && catalog ? <form onSubmit={event => { void submit(event); }} className="settings-form">
       <div className="settings-body">
         <p className="settings-intro">为同一个 Mira 选择模型。直接输入 API Key，保存在本机服务的数据目录中。浏览器只暂存本次输入，不保存或回显已存密钥。</p>
@@ -297,5 +309,9 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus }: Pro
       </div>
       <div className="settings-footer"><span>{dirty ? '尚有未保存的更改' : '密钥保留在本地服务端'}</span><div><button type="button" className="secondary-button" onClick={onClose}>{dirty ? '取消' : '关闭'}</button><button type="submit" className="primary-button" disabled={saving || !dirty || conflict}>{saving ? '正在保存…' : '保存设置'}</button></div></div>
     </form> : null}
+    </section>
+    <section id="settings-panel-memory" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-memory" hidden={tab !== 'memory'}><MemoryPanel active={tab === 'memory'} request={memoryRequest} pending={memoryPending} sending={sending} storageError={storageError} onSubmit={onMemorySubmit} onRetry={onMemoryRetry} /></section>
+    <section id="settings-panel-extensions" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-extensions" hidden={tab !== 'extensions'}><ExtensionsPanel active={tab === 'extensions'} /></section>
+    <section id="settings-panel-runs" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-runs" hidden={tab !== 'runs'}><RunsPanel active={tab === 'runs'} /></section>
   </dialog>;
 }

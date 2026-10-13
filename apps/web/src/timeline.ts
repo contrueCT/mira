@@ -40,7 +40,7 @@ export interface HistoryGap { id: string; cursor: string; boundaryIds: string[] 
 export interface HistoryPagination { latestCursor: string | null; oldestCursor: string | null; gaps: HistoryGap[] }
 export interface HistoryRequest { cursor: string; gapId: string | null }
 /** Track disconnected latest windows without losing the older-history frontier. */
-export function latestPagination(current: HistoryPagination, known: TimelineItem[], page: { items: TimelineItem[]; nextCursor: string | null }, initialized: boolean): HistoryPagination {
+export function latestPagination(current: HistoryPagination, known: { id: string }[], page: { items: { id: string }[]; nextCursor: string | null }, initialized: boolean): HistoryPagination {
   if (!initialized) return { latestCursor: page.nextCursor, oldestCursor: page.nextCursor, gaps: [] };
   // The same hidden-only latest window must not rewind a partially read gap.
   // A changed window still needs a gap, even before any visible item is found.
@@ -54,7 +54,7 @@ export function nextHistoryRequest(pagination: HistoryPagination): HistoryReques
   const gap = pagination.gaps[0];
   return gap ? { cursor: gap.cursor, gapId: gap.id } : pagination.oldestCursor ? { cursor: pagination.oldestCursor, gapId: null } : null;
 }
-export function olderPagination(current: HistoryPagination, request: HistoryRequest, page: { items: TimelineItem[]; nextCursor: string | null }): HistoryPagination {
+export function olderPagination(current: HistoryPagination, request: HistoryRequest, page: { items: { id: string }[]; nextCursor: string | null }): HistoryPagination {
   if (request.gapId === null) return { ...current, oldestCursor: page.nextCursor };
   const gapIndex = current.gaps.findIndex(gap => gap.id === request.gapId);
   if (gapIndex < 0) return current;

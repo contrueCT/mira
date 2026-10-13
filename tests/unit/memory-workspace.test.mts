@@ -466,3 +466,14 @@ test('repository identity is stable and expected identity accepts a normal same-
     assert.equal((await loadMemoryBootstrap({ memoryRoot: options.memoryRoot })).memory.content, '');
   });
 });
+
+test('optional management bootstrap byte ceiling rejects oversized content without returning a partial Memory', async () => {
+  await withWorkspace(async options => {
+    await setupMemoryWorkspace(options);
+    await writeFile(path.join(options.memoryRoot, 'MEMORY.md'), '记忆');
+    assert.equal((await loadMemoryBootstrap({ memoryRoot: options.memoryRoot, maxBytes: 6 })).memory.content, '记忆');
+    await assert.rejects(loadMemoryBootstrap({ memoryRoot: options.memoryRoot, maxBytes: 5 }), { name: 'MemoryReadLimitError' });
+    assert.equal((await loadMemoryBootstrap({ memoryRoot: options.memoryRoot })).memory.content, '记忆', 'runtime reads remain unchanged');
+    for (const maxBytes of [0, -1, 0.5, 16_777_217]) await assert.rejects(loadMemoryBootstrap({ memoryRoot: options.memoryRoot, maxBytes }), /Invalid Memory display read limit/);
+  });
+});

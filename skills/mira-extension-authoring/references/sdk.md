@@ -194,3 +194,16 @@ registered user callbacks. Read [lifecycle](lifecycle.md) before adding resource
 No SDK API installs dependencies, activates code, writes context/history directly,
 sends notifications, provides a fetch client, or authorizes an action. Use actual
 available tools for management and approved ordinary libraries for implementation.
+
+## Request context observations
+
+`registerContextProvider({ id, provide({ signal }) })` contributes bounded read-only
+text at natural model-request boundaries. `provide` is async and returns
+`{ text: string } | null`. IDs follow the tool-name syntax and are unique within
+one configured extension. The host binds source/activation/digest and reports
+empty/failed/stale/oversized/budget-exceeded outcomes, rather than reusing old data.
+There is no automatic Wake or Memory refresh. Do not put effects or credentials in
+this callback; actions belong in normal model-selected tools. Honor cancellation
+and register cleanup, because in-flight sampling leases the same resources as a
+tool and an uncooperative callback can delay unloading. See the SDK README and
+ADR 0019 for exact serialized byte/count limits and recovery semantics.

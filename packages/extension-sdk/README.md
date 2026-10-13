@@ -53,3 +53,23 @@ or deliberately invalid JSON directly, without casts to a config-free template's
 `await assert.rejects(async () => { await extension.apply({ mira: context }, value); })`.
 The ordinary template demonstrates the derived input type. This change does not
 widen tool arguments, author callbacks, or any unrelated public interface.
+
+## Context providers
+
+`registerContextProvider({ id, async provide({ signal }) { return { text }; } })`
+registers a read-only observation for each natural model request. Return `null` or
+an empty string for no observation, and honor cancellation. IDs use the tool-name
+syntax above and are unique within this extension, rather than across extensions.
+The host supplies configured extension identity, activation and generated digest;
+return only text, never credentials or purported authorization. This is not a tool
+effect/intent transaction. Use ordinary model-selected tools for actions.
+
+There are at most 32 registered providers. An extension contributing one must have
+a configured ID of at most 128 characters. Each serialized sourced sample is
+limited to 16 KiB and the complete JSON array to 64 KiB, before prompt escaping.
+Oversized, empty, failed, stale or aggregate-budget-exceeded samples have explicit
+statuses; no silent truncation or reuse of old success. Registration collisions
+fail activation and unwind resources. Sampling does not create an Event or Wake,
+load Memory again, or run during recovery/compaction. Cancellation stops preparation
+while actual callback resources remain leased until it settles. See
+[ADR 0019](../../docs/adr/0019-extension-context-providers.md).

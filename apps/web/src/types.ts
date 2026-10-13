@@ -47,3 +47,34 @@ export interface CustomConnectionWrite extends CustomConnection { apiKey?: strin
 export interface SettingsWrite extends Omit<Settings, 'configuration'> {
   configuration: { builtinCredentials: Record<string, ApiKeyWrite>; customConnections: CustomConnectionWrite[] };
 }
+
+/** Independent browser management DTOs. Never import server/runtime types here. */
+export interface MemoryView { configured: boolean; content: string | null; revision: string | null }
+export interface MemoryReceipt { state: 'unavailable' | 'pending' | 'unchanged' | 'changed'; commit: string | null }
+export interface AssistantReply { id: string; text: string; occurredAt: string }
+export interface MessageStatus {
+  id: string; eventId: string | null; runId: string | null;
+  state: 'unknown' | 'submitted' | 'processing' | 'completed' | 'failed';
+  assistant: AssistantReply | null; memory: MemoryReceipt; error: string | null;
+}
+export interface ExtensionView {
+  id: string; revision: string; enabled: boolean;
+  status: 'disabled' | 'import-failed' | 'waiting' | 'loading' | 'active' | 'failed' | 'disposed' | 'unloading';
+  activation: string | null; tools: string[]; contextProviders: string[];
+  generated: { digest: string; revision: string; history: { id: string; digest: string }[] } | null;
+  error: string | null;
+}
+export interface ExtensionsView { available: boolean; extensions: ExtensionView[]; releases: { digest: string }[]; error: string | null }
+export type ExtensionMutation = { expectedRevision: string } & ({ action: 'enable' | 'disable' | 'reload' } | { action: 'configure'; config: unknown } | { action: 'update'; digest: string } | { action: 'rollback'; revision: string });
+export interface ExtensionMutationResult {
+  id: string; extensionId: string; action: ExtensionMutation['action']; status: 'applied' | 'failed';
+  persistence: 'saved' | 'failed' | 'not-required' | 'not-attempted'; runtime: ExtensionView | null; error: string | null;
+}
+export interface RunSummary { id: string; occurredAt: string; status: 'running' | 'completed'; requestCount: number }
+export interface RunsView { items: RunSummary[]; nextCursor: string | null }
+export interface RunExecution { id: string; occurredAt: string; kind: 'model' | 'tool' | 'compaction' | 'recovery' | 'unavailable'; name: string | null; status: string; error: string | null }
+export interface RunDetail extends RunSummary {
+  requests: { eventId: string; source: string; type: string; reason: string | null }[];
+  assistant: AssistantReply | null; memory: MemoryReceipt; executions: RunExecution[]; nextCursor: string | null;
+  compactionErrors: 'not-recorded'; error: string | null;
+}

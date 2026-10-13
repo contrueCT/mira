@@ -16,6 +16,7 @@
 - `artifacts.ts` 的 stage 只复制/哈希，不 import；测试/激活版本必须真实绑定完整快照与本地依赖
 - 每次生成版本激活使用私有新路径，保护实际在途调用并等待 cleanup；保留 release，不宣称回退外部效果
 - requestChange 统一 await 保存/清理/应用，返回最终 receipt + runtime；无 accepted 队列，管理工具不持有扩展执行租约，旧 activation 的未执行调用返回已知 stale 结果
+- prepareCapabilities 同份捕获工具/ContextProvider，实际采样才取得租约；旧代未开始项返回 stale，失败不复用旧数据；限额与取消见 ADR 0019
 - configuration、artifact、PG 与 runtime 非原子；receipt 必须分别报告未保存/已保存/实际失败
 
 ## 验证

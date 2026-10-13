@@ -29,3 +29,5 @@ ADR 0007 回归直接工具调用与模型普通澄清，保留 schema/参数、
 - External SDK：`unit/external-*.test.mts` 覆盖协议、客户端、真实回环 HTTP 与私有文件；`recovery/external-*.test.mts` 为真实 PostgreSQL。`deny-model-network.mts` 的 scoped 测试许可只放行显式登记的精确 127.0.0.1 HTTP origin，禁止重定向，清理后立即撤销；其余 fetch 及 http/https 外发仍拒绝。
 
 - Dreaming：`unit/dreaming.test.mts` 验证 timer；`integration/dreaming.test.mts` 用真实 PG 验证条件/事务/COMMIT 前后进程死亡；`recovery/dreaming-service.test.mts` 走真实服务/普通工具/History/Git（仅 provider 合成）。质量探针及第一轮局限见 `docs/acceptance/dreaming-memory.md`。
+
+- 管理：`unit/management.test.mts` 与 `integration/management-history.test.mts` 验证脱敏投影、同源HTTP和真实PG关联；`test:management:e2e` 独立经过真实浏览器/HTTP/PG/runtime/普通工具/Memory Git。后者只模拟模型，不可被fixture gate替代。ContextProvider离线机制与真实数据库/浏览器门禁分开报告。

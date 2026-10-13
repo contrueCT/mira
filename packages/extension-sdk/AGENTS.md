@@ -12,6 +12,7 @@
 
 - 保持平台独立，不导入核心内部、Pi、Cordis、数据库或 Node 平台模块
 - 只暴露注册工具、事件、Wake 等批准能力；不得暴露直接改历史/上下文的通道
+- ContextProvider 是自然请求的只读来源数据，注册/大小/取消/生命周期见 [ADR 0019](../../docs/adr/0019-extension-context-providers.md)；不直接改上下文、Memory 或产生 Wake
 - 新增公共 export 需兼容性考虑及消费者测试，避免映射整个内部类型树
 
 ## 验证

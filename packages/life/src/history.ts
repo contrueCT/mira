@@ -109,3 +109,19 @@ export class HistoryError extends Error {
     this.name = 'HistoryError'; this.code = code; this.requiredBytes = requiredBytes;
   }
 }
+
+/** Read-only joins over the existing Wake/History/checkpoint facts. No second
+ * run log and no runtime interpretation belong in this storage contract. */
+export interface HistoryEventRun { eventId: string; runId: string | null }
+export interface HistoryRunPageRequest { id: string; before?: string; limit?: number }
+export interface HistoryRunPage {
+  run: HistoryWake;
+  memory: { preparedAt: string; receipt: { commit: string | null } | null } | null;
+  /** Existing context/tool IDs within this Wake's durable version interval. */
+  records: Array<HistoryMetadata & { occurredAt: string }>;
+  nextCursor: string | null;
+}
+export interface RunHistoryReader extends HistoryReader {
+  findEventRun(externalEventId: string): Promise<HistoryEventRun | null>;
+  readRun(request: HistoryRunPageRequest): Promise<HistoryRunPage | null>;
+}

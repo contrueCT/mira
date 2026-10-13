@@ -3,6 +3,8 @@ import type { FormEvent, KeyboardEvent } from 'react';
 import { api, errorText, isAbort } from './api.ts';
 import { ArrowUp, ChevronDown, SettingsIcon } from './icons.tsx';
 import { SettingsDialog } from './SettingsDialog.tsx';
+import { createMemoryRequest, MEMORY_REQUEST_PREFIX, readMemoryRequest, writeMemoryRequest } from './management.ts';
+import type { MemoryRequestIdentity } from './management.ts';
 import { latestPagination, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
 import type { HistoryPagination, HistoryRequest } from './timeline.ts';
 import type { MessageEnvelope, PendingMessage, ServerStatus, TimelineItem, TimelinePage } from './types.ts';
@@ -16,15 +18,21 @@ function dateLabel(value: string): string {
   if (date.toDateString() === today.toDateString()) return '今天';
   return new Intl.DateTimeFormat('zh-CN', { year: date.getFullYear() === today.getFullYear() ? undefined : 'numeric', month: 'long', day: 'numeric' }).format(date);
 }
-function initialPending(): { messages: PendingMessage[]; error: string | null } {
-  try { return { messages: readPending(window.sessionStorage), error: null }; }
-  catch { return { messages: [], error: '浏览器中的待确认消息无法读取。为避免丢失或重复发送，请先恢复此标签页的存储访问，再刷新页面。' }; }
+function initialPending(): { messages: PendingMessage[]; memoryRequest: MemoryRequestIdentity | null; error: string | null } {
+  try {
+    const messages = readPending(window.sessionStorage);
+    const memoryRequest = readMemoryRequest(window.sessionStorage) ?? [...messages].reverse().find(message => message.text.startsWith(MEMORY_REQUEST_PREFIX)) ?? null;
+    return { messages, memoryRequest, error: null };
+  }
+  catch { return { messages: [], memoryRequest: null, error: '浏览器中的待确认消息无法读取。为避免丢失或重复发送，请先恢复此标签页的存储访问，再刷新页面。' }; }
 }
 
 export function App() {
   const [recovered] = useState(initialPending);
   const [items, setItems] = useState<TimelineItem[]>([]);
   const [pending, setPending] = useState<PendingMessage[]>(recovered.messages);
+  const [memoryRequest, setMemoryRequest] = useState<MemoryRequestIdentity | null>(recovered.memoryRequest);
+  const memoryRequestRef = useRef(memoryRequest);
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -175,7 +183,7 @@ export function App() {
     finally { olderBusyRef.current = false; if (activeRef.current) setLoadingOlder(false); }
   };
 
-  const sendEnvelope = async (envelope: MessageEnvelope, retry = false) => {
+  const sendEnvelope = async (envelope: MessageEnvelope, retry = false, fromMemory = memoryRequestRef.current?.id === envelope.id) => {
     if (sendingRef.current || recovered.error) return;
     sendingRef.current = true; setSending(true);
     const controller = new AbortController(); postAbortRef.current = controller;
@@ -189,7 +197,8 @@ export function App() {
         if (itemsRef.current.some(item => item.role === 'user' && item.externalEventId === envelope.id)) return;
       }
       if (!updatePending(current => [...current.filter(message => message.id !== envelope.id), { ...envelope, state: 'sending' }], true)) return;
-      if (!retry) setComposer('');
+      if (fromMemory) writeMemoryRequest(window.sessionStorage, envelope);
+      if (!retry && !fromMemory) setComposer('');
       const receipt = await api<{ id: string; receipt: 'inserted' | 'duplicate' }>('/api/messages', { method: 'POST', body: JSON.stringify(envelope), signal: controller.signal });
       if (!activeRef.current) return;
       if (receipt.id !== envelope.id || !['inserted', 'duplicate'].includes(receipt.receipt)) throw new Error('无法确认服务端的接收回执');
@@ -201,8 +210,18 @@ export function App() {
       clearTimeout(timeout);
       if (postAbortRef.current === controller) postAbortRef.current = null;
       sendingRef.current = false;
-      if (activeRef.current) { setSending(false); textareaRef.current?.focus(); }
+      if (activeRef.current) { setSending(false); if (!fromMemory) textareaRef.current?.focus(); }
     }
+  };
+  const submitMemory = (text: string): boolean => {
+    if (sendingRef.current || recovered.error) return false;
+    const envelope = createMemoryRequest(text);
+    // Stage the exact ordinary message before tracking it or starting network I/O.
+    if (!updatePending(current => [...current, { ...envelope, state: 'uncertain' }], true)) return false;
+    const identity = { id: envelope.id, occurredAt: envelope.occurredAt };
+    memoryRequestRef.current = identity; setMemoryRequest(identity);
+    void sendEnvelope(envelope, false, true);
+    return true;
   };
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
@@ -281,6 +300,6 @@ export function App() {
         <p className="composer-caption">Enter 发送<span>·</span>Shift + Enter 换行{status?.mode === 'synthetic' && <><span>·</span>当前为模拟模型</>}</p>
       </footer>
     </div>
-    {settingsOpen && <SettingsDialog synthetic={status?.mode === 'synthetic'} onClose={closeSettings} onSaved={() => { void refresh(); }} returnFocus={settingsButtonRef} />}
+    {settingsOpen && <SettingsDialog synthetic={status?.mode === 'synthetic'} onClose={closeSettings} onSaved={() => { void refresh(); }} returnFocus={settingsButtonRef} memoryRequest={memoryRequest} memoryPending={pending.find(message => message.id === memoryRequest?.id) ?? null} sending={sending} storageError={storageError} onMemorySubmit={submitMemory} onMemoryRetry={message => { void sendEnvelope(message, true, true); }} />}
   </>;
 }

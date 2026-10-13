@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { Client } from 'pg';
 import { assertJson, assertRecord } from '@mira/context';
 import { HistoryError } from '@mira/life';
-import type { HistoryEntry, HistoryKind, HistoryPageHit, HistoryPageRequest, HistoryPageResult, HistoryReader, HistoryReadRequest, HistorySearchRequest, HistorySearchResult } from '@mira/life';
+import type { HistoryEntry, HistoryKind, HistoryPageHit, HistoryPageRequest, HistoryPageResult, RunHistoryReader, HistoryEventRun, HistoryRunPage, HistoryRunPageRequest, HistoryReadRequest, HistorySearchRequest, HistorySearchResult } from '@mira/life';
 import type { PostgresOptions } from './index.ts';
 
 const FULL_TEXT_PREFIX_CHARS = 65_536;
@@ -152,7 +152,7 @@ function validateEntry(entry: HistoryEntry, miraId: string, request: HistoryRead
 
 /** Internal adapter constructed by PostgresPersistence.history. One independent
  * read-only transaction per request; it never registers a Mira or takes a lock. */
-export class PostgresHistoryReader implements HistoryReader {
+export class PostgresHistoryReader implements RunHistoryReader {
   readonly miraId: string;
   readonly #options: PostgresOptions;
   constructor(options: PostgresOptions, miraId: string) {
@@ -183,6 +183,77 @@ export class PostgresHistoryReader implements HistoryReader {
       if (inTransaction) await client.query('ROLLBACK').catch(() => {});
       throw error;
     } finally { await client.end().catch(() => {}); }
+  }
+  async findEventRun(externalEventId: string): Promise<HistoryEventRun | null> {
+    string(externalEventId, 'external event ID', 65_536);
+    return response<HistoryEventRun>(await this.#query(bound(`SELECT
+      json_build_object('eventId', e.history_id, 'runId', r.run_id) AS body, true AS valid
+      FROM life_events e LEFT JOIN wake_requests w ON w.mira_id = e.mira_id AND w.event_id = e.event_id
+      LEFT JOIN wake_run_requests r ON r.mira_id = w.mira_id AND r.wake_id = w.wake_id
+      WHERE e.mira_id = $1 AND e.event_id = $2`, '$3'), [this.miraId, externalEventId, MAX_PAGE_BYTES]));
+  }
+  async readRun(request: HistoryRunPageRequest): Promise<HistoryRunPage | null> {
+    object(request); historyId(request.id);
+    const limit = request.limit ?? 50; integer(limit, 1, 100, 'limit');
+    // Cursor contains only a scoped version/kind/UUID boundary, never payload.
+    const scope = createHash('sha256').update(JSON.stringify([this.miraId, request.id, 'run-records'])).digest('hex');
+    let boundary: [number, string, string] | null = null;
+    if (request.before !== undefined) {
+      string(request.before, 'run cursor', 1024);
+      try {
+        if (!/^[A-Za-z0-9_-]+$/.test(request.before)) throw Error();
+        const bytes = Buffer.from(request.before, 'base64url');
+        if (bytes.toString('base64url') !== request.before) throw Error();
+        const value: unknown = JSON.parse(bytes.toString('utf8'));
+        if (!Array.isArray(value) || value.length !== 4 || value[0] !== scope) throw Error();
+        integer(value[1], 1, Number.MAX_SAFE_INTEGER, 'cursor version'); historyId(value[3]);
+        if (value[2] !== 'context' && value[2] !== 'tool') throw Error();
+        boundary = [value[1], value[2], value[3]];
+      } catch { invalid('Invalid run history cursor'); }
+    }
+    const source = sources.wake;
+    const runBody = source.body.replace("'claimedVersion', claimed_version", "'claimedVersion', s.claimed_version")
+      .replace("'inputRecordId', input_record_id", "'inputRecordId', s.input_record_id")
+      .replace("'finalRecordId', final_record_id", "'finalRecordId', s.final_record_id")
+      .replace('CASE WHEN completed THEN', 'CASE WHEN s.completed THEN');
+    type Result = Omit<HistoryRunPage, 'nextCursor' | 'records'> & { records: Array<HistoryRunPage['records'][number] & { version: number }>; hasMore: boolean };
+    // Claimed version excludes the previous Wake; final version closes a
+    // completed Wake even after later requests or compaction append new records.
+    // All metadata/checkpoint/membership fields share one read-only snapshot.
+    const sql = `WITH run AS MATERIALIZED (SELECT s.*, f.version AS final_version FROM wake_runs s
+        LEFT JOIN context_records f ON f.mira_id = s.mira_id AND f.record_id = s.final_record_id
+        WHERE s.mira_id = $1 AND s.run_id = $2::uuid),
+      matching AS (
+        SELECT c.record_id AS id, 'context'::text AS kind, c.version, c.envelope->>'occurredAt' AS occurred_at
+        FROM context_records c JOIN run r ON r.mira_id = c.mira_id
+        WHERE c.version > r.claimed_version AND (r.final_version IS NULL OR c.version <= r.final_version)
+        UNION ALL
+        SELECT t.history_id, 'tool'::text, t.context_version, t.intent->>'occurredAt'
+        FROM tool_executions t JOIN run r ON r.mira_id = t.mira_id
+        WHERE t.context_version > r.claimed_version AND (r.final_version IS NULL OR t.context_version <= r.final_version)),
+      limited AS MATERIALIZED (SELECT * FROM matching WHERE $4::bigint IS NULL OR
+        (version, kind COLLATE "C", id) < ($4::bigint, $5::text COLLATE "C", $6::uuid)
+        ORDER BY version DESC, kind COLLATE "C" DESC, id DESC LIMIT $3 + 1),
+      numbered AS (SELECT *, row_number() OVER (ORDER BY version DESC, kind COLLATE "C" DESC, id DESC) AS n FROM limited)
+      SELECT json_build_object('run', json_build_object('kind', 'wake', 'id', s.run_id, 'miraId', s.mira_id,
+        'occurredAt', s.claimed_at, ${runBody}),
+        'memory', CASE WHEN c.run_id IS NULL THEN NULL ELSE json_build_object('preparedAt', c.prepared_at,
+          'receipt', CASE WHEN receipt.run_id IS NULL THEN NULL ELSE json_build_object('commit', receipt.commit_id) END) END,
+        'hasMore', (SELECT count(*) > $3 FROM numbered),
+        'records', (SELECT coalesce(json_agg(json_build_object('id', id, 'kind', kind, 'version', version,
+          'occurredAt', occurred_at) ORDER BY n DESC) FILTER (WHERE n <= $3), '[]'::json) FROM numbered)) AS body,
+        (s.final_record_id IS NULL OR s.final_version IS NOT NULL) AS valid
+      FROM run s LEFT JOIN wake_memory_checkpoints c ON c.mira_id = s.mira_id AND c.run_id = s.run_id
+      LEFT JOIN wake_memory_receipts receipt ON receipt.mira_id = s.mira_id AND receipt.run_id = s.run_id`;
+    const result = response<Result>(await this.#query(bound(sql, '$7'),
+      [this.miraId, request.id, limit, boundary?.[0] ?? null, boundary?.[1] ?? null, boundary?.[2] ?? null, MAX_PAGE_BYTES]));
+    if (!result) return null;
+    validateEntry(result.run, this.miraId, { id: request.id });
+    for (const record of result.records) { historyId(record.id); integer(record.version, 1, Number.MAX_SAFE_INTEGER, 'version'); }
+    const oldest = result.records[0];
+    return { run: result.run, memory: result.memory,
+      records: result.records.map(({ id, kind, occurredAt }) => ({ id, kind, occurredAt })),
+      nextCursor: result.hasMore && oldest ? Buffer.from(JSON.stringify([scope, oldest.version, oldest.kind, oldest.id])).toString('base64url') : null };
   }
   async search(request: HistorySearchRequest): Promise<HistorySearchResult> {
     object(request); string(request.query, 'query', 1024);

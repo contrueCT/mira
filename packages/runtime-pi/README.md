@@ -396,3 +396,16 @@ content was empty. A configured stream cannot compact with a missing loader; thi
 is rejected before summarization. Adopting a loader from an unconfigured stream
 is committed with the checkpoint. Recovery validates the full Memory/prompt chain
 before writing any tool-outcome or recovery-observation repairs.
+
+## Extension observations
+
+`loadContextProviders(signal)` requires `miraPrompt` and returns sourced
+`ContextProviderSample[]` for the current prepared activation snapshot. It runs
+once in each natural `prepareRequest`, alongside Skills metadata. Runtime validates
+bounded JSON, provenance shape and unique extension/provider identities, then
+adds clearly labeled observation data to `OTHER_ENVIRONMENT_CONTEXT`. Existing
+single-pass escaping, persisted system snapshots and writer/CAS happen before the
+actual provider request. No extra Wake, Memory load, hidden authorization gate or
+semantic state is introduced. Recovery/compaction preserve frozen observations;
+the next natural request replaces them, including removal or explicit failure.
+See [ADR 0019](../../docs/adr/0019-extension-context-providers.md).

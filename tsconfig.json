@@ -67,6 +67,8 @@
     "tests/unit/compaction-continuity.test.mts",
     "tests/unit/external-http.test.mts",
     "scripts/external-sdk-usability.mts",
-    "tests/unit/external-access.test.mts"
+    "tests/unit/external-access.test.mts",
+    "tests/unit/management.test.mts",
+    "tests/unit/context-providers.test.mts"
   ]
 }

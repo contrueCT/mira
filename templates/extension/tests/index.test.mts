@@ -9,7 +9,7 @@ type HostConfig = Parameters<typeof extension.apply>[1];
 async function registeredTool(config: HostConfig = null): Promise<ExtensionTool> {
   const tools: ExtensionTool[] = [];
   const context: ExtensionContext = {
-    id: 'local-template-test', registerTool: tool => { tools.push(tool); },
+    id: 'local-template-test', registerTool: tool => { tools.push(tool); }, registerContextProvider: unexpected,
     emitEvent: unexpected, requestWake: unexpected, provideService: unexpected,
     service: unexpected, onCleanup: unexpected, onEvent: unexpected,
     publish: unexpected, interval: unexpected,
