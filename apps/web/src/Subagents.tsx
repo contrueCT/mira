@@ -11,7 +11,7 @@ export const childStatus = (status: string) => ({ queued: '等待执行', runnin
 const when = (value: string) => new Date(value).toLocaleString('zh-CN');
 export function activityText(activity: ChildActivityView): string {
   if (activity.kind === 'progress') return activity.text ?? '进度已报告';
-  const name = activity.kind === 'model' ? '生成回复' : `工具 ${activity.name ?? '名称未记录'}`;
+  const name = activity.kind === 'model' ? activity.name === 'context-compaction' ? '整理任务上下文' : '生成回复' : `工具 ${activity.name ?? '名称未记录'}`;
   if (activity.phase === 'started') return `${name} · 已开始`;
   return `${name} · ${{ succeeded: '已完成', completed: '已完成', failed: '失败', interrupted: '已中断', unknown: '结果未知' }[activity.status ?? ''] ?? '已结束'}`;
 }

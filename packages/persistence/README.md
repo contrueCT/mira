@@ -214,6 +214,15 @@ existing History remains authoritative. Terminalization clears current activity;
 restart marks incomplete observations interrupted/unknown without replay. A read
 after ownership loss may show the last persisted observation until a new owner
 records interruption. Registry writes use the same parent fencing; read-only
-inspection remains available. Terminal results and observations cannot be rewritten.
+inspection remains available. Terminal results and stored observations cannot be rewritten.
+Summary starts may additionally retain their planned checkpoint UUID internally.
+Terminalization and summary completion check that exact UUID, the child stream and
+checkpoint envelope kind using the parent's connection, including when the child
+writer stopped after losing its COMMIT response. If cancellation closed the parent
+turn before that COMMIT became visible, bounded child reads batch-check only their
+final interrupted summary identities and project confirmed completion without an
+UPDATE, a late callback, a new Event/Wake, or a change to the terminal result. Thus
+restart also handles a missing completion callback. Public DTOs omit these links;
+no new migration, replay path or independent state engine is introduced.
 Both subagent migrations have explicit up/down; down is destructive and must not
 be run on user data automatically. See ADR 0025 and ADR 0026.

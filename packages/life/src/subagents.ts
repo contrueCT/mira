@@ -17,6 +17,8 @@ export interface SubagentActivityEvent {
   name: string | null;
   /** Internal link to existing immutable tool history, never a provider ID or public DTO field. */
   toolHistoryId: string | null;
+  /** Internal planned summary checkpoint identity, never a public DTO field. */
+  checkpointId?: string;
   status: 'completed' | 'failed' | 'interrupted' | 'succeeded' | 'unknown' | null;
   /** Explicit public worker progress only. No tool arguments, results or reasoning. */
   text: string | null;
@@ -60,7 +62,7 @@ export interface SubagentWriter extends DurableWriter, SubagentReader {
   sendSubagent(callId: string, id: string, instruction: string, maxConcurrent: number): Promise<SubagentRecord>;
   claimSubagentTurn(id: string): Promise<SubagentTurn | null>;
   finishSubagentTurn(id: string, status: 'completed' | 'interrupted' | 'cancelled' | 'failed', result: SubagentResult): Promise<void>;
-  /** Bounded public observation, persisted under parent ownership; terminal turns ignore late events. */
+  /** Bounded public observation, persisted under parent ownership; terminal turns ignore late events. Reads may project exact committed summary evidence. */
   recordSubagentActivity(turnId: string, event: SubagentActivityInput): Promise<void>;
   cancelSubagent(id: string): Promise<void>;
   /** Reconcile pending work under the owner only at startup or after all child actors settle on shutdown. Never replay. */

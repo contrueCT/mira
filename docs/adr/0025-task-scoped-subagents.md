@@ -71,9 +71,9 @@ The exact injected parent transport is used for each started child turn, with
 model identity and a configuration fingerprint in the durable specification.
 Credentials/functions are not persisted in child metadata. Followup rejects a
 changed model configuration. The first version does not add model-selection UI.
-Child automatic compaction is disabled: the existing request budget fails safely
-rather than applying the main Mira/Memory compaction prompt to a worker. Long tasks
-can report a blocker and be redelegated with explicitly selected materials.
+ADR 0030 enables child automatic compaction with task-only summary instructions,
+using the same durable SDK checkpoint path and independent child transcript. It
+does not apply the main Mira/Memory summary prompt or grant Memory access.
 
 ## Tools, files and observations
 

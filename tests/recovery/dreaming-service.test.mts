@@ -187,7 +187,10 @@ test('real PostgreSQL failed Dreaming preserves its ordinary file effect and res
   const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-dreaming-recovery-');
   let service: LocalWebService | undefined; let requests = 0;
   try {
-    const configuration = { ...options(db, root, 'dreaming-recovery'), dreaming: { idleMs: 40, intervalMs: 100, minCompactions: 3 } };
+    // This case drives eligibility with age()+settings(); the preceding case
+    // covers the short real timer. Default long thresholds keep CI scheduling
+    // delays from triggering Dreaming before the initial foreground assertion.
+    const configuration = options(db, root, 'dreaming-recovery');
     const file = path.join(configuration.memoryRoot, 'recovered.md');
     service = await LocalWebService.open({ ...configuration, syntheticStream: (_model, context) => {
       requests++;

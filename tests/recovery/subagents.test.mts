@@ -9,6 +9,7 @@ import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { PiDurableRuntime, encodeEntry, messageEntry, jsonValue } from '@mira/runtime-pi';
 import { SubagentManager, createSubagentTools } from '../../apps/server/src/subagents.ts';
 import { LocalWebService } from '@mira/server';
+import { writeWakeInput } from '@mira/workspace';
 import { createTestDatabase } from '../integration/database.mts';
 import { assistant, streamOf, model, input, deferred, seed, effectTool, result } from './fixtures.mts';
 
@@ -261,4 +262,65 @@ test('PostgreSQL pre-input child interruption retains original assignment and fr
     assert.match(seen, /quoted reference data/);
     assert.equal((await writer.getSubagent(childId))!.turns[0]!.status, 'interrupted');
   } finally { await manager?.close(); await writer.close(); await db.close(); }
+});
+
+test('child auto-compaction checkpoints survive PostgreSQL restart without main Memory or Dreaming state', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-subagent-compaction-'); let manager: SubagentManager | undefined;
+  const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: root, sourceDirectory: process.cwd(), runId, content });
+  try {
+    let writer = await db.acquire('compact-parent'); await writer.initializeDreaming();
+    const beforeDreaming = (await db.admin.query("SELECT checkpoint_version, consumed_receipt_order, last_triggered_at FROM dreaming_progress WHERE mira_id='compact-parent'")).rows;
+    const failures: unknown[] = []; let summaries = 0; let calls = 0; let latest = '';
+    const transport = { model, streamFn: ((_m, context) => {
+      const system = getSystemMessageText(getCurrentSystemMessage(context.messages)!);
+      if (system.includes('Summarize this task-scoped worker')) {
+        summaries++;
+        const data = JSON.parse(String(context.messages.find(m => m.role === 'user')?.content));
+        assert.equal(data.memory_snapshot, null); assert.match(data.persona_context, /task-scoped worker/);
+        return streamOf(assistant('PG_TASK_SUMMARY: read-only research remains pending; preserve sources.'));
+      }
+      calls++; latest = JSON.stringify(context.messages);
+      return streamOf(assistant(`step-${calls}: ${'bounded research evidence '.repeat(60)}`));
+    }) as StreamFn };
+    const makeManager = () => new SubagentManager({ writer, acquire: id => db.acquire(id), tools: () => [],
+      writeOverflowInput, onCompletion: () => {}, onFailure: error => failures.push(error) });
+    manager = makeManager(); await manager.initialize();
+    const parentCall = async (callId: string, name: string, args: Record<string, string>) => {
+      let requested = false;
+      const runtime = new PiDurableRuntime({ writer, writeOverflowInput, model: { ...model, contextWindow: 1_000_000 }, autoCompaction: { enabled: false },
+        tools: createSubagentTools(manager!, transport), streamFn: () => {
+          if (requested) return streamOf(assistant('Delegation recorded'));
+          requested = true;
+          return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: callId, name, arguments: args }] });
+        } });
+      const context = await runtime.run(input(`Dispatch ${callId}`));
+      const result = context.entries.find(entry => entry.type === 'message' && entry.message.role === 'toolResult' && entry.message.toolCallId === callId);
+      assert.ok(result?.type === 'message' && result.message.role === 'toolResult');
+      const text = result.message.content.find(block => block.type === 'text'); assert.ok(text?.type === 'text');
+      return JSON.parse(text.text) as { id: string };
+    };
+    const c = await parentCall('pg-compaction', 'subagent_spawn', { task: 'Read-only investigation' });
+    await until(async () => (await writer.getSubagent(c.id))!.turns.at(-1)!.status === 'completed');
+    for (let i = 1; i <= 24 && summaries === 0; i++) {
+      await parentCall(`pg-followup-${i}`, 'subagent_send', { id: c.id, message: `Continue ${i}` });
+      await until(async () => (await writer.getSubagent(c.id))!.turns.at(-1)!.status === 'completed');
+    }
+    assert.equal(summaries, 1); const child = (await writer.getSubagent(c.id))!;
+    const records = (await db.admin.query('SELECT envelope FROM context_records WHERE mira_id=$1 ORDER BY version', [child.streamId])).rows;
+    assert.equal(records.filter(row => row.envelope.kind === 'checkpoint').length, 1);
+    assert.equal((await writer.load()).records.filter(record => record.kind === 'checkpoint').length, 0);
+    assert.doesNotMatch(JSON.stringify(records), /miraMemory/);
+    assert.deepEqual((await db.admin.query("SELECT checkpoint_version, consumed_receipt_order, last_triggered_at FROM dreaming_progress WHERE mira_id='compact-parent'")).rows, beforeDreaming);
+    assert.equal((await db.admin.query("SELECT count(*)::int AS n FROM dreaming_progress WHERE mira_id LIKE 'subagent:%'")).rows[0].n, 0);
+    await manager.close(); await writer.close();
+    const beforeCalls = calls; writer = await db.acquire('compact-parent'); manager = makeManager(); await manager.initialize();
+    assert.equal(calls, beforeCalls); assert.equal(summaries, 1);
+    await parentCall('pg-after-restart', 'subagent_send', { id: c.id, message: 'RESTART_FOLLOWUP: inspect the preserved findings' });
+    await until(async () => (await writer.getSubagent(c.id))!.turns.at(-1)!.status === 'completed');
+    assert.match(latest, /PG_TASK_SUMMARY/); assert.match(latest, /RESTART_FOLLOWUP/);
+    assert.equal(calls, beforeCalls + 1);
+    const after = (await db.admin.query('SELECT envelope FROM context_records WHERE mira_id=$1 ORDER BY version', [child.streamId])).rows;
+    assert.deepEqual(after.slice(0, records.length), records);
+    assert.equal((await writer.load()).records.filter(record => record.kind === 'checkpoint').length, 0); assert.deepEqual(failures, []);
+  } finally { await manager?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });

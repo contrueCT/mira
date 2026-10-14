@@ -157,3 +157,66 @@ test('due reminder and child completion queue behind user steering at one real t
     }
   }
 });
+
+test('long child compacts through real tools and PostgreSQL, remains inspectable after service restart', async ({ page }, testInfo) => {
+  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-child-compaction-browser-');
+  const evidence = path.join(root, 'evidence.txt'); await writeFile(evidence, 'read-only evidence line\n'.repeat(520));
+  let app: ReturnType<typeof createLocalHttp> | undefined; let service: LocalWebService | undefined;
+  let childCalls = 0, summaries = 0, parentCalls = 0;
+  const summaryRelease = deferred();
+  const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'compaction-browser-parent', sourceDirectory,
+    workingDirectory: root, miraHome: root, memoryRoot: path.join(root, 'Memory'), spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'),
+    synthetic: true, syntheticModel: { ...model, contextWindow: 100_000 }, dreaming: { enabled: false }, autoCompaction: { enabled: false } };
+  const start = async () => {
+    service = await LocalWebService.open({ ...options, syntheticStream: async (_m, context) => {
+      const system = getCurrentSystemPrompt(context.messages);
+      if (system.includes('Summarize this task-scoped worker')) {
+        summaries++;
+        const data = JSON.parse(String(context.messages.find(message => message.role === 'user')?.content));
+        expect(data.memory_snapshot).toBeNull(); expect(data.persona_context).not.toContain('MAIN_PRIVATE_MEMORY');
+        expect(JSON.stringify(data.source_messages)).toContain('read-only evidence');
+        await summaryRelease.promise;
+        return streamOf(assistant('BROWSER_TASK_SUMMARY: inspected evidence, no publication or external effects.'));
+      }
+      if (system.includes('task-scoped worker')) {
+        childCalls++; expect(childCalls).toBeLessThan(40);
+        expect(system).not.toContain('MAIN_PRIVATE_MEMORY');
+        if (JSON.stringify(context.messages).includes('BROWSER_TASK_SUMMARY')) return streamOf(assistant('CHILD_COMPACTED_FINDING'));
+        return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: `evidence-read-${childCalls}`, name: 'read', arguments: { path: evidence } }] });
+      }
+      parentCalls++;
+      if (parentCalls === 1) return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'browser-compact-spawn', name: 'subagent_spawn', arguments: { title: '长任务压缩验证', task: 'Read the assigned evidence until enough context exists, then report', fork: 'none' } }] });
+      return streamOf(assistant(parentCalls === 2 ? '子任务正在读取证据。' : '子任务压缩后已完成。'));
+    } });
+    app = createLocalHttp({ backend: service, port, assetsDirectory: path.join(sourceDirectory, 'apps/web/dist') });
+    await app.listen({ port, host: '127.0.0.1' });
+  };
+  try {
+    await start(); await writeFile(path.join(root, 'Memory', 'MEMORY.md'), 'MAIN_PRIVATE_MEMORY');
+    await page.goto(origin);
+    await page.getByLabel('给 Mira 发消息', { exact: true }).fill('让子任务检查指定证据。');
+    await page.getByRole('button', { name: '发送消息', exact: true }).click();
+    await expect.poll(() => summaries, { timeout: 60_000 }).toBe(1);
+    await page.getByRole('button', { name: '查看子任务 长任务压缩验证', exact: true }).click();
+    const activeDialog = page.getByRole('dialog', { name: '长任务压缩验证', exact: true });
+    await expect(activeDialog.locator('.child-current')).toContainText('整理任务上下文 · 已开始');
+    await page.screenshot({ path: testInfo.outputPath('child-compacting-desktop.png'), fullPage: true });
+    await activeDialog.getByRole('button', { name: '关闭', exact: true }).click();
+    summaryRelease.resolve();
+    await expect(page.getByText('子任务压缩后已完成。', { exact: true })).toBeVisible({ timeout: 60_000 });
+    expect(summaries).toBe(1);
+    const checkpoints = (await db.admin.query("SELECT mira_id FROM context_records WHERE envelope->>'kind'='checkpoint'")).rows;
+    expect(checkpoints).toHaveLength(1); expect(checkpoints[0].mira_id).toMatch(/^subagent:/);
+    expect((await db.admin.query("SELECT count(*)::int AS n FROM wake_memory_checkpoints WHERE mira_id LIKE 'subagent:%'")).rows[0].n).toBe(0);
+    await page.getByRole('button', { name: '查看子任务 长任务压缩验证', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: '长任务压缩验证', exact: true });
+    await expect(dialog.getByText('CHILD_COMPACTED_FINDING', { exact: true })).toBeVisible();
+    await expect(dialog).not.toContainText('MAIN_PRIVATE_MEMORY');
+    await page.screenshot({ path: testInfo.outputPath('child-compacted-desktop.png'), fullPage: true });
+    const oldCalls = childCalls; await app!.close(); app = undefined; await service!.close(); service = undefined;
+    await start(); await page.reload();
+    await page.getByRole('button', { name: '查看子任务 长任务压缩验证', exact: true }).click();
+    await expect(dialog.getByText('CHILD_COMPACTED_FINDING', { exact: true })).toBeVisible();
+    expect(childCalls).toBe(oldCalls); expect(summaries).toBe(1);
+  } finally { summaryRelease.resolve(); await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});

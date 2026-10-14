@@ -9,12 +9,34 @@ const validText = (text: string) => typeof text === 'string' && text.trim().leng
 interface Row { child_id: string; stream_id: string; spawn_call_id: string; created_at: string; spec: SubagentSpec }
 interface TurnRow { turn_id: string; child_id: string; call_id: string; sequence: number; instruction: string; status: SubagentTurn['status']; created_at: string; started_at: string | null; activity: SubagentActivity; finished_at: string | null; result: SubagentResult | null }
 const turn = (r: TurnRow): SubagentTurn => ({ id: r.turn_id, childId: r.child_id, callId: r.call_id, sequence: r.sequence, instruction: r.instruction, status: r.status, createdAt: r.created_at, startedAt: r.started_at, activity: r.activity, finishedAt: r.finished_at, result: r.result });
+/** Terminal rows remain immutable. A cancellation can close an observation
+ * before an already-dispatched child COMMIT becomes visible; project only that
+ * exact summary's durable evidence, even after a crash prevented its callback. */
+async function projectTurns(client: Client, miraId: string, rows: TurnRow[]): Promise<SubagentTurn[]> {
+  const turns = rows.map(turn);
+  const pending = turns.flatMap(value => {
+    const last = value.activity.events.at(-1);
+    return !['queued','running'].includes(value.status) && last?.checkpointId && last.phase === 'finished' && last.status === 'interrupted'
+      ? [{ turn: value, checkpointId: last.checkpointId }] : [];
+  });
+  if (!pending.length) return turns;
+  const evidence = await client.query<{ child_id: string; record_id: string }>(
+    `SELECT child.child_id,record.record_id FROM context_records record JOIN subagents child ON child.stream_id=record.mira_id
+      WHERE child.parent_mira_id=$1 AND record.record_id=ANY($2::uuid[]) AND child.child_id=ANY($3::uuid[]) AND record.envelope->>'kind'='checkpoint'`,
+    [miraId,[...new Set(pending.map(value => value.checkpointId))],[...new Set(pending.map(value => value.turn.childId))]]);
+  const committed = new Set(evidence.rows.map(row => `${row.child_id}:${row.record_id}`));
+  for (const value of pending) if (committed.has(`${value.turn.childId}:${value.checkpointId}`)) {
+    value.turn.activity = structuredClone(value.turn.activity);
+    value.turn.activity.events.at(-1)!.status = 'completed';
+  }
+  return turns;
+}
 /** Bounded shared queries used by the owner and independent read-only reader. */
 async function readRecord(client: Client, miraId: string, row: Row): Promise<SubagentRecord> {
   const count = (await client.query<{ count: number }>('SELECT coalesce(max(sequence),0)::integer AS count FROM subagent_turns WHERE parent_mira_id=$1 AND child_id=$2', [miraId, row.child_id])).rows[0]!.count;
   const rows = await client.query<TurnRow>(`(SELECT * FROM subagent_turns WHERE parent_mira_id=$1 AND child_id=$2 ORDER BY sequence DESC LIMIT 8)
     UNION ALL (SELECT * FROM subagent_turns WHERE parent_mira_id=$1 AND child_id=$2 AND status IN ('queued','running') ORDER BY sequence LIMIT 18)`, [miraId, row.child_id]);
-  const turns = [...new Map(rows.rows.map(row => [row.turn_id, turn(row)])).values()].sort((a,b) => a.sequence - b.sequence);
+  const turns = await projectTurns(client, miraId, [...new Map(rows.rows.map(row => [row.turn_id, row])).values()].sort((a,b) => a.sequence - b.sequence));
   if (turns.filter(turn => ['queued','running'].includes(turn.status)).length > 17) throw new SubagentError('invalid', 'Child pending-turn limit was exceeded');
   return { id: row.child_id, streamId: row.stream_id, spawnCallId: row.spawn_call_id, createdAt: row.created_at, spec: row.spec, turnCount: count, turns };
 }
@@ -27,7 +49,7 @@ async function findCall(client: Client, miraId: string, callId: string): ReturnT
   if (!validText(callId)) throw new SubagentError('invalid', 'Invalid parent call ID');
   const row = (await client.query<TurnRow>('SELECT * FROM subagent_turns WHERE parent_mira_id=$1 AND call_id=$2', [miraId,callId])).rows[0];
   if (!row) return null;
-  return { child: (await readChild(client,miraId,row.child_id))!, turn: turn(row) };
+  return { child: (await readChild(client,miraId,row.child_id))!, turn: (await projectTurns(client,miraId,[row]))[0]! };
 }
 /** Match parent call versions to the same immutable run interval as history.readRun. */
 function runOwnership(parameter: string): string {
@@ -209,6 +231,14 @@ export class PostgresSubagents {
     await this.client.query("UPDATE subagent_turns SET status='running',started_at=$2 WHERE turn_id=$1", [next.id,startedAt]);
     return { ...next, status: 'running', startedAt };
   });
+  async #checkpointCommitted(childId: string, checkpointId: string): Promise<boolean> {
+    // Read from the parent's live connection, never the possibly stopped child
+    // writer. Exact immutable identity and stream ownership replace clock guesses.
+    return (await this.client.query<{ committed: boolean }>(
+      `SELECT EXISTS(SELECT 1 FROM context_records record JOIN subagents child ON child.stream_id=record.mira_id
+        WHERE child.parent_mira_id=$1 AND child.child_id=$2 AND record.record_id=$3::uuid AND record.envelope->>'kind'='checkpoint') AS committed`,
+      [this.miraId,childId,checkpointId])).rows[0]!.committed;
+  }
   async #finish(row: TurnRow, status: 'completed' | 'interrupted' | 'cancelled' | 'failed', result: SubagentResult): Promise<void> {
     if (!['queued', 'running'].includes(row.status)) {
       if (row.status !== status || !isDeepStrictEqual(row.result, result)) throw new SubagentError('conflict', 'Terminal child result is immutable');
@@ -225,7 +255,8 @@ export class PostgresSubagents {
           WHERE child.parent_mira_id=$1 AND child.child_id=$2 AND execution.history_id=$3::uuid AND execution.outcome IS NOT NULL) AS known`,
         [this.miraId,row.child_id,activity.current.toolHistoryId])).rows[0]!.known;
       appendActivity(activity, { ...activity.current, phase: 'finished', occurredAt: finishedAt,
-        status: activity.current.kind === 'tool' ? known ? 'completed' : 'unknown' : 'interrupted' });
+        status: activity.current.kind === 'tool' ? known ? 'completed' : 'unknown'
+          : activity.current.checkpointId && await this.#checkpointCommitted(row.child_id, activity.current.checkpointId) ? 'completed' : 'interrupted' });
     }
     activity.current = null;
     await this.client.query('UPDATE subagent_turns SET status=$2,finished_at=$3,result=$4::json,activity=$5::jsonb WHERE turn_id=$1', [row.turn_id, status, finishedAt, JSON.stringify(result), JSON.stringify(activity)]);
@@ -252,8 +283,11 @@ export class PostgresSubagents {
     return this.transaction(async () => {
       const row = (await this.client.query<TurnRow>('SELECT * FROM subagent_turns WHERE parent_mira_id=$1 AND turn_id=$2', [this.miraId,id])).rows[0];
       if (!row) throw new SubagentError('missing', 'Child turn does not exist');
-      // Cancellation/terminal results win over callbacks already in flight.
+      // Terminal rows remain immutable; bounded reads project late committed
+      // summary evidence without accepting callbacks or changing the result.
       if (row.status !== 'running') return;
+      if (frozen.checkpointId && frozen.phase === 'finished' && row.activity.current?.checkpointId !== frozen.checkpointId)
+        throw new SubagentError('invalid', 'Summary activity requires its exact registered checkpoint identity');
       const { callId, ...publicEvent } = frozen;
       let toolHistoryId: string | null = null;
       if (frozen.kind === 'tool') {
@@ -266,6 +300,10 @@ export class PostgresSubagents {
         toolHistoryId = evidence.history_id;
       }
       const projected = { ...publicEvent, toolHistoryId };
+      if (frozen.checkpointId && frozen.phase === 'finished') {
+        projected.status = await this.#checkpointCommitted(row.child_id, frozen.checkpointId) ? 'completed'
+          : frozen.status === 'completed' ? 'interrupted' : frozen.status;
+      }
       if (Buffer.byteLength(JSON.stringify(projected)) > 3072) throw new SubagentError('invalid', 'Public activity exceeds its bounded size');
       const activity = structuredClone(row.activity);
       appendActivity(activity, projected);
@@ -285,7 +323,9 @@ export class PostgresSubagents {
 
 function validateActivity(event: SubagentActivityInput): void {
   const keys = ['occurredAt','source','kind','phase','name','callId','status','text'];
-  if (!event || Object.keys(event).length !== keys.length || Object.keys(event).some(key => !keys.includes(key))
+  if (!event || keys.some(key => !Object.hasOwn(event, key)) || Object.keys(event).some(key => !keys.includes(key) && key !== 'checkpointId')
+    || (Object.hasOwn(event, 'checkpointId') && (typeof event.checkpointId !== 'string' || !uuid(event.checkpointId)
+      || event.kind !== 'model' || event.source !== 'runtime' || event.name !== 'context-compaction'))
     || typeof event.occurredAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(event.occurredAt) || !Number.isFinite(Date.parse(event.occurredAt))
     || !['runtime','worker'].includes(event.source) || !['model','tool','progress'].includes(event.kind)
     || !['started','finished','reported'].includes(event.phase)
