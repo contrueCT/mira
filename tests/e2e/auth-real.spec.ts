@@ -67,7 +67,10 @@ test('optional password gates real private HTTP and attachments with remote Host
     await page.getByLabel('设置访问密码', { exact: true }).fill(password);
     await page.getByLabel('再次输入新密码', { exact: true }).fill(password);
     await page.getByRole('button', { name: '保存访问设置', exact: true }).click();
-    await expect(page.getByText('访问密码已保存，当前浏览器已登录，其他浏览器需重新登录。')).toBeVisible();
+    await expect.poll(async () => page.evaluate(async () => { const state = await (await fetch('/api/auth/status', { headers: { 'x-mira-client': 'web' } })).json() as { enabled: boolean; authenticated: boolean }; return state.enabled && state.authenticated; })).toBe(true);
+    await expect(page.locator('form.composer')).toBeVisible();
+    await access(page);
+    await expect(page.getByRole('switch', { name: '使用访问密码' })).toBeChecked();
     await page.screenshot({ path: testInfo.outputPath('password-settings-desktop.png'), fullPage: true });
     await other.goto(origin);
     await expect(other.getByLabel('访问密码', { exact: true })).toBeVisible();

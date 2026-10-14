@@ -34,7 +34,7 @@ MIRA_HOST=0.0.0.0 MIRA_PUBLIC_ORIGIN=http://192.168.1.20:3210 MIRA_DATABASE_URL=
 
 把示例 IP 替换成服务器实际 LAN 地址；0.0.0.0 是监听地址，不能在客户端拿它当服务器地址。非回环绑定未提供 public origin 时启动直接说明所需配置，不启动一个所有远程访问都 403 的实例。public origin 不接受路径、查询、凭据或通配监听地址。
 
-HTTP 不加密密码、cookie 或聊天，仅用于可信 LAN。浏览器 UUID 使用 Web Crypto getRandomValues，避免仅 secure context 提供的 randomUUID 让 LAN HTTP 无法发送消息或添加附件（[MDN](https://developer.mozilla.org/en-US/docs/Web/API/Crypto/getRandomValues)）。公网必须由用户另行配置 HTTPS 反向代理，设置 `MIRA_PUBLIC_ORIGIN=https://mira.example.com` 并保持上游 Host。Mira 不自动配置 TLS、防火墙、DNS、隧道或部署；代理方案需要限制上游可达范围。配置 HTTPS origin 不会让 Mira 的 HTTP listener 自动变成 HTTPS。
+HTTP 不加密密码、cookie 或聊天，仅用于可信 LAN。浏览器 UUID 使用 Web Crypto getRandomValues，避免仅 secure context 提供的 randomUUID 让 LAN HTTP 无法发送消息或添加附件（[MDN](https://developer.mozilla.org/en-US/docs/Web/API/Crypto/getRandomValues)）。公网必须由用户另行配置 HTTPS 反向代理，设置 `MIRA_PUBLIC_ORIGIN=https://mira.example.com` 并保持配置的 public Host。代理必须只接受该 public Host（拒绝未知 Host），明确禁止转发 `/api/external/*`，并限制上游 HTTP listener 的可达范围。代理若把外部请求改写为回环 Host/地址，会削弱回环来源边界；应用不能识别省略来源信息的错误代理配置。Mira 不自动配置 TLS、防火墙、DNS、隧道或部署；代理方案需要限制上游可达范围。配置 HTTPS origin 不会让 Mira 的 HTTP listener 自动变成 HTTPS。
 
 ## 验证
 
