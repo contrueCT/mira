@@ -361,9 +361,10 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     }
     // Independent bounded reads keep preserved evidence inspectable after owner loss.
     let children: SubagentCallView[] = [];
+    let childDetailsUnavailable = false;
     try { if (childCallIds.length) children = await this.#subagentReader.readSubagentCalls(childCallIds); }
     catch {
-      executions.push({ supplemental: true, id: page.run.id, occurredAt: page.run.occurredAt, kind: 'unavailable', name: 'Subagent metadata', status: 'unavailable', error: 'Child details are temporarily unavailable; preserved parent history is still shown.' });
+      childDetailsUnavailable = true;
     }
     const shownChildren = new Set<string>();
     for (const child of children) {
@@ -385,13 +386,13 @@ export class LocalWebService implements WebBackend, ManagementBackend {
           }
         }
       } catch {
-        executions.push({ supplemental: true, id: `${child.turnId}:activity`, occurredAt: child.createdAt, kind: 'unavailable', name: child.childId, status: 'unavailable', error: 'Latest child activity is temporarily unavailable; preserved parent history is still shown.' });
+        childDetailsUnavailable = true;
       }
     }
-    return { id, occurredAt: page.run.occurredAt, status: page.run.status, requestCount: page.run.requestCount,
+    return { ...(childDetailsUnavailable ? { childDetailsUnavailable: true } : {}), ...(page.refreshCursor ? { refreshCursor: page.refreshCursor } : {}), id, occurredAt: page.run.occurredAt, status: page.run.status, requestCount: page.run.requestCount,
       requests: requestsPage.items, nextRequestsCursor: requestsPage.nextCursor, assistant: await this.#reply(page.run.finalRecordId), memory: memoryReceipt(page.memory), executions,
       nextCursor: page.nextCursor, compactionErrors: 'not-recorded',
-      error: page.run.status === 'running' && !this.#drain && this.#error ? publicFailure : null };
+      error: childDetailsUnavailable ? 'Child details are temporarily unavailable; preserved parent history is still shown.' : page.run.status === 'running' && !this.#drain && this.#error ? publicFailure : null };
   }
   async close(): Promise<void> {
     if (this.#closed) return;

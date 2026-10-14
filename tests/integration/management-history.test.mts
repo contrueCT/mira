@@ -118,3 +118,21 @@ test('large coalesced Wake headers, status-sized reads, list and trigger pages n
     await writer.verifyActive();
   } finally { await db.close(); }
 });
+
+test('stable run refresh boundary rereads the original page after more than fifty newer records', async () => {
+  const db = await createTestDatabase();
+  try {
+    const writer = await db.acquire('refresh-parent'); const history = db.store.history(writer.miraId);
+    await writer.receive({ id: 'refresh-request', type: 'web.message', source: 'user', occurredAt: now, payload: {} }, { id: 'refresh-wake', reason: 'Synthetic refresh boundary' });
+    const run = await writer.claimWakeBatch(); assert(run);
+    let version = await writer.appendWakeInput(run.id, 0, record('refresh-input', null));
+    const first = await history.readRun({ id: run.id }); assert(first?.refreshCursor);
+    let parent = 'refresh-input';
+    for (let i = 0; i < 55; i++) { const id = `refresh-new-${i}`; version = await writer.append(version, record(id, parent)); parent = id; }
+    const latest = await history.readRun({ id: run.id }); assert(latest); assert.equal(latest.records.length, 50);
+    assert.ok(!latest.records.some(item => item.id === uuid('refresh-input')));
+    const refreshed = await history.readRun({ id: run.id, before: first.refreshCursor }); assert(refreshed);
+    assert.deepEqual(refreshed.records, first.records); assert.equal(refreshed.refreshCursor, first.refreshCursor);
+    await assert.rejects(db.store.history('other-parent').readRun({ id: run.id, before: first.refreshCursor }), HistoryError);
+  } finally { await db.close(); }
+});

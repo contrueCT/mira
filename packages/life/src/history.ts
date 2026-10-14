@@ -123,6 +123,8 @@ export interface HistoryRunRequestsPage {
   nextCursor: string | null;
 }
 export interface HistoryRunPage {
+  /** Stable upper boundary for re-reading this page after the run grows. */
+  refreshCursor?: string;
   run: HistoryRunHeader;
   memory: { preparedAt: string; receipt: { commit: string | null } | null } | null;
   /** Existing context/tool IDs within this Wake's durable version interval. */

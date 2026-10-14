@@ -319,7 +319,9 @@ export class PostgresHistoryReader implements RunHistoryReader {
     validateRunHeader(result.run, this.miraId);
     for (const record of result.records) { historyId(record.id); integer(record.version, 1, Number.MAX_SAFE_INTEGER, 'version'); }
     const oldest = result.records[0];
-    return { run: result.run, memory: result.memory,
+    const newest = result.records.at(-1);
+    const refreshCursor = request.before ?? (newest && newest.version < Number.MAX_SAFE_INTEGER ? Buffer.from(JSON.stringify([scope, newest.version + 1, 'context', newest.id])).toString('base64url') : undefined);
+    return { ...(refreshCursor ? { refreshCursor } : {}), run: result.run, memory: result.memory,
       records: result.records.map(({ id, kind, occurredAt }) => ({ id, kind, occurredAt })),
       nextCursor: result.hasMore && oldest ? Buffer.from(JSON.stringify([scope, oldest.version, oldest.kind, oldest.id])).toString('base64url') : null };
   }

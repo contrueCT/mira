@@ -48,6 +48,8 @@ export interface RunExecutionView {
   error: string | null;
 }
 export interface RunDetailView extends RunSummaryView {
+  childDetailsUnavailable?: true;
+  refreshCursor?: string;
   requests: Array<{ eventId: string; source: string; type: string; reason: string | null }>;
   nextRequestsCursor: string | null;
   assistant: AssistantReplyView | null; memory: MemoryReceiptView;

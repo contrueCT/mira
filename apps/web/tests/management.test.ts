@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMemoryRequest, MEMORY_REQUEST_KEY, MEMORY_REQUEST_PREFIX, memoryBlocks, parseConfig, readMemoryRequest, recoverMemoryRequest, writeMemoryRequest } from '../src/management.ts';
-import { acceptRunRecords, emptyRunRecords, nextRunRecords } from '../src/run-records.ts';
+import { acceptRunRecords, emptyRunRecords, nextRunRecords, nextChildRefresh, acceptChildRefresh } from '../src/run-records.ts';
 import type { RunExecution } from '../src/types.ts';
 
 const execution = (id: string, status = 'unknown'): RunExecution => ({ id, kind: 'tool', name: 'read', occurredAt: '2026-10-13T00:00:00Z', status, error: null });
@@ -181,4 +181,29 @@ test('repeated supplemental child activity never bridges disjoint parent cursor 
   state = acceptRunRecords(state, { executions: [execution('spawn-parent'), childTurn, childActivity], nextCursor: null }, gap);
   assert.equal(nextRunRecords(state), null);
   assert.deepEqual(state.executions.filter(item => !item.supplemental).map(item => item.id), ['spawn-parent', 'middle-parent', 'newer-send-parent']);
+});
+
+
+test('loaded child older than latest fifty records refreshes after history is exhausted without changing parent cursors', () => {
+  const child = (status: string): RunExecution => ({ ...execution('old-child', status), kind: 'subagent', supplemental: true });
+  let state = acceptRunRecords(emptyRunRecords(), { executions: [execution('spawn'), child('running')], nextCursor: null, refreshCursor: 'frozen-spawn-page' });
+  const latest = { executions: Array.from({ length: 50 }, (_, i) => execution(`new-${i}`)), nextCursor: 'before-new', refreshCursor: 'frozen-latest' };
+  state = acceptRunRecords(state, latest);
+  state = acceptRunRecords(state, { executions: [execution('spawn'), child('running')], nextCursor: null, refreshCursor: 'frozen-spawn-page' }, nextRunRecords(state)!);
+  assert.equal(nextRunRecords(state), null);
+  state = acceptRunRecords(state, latest);
+  const pagination = state.pagination;
+  assert.equal(nextChildRefresh(state), 'frozen-spawn-page');
+  state = acceptChildRefresh(state, { executions: [execution('spawn'), child('completed')], nextCursor: 'irrelevant-to-parent', refreshCursor: 'frozen-spawn-page' }, 'frozen-spawn-page');
+  assert.equal(state.executions.find(item => item.id === 'old-child')?.status, 'completed');
+  assert.deepEqual(state.pagination, pagination);
+  assert.equal(nextChildRefresh(state), null);
+});
+
+test('transient child page failure retains bounded retry then clears without creating durable unavailable evidence', () => {
+  let state = acceptRunRecords(emptyRunRecords(), { executions: [execution('spawn')], nextCursor: null, refreshCursor: 'child-page', childDetailsUnavailable: true });
+  assert.equal(nextChildRefresh(state), 'child-page');
+  state = acceptChildRefresh(state, { executions: [execution('spawn')], nextCursor: null, refreshCursor: 'child-page' }, 'child-page');
+  assert.equal(nextChildRefresh(state), null);
+  assert.equal(state.executions.some(item => item.kind === 'unavailable'), false);
 });

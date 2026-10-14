@@ -71,9 +71,9 @@ export function registerManagementHttp(app: FastifyInstance, backend: Partial<Ma
   }, async (request, reply) => {
     const result = await requireMethod('run')(request.params.id, request.query.before);
     if (!result) return reply.code(404).send({ error: 'Run not found' });
-    return { ...summaryView(result), requests: result.requests.map(item => ({ eventId: item.eventId, source: item.source, type: item.type, reason: item.reason })),
+    return { ...(result.childDetailsUnavailable ? { childDetailsUnavailable: true } : {}), ...(result.refreshCursor ? { refreshCursor: result.refreshCursor } : {}), ...summaryView(result), requests: result.requests.map(item => ({ eventId: item.eventId, source: item.source, type: item.type, reason: item.reason })),
       assistant: replyView(result.assistant), memory: memoryView(result.memory),
-      executions: result.executions.map(item => ({ id: item.id, occurredAt: item.occurredAt, kind: item.kind, name: item.name, status: item.status, error: item.error === null ? null : privateError })),
+      executions: result.executions.map(item => ({ ...(item.supplemental ? { supplemental: true } : {}), id: item.id, occurredAt: item.occurredAt, kind: item.kind, name: item.name, status: item.status, error: item.error === null ? null : privateError })),
       nextCursor: result.nextCursor, nextRequestsCursor: result.nextRequestsCursor, compactionErrors: 'not-recorded', error: result.error === null ? null : privateError };
   });
 }

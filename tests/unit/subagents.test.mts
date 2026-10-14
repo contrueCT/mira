@@ -307,3 +307,33 @@ test('queued followup uses the accepting parent turn transport after a same-mode
     assert.equal(f.parent.children[0]!.turns[2]!.result?.text, 'newest transport result');
   } finally { release.resolve(); await f.manager.close(); }
 });
+
+test('actual service child metadata and activity failures recover as current notices, not durable rows', async () => {
+  const { LocalWebService } = await import('@mira/server');
+  const now = new Date().toISOString(); const runId = randomUUID(); const callId = 'detail-spawn';
+  const toolId = randomUUID(); const childId = randomUUID(); const turnId = randomUUID();
+  let metadataFails = true; let activityFails = false;
+  const history = {
+    readRun: async () => ({ run: { id: runId, occurredAt: now, status: 'completed', requestCount: 1, finalRecordId: null }, memory: null,
+      records: [{ id: toolId, kind: 'tool', occurredAt: now }], nextCursor: null, refreshCursor: 'stable-detail-page' }),
+    readRunRequests: async () => ({ items: [], nextCursor: null }),
+    read: async () => ({ id: toolId, kind: 'tool', occurredAt: now, intent: { callId, toolName: 'subagent_spawn' }, outcome: null }),
+  };
+  const reader = { readSubagentCalls: async () => { if (metadataFails) throw Error('Synthetic metadata unavailable'); return [{ childId, streamId: `subagent:${childId}`, turnId, createdAt: now, status: 'completed' }]; } };
+  const childHistory = () => ({ page: async () => { if (activityFails) throw Error('Synthetic child history unavailable'); return { hits: [], nextCursor: null }; } });
+  // Invoke the real read-only service method with deterministic reader fixtures;
+  // no service lifecycle, database, provider or filesystem fallback is substituted.
+  const service = Reflect.construct(LocalWebService, [{ dreaming: { enabled: false } }, {}, history, {}, {}, {}, {}, {}, reader, childHistory]) as typeof LocalWebService.prototype;
+  const failed = await service.run(runId); assert(failed);
+  assert.equal(failed.childDetailsUnavailable, true); assert.ok(failed.error);
+  assert.ok(!failed.executions.some(item => item.kind === 'unavailable'));
+  metadataFails = false; activityFails = true;
+  const partial = await service.run(runId); assert(partial);
+  assert.equal(partial.childDetailsUnavailable, true);
+  assert.ok(partial.executions.some(item => item.kind === 'subagent' && item.status === 'completed'));
+  assert.ok(!partial.executions.some(item => item.kind === 'unavailable'));
+  activityFails = false;
+  const recovered = await service.run(runId); assert(recovered);
+  assert.equal(recovered.childDetailsUnavailable, undefined); assert.equal(recovered.error, null);
+  assert.ok(!recovered.executions.some(item => item.kind === 'unavailable'));
+});

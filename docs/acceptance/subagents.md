@@ -112,3 +112,22 @@ parent records remain reachable in durable order.
 `361212a` passed full CI run 38517250051, including the newly added pre-first-input
 PostgreSQL recovery case and all browser gates. This predates the transport and
 supplemental-pagination fixes and does not establish their acceptance.
+
+A fourth fresh review of `3677294` found two remaining UI P2s: loaded child turns
+outside the latest parent page stopped refreshing, and transient child-reader
+errors were retained as immutable execution rows. The revision returns a stable,
+Mira/run-scoped page refresh boundary and re-reads at most one loaded pending-child
+page per existing poll, rotating pages and dropping terminal turns. Refresh reads
+do not move parent pagination frontiers. Transient child-read failures are current
+response notices, retried through the same bounded path and cleared on success.
+The HTTP whitelist now explicitly retains supplemental/refresh metadata.
+
+Added checks cover exhausted history with more than fifty newer parent records,
+HTTP projection fields, independent metadata/activity failure recovery, and a
+real PostgreSQL stable-refresh-boundary regression. The focused suite now has
+fourteen actual-Pi runtime tests plus one read-only LocalWebService fixture test;
+none of those offline fixtures claim a PostgreSQL or browser execution result.
+A fresh rereview and exact-head CI are still required.
+
+`3677294` passed full CI run 38518115266 before these UI refresh fixes. Its green
+PostgreSQL/browser gates do not stand in for validation of the newer revision.

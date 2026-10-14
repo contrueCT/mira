@@ -2,13 +2,13 @@ import { latestPagination, nextHistoryRequest, olderPagination } from './timelin
 import type { HistoryPagination, HistoryRequest } from './timeline.ts';
 import type { RunExecution } from './types.ts';
 
-export interface RunRecordsState { executions: RunExecution[]; pagination: HistoryPagination; initialized: boolean }
-export const emptyRunRecords = (): RunRecordsState => ({ executions: [], pagination: { latestCursor: null, oldestCursor: null, gaps: [] }, initialized: false });
+export interface RunRecordsState { executions: RunExecution[]; pagination: HistoryPagination; initialized: boolean; childRefreshes: Array<{ id: string; cursor: string }> }
+export const emptyRunRecords = (): RunRecordsState => ({ executions: [], pagination: { latestCursor: null, oldestCursor: null, gaps: [] }, initialized: false, childRefreshes: [] });
 /** Pages are ordered by durable version by the server; wall-clock time may move
  * backwards. Tool outcomes advance from unknown to a fixed durable outcome,
  * including in older pages. Stale reads cannot regress those known outcomes,
  * and independent gap frontiers remain reachable. */
-export function acceptRunRecords(current: RunRecordsState, page: { executions: RunExecution[]; nextCursor: string | null }, request: HistoryRequest | null = null): RunRecordsState {
+export function acceptRunRecords(current: RunRecordsState, page: { executions: RunExecution[]; nextCursor: string | null; refreshCursor?: string; childDetailsUnavailable?: true }, request: HistoryRequest | null = null): RunRecordsState {
   const executions = [...current.executions];
   const gap = request?.gapId ? current.pagination.gaps.find(item => item.id === request.gapId) : null;
   // A non-overlapping gap page belongs after its previously loaded older
@@ -43,6 +43,21 @@ export function acceptRunRecords(current: RunRecordsState, page: { executions: R
   // display evidence, never proof that a parent cursor gap was traversed.
   const projected = { items: page.executions.filter(item => !item.supplemental), nextCursor: page.nextCursor };
   const pagination = request ? olderPagination(current.pagination, request, projected) : latestPagination(current.pagination, current.executions.filter(item => !item.supplemental), projected, current.initialized);
-  return { executions, pagination, initialized: true };
+  const refreshes = new Map(current.childRefreshes.map(item => [item.id, item.cursor]));
+  if (page.refreshCursor) {
+    const notice = `unavailable:${page.refreshCursor}`;
+    if (page.childDetailsUnavailable) refreshes.set(notice, page.refreshCursor);
+    else refreshes.delete(notice);
+  }
+  if (page.refreshCursor) for (const item of page.executions) if (item.kind === 'subagent' && ['queued', 'running'].includes(item.status)) refreshes.set(item.id, page.refreshCursor);
+  const pending = new Set(executions.filter(item => item.kind === 'subagent' && ['queued', 'running'].includes(item.status)).map(item => item.id));
+  return { executions, pagination, initialized: true, childRefreshes: [...refreshes].filter(([id]) => (pending.has(id) || id.startsWith('unavailable:'))).map(([id, cursor]) => ({ id, cursor })) };
 }
 export function nextRunRecords(state: RunRecordsState): HistoryRequest | null { return nextHistoryRequest(state.pagination); }
+
+/** Refresh one already-loaded pending-child page per poll, round robin. */
+export function nextChildRefresh(state: RunRecordsState): string | null { return state.childRefreshes[0]?.cursor ?? null; }
+export function acceptChildRefresh(current: RunRecordsState, page: { executions: RunExecution[]; nextCursor: string | null; refreshCursor?: string; childDetailsUnavailable?: true }, cursor: string): RunRecordsState {
+  const merged = acceptRunRecords(current, page, { cursor, gapId: null });
+  return { ...merged, pagination: current.pagination, childRefreshes: [...merged.childRefreshes.filter(item => item.cursor !== cursor), ...merged.childRefreshes.filter(item => item.cursor === cursor)] };
+}

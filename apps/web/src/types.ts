@@ -78,6 +78,8 @@ export interface RunExecution { supplemental?: true; id: string; occurredAt: str
 export interface RunRequest { eventId: string; source: string; type: string; reason: string | null }
 export interface RunRequestsPage { items: RunRequest[]; nextCursor: string | null }
 export interface RunDetail extends RunSummary {
+  childDetailsUnavailable?: true;
+  refreshCursor?: string;
   requests: RunRequest[]; nextRequestsCursor: string | null;
   assistant: AssistantReply | null; memory: MemoryReceipt; executions: RunExecution[]; nextCursor: string | null;
   compactionErrors: 'not-recorded'; error: string | null;
