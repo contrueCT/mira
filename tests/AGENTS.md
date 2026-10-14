@@ -37,3 +37,4 @@ ADR 0007 回归直接工具调用与模型普通澄清，保留 schema/参数、
 - 调度：`unit/reminders.test.mts`、`unit/scheduling-host.test.mts`验证扩展/DST/生命周期/timer；`integration/scheduling.test.mts`覆盖真实PG及COMMIT前后子进程死亡；`recovery/scheduling-service.test.mts`穿过真实reminder_create与活动Wake/重启补扫。后两者不能用mock或standalone SQL代替。
 
 - 组合：`recovery/agent-capabilities.test.mts` 用真实 PG/service 验证 child wait 的用户插话及后台完成不清除失败主轮；`test:capabilities:e2e` 将提醒到期、child skills/read/完成、单工具插话及重启不重复放入同一真实浏览器链路，不调用真实模型。
+- 请求重试：`unit/model-retry.test.mts` 注入真实Pi SDK的HTTP/SSE故障，覆盖partial/取消/unknown不重放；`recovery/model-retry.test.mts`走真实PG/service/普通bash与重启，不能用离线fixture替代。浏览器fixture单独验证状态提示。

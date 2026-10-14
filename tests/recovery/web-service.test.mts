@@ -242,7 +242,7 @@ test('missing live model is a setup state and cannot enqueue or call a model', {
   let service: LocalWebService | undefined;
   try {
     service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'unconfigured', sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json') });
-    assert.deepEqual(await service.status(), { state: 'idle', mode: 'live', model: null, error: null });
+    assert.deepEqual(await service.status(), { state: 'idle', mode: 'live', model: null, error: null, modelRetry: null });
     await assert.rejects(service.submit({ id: 'setup-message', text: 'Do not send yet', occurredAt: '2026-10-06T08:00:00.000Z' }), WebHttpError);
     assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM life_events')).rows[0].n, 0);
   } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }

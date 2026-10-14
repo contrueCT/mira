@@ -16,6 +16,7 @@ import { writeWakeInput, setupMemoryWorkspace, loadMemoryBootstrap, MemoryReadLi
 import { createWorkspaceTools, demoModel, memoryCheckpointHook } from './index.ts';
 import { extensionManagementTools, extensionReceiver, extensionTools } from './extensions.ts';
 import { WebSettingsStore, hasSelectedWebApiKey, type WebSettings } from './web-settings.ts';
+import type { ModelRetryStatus } from './model-retry.ts';
 import { ModelRequestFailure } from './model-errors.ts';
 import { PersistenceFailureNotice } from './persistence-errors.ts';
 import { WebHttpError, type WebBackend } from './http.ts';
@@ -40,6 +41,8 @@ export interface WebServiceOptions {
   miraHome?: string;
   extensions?: { entries: LocalExtensionEntry[]; hmr?: boolean; configurationFile?: string; artifactsDirectory?: string };
   synthetic?: boolean;
+  /** Test injection at the real credential-bound HTTP transport; no live provider is required. */
+  modelFetch?: typeof globalThis.fetch;
   /** Deterministic test injection only; never obtains ambient credentials. */
   syntheticStream?: StreamFn;
   /** Deterministic model capability fixture; used only in synthetic mode. */
@@ -96,6 +99,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   #drain: Promise<void> | undefined;
   #error: string | ModelRequestFailure | PersistenceFailureNotice | null = null;
   #modelFailure: ModelRequestFailure | null = null;
+  #modelRetry: ModelRetryStatus | null = null;
   #closed = false;
   #settingsValue: WebSettings;
   #configurationWrite = false;
@@ -170,8 +174,8 @@ export class LocalWebService implements WebBackend, ManagementBackend {
           service!.#modelFailure = null;
           const current = service!.#settingsValue;
           if (!options.synthetic && !hasSelectedWebApiKey(current)) throw Error('Choose a model with a saved API key first');
-          const transport = options.synthetic ? { ...(current.configuration.defaultThinkingLevel === undefined ? {} : { thinkingLevel: current.configuration.defaultThinkingLevel }), model: options.syntheticModel ?? demoModel, streamFn: options.syntheticStream ?? syntheticStream } : settings.transport(current, { onFailure: failure => { service!.#modelFailure = failure; } });
-          const childTransport = options.synthetic ? transport : settings.transport(current);
+          const transport = options.synthetic ? { ...(current.configuration.defaultThinkingLevel === undefined ? {} : { thinkingLevel: current.configuration.defaultThinkingLevel }), model: options.syntheticModel ?? demoModel, streamFn: options.syntheticStream ?? syntheticStream } : settings.transport(current, { ...(options.modelFetch ? { fetch: options.modelFetch } : {}), onFailure: failure => { service!.#modelFailure = failure; }, onRetry: status => { service!.#modelRetry = status; } });
+          const childTransport = options.synthetic ? transport : settings.transport(current, options.modelFetch ? { fetch: options.modelFetch } : {});
           const childTools = createSubagentTools(children, childTransport, { hasPendingUserInput: async () => (await writer.loadLiveInputs(run.id)).some(input => input.inputRecordId === null) });
           let contextProviders: RegisteredContextProvider[] = [];
           return new PiDurableRuntime({ ...(options.autoCompaction ? { autoCompaction: options.autoCompaction } : {}), writer, ...transport, writeOverflowInput, resolveAttachment: reference => attachments.hydrate(reference), tools: [...baseTools, ...childTools], loadSkills,
@@ -203,8 +207,9 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     this.#kickRequested = false;
     this.#error = null; this.#modelFailure = null;
     this.#drain = this.#loop.drain(this.#abort.signal).then(() => {}).catch((error: unknown) => {
-      if (!this.#closed) this.#error = PersistenceFailureNotice.from(error) ?? (error instanceof Error && error.message === this.#modelFailure?.message ? this.#modelFailure : publicFailure);
+      if (!this.#closed) this.#error = PersistenceFailureNotice.from(error) ?? (error instanceof Error && error.message === this.#modelFailure?.terminalMessage ? this.#modelFailure : publicFailure);
     }).finally(() => {
+      this.#modelRetry = null;
       this.#drain = undefined;
       const again = this.#kickRequested; this.#kickRequested = false;
       // A concurrent arrival after the last empty claim needs one more drain.
@@ -216,7 +221,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   async status(): Promise<Awaited<ReturnType<WebBackend['status']>>> {
     const selection = this.#settingsValue.selection;
     return { state: this.#closed || this.#writer.signal.aborted ? 'stopped' : this.#error ? 'error' : this.#drain ? 'working' : 'idle',
-      mode: this.#options.synthetic ? 'synthetic' : 'live', model: this.#options.synthetic ? '模拟模型' : selection?.model ?? null, error: this.#error };
+      mode: this.#options.synthetic ? 'synthetic' : 'live', model: this.#options.synthetic ? '模拟模型' : selection?.model ?? null, error: this.#error, modelRetry: this.#closed || this.#writer.signal.aborted ? null : this.#modelRetry };
   }
   async settings(): Promise<WebSettings> {
     const generation = ++this.#settingsGeneration;

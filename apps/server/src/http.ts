@@ -6,6 +6,7 @@ import path from 'node:path';
 import { HistoryError } from '@mira/life';
 import { registerManagementHttp } from './management-http.ts';
 import type { ManagementBackend } from './management.ts';
+import type { ModelRetryStatus } from './model-retry.ts';
 import { ModelRequestFailure } from './model-errors.ts';
 import { PersistenceFailureNotice } from './persistence-errors.ts';
 import { listBuiltinCatalog } from './model-catalog.ts';
@@ -17,7 +18,7 @@ import type { ModelDiscoveryResult } from './model-discovery.ts';
 import { parseWebSettings, parseWebSettingsWrite, WebSettingsError, webSettingsMaxBytes, type WebSettings } from './web-settings.ts';
 
 export interface WebBackend extends Partial<ManagementBackend> {
-  status(): Promise<{ state: 'idle' | 'working' | 'error' | 'stopped'; mode: 'synthetic' | 'live'; model: string | null; error: string | ModelRequestFailure | PersistenceFailureNotice | null }>;
+  status(): Promise<{ state: 'idle' | 'working' | 'error' | 'stopped'; mode: 'synthetic' | 'live'; model: string | null; error: string | ModelRequestFailure | PersistenceFailureNotice | null; modelRetry?: ModelRetryStatus | null }>;
   timeline(before?: string): Promise<{
     items: Array<{ id: string; externalEventId?: string; role: 'user' | 'assistant' | 'notice'; text: string; occurredAt: string; attachments?: AttachmentDescriptor[]; child?: { id: string; runId: string } }>;
     nextCursor: string | null;
@@ -171,7 +172,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   app.setNotFoundHandler((_request, reply) => reply.code(404).send({ error: 'Not found' }));
   app.get('/api/status', { schema: { querystring: noQuery } }, async () => {
     const result = await backend.status();
-    return { state: result.state, mode: result.mode, model: result.model, error: result.error === null ? null : result.error instanceof ModelRequestFailure ? result.error.message : PersistenceFailureNotice.text(result.error) ?? protectedError };
+    return { state: result.state, mode: result.mode, model: result.model, ...(result.modelRetry ? { modelRetry: { phase: result.modelRetry.phase, attempt: result.modelRetry.attempt, maxAttempts: result.modelRetry.maxAttempts, delayMs: result.modelRetry.delayMs, reason: result.modelRetry.reason } } : {}), error: result.error === null ? null : result.error instanceof ModelRequestFailure ? result.error.message : PersistenceFailureNotice.text(result.error) ?? protectedError };
   });
   app.get<{ Querystring: { before?: string } }>('/api/timeline', {
     schema: { querystring: objectSchema({ before: { type: 'string', minLength: 1, maxLength: 2_048, pattern: '^[A-Za-z0-9_=-]+$' } }) },

@@ -68,3 +68,5 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 - [0027 模型默认推理强度](0027-configured-reasoning-levels.md)：Accepted scope，2026-10-14；配置偏好、Pi 能力适配、主/child/Dreaming 显式注入与独立最低档压缩，总输出 cap 不扩大。
 
 - [0028: Unified tool output budget](0028-tool-output-budget.md): Accepted scope, 2026-10-14; bounded model text with complete durable outcomes and ordinary-file references, restart reconstruction, and revision-bound History text pages above 1 MiB.
+
+- [0029: Bounded model-request retries](0029-bounded-model-request-retries.md): Accepted scope, 2026-10-14; at most three transport attempts before a complete assistant message is published, explicit transient evidence, cancellation and temporary status, without whole-Wake/tool replay.

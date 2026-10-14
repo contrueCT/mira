@@ -335,3 +335,16 @@ test('timeline exposes separate event receipt identity only for user items on bo
     assert.equal(response.json().items[1].externalEventId, undefined);
   }
 });
+
+test('retry status exposes only bounded request observations and clears without adding a timeline record', async t => {
+  let retrying = true;
+  const app = createLocalHttp({ backend: backend({ status: async () => ({ state: retrying ? 'working' : 'idle', mode: 'live', model: 'fixture', error: null,
+    modelRetry: retrying ? { phase: 'waiting', attempt: 2, maxAttempts: 3, delayMs: 250, reason: 'server', raw: 'PRIVATE_PROVIDER_BODY' } : null }) }), port });
+  t.after(() => app.close());
+  const response = await app.inject({ url: '/api/status', headers: readHeaders });
+  assert.deepEqual(response.json().modelRetry, { phase: 'waiting', attempt: 2, maxAttempts: 3, delayMs: 250, reason: 'server' });
+  assert.doesNotMatch(response.body, /PRIVATE_PROVIDER_BODY/);
+  retrying = false;
+  assert.equal((await app.inject({ url: '/api/status', headers: readHeaders })).json().modelRetry, undefined);
+  assert.equal((await app.inject({ url: '/api/timeline', headers: readHeaders })).json().items.length, 1);
+});

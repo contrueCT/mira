@@ -303,7 +303,7 @@ for (const api of ['openai-completions', 'openai-responses', 'anthropic-messages
       assert.match(message.errorMessage!, /invalid_tool_name/);
       assert.match(message.errorMessage!, /req-fixture-123/);
       assert.doesNotMatch(JSON.stringify(message), /synthetic-custom-key|private-header|private-cookie|private-request|other-secret/);
-      assert.equal(failures[0], null); assert.equal(failures.at(-1)?.message, message.errorMessage);
+      assert.equal(failures[0], null); assert.equal(failures.at(-1)?.terminalMessage, message.errorMessage);
     }
   });
 }
@@ -339,7 +339,7 @@ test('each model request clears a previous diagnostic and successful retry does 
     env: () => syntheticKey, onFailure: value => { failure = value; },
     fetch: async () => ++attempts === 1 ? new Response('{"error":{"message":"capacity exhausted","code":"overloaded"}}', { status: 503 }) : completions(),
   });
-  await (await transport.streamFn(transport.model, transcript)).result(); assert.ok(failure);
+  assert.equal((await (await transport.streamFn(transport.model, transcript)).result()).stopReason, 'stop'); assert.equal(attempts, 2); assert.equal(failure, null);
   assert.equal((await (await transport.streamFn(transport.model, transcript)).result()).stopReason, 'stop'); assert.equal(failure, null);
 });
 

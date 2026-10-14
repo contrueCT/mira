@@ -750,3 +750,17 @@ test('reasoning edit stays retryable when active child work makes settings tempo
   expect(writes).toBe(1);
   await page.getByRole('button', { name: '保存设置', exact: true }).click(); await expect(page.getByText(/配置已保存/)).toBeVisible(); expect(writes).toBe(2);
 });
+
+test('request retry status survives refresh and disappears on completion without leaking provider details', async ({ page }, testInfo) => {
+  let phase: 'waiting' | 'requesting' | null = 'waiting';
+  await page.route('**/api/status', route => route.fulfill({ json: { state: phase ? 'working' : 'idle', mode: 'synthetic', model: 'Fixture model', error: null,
+    ...(phase ? { modelRetry: { phase, attempt: 2, maxAttempts: 3, delayMs: phase === 'waiting' ? 1000 : 0, reason: 'server', raw: 'PRIVATE_PROVIDER_SENTINEL' } } : {}) } }));
+  await page.setViewportSize({ width: 390, height: 844 }); await page.goto('/');
+  await expect(page.getByRole('status').filter({ hasText: '等待重试（第 2/3 次）' })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('model-retry-narrow.png'), fullPage: true });
+  await page.reload(); await expect(page.getByRole('status').filter({ hasText: '等待重试（第 2/3 次）' })).toBeVisible();
+  phase = 'requesting'; await expect(page.getByRole('status').filter({ hasText: '正在重试模型请求（第 2/3 次）' })).toBeVisible();
+  await expect(page.getByText('PRIVATE_PROVIDER_SENTINEL')).toHaveCount(0);
+  phase = null; await expect(page.locator('.working-indicator')).toHaveCount(0);
+  await page.reload(); await expect(page.locator('.working-indicator')).toHaveCount(0);
+});

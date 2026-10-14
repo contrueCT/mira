@@ -87,3 +87,4 @@ pnpm check
 - 行为、配置、命令、依赖、公开接口变化与对应文档/本指引在同一 PR 更新
 - 不输出或提交用户秘密；不自动引入付费调用、账户、凭据或权限扩张
 - [ADR 0022](docs/adr/0022-durable-single-shot-delivery.md)：持久单次UTC投递与版本CAS；Event/Wake和入队状态同一fenced事务，扩展负责提醒/时区/DST/过期政策。owner使用持久安装身份，disable/remove保留pending暂停；不改Dreaming、不加通用job引擎。
+- [ADR 0029](docs/adr/0029-bounded-model-request-retries.md)：显式transport只在完整assistant发布前对确定瞬时请求错误做最多三次尝试，partial不落库；取消停止退避，不重放Wake/工具/unknown。SDK maxRetries仍为0，主Web状态与child隔离。
