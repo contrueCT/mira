@@ -29,7 +29,7 @@ No tmux framework, approval engine, new user-facing persona or sandbox is added.
 
 `subagent_spawn` returns a stable child UUID after saving the parent call-to-child
 mapping. Child model/tool execution runs separately, while the main turn continues.
-Four children can occupy active slots. Followups are persisted, deduplicated by
+ADR 0026 raises the default to eight active slots, configurable from 1 to 32 at startup. Followups are persisted, deduplicated by
 parent call ID and consumed after the current child turn. At most sixteen queued
 followups per child are accepted. An idle or terminal child can receive a new turn.
 Each turn retains its immutable terminal result; later work never overwrites it.
@@ -88,14 +88,12 @@ action or impersonate the user.
 
 Terminal text is capped at 16 KiB in the completion Event. Larger output is saved
 through the existing ordinary input-spool writer with a full-file path and explicit
-truncation marker. Tool status exposes recent results. Existing run details show
-child identity, lifecycle state and safe execution projections from the latest ten
-child history records (explicitly labelled latest activity), without raw task payload, hidden reasoning or
-system prompts. Run-detail child metadata uses an independent read-only connection and at most
-fifty parent call IDs from the current page. Parent ownership loss does not disable
-history inspection; temporarily unavailable child details do not discard readable
-parent history. Normal Timeline never publishes a child's result automatically;
-only Mira decides what to relay.
+truncation marker. Tool status exposes recent results. ADR 0026 replaces the initial
+parent-page child-history projection with independent bounded child/run details,
+explicit public titles/progress and real runtime start/end observations. Only
+linked child tasks create compact Timeline cards; they do not automatically
+publish worker results as a Mira reply or expose arbitrary result files. Parent
+ownership loss does not disable read-only history inspection.
 
 ## Verification
 
@@ -109,6 +107,6 @@ The integrated server passes the claimed Wake to tool assembly. `subagent_wait`
 checks that run's durable pending supplemental input as well as committed input
 notifications, so the interval between tool intent and execute cannot lose user
 attention. Completion stays an ordinary queued result and does not clear a failed
-parent run. Child `loadSkills` uses the ordinary source/Mira-home metadata loader
+parent run. Child `loadSkills` uses the ordinary source/Mira-home/user-global (`~/.agents/skills`) metadata loader
 and a standalone durable system section; it does not render the main Mira persona,
 load main Memory, or read skill bodies automatically.

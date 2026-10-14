@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { formatSkillsForPrompt, type LoadSkillsResult } from '@earendil-works/pi-coding-agent';
 import { getCurrentSystemMessage, getCurrentSystemPrompt, getCurrentTools } from '@earendil-works/pi-ai';
 import { createSkillLoader, createWorkspaceTools } from '@mira/server';
@@ -11,12 +11,17 @@ import { assistant, effectTool, input, MemoryWriter, model, overrideWriter, resu
 
 const signal = () => new AbortController().signal;
 const prompt = { environmentContext: 'Offline skills fixture', authorizationContext: 'Synthetic user request', now: () => new Date('2026-10-06T12:00:00.000Z') };
-async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
+async function fixture(t: TestContext) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mira-skills-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sourceDirectory = path.join(root, 'checkout'); const miraHome = path.join(root, 'mira home & <fixture>');
-  await mkdir(sourceDirectory);
-  return { root, sourceDirectory, miraHome };
+  const userHome = path.join(root, 'user home & <fixture>');
+  const globalRoot = path.join(userHome, '.agents');
+  await mkdir(sourceDirectory); await mkdir(userHome);
+  // Direct test runs must never discover skills from the developer's real HOME.
+  // The test runner also supplies an isolated HOME for all integration children.
+  t.mock.method(os, 'homedir', () => userHome);
+  return { root, sourceDirectory, miraHome, userHome, globalRoot };
 }
 async function skill(root: string, name: string, description: string, body = 'BODY_ONLY_SENTINEL', extra = ''): Promise<string> {
   const directory = path.join(root, 'skills', name);
@@ -26,75 +31,108 @@ async function skill(root: string, name: string, description: string, body = 'BO
   return file;
 }
 
-test('only explicit repository/Mira-home roots load; absent user skills stay silent and may appear later', async t => {
-  const { root, sourceDirectory, miraHome } = await fixture(t);
+test('only explicit source, Mira-home and user-global roots load; missing or empty optional roots stay silent', async t => {
+  const { root, sourceDirectory, miraHome, userHome, globalRoot } = await fixture(t);
   const diagnostics: LoadSkillsResult['diagnostics'][] = [];
   await skill(sourceDirectory, 'builtin', 'Repository skill');
   await skill(path.join(sourceDirectory, '.pi'), 'pi-project', 'Must not discover');
   await skill(path.join(sourceDirectory, '.agents'), 'agents-project', 'Must not discover');
   await skill(path.join(root, '.agents'), 'agents-ancestor', 'Must not discover');
   await skill(path.join(miraHome, '.pi'), 'pi-home', 'Must not discover');
+  await skill(path.join(miraHome, '.agents'), 'agents-mira-home', 'Must not discover');
+  await skill(path.join(userHome, '.pi', 'agent'), 'pi-user-home', 'Must not discover');
+  await skill(path.join(userHome, '.agent'), 'agent-user-home', 'Must not discover');
+  const workingDirectory = path.join(root, 'working-directory');
+  await skill(workingDirectory, 'cwd-skill', 'Must not discover');
+  await skill(path.join(workingDirectory, '.agents'), 'agents-cwd', 'Must not discover');
+  const previousCwd = process.env['MIRA_CWD']; process.env['MIRA_CWD'] = workingDirectory;
+  t.after(() => { if (previousCwd === undefined) delete process.env['MIRA_CWD']; else process.env['MIRA_CWD'] = previousCwd; });
   const load = createSkillLoader({ sourceDirectory, miraHome, onDiagnostics: value => diagnostics.push(value) });
   assert.deepEqual((await load(signal())).map(item => item.name), ['builtin']);
   assert.deepEqual((await load(signal())).map(item => item.name), ['builtin']);
-  assert.deepEqual(diagnostics, [], 'never-created optional user root is not a warning');
+  assert.deepEqual(diagnostics, [], 'never-created optional roots are not warnings');
+  await mkdir(path.join(globalRoot, 'skills'), { recursive: true });
+  assert.deepEqual((await load(signal())).map(item => item.name), ['builtin']);
+  assert.deepEqual(diagnostics, [], 'an empty global root is not a warning');
   await skill(miraHome, 'personal', 'Appeared before next request');
-  assert.deepEqual((await load(signal())).map(item => item.name), ['builtin', 'personal']);
+  await skill(globalRoot, 'global', 'Global appeared before next request');
+  assert.deepEqual((await load(signal())).map(item => item.name), ['builtin', 'personal', 'global']);
   await rm(path.join(miraHome, 'skills'), { recursive: true });
+  await rm(path.join(globalRoot, 'skills'), { recursive: true });
   assert.deepEqual((await load(signal())).map(item => item.name), ['builtin']);
   assert.deepEqual(diagnostics, []);
 });
 
-test('MIRA_HOME and ~/.mira default roots are resolved explicitly', async t => {
-  const { sourceDirectory, miraHome } = await fixture(t);
+test('MIRA_HOME changes only Mira skills; global skills always use the running user home', async t => {
+  const { sourceDirectory, miraHome, userHome, globalRoot } = await fixture(t);
   await skill(miraHome, 'home-env', 'Configured home');
-  const oldHome = process.env['HOME']; const oldMiraHome = process.env['MIRA_HOME'];
+  await skill(globalRoot, 'global', 'Running user global skills');
+  await skill(path.join(miraHome, '.agents'), 'wrong-home', 'Must not discover');
+  const oldMiraHome = process.env['MIRA_HOME'];
   try {
     process.env['MIRA_HOME'] = miraHome;
-    assert.deepEqual((await createSkillLoader({ sourceDirectory })(signal())).map(item => item.name), ['home-env']);
-    delete process.env['MIRA_HOME']; process.env['HOME'] = miraHome;
-    await skill(path.join(miraHome, '.mira'), 'home-default', 'Default home');
-    assert.deepEqual((await createSkillLoader({ sourceDirectory })(signal())).map(item => item.name), ['home-default']);
+    assert.deepEqual((await createSkillLoader({ sourceDirectory })(signal())).map(item => item.name), ['home-env', 'global']);
+    delete process.env['MIRA_HOME'];
+    await skill(path.join(userHome, '.mira'), 'home-default', 'Default home');
+    assert.deepEqual((await createSkillLoader({ sourceDirectory })(signal())).map(item => item.name), ['home-default', 'global']);
   } finally {
-    if (oldHome === undefined) delete process.env['HOME']; else process.env['HOME'] = oldHome;
     if (oldMiraHome === undefined) delete process.env['MIRA_HOME']; else process.env['MIRA_HOME'] = oldMiraHome;
   }
 });
 
-test('Pi parsing, first-name-wins collision diagnostics, hidden skills and canonical path deduplication are retained', async t => {
-  const { sourceDirectory, miraHome } = await fixture(t);
+test('Pi parsing, three-root priority, hidden skills and realpath deduplication are retained', async t => {
+  const { sourceDirectory, miraHome, globalRoot } = await fixture(t);
   const winner = await skill(sourceDirectory, 'shared', 'Current repository SDK');
-  const loser = await skill(miraHome, 'shared', 'Stale user copy');
-  await skill(miraHome, 'hidden', 'Hidden metadata', 'HIDDEN_BODY', 'disable-model-invocation: true\n');
-  await mkdir(path.join(sourceDirectory, 'skills', 'bad-yaml'));
-  await writeFile(path.join(sourceDirectory, 'skills', 'bad-yaml', 'SKILL.md'), '---\ndescription: [broken\n---\nbody');
-  await mkdir(path.join(sourceDirectory, 'skills', 'missing-description'));
-  await writeFile(path.join(sourceDirectory, 'skills', 'missing-description', 'SKILL.md'), '---\nname: missing-description\n---\nbody');
-  await writeFile(path.join(sourceDirectory, 'skills', 'ordinary.md'), 'An ordinary document without frontmatter');
-  await writeFile(path.join(sourceDirectory, 'skills', 'direct.md'), '---\nname: direct\ndescription: Direct markdown skill\n---\nDIRECT_BODY');
+  const homeLoser = await skill(miraHome, 'shared', 'Stale Mira copy');
+  const globalLoser = await skill(globalRoot, 'shared', 'Stale global copy');
+  const homeWinner = await skill(miraHome, 'personal', 'Mira-home wins over global');
+  const personalLoser = await skill(globalRoot, 'personal', 'Shadowed global personal skill');
+  await skill(globalRoot, 'hidden', 'Hidden metadata', 'HIDDEN_BODY', 'disable-model-invocation: true\n');
+  await mkdir(path.join(globalRoot, 'skills', 'bad-yaml'));
+  await writeFile(path.join(globalRoot, 'skills', 'bad-yaml', 'SKILL.md'), '---\ndescription: [broken\n---\nbody');
+  await mkdir(path.join(globalRoot, 'skills', 'missing-description'));
+  await writeFile(path.join(globalRoot, 'skills', 'missing-description', 'SKILL.md'), '---\nname: missing-description\n---\nbody');
+  await writeFile(path.join(globalRoot, 'skills', 'ordinary.md'), 'An ordinary document without frontmatter');
+  await writeFile(path.join(globalRoot, 'skills', 'direct.md'), '---\nname: direct\ndescription: Direct markdown skill\n---\nDIRECT_BODY');
   await symlink(path.dirname(winner), path.join(miraHome, 'skills', 'alias'));
+  await symlink(path.dirname(winner), path.join(globalRoot, 'skills', 'source-alias'));
+  await symlink(path.dirname(homeWinner), path.join(globalRoot, 'skills', 'home-alias'));
   const diagnostics: LoadSkillsResult['diagnostics'][] = [];
   const load = createSkillLoader({ sourceDirectory, miraHome, onDiagnostics: value => diagnostics.push(structuredClone(value)) });
   const skills = await load(signal());
-  assert.deepEqual(skills.map(item => item.name).sort(), ['direct', 'hidden', 'shared']);
+  assert.deepEqual(skills.map(item => item.name).sort(), ['direct', 'hidden', 'personal', 'shared']);
   assert.equal(skills.find(item => item.name === 'shared')?.filePath, winner);
   assert.equal(skills.find(item => item.name === 'shared')?.description, 'Current repository SDK');
+  assert.equal(skills.find(item => item.name === 'personal')?.filePath, homeWinner);
   assert.ok(skills.every(item => !Object.hasOwn(item, 'body') && !Object.hasOwn(item, 'content')));
   const collisions = diagnostics[0]!.filter(item => item.type === 'collision');
-  assert.equal(collisions.length, 1, 'same real file is deduplicated before name collision detection');
-  assert.equal(collisions[0]!.collision?.winnerPath, winner); assert.equal(collisions[0]!.collision?.loserPath, loser);
+  assert.equal(collisions.length, 3, 'real files are deduplicated before name collision detection across all roots');
+  assert.deepEqual(collisions.map(item => [item.collision?.winnerPath, item.collision?.loserPath]), [
+    [winner, homeLoser], [homeWinner, personalLoser], [winner, globalLoser],
+  ]);
   assert.ok(diagnostics[0]!.some(item => item.path?.includes('bad-yaml')));
   assert.ok(diagnostics[0]!.some(item => item.path?.includes('missing-description')));
-  assert.doesNotMatch(formatSkillsForPrompt(skills), /Hidden metadata|HIDDEN_BODY|BODY_ONLY_SENTINEL|DIRECT_BODY|Stale user copy/);
+  assert.doesNotMatch(formatSkillsForPrompt(skills), /Hidden metadata|HIDDEN_BODY|BODY_ONLY_SENTINEL|DIRECT_BODY|Stale Mira copy|Stale global copy|Shadowed global/);
   await load(signal()); assert.equal(diagnostics.length, 1, 'unchanged warnings do not flood each request');
-  await rm(path.join(sourceDirectory, 'skills', 'bad-yaml'), { recursive: true });
-  await rm(path.join(sourceDirectory, 'skills', 'missing-description'), { recursive: true });
-  await rm(path.dirname(loser), { recursive: true });
+  await rm(path.join(globalRoot, 'skills', 'bad-yaml'), { recursive: true });
+  await rm(path.join(globalRoot, 'skills', 'missing-description'), { recursive: true });
+  for (const loser of [homeLoser, globalLoser, personalLoser]) await rm(path.dirname(loser), { recursive: true });
   await load(signal()); assert.deepEqual(diagnostics[1], [], 'resolved diagnostics clear the caller snapshot');
 });
 
+test('a global root symlink to Mira-home skills does not duplicate metadata or diagnostics', async t => {
+  const { sourceDirectory, miraHome, globalRoot } = await fixture(t);
+  const file = await skill(miraHome, 'same-file', 'ONE_CANONICAL_SKILL');
+  await mkdir(globalRoot, { recursive: true });
+  await symlink(path.join(miraHome, 'skills'), path.join(globalRoot, 'skills'));
+  const diagnostics: LoadSkillsResult['diagnostics'][] = [];
+  const skills = await createSkillLoader({ sourceDirectory, miraHome, onDiagnostics: value => diagnostics.push(value) })(signal());
+  assert.deepEqual(skills.map(item => item.filePath), [file]);
+  assert.deepEqual(diagnostics, []);
+});
+
 test('skill add/change/remove refresh at each natural tool continuation with one request snapshot and no extra calls', async t => {
-  const { sourceDirectory, miraHome } = await fixture(t);
+  const { sourceDirectory, miraHome, globalRoot } = await fixture(t);
   await skill(sourceDirectory, 'initial', 'METADATA_FIRST');
   const loader = createSkillLoader({ sourceDirectory, miraHome });
   const writer = new MemoryWriter(); let calls = 0; let loads = 0; let memoryLoads = 0; let generation = 0;
@@ -102,9 +140,11 @@ test('skill add/change/remove refresh at each natural tool continuation with one
     if (generation++ === 0) {
       await skill(sourceDirectory, 'initial', 'METADATA_CHANGED');
       await skill(miraHome, 'added', 'METADATA_ADDED');
+      await skill(globalRoot, 'global-added', 'GLOBAL_METADATA_ADDED');
     } else {
       await rm(path.join(sourceDirectory, 'skills'), { recursive: true });
       await rm(path.join(miraHome, 'skills'), { recursive: true });
+      await rm(path.join(globalRoot, 'skills'), { recursive: true });
     }
     return result;
   });
@@ -115,22 +155,22 @@ test('skill add/change/remove refresh at each natural tool continuation with one
       assert.equal(getCurrentTools(context.messages).length, 1); assert.match(text, /FROZEN_MEMORY/);
       assert.doesNotMatch(text, /BODY_ONLY_SENTINEL/);
       if (calls === 1) { assert.match(text, /METADATA_FIRST/); assert.doesNotMatch(text, /METADATA_CHANGED|METADATA_ADDED/); return streamOf(toolCalls('add-change')); }
-      if (calls === 2) { assert.match(text, /METADATA_CHANGED/); assert.match(text, /METADATA_ADDED/); assert.doesNotMatch(text, /METADATA_FIRST/); return streamOf(toolCalls('remove')); }
+      if (calls === 2) { assert.match(text, /METADATA_CHANGED/); assert.match(text, /METADATA_ADDED/); assert.match(text, /GLOBAL_METADATA_ADDED/); assert.doesNotMatch(text, /METADATA_FIRST/); return streamOf(toolCalls('remove')); }
       assert.doesNotMatch(text, /available_skills|METADATA_FIRST|METADATA_CHANGED|METADATA_ADDED/);
       return streamOf(assistant());
     } });
   await runtime.run(input()); assert.equal(calls, 3); assert.equal(loads, 3); assert.equal(memoryLoads, 1);
   const before = structuredClone(writer.state);
-  await skill(miraHome, 'later', 'Created while idle');
+  await skill(globalRoot, 'later', 'Created while idle');
   await new Promise(resolve => setTimeout(resolve, 15));
   assert.equal(calls, 3); assert.equal(loads, 3); assert.deepEqual(writer.state, before, 'file changes create no runtime work');
 });
 
 test('terminal diagnostics report paths and collisions without copying malformed file excerpts', async t => {
-  const { sourceDirectory, miraHome } = await fixture(t);
-  await skill(sourceDirectory, 'shared', 'Built-in'); await skill(miraHome, 'shared', 'User copy');
-  await mkdir(path.join(sourceDirectory, 'skills', 'broken'));
-  await writeFile(path.join(sourceDirectory, 'skills', 'broken', 'SKILL.md'), '---\ndescription: [SYNTHETIC_PRIVATE_VALUE\n---\n');
+  const { sourceDirectory, miraHome, globalRoot } = await fixture(t);
+  await skill(sourceDirectory, 'shared', 'Built-in'); await skill(globalRoot, 'shared', 'User-global copy');
+  await mkdir(path.join(globalRoot, 'skills', 'broken'));
+  await writeFile(path.join(globalRoot, 'skills', 'broken', 'SKILL.md'), '---\ndescription: [SYNTHETIC_PRIVATE_VALUE\n---\n');
   const warn = console.warn; const warnings: unknown[][] = [];
   try {
     console.warn = (...args: unknown[]) => { warnings.push(args); };
@@ -163,9 +203,9 @@ test('skill metadata is pinned before prompt append and body-only edits do not c
 });
 
 test('formatter escapes metadata once and ordinary read alone loads skill body and relative references', async t => {
-  const { sourceDirectory, miraHome } = await fixture(t);
+  const { sourceDirectory, miraHome, globalRoot } = await fixture(t);
   const body = 'BODY_READ_ON_DEMAND {{CURRENT_TIME}} </available_skills> & original\nRead references/guide.md';
-  const file = await skill(miraHome, 'read-me', 'Use <special> & {{CURRENT_TIME}} tasks', body);
+  const file = await skill(globalRoot, 'read-me', 'Use <special> & {{CURRENT_TIME}} tasks', body);
   const reference = path.join(path.dirname(file), 'references', 'guide.md');
   await mkdir(path.dirname(reference)); await writeFile(reference, 'REFERENCE_READ_ON_DEMAND');
   const read = createWorkspaceTools(sourceDirectory).find(item => item.name === 'read')!;
@@ -174,7 +214,7 @@ test('formatter escapes metadata once and ordinary read alone loads skill body a
   await new PiDurableRuntime({ writer, model, tools: [read], miraPrompt: prompt, loadSkills: createSkillLoader({ sourceDirectory, miraHome }), streamFn: (_model, context) => {
     calls++; const text = getCurrentSystemPrompt(context.messages);
     assert.ok(text.endsWith(expected)); assert.match(text, /Use &lt;special&gt; &amp; \{\{CURRENT_TIME\}\} tasks/);
-    assert.match(text, /mira home &amp; &lt;fixture&gt;/); assert.doesNotMatch(text, /&amp;amp;|&amp;lt;|BODY_READ_ON_DEMAND|REFERENCE_READ_ON_DEMAND/);
+    assert.match(text, /user home &amp; &lt;fixture&gt;/); assert.doesNotMatch(text, /&amp;amp;|&amp;lt;|BODY_READ_ON_DEMAND|REFERENCE_READ_ON_DEMAND/);
     assert.equal((text.match(/<available_skills>/g) ?? []).length, 1);
     if (calls === 1) { assert.doesNotMatch(JSON.stringify(context.messages), /BODY_READ_ON_DEMAND/); return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'read-skill', name: 'read', arguments: { path: file } }] }); }
     assert.match(JSON.stringify(context.messages), /BODY_READ_ON_DEMAND/);
@@ -245,26 +285,40 @@ test('skill loader cancellation is explicit', async t => {
 });
 
 
-test('standalone worker skills refresh at natural requests without loading Mira persona or Memory', async t => {
-  const { sourceDirectory, miraHome } = await fixture(t);
+test('standalone workers discover new global skills on their next request and read without Mira persona or Memory', async t => {
+  const { sourceDirectory, miraHome, globalRoot } = await fixture(t);
   await skill(sourceDirectory, 'worker-skill', 'WORKER_METADATA_FIRST');
+  const globalFile = path.join(globalRoot, 'skills', 'global-worker', 'SKILL.md');
+  const read = createWorkspaceTools(sourceDirectory).find(item => item.name === 'read')!;
   const writer = new MemoryWriter(); let calls = 0; let loads = 0;
   const loader = createSkillLoader({ sourceDirectory, miraHome });
   const runtime = new PiDurableRuntime({ writer, model, autoCompaction: { enabled: false },
-    loadSkills: async signal => { loads++; return loader(signal); }, tools: [effectTool(async () => {
-      await skill(sourceDirectory, 'worker-skill', 'WORKER_METADATA_CHANGED'); return result;
+    loadSkills: async signal => { loads++; return loader(signal); }, tools: [read, effectTool(async () => {
+      await skill(sourceDirectory, 'worker-skill', 'WORKER_METADATA_CHANGED');
+      await skill(globalRoot, 'global-worker', 'GLOBAL_WORKER_METADATA', 'GLOBAL_WORKER_BODY_ON_DEMAND');
+      return result;
     })], streamFn: (_model, context) => {
       calls++; const system = getCurrentSystemPrompt(context.messages);
       assert.match(system, /TASK_SCOPED_CONTRACT/);
-      assert.doesNotMatch(system, /# Mira System Prompt|miraMemory|BODY_ONLY_SENTINEL/);
-      if (calls === 1) { assert.match(system, /WORKER_METADATA_FIRST/); return streamOf(toolCalls('worker-change')); }
+      assert.doesNotMatch(system, /# Mira System Prompt|miraMemory|BODY_ONLY_SENTINEL|GLOBAL_WORKER_BODY_ON_DEMAND/);
+      if (calls === 1) {
+        assert.match(system, /WORKER_METADATA_FIRST/); assert.doesNotMatch(system, /GLOBAL_WORKER_METADATA/);
+        return streamOf(toolCalls('worker-change'));
+      }
       assert.match(system, /WORKER_METADATA_CHANGED/); assert.doesNotMatch(system, /WORKER_METADATA_FIRST/);
+      assert.match(system, /GLOBAL_WORKER_METADATA/);
+      if (calls === 2) {
+        assert.doesNotMatch(JSON.stringify(context.messages), /GLOBAL_WORKER_BODY_ON_DEMAND/);
+        return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'worker-read-global', name: 'read', arguments: { path: globalFile } }] });
+      }
+      assert.match(JSON.stringify(context.messages), /GLOBAL_WORKER_BODY_ON_DEMAND/);
       return streamOf(assistant('worker done'));
     } });
   await runtime.appendMessage({ role: 'system', content: 'TASK_SCOPED_CONTRACT', timestamp: Date.now() });
   await runtime.run(input('Only inspect assigned files'));
-  assert.equal(calls, 2); assert.equal(loads, 2);
+  assert.equal(calls, 3); assert.equal(loads, 3);
   assert.ok(!JSON.stringify(writer.state.records).includes('miraMemory'));
+  assert.deepEqual(writer.state.executions.find(item => item.intent.toolName === 'read')?.intent.arguments, { path: globalFile });
   const restored = new PiDurableRuntime({ writer, model, loadSkills: async () => { throw Error('must not load during recovery'); }, streamFn: () => { throw Error('must not call during recovery'); } });
   assert.match(getCurrentSystemPrompt((await restored.recover()).messages), /TASK_SCOPED_CONTRACT/);
 });

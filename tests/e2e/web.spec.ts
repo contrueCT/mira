@@ -610,3 +610,82 @@ test('mocked historical thumbnails load only near viewport and release bytes whe
   await page.locator('.timeline-scroll').evaluate(element => { element.scrollTop = 0; });
   await expect(tile.locator('img')).toHaveAttribute('src', /^blob:/u); expect(reads).toBe(2);
 });
+
+test('child cards observe their own identities, show unknown honestly, recover a refresh failure and notice followups', async ({ page }, testInfo) => {
+  const runId = '10000000-0000-4000-8000-000000000010';
+  const childA = '10000000-0000-4000-8000-000000000011', childB = '10000000-0000-4000-8000-000000000012';
+  const at = '2026-10-14T07:00:00.000Z';
+  let stateA = 'running', failA = false, wrongOwner = false, queriesA = 0;
+  const unexpected: string[] = []; page.on('request', request => { if (new URL(request.url()).pathname === `/api/runs/${runId}`) unexpected.push(request.url()); });
+  await page.route('**/api/timeline', route => route.fulfill({ json: { items: [
+    { id: '10000000-0000-4000-8000-000000000013', role: 'assistant', text: '', occurredAt: at, child: { id: childA, runId } },
+    { id: '10000000-0000-4000-8000-000000000014', role: 'assistant', text: '', occurredAt: at, child: { id: childB, runId } },
+  ], nextCursor: null } }));
+  await page.route('**/api/runs/*/subagents/*', async route => {
+    const url = new URL(route.request().url()); const id = url.pathname.split('/').at(-1)!;
+    if (id === childA) queriesA++;
+    if (id === childA && failA) { await route.fulfill({ status: 503, json: { error: 'Temporary child read failure' } }); return; }
+    const state = id === childA ? stateA : 'completed';
+    const summary = { id: wrongOwner && id === childA ? childB : id, runId, title: id === childA ? '核对资料' : '检查构建', createdAt: at, status: state, current: null, updatedAt: at };
+    await route.fulfill({ json: url.searchParams.has('view') ? summary : { ...summary, olderTurns: 0,
+      privateField: 'PRIVATE_HIDDEN_SENTINEL', turns: [{ id, sequence: 1, status: state, createdAt: at, startedAt: at, finishedAt: state === 'running' ? null : at,
+        activities: [{ sequence: 1, occurredAt: at, source: 'runtime', kind: 'tool', phase: 'finished', name: 'bash', status: 'unknown', text: null }],
+        droppedActivities: 0, result: state === 'completed' ? { text: id === childA ? '资料核对完成' : '构建检查完成', truncated: false } : null }] } });
+  });
+  await page.goto('/');
+  const first = page.getByRole('button', { name: '查看子任务 核对资料', exact: true });
+  await expect(first).toContainText('执行中');
+  await expect(page.getByRole('button', { name: '查看子任务 检查构建', exact: true })).toContainText('已完成');
+  await first.click(); const dialog = page.getByRole('dialog', { name: '核对资料', exact: true });
+  await expect(dialog.getByText('工具 bash · 结果未知', { exact: true })).toBeVisible();
+  await expect(dialog).not.toContainText('PRIVATE_HIDDEN_SENTINEL');
+  failA = true; await dialog.getByRole('button', { name: '刷新子任务', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toBeVisible();
+  await expect(dialog.getByText('工具 bash · 结果未知', { exact: true })).toBeVisible();
+  failA = false; wrongOwner = true; await dialog.getByRole('button', { name: '刷新子任务', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('无法核对');
+  wrongOwner = false; stateA = 'completed'; await dialog.getByRole('button', { name: '刷新子任务', exact: true }).click();
+  await expect(dialog.getByText('资料核对完成', { exact: true })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('child-detail-fixture-desktop.png'), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('child-detail-fixture-mobile.png'), fullPage: true });
+  await page.keyboard.press('Escape'); await expect(dialog).not.toBeVisible();
+  await expect(first).toBeFocused(); await expect(first).toContainText('已完成');
+  stateA = 'running'; await expect(first).toContainText('执行中', { timeout: 10_000 });
+  await page.getByRole('button', { name: '查看子任务 检查构建', exact: true }).click();
+  const second = page.getByRole('dialog', { name: '检查构建', exact: true });
+  await expect(second.getByText('构建检查完成', { exact: true })).toBeVisible();
+  await expect(second).not.toContainText('资料核对完成');
+  await second.getByRole('button', { name: '关闭', exact: true }).click();
+  expect(queriesA).toBeGreaterThan(1); expect(unexpected).toEqual([]);
+});
+
+test('run child pagination discovers a newly followed-up older child after all previous pages were exhausted', async ({ page }) => {
+  const runId = '20000000-0000-4000-8000-000000000001', at = '2026-10-14T07:00:00.000Z';
+  const id = (n: number) => `30000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+  const item = (n: number) => ({ id: id(n), runId, title: n === 0 ? '继续早先任务' : `任务 ${n}`, createdAt: n === 0 ? '2026-10-01T00:00:00.000Z' : at, status: 'completed', current: null, updatedAt: at });
+  const existing = Array.from({ length: 55 }, (_, index) => item(index + 1)); let followedUp = false;
+  await page.route('**/api/runs', route => route.fulfill({ json: { items: [{ id: runId, occurredAt: at, status: 'completed', requestCount: 0 }], nextCursor: null } }));
+  await page.route(`**/api/runs/${runId}`, route => route.fulfill({ json: { id: runId, occurredAt: at, status: 'completed', requestCount: 0,
+    requests: [], nextRequestsCursor: null, assistant: null, memory: { state: 'unavailable', commit: null }, executions: [], nextCursor: null, compactionErrors: 'not-recorded', error: null } }));
+  await page.route(/\/api\/runs\/[^/]+\/subagents(?:[/?].*)?$/, route => {
+    const url = new URL(route.request().url()); const child = url.pathname.split('/subagents/')[1];
+    if (child) return route.fulfill({ json: item(Number(child.slice(-12))) });
+    // The API orders by first association in this run, independent of child's age.
+    const ordered = followedUp ? [item(0), ...existing] : existing;
+    const before = url.searchParams.get('before'); const start = before ? ordered.findIndex(entry => entry.id === before) + 1 : 0;
+    const selected = ordered.slice(start, start + 50);
+    return route.fulfill({ json: { items: selected, nextCursor: start + 50 < ordered.length ? selected.at(-1)!.id : null } });
+  });
+  await page.goto('/'); await page.getByRole('button', { name: '模型设置', exact: true }).click();
+  await page.getByRole('tab', { name: '运行记录', exact: true }).click(); await page.locator('.run-list-button').click();
+  await expect(page.locator('.run-children .child-card')).toHaveCount(50);
+  await page.getByRole('button', { name: '更多子任务', exact: true }).click();
+  await expect(page.locator('.run-children .child-card')).toHaveCount(55);
+  await expect(page.getByRole('button', { name: '更多子任务', exact: true })).toHaveCount(0);
+  followedUp = true;
+  await expect(page.locator('.run-children .child-card')).toHaveCount(56, { timeout: 10_000 });
+  await expect(page.locator('.run-children .child-card').first()).toContainText('继续早先任务');
+  await expect(page.getByRole('button', { name: '更多子任务', exact: true })).toHaveCount(0);
+});

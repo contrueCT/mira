@@ -3,8 +3,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import { getCurrentSystemMessage, getSystemMessageText, getCurrentTools } from '@earendil-works/pi-ai';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
-import { SubagentError, type SubagentWriter, type SubagentRecord, type SubagentSpec, type SubagentResult, type LifeEvent, type WakeReceipt } from '@mira/life';
-import { PiDurableRuntime, freezeSubagentContext, encodeEntry } from '@mira/runtime-pi';
+import { SubagentError, emptySubagentActivity, type SubagentActivityInput, type SubagentWriter, type SubagentRecord, type SubagentSpec, type SubagentResult, type LifeEvent, type WakeReceipt } from '@mira/life';
+import { PiDurableRuntime, freezeSubagentContext, encodeEntry, decodeRecords, type PiRuntimeActivity } from '@mira/runtime-pi';
 import { SubagentManager, createSubagentTools } from '../../apps/server/src/subagents.ts';
 import { MemoryWriter, assistant, streamOf, model, deferred, seed, input, effectTool, result } from '../recovery/fixtures.mts';
 
@@ -17,7 +17,7 @@ class Parent extends MemoryWriter implements SubagentWriter {
     if (this.children.filter(c => c.turns.some(t => ['queued','running'].includes(t.status))).length >= max) throw new SubagentError('capacity', 'full');
     const id = randomUUID(); const createdAt = new Date().toISOString();
     const child: SubagentRecord = { id, streamId: `subagent:${id}`, spawnCallId: callId, createdAt, spec: structuredClone(spec), turnCount: 1, turns: [
-      { id: randomUUID(), childId: id, callId, sequence: 1, instruction: spec.task, status: 'queued', createdAt, finishedAt: null, result: null },
+      { id: randomUUID(), childId: id, callId, sequence: 1, instruction: spec.task, status: 'queued', createdAt, startedAt: null, activity: emptySubagentActivity(), finishedAt: null, result: null },
     ] }; this.children.push(child); return structuredClone(child);
   }
   async listSubagents(before?: string) {
@@ -26,19 +26,32 @@ class Parent extends MemoryWriter implements SubagentWriter {
     return { children: page.map(c => ({ id: c.id, createdAt: c.createdAt, model: c.spec.model, status: c.turns.at(-1)!.status })), nextCursor: end>50 ? page[0]!.id : null };
   }
   async findSubagentCall(callId: string) { for (const child of this.children) { const turn = child.turns.find(t => t.callId === callId); if (turn) return structuredClone({ child,turn }); } return null; }
-  async readSubagentCalls(callIds: string[]) { return this.children.flatMap(c => c.turns.filter(t => callIds.includes(t.callId)).map(t => ({ childId:c.id,streamId:c.streamId,turnId:t.id,createdAt:t.createdAt,status:t.status }))); }
+  async readSubagentCalls(callIds: string[]) { return this.children.flatMap(c => c.turns.filter(t => callIds.includes(t.callId)).map(t => ({ callId:t.callId,runId:null,childId:c.id,streamId:c.streamId,turnId:t.id,createdAt:t.createdAt,status:t.status }))); }
+  async getSubagentForRun(id: string, _runId: string) { return this.getSubagent(id); }
+  async readSubagentsForRun(_runId: string, before?: string) { return this.listSubagents(before); }
+  async recordSubagentActivity(id: string, input: SubagentActivityInput) {
+    const turn = this.children.flatMap(child => child.turns).find(turn => turn.id === id)!;
+    if (turn.status !== 'running') return;
+    const activity = turn.activity;
+    const { callId, ...publicInput } = structuredClone(input);
+    const event = { ...publicInput, toolHistoryId: callId ? randomUUID() : null, sequence: activity.dropped + activity.events.length + 1 };
+    if (event.phase === 'started') activity.current = event;
+    if (event.phase === 'finished') activity.current = null;
+    activity.events.push(event); if (activity.events.length > 40) { activity.events.shift(); activity.dropped++; }
+    activity.updatedAt = event.occurredAt;
+  }
   async getSubagent(id: string) { return structuredClone(this.children.find(c => c.id === id) ?? null); }
   async sendSubagent(callId: string, id: string, instruction: string, _max: number) {
     const c = this.children.find(c => c.id === id)!;
-    if (!c.turns.some(t => t.callId === callId)) c.turns.push({ id: randomUUID(), childId: id, callId, sequence: c.turns.length + 1, instruction, status: 'queued', createdAt: new Date().toISOString(), finishedAt: null, result: null });
+    if (!c.turns.some(t => t.callId === callId)) c.turns.push({ id: randomUUID(), childId: id, callId, sequence: c.turns.length + 1, instruction, status: 'queued', createdAt: new Date().toISOString(), startedAt: null, activity: emptySubagentActivity(), finishedAt: null, result: null });
     c.turnCount = c.turns.length;
     return structuredClone(c);
   }
-  async claimSubagentTurn(id: string) { const t = this.children.find(c => c.id === id)!.turns.find(t => t.status === 'queued'); if (!t) return null; t.status = 'running'; return structuredClone(t); }
+  async claimSubagentTurn(id: string) { const t = this.children.find(c => c.id === id)!.turns.find(t => t.status === 'queued'); if (!t) return null; t.status = 'running'; t.startedAt = new Date().toISOString(); return structuredClone(t); }
   async finishSubagentTurn(id: string, status: 'completed' | 'interrupted' | 'cancelled' | 'failed', value: SubagentResult) {
     const t = this.children.flatMap(c => c.turns).find(t => t.id === id)!;
     if (!['queued', 'running'].includes(t.status)) { assert.equal(t.status, status); assert.deepEqual(t.result, value); return; }
-    t.status = status; t.result = structuredClone(value); t.finishedAt = new Date().toISOString();
+    t.activity.current = null; t.status = status; t.result = structuredClone(value); t.finishedAt = new Date().toISOString();
     this.events.push({ id: `subagent-result:${id}`, type: 'subagent.result', source: 'system', occurredAt: t.finishedAt, payload: { childId: t.childId, status } });
   }
   async cancelSubagent(id: string) { for (const t of this.children.find(c => c.id === id)!.turns) if (['queued','running'].includes(t.status)) await this.finishSubagentTurn(t.id, 'cancelled', { text: 'Cancelled; effects may be unknown', truncated: false, fullResultPath: null, finalRecordId: null }); }
@@ -46,9 +59,9 @@ class Parent extends MemoryWriter implements SubagentWriter {
   override async receive(event: LifeEvent, _wake?: WakeReceipt): Promise<'inserted'> { this.events.push(event); return 'inserted'; }
 }
 async function until(check: () => boolean | Promise<boolean>) { const end = Date.now() + 3000; while (!await check()) { if (Date.now() > end) throw Error('Condition did not settle'); await new Promise(resolve => setTimeout(resolve, 5)); } }
-function fixture(parent = new Parent(), tools = () => [] as ReturnType<typeof createSubagentTools>) {
+function fixture(parent = new Parent(), tools = () => [] as ReturnType<typeof createSubagentTools>, maxConcurrent?: number) {
   const writers = new Map<string, MemoryWriter>(); const errors: unknown[] = []; const spooled: string[] = []; let notifications = 0;
-  const manager = new SubagentManager({ writer: parent, acquire: async id => {
+  const manager = new SubagentManager({ writer: parent, ...(maxConcurrent === undefined ? {} : { maxConcurrent }), acquire: async id => {
     let writer = writers.get(id);
     if (!writer || writer.signal.aborted) { const next = new MemoryWriter(); if (writer) next.state = structuredClone(writer.state); writer = next; writers.set(id, writer); }
     return writer;
@@ -155,16 +168,16 @@ test('result budget keeps full text in an ordinary file and a bounded completion
   } finally { await f.manager.close(); }
 });
 
-test('four concurrent children run independently; fifth returns capacity and spawn retry does not duplicate', async () => {
+test('eight concurrent children run independently; ninth returns capacity and spawn retry does not duplicate', async () => {
   const f = fixture(); const release = deferred(); let calls = 0;
   const t = transport(async () => { calls++; await release.promise; return streamOf(assistant('done')); });
   try {
-    for (let i = 0; i < 4; i++) await f.manager.spawn(`parallel-${i}`, `Task ${i}`, 'none', t);
-    await until(() => calls === 4);
-    await assert.rejects(f.manager.spawn('fifth', 'More', 'none', t), (e: unknown) => e instanceof SubagentError && e.code === 'capacity');
-    const retried = await f.manager.spawn('parallel-0', 'Task 0', 'none', t); assert.equal(retried.id, f.parent.children[0]!.id); assert.equal(calls, 4);
+    for (let i = 0; i < 8; i++) await f.manager.spawn(`parallel-${i}`, `Task ${i}`, 'none', t);
+    await until(() => calls === 8);
+    await assert.rejects(f.manager.spawn('ninth', 'More', 'none', t), (e: unknown) => e instanceof SubagentError && e.code === 'capacity');
+    const retried = await f.manager.spawn('parallel-0', 'Task 0', 'none', t); assert.equal(retried.id, f.parent.children[0]!.id); assert.equal(calls, 8);
     release.resolve(); await until(() => f.parent.children.every(c => c.turns[0]!.status === 'completed'));
-    assert.equal(f.parent.events.length, 4);
+    assert.equal(f.parent.events.length, 8);
   } finally { release.resolve(); await f.manager.close(); }
 });
 
@@ -232,8 +245,8 @@ test('followup cannot bypass the concurrency cap while cancelled effects are sti
     await until(() => [...f.writers.values()][0]?.signal.aborted ?? false);
     block = true;
     const active = [];
-    for (let i = 0; i < 4; i++) active.push(await f.manager.spawn(`blocked-${i}`, 'Wait in effect', 'none', t));
-    await until(() => effects === 4);
+    for (let i = 0; i < 8; i++) active.push(await f.manager.spawn(`blocked-${i}`, 'Wait in effect', 'none', t));
+    await until(() => effects === 8);
     await f.manager.cancel(active[0]!.id);
     await assert.rejects(f.manager.send('extra-followup', idle.id, 'Continue', t), (error: unknown) => error instanceof SubagentError && error.code === 'capacity');
     assert.equal(f.parent.children[0]!.turns.length, 1);
@@ -308,34 +321,34 @@ test('queued followup uses the accepting parent turn transport after a same-mode
   } finally { release.resolve(); await f.manager.close(); }
 });
 
-test('actual service child metadata and activity failures recover as current notices, not durable rows', async () => {
+test('independent child reads can fail and recover without discarding readable parent history', async () => {
   const { LocalWebService } = await import('@mira/server');
-  const now = new Date().toISOString(); const runId = randomUUID(); const callId = 'detail-spawn';
-  const toolId = randomUUID(); const childId = randomUUID(); const turnId = randomUUID();
-  let metadataFails = true; let activityFails = false;
+  const now = new Date().toISOString(); const runId = randomUUID(); const toolId = randomUUID();
+  const parent = new Parent();
+  const record = await parent.createSubagent('detail-spawn', { title: 'Inspect build', task: 'PRIVATE_TASK',
+    fork: { mode: 'none', text: '', bytes: 0, parentVersion: 0, parentHead: null },
+    model: { provider: model.provider, id: model.id, api: model.api, configurationHash: 'a'.repeat(64) } }, 8);
+  let unavailable = true;
   const history = {
     readRun: async () => ({ run: { id: runId, occurredAt: now, status: 'completed', requestCount: 1, finalRecordId: null }, memory: null,
-      records: [{ id: toolId, kind: 'tool', occurredAt: now }], nextCursor: null, refreshCursor: 'stable-detail-page' }),
+      records: [{ id: toolId, kind: 'tool', occurredAt: now }], nextCursor: null }),
     readRunRequests: async () => ({ items: [], nextCursor: null }),
-    read: async () => ({ id: toolId, kind: 'tool', occurredAt: now, intent: { callId, toolName: 'subagent_spawn' }, outcome: null }),
+    read: async () => ({ id: toolId, kind: 'tool', occurredAt: now, intent: { callId: 'detail-spawn', toolName: 'subagent_spawn' }, outcome: null }),
   };
-  const reader = { readSubagentCalls: async () => { if (metadataFails) throw Error('Synthetic metadata unavailable'); return [{ childId, streamId: `subagent:${childId}`, turnId, createdAt: now, status: 'completed' }]; } };
-  const childHistory = () => ({ page: async () => { if (activityFails) throw Error('Synthetic child history unavailable'); return { hits: [], nextCursor: null }; } });
-  // Invoke the real read-only service method with deterministic reader fixtures;
-  // no service lifecycle, database, provider or filesystem fallback is substituted.
-  const service = Reflect.construct(LocalWebService, [{ dreaming: { enabled: false } }, { onLiveInput: () => () => {} }, history, {}, {}, {}, {}, {}, reader, childHistory]) as typeof LocalWebService.prototype;
-  const failed = await service.run(runId); assert(failed);
-  assert.equal(failed.childDetailsUnavailable, true); assert.ok(failed.error);
-  assert.ok(!failed.executions.some(item => item.kind === 'unavailable'));
-  metadataFails = false; activityFails = true;
-  const partial = await service.run(runId); assert(partial);
-  assert.equal(partial.childDetailsUnavailable, true);
-  assert.ok(partial.executions.some(item => item.kind === 'subagent' && item.status === 'completed'));
-  assert.ok(!partial.executions.some(item => item.kind === 'unavailable'));
-  activityFails = false;
-  const recovered = await service.run(runId); assert(recovered);
-  assert.equal(recovered.childDetailsUnavailable, undefined); assert.equal(recovered.error, null);
-  assert.ok(!recovered.executions.some(item => item.kind === 'unavailable'));
+  const reader = {
+    readSubagentsForRun: async () => { if (unavailable) throw Error('Synthetic unavailable'); return parent.listSubagents(); },
+    getSubagentForRun: async () => { if (unavailable) throw Error('Synthetic unavailable'); return parent.getSubagent(record.id); },
+  };
+  const service = Reflect.construct(LocalWebService, [{ dreaming: { enabled: false } }, { onLiveInput: () => () => {} }, history, {}, {}, {}, {}, {}, reader]) as typeof LocalWebService.prototype;
+  const detail = await service.run(runId); assert(detail);
+  assert.equal(detail.executions.length, 1); assert.equal(detail.error, null);
+  assert.equal(detail.executions[0]!.kind, 'tool');
+  await assert.rejects(service.children(runId)); await assert.rejects(service.child(runId, record.id));
+  unavailable = false;
+  assert.equal((await service.children(runId)).items[0]!.id, record.id);
+  const child = await service.child(runId, record.id); assert(child);
+  assert.equal(child.title, 'Inspect build'); assert.doesNotMatch(JSON.stringify(child), /PRIVATE_TASK|configurationHash|instruction|fullResultPath/);
+  assert.deepEqual(await service.run(runId), detail);
 });
 
 
@@ -396,4 +409,170 @@ test('wait observes committed input before execution and while its admission rea
     assert.equal((await waiting).reason, 'user_input');
     assert.equal((await f.manager.wait(child.id, 0, undefined, async () => false)).reason, 'timeout', 'already consumed input cannot poison later waits');
   } finally { release.resolve(); queryRelease.resolve(); await f.manager.close(); }
+});
+
+
+test('child activity follows actual model and tool boundaries and explicit public progress', async () => {
+  const modelRelease = deferred(); const toolEntered = deferred(); const toolRelease = deferred(); let calls = 0;
+  const f = fixture(new Parent(), () => [effectTool(async () => { toolEntered.resolve(); await toolRelease.promise; return result; })]);
+  const t = transport(async () => {
+    calls++;
+    if (calls === 1) { await modelRelease.promise; return streamOf({ ...assistant(), stopReason: 'toolUse', content: [
+      { type: 'thinking', thinking: 'HIDDEN_REASONING_SENTINEL' },
+      { type: 'toolCall', id: 'public-progress', name: 'report_progress', arguments: { text: 'Checked the failing test; now verifying the fix.' } },
+      { type: 'toolCall', id: 'observed-effect', name: 'effect', arguments: {} },
+    ] }); }
+    return streamOf(assistant('Verified result'));
+  });
+  try {
+    const c = await f.manager.spawn('activity-spawn', 'PRIVATE_TASK_SENTINEL', 'none', t, 'Verify build');
+    await until(() => calls === 1);
+    let turn = (await f.parent.getSubagent(c.id))!.turns[0]!;
+    assert.equal(c.title, 'Verify build'); assert.ok(turn.startedAt); assert.equal(turn.activity.current?.kind, 'model');
+    assert.equal(turn.activity.events.length, 1);
+    modelRelease.resolve(); await toolEntered.promise;
+    turn = (await f.parent.getSubagent(c.id))!.turns[0]!;
+    assert.equal(turn.activity.current?.kind, 'tool'); assert.equal(turn.activity.current?.name, 'effect');
+    assert.ok(turn.activity.events.some(event => event.source === 'worker' && event.kind === 'progress' && event.text?.includes('verifying the fix')));
+    assert.ok(turn.activity.events.some(event => event.kind === 'model' && event.phase === 'finished'));
+    assert.doesNotMatch(JSON.stringify(turn.activity), /HIDDEN_REASONING_SENTINEL|PRIVATE_TASK_SENTINEL|arguments|thinking/);
+    toolRelease.resolve(); await until(() => f.parent.children[0]!.turns[0]!.status === 'completed');
+    turn = (await f.parent.getSubagent(c.id))!.turns[0]!;
+    assert.equal(turn.activity.current, null); assert.ok(turn.finishedAt);
+    assert.ok(turn.activity.events.some(event => event.name === 'effect' && event.status === 'succeeded'));
+    await assert.rejects(f.manager.spawn('activity-spawn', 'PRIVATE_TASK_SENTINEL', 'none', t, 'Changed name'), /different arguments/);
+  } finally { modelRelease.resolve(); toolRelease.resolve(); await f.manager.close(); }
+});
+
+test('thrown child effect ends as unknown before the recovery model starts', async () => {
+  const release = deferred(); let calls = 0;
+  const f = fixture(new Parent(), () => [effectTool(async () => { throw Error('SECRET_EXCEPTION_SENTINEL'); })]);
+  const t = transport(async () => {
+    if (++calls === 1) return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'unknown-observation', name: 'effect', arguments: {} }] });
+    await release.promise; return streamOf(assistant('Inspected the unknown effect'));
+  });
+  try {
+    const child = await f.manager.spawn('unknown-activity', 'Inspect safely', 'none', t);
+    await until(() => calls === 2);
+    const activity = (await f.parent.getSubagent(child.id))!.turns[0]!.activity;
+    assert.equal(activity.current?.kind, 'model');
+    assert.ok(activity.events.some(event => event.kind === 'tool' && event.phase === 'finished' && event.status === 'unknown'));
+    assert.doesNotMatch(JSON.stringify(activity), /SECRET_EXCEPTION_SENTINEL/);
+    release.resolve(); await until(() => f.parent.children[0]!.turns[0]!.status === 'completed');
+  } finally { release.resolve(); await f.manager.close(); }
+});
+
+test('concurrent admissions cannot spend a cancelling execution slot twice', async () => {
+  const release = deferred(); let effects = 0;
+  const f = fixture(new Parent(), () => [effectTool(async () => { effects++; await release.promise; return result; })], 2);
+  const t = transport(() => streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: randomUUID(), name: 'effect', arguments: {} }] }));
+  try {
+    const first = await f.manager.spawn('capacity-cancelling', 'Work', 'none', t); await until(() => effects === 1);
+    await f.manager.cancel(first.id);
+    const results = await Promise.allSettled([f.manager.spawn('concurrent-one', 'Work', 'none', t), f.manager.spawn('concurrent-two', 'Work', 'none', t)]);
+    assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+    const rejected = results.find(result => result.status === 'rejected')!;
+    assert.ok(rejected.status === 'rejected' && rejected.reason instanceof SubagentError && rejected.reason.code === 'capacity');
+  } finally { release.resolve(); await f.manager.close(); }
+});
+
+test('startup concurrency defaults to eight and accepts only one through thirty-two', async () => {
+  const { subagentConcurrency } = await import('../../apps/server/src/web-config.ts');
+  assert.equal(subagentConcurrency(undefined), 8);
+  for (const value of [1, 8, 32]) { assert.equal(subagentConcurrency(String(value)), value); const f = fixture(new Parent(), () => [], value); assert.equal(f.manager.maxConcurrent, value); await f.manager.close(); }
+  for (const value of ['', '0', '33', '-1', '1.5', '08', ' 8', 'secret-value']) assert.throws(() => subagentConcurrency(value), /integer from 1 to 32/);
+  for (const value of [0, 33, 1.5]) assert.throws(() => fixture(new Parent(), () => [], value), /Invalid child concurrency/);
+});
+
+test('failed durable activity observation stops the child before provider dispatch', async () => {
+  class ActivityFailureParent extends Parent {
+    override async recordSubagentActivity(_id: string, _event: SubagentActivityInput): Promise<void> { throw Error('Synthetic activity writer failure'); }
+  }
+  const f = fixture(new ActivityFailureParent()); let calls = 0;
+  try {
+    await f.manager.spawn('failed-observation', 'Inspect only', 'none', transport(() => { calls++; return streamOf(assistant('must not execute')); }));
+    await until(() => f.parent.children[0]!.turns[0]!.status === 'failed');
+    assert.equal(calls, 0); assert.equal(f.parent.children[0]!.turns[0]!.activity.current, null);
+  } finally { await f.manager.close(); }
+});
+
+
+test('activity cancellation after durable finishTool preserves exact known success or error', async () => {
+  for (const isError of [false, true]) {
+    const abort = new AbortController(); const events: PiRuntimeActivity[] = []; let effects = 0; let requests = 0;
+    class AfterOutcomeWriter extends MemoryWriter {
+      override async finishTool(outcome: Parameters<MemoryWriter['finishTool']>[0]) {
+        await super.finishTool(outcome);
+        abort.abort(new Error('Synthetic cancellation immediately after durable outcome'));
+      }
+    }
+    const writer = new AfterOutcomeWriter();
+    const runtime = new PiDurableRuntime({ writer, model, onActivity: async event => { events.push(event); },
+      tools: [effectTool(async () => { effects++; return { ...result, isError }; })],
+      streamFn: () => { requests++; return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'after-outcome-abort', name: 'effect', arguments: {} }] }); },
+    });
+    await assert.rejects(runtime.run(input('Check durable outcome cancellation'), abort.signal));
+    assert.equal(effects, 1); assert.equal(requests, 1); assert.ok(writer.state.executions[0]!.outcome);
+    const last = events.filter(event => event.kind === 'tool').at(-1)!;
+    assert.equal(last.phase, 'finished'); assert.equal(last.status, isError ? 'failed' : 'succeeded');
+    assert.ok(!events.some(event => event.kind === 'tool' && event.status === 'unknown'));
+    await writer.close();
+  }
+});
+
+
+test('activity cancellation after durable assistant append preserves the completed model request', async () => {
+  const abort = new AbortController(); const events: PiRuntimeActivity[] = [];
+  class AfterModelWriter extends MemoryWriter {
+    override async append(...args: Parameters<MemoryWriter['append']>) {
+      const version = await super.append(...args);
+      const entry = decodeRecords([args[1]], args[1].parentId)[0];
+      if (entry?.type === 'message' && entry.message.role === 'assistant') abort.abort(Error('Synthetic cancellation after model publication'));
+      return version;
+    }
+  }
+  const writer = new AfterModelWriter();
+  const runtime = new PiDurableRuntime({ writer, model, streamFn: () => streamOf(assistant('Saved response')), onActivity: async event => { events.push(event); } });
+  await assert.rejects(runtime.run(input('Check response publication'), abort.signal));
+  assert.equal(events.at(-1)!.kind, 'model'); assert.equal(events.at(-1)!.phase, 'finished'); assert.equal(events.at(-1)!.status, 'completed');
+  assert.ok(writer.state.records.some(record => { const entry = decodeRecords([record], record.parentId)[0]; return entry?.type === 'message' && entry.message.role === 'assistant'; }));
+  await writer.close();
+});
+
+
+test('close settles an admission committed after dispatch was closed without leaving queued work', async () => {
+  const entered = deferred(); const release = deferred();
+  class SlowAdmissionParent extends Parent {
+    override async createSubagent(...args: Parameters<Parent['createSubagent']>) {
+      entered.resolve(); await release.promise; return super.createSubagent(...args);
+    }
+  }
+  const f = fixture(new SlowAdmissionParent()); let requests = 0; let closed = false;
+  try {
+    const spawning = f.manager.spawn('close-admission', 'Never dispatched', 'none', transport(() => { requests++; return streamOf(assistant('unused')); }));
+    await entered.promise;
+    const closing = f.manager.close().then(() => { closed = true; });
+    await new Promise(resolve => setTimeout(resolve, 5)); assert.equal(closed, false);
+    release.resolve(); await spawning; await closing;
+    assert.equal(requests, 0); assert.equal(f.writers.size, 0);
+    assert.equal(f.parent.children[0]!.turns[0]!.status, 'interrupted');
+    assert.equal(f.parent.children[0]!.turns[0]!.startedAt, null);
+    assert.equal(f.parent.events.length, 1);
+  } finally { release.resolve(); await f.manager.close(); }
+});
+
+test('close marks unstarted followups interrupted after the real in-flight child settles', async () => {
+  const release = deferred(); let requests = 0;
+  const f = fixture();
+  const t = transport(async () => { requests++; await release.promise; return streamOf(assistant('late response')); });
+  try {
+    const child = await f.manager.spawn('close-followup-spawn', 'First assignment', 'none', t);
+    await until(() => requests === 1);
+    await f.manager.send('close-followup-next', child.id, 'Queued assignment', t);
+    const closing = f.manager.close(); release.resolve(); await closing;
+    assert.equal(requests, 1);
+    assert.deepEqual(f.parent.children[0]!.turns.map(turn => turn.status), ['interrupted', 'interrupted']);
+    assert.equal(f.parent.children[0]!.turns[1]!.startedAt, null);
+    assert.equal(f.parent.events.length, 2);
+  } finally { release.resolve(); await f.manager.close(); }
 });

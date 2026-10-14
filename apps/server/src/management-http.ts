@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { WebHttpError } from './http.ts';
-import type { AssistantReplyView, ExtensionMutation, ExtensionView, ManagementBackend, MemoryReceiptView, RunSummaryView } from './management.ts';
+import type { AssistantReplyView, ExtensionMutation, ExtensionView, ManagementBackend, MemoryReceiptView, RunSummaryView, ChildActivityView, ChildSummaryView } from './management.ts';
 
 const object = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', additionalProperties: false, properties, required });
 const noQuery = object({});
@@ -19,6 +19,10 @@ const extensionView = (entry: ExtensionView): ExtensionView => ({
   generated: entry.generated ? { digest: entry.generated.digest, revision: entry.generated.revision,
     history: entry.generated.history.map(revision => ({ id: revision.id, digest: revision.digest })) } : null,
 });
+const activityView = (item: ChildActivityView): ChildActivityView => ({ sequence: item.sequence, occurredAt: item.occurredAt,
+  source: item.source, kind: item.kind, phase: item.phase, name: item.name, status: item.status, text: item.text });
+const childSummaryView = (child: ChildSummaryView): ChildSummaryView => ({ id: child.id, runId: child.runId, title: child.title,
+  createdAt: child.createdAt, status: child.status, current: child.current ? activityView(child.current) : null, updatedAt: child.updatedAt });
 /** Re-project even typed service output: accidental adapter fields must never
  * reach the browser when host/history structures grow. */
 export function registerManagementHttp(app: FastifyInstance, backend: Partial<ManagementBackend>): void {
@@ -26,7 +30,24 @@ export function registerManagementHttp(app: FastifyInstance, backend: Partial<Ma
     const method = backend[key]; if (!method) throw new WebHttpError('unavailable');
     return method.bind(backend) as ManagementBackend[K];
   };
-  app.get('/api/memory', { schema: { querystring: noQuery } }, async () => {
+  app.get<{ Params: { id: string }; Querystring: { before?: string } }>('/api/runs/:id/subagents', {
+    schema: { querystring: object({ before: uuid }), params: runParams },
+  }, async request => {
+    const result = await requireMethod('children')(request.params.id, request.query.before);
+    return { items: result.items.map(childSummaryView), nextCursor: result.nextCursor };
+  });
+  app.get<{ Params: { id: string; childId: string }; Querystring: { view?: 'summary' } }>('/api/runs/:id/subagents/:childId', {
+    schema: { params: object({ id: uuid, childId: uuid }, ['id', 'childId']), querystring: object({ view: { const: 'summary' } }) },
+  }, async (request, reply) => {
+    const result = await requireMethod('child')(request.params.id, request.params.childId);
+    if (!result) return reply.code(404).send({ error: 'Child not found in this run' });
+    if (request.query.view === 'summary') return childSummaryView(result);
+    return { ...childSummaryView(result), olderTurns: result.olderTurns, turns: result.turns.map(turn => ({ id: turn.id,
+      sequence: turn.sequence, status: turn.status, createdAt: turn.createdAt, startedAt: turn.startedAt, finishedAt: turn.finishedAt,
+      activities: turn.activities.map(activityView), droppedActivities: turn.droppedActivities,
+      result: turn.result ? { text: turn.result.text, truncated: turn.result.truncated } : null })) };
+  });
+  app.get('/api/memory' , { schema: { querystring: noQuery } }, async () => {
     const result = await requireMethod('memory')();
     return { configured: result.configured, content: result.content, revision: result.revision };
   });
@@ -71,9 +92,9 @@ export function registerManagementHttp(app: FastifyInstance, backend: Partial<Ma
   }, async (request, reply) => {
     const result = await requireMethod('run')(request.params.id, request.query.before);
     if (!result) return reply.code(404).send({ error: 'Run not found' });
-    return { ...(result.childDetailsUnavailable ? { childDetailsUnavailable: true } : {}), ...(result.refreshCursor ? { refreshCursor: result.refreshCursor } : {}), ...summaryView(result), requests: result.requests.map(item => ({ eventId: item.eventId, source: item.source, type: item.type, reason: item.reason })),
+    return { ...summaryView(result), requests: result.requests.map(item => ({ eventId: item.eventId, source: item.source, type: item.type, reason: item.reason })),
       assistant: replyView(result.assistant), memory: memoryView(result.memory),
-      executions: result.executions.map(item => ({ ...(item.supplemental ? { supplemental: true } : {}), id: item.id, occurredAt: item.occurredAt, kind: item.kind, name: item.name, status: item.status, error: item.error === null ? null : privateError })),
+      executions: result.executions.map(item => ({ id: item.id, occurredAt: item.occurredAt, kind: item.kind, name: item.name, status: item.status, error: item.error === null ? null : privateError })),
       nextCursor: result.nextCursor, nextRequestsCursor: result.nextRequestsCursor, compactionErrors: 'not-recorded', error: result.error === null ? null : privateError };
   });
 }

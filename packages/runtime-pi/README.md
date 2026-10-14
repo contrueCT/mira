@@ -453,3 +453,15 @@ current Pi projection (existing summaries retained, hidden reasoning/provider
 metadata excluded). It rejects oversized snapshots instead of silently truncating.
 Worker assembly reuses `PiDurableRuntime.run` with an independent PostgreSQL writer;
 no parent tool call is inserted into the child's protocol. See ADR 0025.
+
+## Public task activity observations
+
+Optional awaited `onActivity` reports content-free model and tool starts at their
+actual dispatch gates, and finishes after durable transcript/outcome publication.
+A thrown effect or missing durable outcome ends as unknown, never inferred as
+running or known failure from an absent result. Model/tool arguments, hidden
+reasoning, result payloads and raw errors are never supplied to this callback.
+Observer write failures stop the runtime before further model/tool work. Child
+assembly persists these observations under the parent writer and supplies the
+separate `report_progress` tool for explicit public, bounded worker updates.
+No timer, token-stream capture, or automatic parent Wake is added.

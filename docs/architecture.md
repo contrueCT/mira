@@ -86,7 +86,7 @@ Runtime 默认启用自动压缩，位于已完成工具批次并持久化结果
 
 按 [ADR 0011](adr/0011-conversation-context-and-skills.md)，普通 Web 对话不展示工具活动或工具展示投影；持久工具协议与事实仍完整保存。普通 Web Wake 只呈现来源、时间与消息正文，其他事件保留完整业务 payload，超限仍是普通文件。已有进行中 Wake 升级前应完成，不添加旧格式兼容。
 
-Skills 直接复用 Pi 公共加载器，明确扫描源码 skills/ 与 Mira home skills/。每次自然请求只更新技能目录，正文用 read 按需加载，文件修改不产生 Wake。目录附在同一个持久 Mira system section，Memory 和压缩边界不变。内置扩展作者技能引用当前 SDK、模板及生命周期说明。普通聊天纯文本的批准修订只改变 Prompt 对话格式指导，不影响文件格式。
+Skills 直接复用 Pi 公共加载器，按优先级明确扫描源码 skills/、Mira home skills/、运行用户 os.homedir() 下的 ~/.agents/skills；MIRA_HOME 不重定位全局目录，MIRA_CWD 不增加项目/祖先搜索。保留 includeDefaults:false、同名首项优先诊断与真实路径去重。主与 child 每次自然请求只更新技能目录，正文用 read 按需加载，文件修改不产生 Wake。主目录附在同一个持久 Mira system section，child 保持独立技能 section，不注入主 Mira 人格或 Memory；Memory 和压缩边界不变。内置扩展作者技能引用当前 SDK、模板及生命周期说明。普通聊天纯文本的批准修订只改变 Prompt 对话格式指导，不影响文件格式。
 
 History 使用 `history_records` 薄表维护四类原始记录的全局 UUID，`history_read({id})` 由数据库返回类型；来源事件/工具调用的原始标识独立保留。Memory commit 的 History-Id 可直接读取，内部回执键不用于引用。早期开发只定义当前初始 schema，需新空库和新数据目录，不增加旧库检测、映射、兼容或清理逻辑，见 [ADR 0012](adr/0012-global-history-identities.md)。
 

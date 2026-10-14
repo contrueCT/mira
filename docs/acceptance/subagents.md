@@ -1,5 +1,42 @@
 # Subagent verification
 
+## Current extension: ADR 0026 (2026-10-14)
+
+The historical verification notes below describe the original four-worker feature
+and its former mixed parent-page child projections. ADR 0026 supersedes that
+UI/configuration behavior: default eight workers, startup `1..32`, compact child
+cards only when delegation exists, independent read-only child/run observation,
+real model/tool activity plus explicit worker progress, and OS-home global skills.
+
+Current local verification: `pnpm check` passed 810 foundation/offline tests and
+44 web-state tests, type/boundary checks and build before final cleanup. Skills
+focused tests passed 22/22; runtime/live-input/diagnostic/subagent regression
+passed 176/176. New HTTP projection tests verify private assignment/protocol/spool
+fields are excluded and exact child/run identity is required.
+
+A fresh isolated PostgreSQL 18.6 start was attempted on 2026-10-14. It failed
+creating its Unix socket with `Operation not permitted`; no socket restriction
+was bypassed and no previous data directory was used. Therefore new PG and
+Chromium tests are pending exact-head CI, not locally claimed as passed.
+
+New real-service browser coverage requests spawn → a real blocked `bash` tool →
+explicit public progress → model generation → completion → reopened detail and
+restart. It checks global skill metadata on main/child and ordinary child read,
+keeps the main failed-run/live-input behavior and verifies no duplicate effects.
+Separate UI fixture coverage checks two child identities, failed refresh retaining
+confirmed evidence, mismatched identity rejection, unknown tool outcome wording,
+terminal-to-followup refresh, focus restoration and desktop/narrow screenshots.
+PG regressions cover 8/9 capacity, 40-event bounds, rejected raw fields,
+run-scoped 55-child paging, owner loss and restart current-activity cleanup.
+
+Fresh independent `gpt-6.1-sol`/`max` review is in progress. Its initial findings
+identified terminal-card followup refresh and run-scoped cursor ownership; both
+are being corrected and independently rechecked before delivery. Exact-head CI
+and actual screenshot inspection will be recorded here when available.
+
+## Historical implementation and verification
+
+
 Implementation branch, 2026-10-14. Status is recorded per actual command, not inferred
 from test presence.
 
@@ -149,3 +186,29 @@ The revision keeps the slot through awaited cleanup and remembers followups that
 arrive while that cleanup is settling. Controlled offline regressions cover both
 close waiting for the last read and a followup arriving during that read. These
 failures are retained here; the corrected exact-head CI remains required.
+
+The first ADR 0026 independent review additionally reproduced an actual Pi
+commit-then-abort observation race. Runtime finalization now reloads authoritative
+outcomes, preserving confirmed success/error instead of downgrading them to
+unknown. It also identified long provider call-ID truncation during restart
+reconciliation. The persisted activity link now uses the exact tool History UUID,
+resolved from the untouched protocol ID within the child stream. New regressions
+exercise both windows. Shutdown also waits for capacity admission and actual
+actors before interrupting any remaining queued turns; accepted but not-started
+work cannot remain falsely queued after an orderly close.
+
+CI run [38533105175](https://github.com/contrueCT/mira/actions/runs/38533105175)
+at `56bfc64` passed 816 offline and 42 web-state tests, then ran 209 real-PG
+checks: 207 passed and two failed. Both failures were old down-migration tests
+that still expected the child registry to disappear on the first down, before
+accounting for new migration 0008. The PostgreSQL feature/recovery cases ran;
+Chromium steps were skipped after this failure and are not claimed as passed.
+The down/up tests now explicitly verify the activity/association-column slice
+before removing child/scheduling slices. This failed run is retained as evidence.
+
+Further independent review found that a newly followed-up older child could be
+missed after exhausting run-child pages. Run membership now uses an immutable,
+fenced first-association sequence on existing turns, independent of child age and
+wall-clock time. Browser page merging inserts into the correct cursor window,
+including more than fifty new members and multiple disconnected windows. PG and
+UI regressions exercise these cases; exact-head CI is required again.

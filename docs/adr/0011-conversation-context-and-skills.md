@@ -16,9 +16,9 @@
 
 ## Skills
 
-直接复用已固定的 Pi 1.0.2 `loadSkills`、`formatSkillsForPrompt`。只发现当前源码的 `skills/` 与 `${MIRA_HOME}/skills`（默认 `~/.mira/skills`）；内置目录先加载，同名保留首个并报告诊断。不开启 Pi 默认目录发现，不扫描 `.pi`、`.agents` 祖先目录或包资源。
+直接复用已固定的 Pi 1.0.2 `loadSkills`、`formatSkillsForPrompt`。2026-10-14 用户补充要求加载全局 `~/.agents/skills`。现在仅按优先级发现当前源码的 `skills/`、`${MIRA_HOME}/skills`（默认 `~/.mira/skills`）、运行用户 `os.homedir()` 下的 `~/.agents/skills`；源码先于 Mira-home，Mira-home 先于全局，同名保留首个并报告诊断，真实路径相同的文件去重。全局目录不随 `MIRA_HOME` 改变，缺失或空目录不创建文件、不报警。仍使用 `includeDefaults:false`，`MIRA_CWD` 不增加项目搜索，不扫描项目/祖先 `.agents`、`.agent`、`.pi` 或包资源。
 
-每次自然模型请求前刷新元数据，同一请求使用同一份目录。只将名称、描述、真实 SKILL.md 路径及按需读取说明附到已渲染的同一个 Mira system section，仍先持久化/CAS 再调用模型。正文通过已有 read 工具读取，不默认注入，不进入 MEMORY.md，不增加文件 watcher 或额外 Wake。
+主 Mira 与 task-scoped child 每次自然模型请求前刷新相同根目录的元数据，同一请求使用同一份目录。child 保持独立技能 section，不自动加载主 Mira 人格或 Memory。主 Mira 只将名称、描述、真实 SKILL.md 路径及按需读取说明附到已渲染的同一个 Mira system section，仍先持久化/CAS 再调用模型。正文通过已有 read 工具读取，不默认注入，不进入 MEMORY.md，不增加文件 watcher 或额外 Wake。
 
 官方 formatter 已转义元数据，不能再经过 Mira 占位符二次转义。其输出附在完整 Prompt 之后；现有最新 section 投影及确切 system 压缩校验继续使用。压缩不另行扫描磁盘技能。模型读取技能不授予新的用户权限，技能不能覆盖真实 OS 或持久化边界。
 
@@ -36,6 +36,6 @@
 
 ## 验收
 
-覆盖工具 UI/API 投影移除与正常处理/错误显示、桌面/窄屏；完整多事件/异常 payload/溢出文件恢复；技能新建/修改/移除、缺失/冲突/隐藏与转义；真实请求目录、按需读取、重启/压缩/Memory 冻结和 CAS/所有权失败。指南示例使用离线合成数据，不接触真实服务。
+覆盖工具 UI/API 投影移除与正常处理/错误显示、桌面/窄屏；完整多事件/异常 payload/溢出文件恢复；技能三层优先级、新建/修改/移除、缺失/空目录、全局坏 frontmatter、跨根符号链接去重、冲突/隐藏与转义；全局技能在主/child 下一请求发现并经普通 read 读取正文；真实请求目录、按需读取、重启/压缩/Memory 冻结和 CAS/所有权失败。指南示例使用离线合成数据，不接触真实服务。
 
 完整检查采用独立审查、`pnpm check:all`（隔离 PostgreSQL）和 Chromium `pnpm test:e2e`。具体提交的执行结果另行记录；测试目标不代表已运行或真实模型自然度验收。

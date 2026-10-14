@@ -188,7 +188,32 @@ SQL-bounded metadata pages; child reads include recent eight turns and bounded
 pending work; call dedupe and run associations use indexed scoped lookups. Registry and turn state use
 the existing parent writer's fenced transaction queue; transcript writers remain
 separate. Stable parent call IDs deduplicate spawn/followup. Terminal turn state and
-its parent Event/Wake commit together. Startup `interruptSubagents()` marks queued
-or running work interrupted without replay. Terminal results remain immutable.
-Migration `1760000000007_subagents.sql` has explicit up/down; down is destructive
-and must not be run on user data automatically. See ADR 0025.
+its parent Event/Wake commit together. Startup or settled-shutdown
+`interruptSubagents()` marks remaining queued/running work interrupted without
+replay. Terminal results remain immutable.
+The optional explicit `spec.title` is a public label, never extracted from the
+private task. `readSubagentsForRun` and `getSubagentForRun` resolve scoped parent
+call/version membership independently from parent history pages. Run pages use the
+first immutable turn association order within that run, so following up an old
+child makes a newly associated child visible at the head even after pagination
+was exhausted or the wall clock moved backwards. Later followups do not reorder
+an already associated child; the global list retains its original creation order.
+Call views include
+that run ID, without copying the task or context.
+
+Migration `1760000000008_subagent-activity.sql` adds a unique append-only
+`association_order` identity on turns, `started_at`, and a bounded
+public observation snapshot to the existing turn rows. It retains at most forty
+runtime dispatch/completion or explicit worker-progress events (128 KiB maximum),
+with source and timestamps. Tool observations resolve the full original provider
+call ID within the exact child stream to its existing History UUID; only that
+internal UUID is retained in the snapshot, never a truncated provider ID.
+No request body, tool arguments/results, hidden
+reasoning or raw exception enters this projection. It is not another transcript;
+existing History remains authoritative. Terminalization clears current activity;
+restart marks incomplete observations interrupted/unknown without replay. A read
+after ownership loss may show the last persisted observation until a new owner
+records interruption. Registry writes use the same parent fencing; read-only
+inspection remains available. Terminal results and observations cannot be rewritten.
+Both subagent migrations have explicit up/down; down is destructive and must not
+be run on user data automatically. See ADR 0025 and ADR 0026.

@@ -20,7 +20,7 @@ React + Vite + 原生 CSS 的本地浏览器界面。只有一个持续 Mira 和
 - 每条提交先把完整 `{id,text,occurredAt,attachmentIds?}` 信封写入此标签页的 sessionStorage，再 POST；回执仅表示接收，不表示模型完成
 - 中断或不明响应不会自动重发。刷新后保留原始 ID、文本、时间和有序附件 ID；用户明确点击“核对并重试”才读历史并使用相同信封重试；确认用户消息的 `externalEventId` 与原始提交 ID 相同后清除暂存（Timeline 的全局 History UUID 是独立展示身份）
 - 发送进行中禁用重复点击和 Enter；回执后可以继续发送待处理消息；中文输入法组合时 Enter 不发送
-- Timeline 只渲染对话文本、消息附件和必要通知，不显示工具活动、工具名称/状态、原始参数、结果、system prompt 或 thinking。`GET/POST /api/timeline` 仅返回 `items` 与 `nextCursor`，不读取或发送工具展示投影；内部执行和持久工具记录不变。文本使用 React 安全渲染与 `white-space: pre-wrap`
+- Timeline 渲染对话文本、消息附件和必要通知，以及已关联 child 的紧凑任务卡片（ADR 0026）。点击查看独立子任务的真实活动、显式公开进度和有界结果；不展示主工具活动、原始参数、system prompt 或 thinking。`GET/POST /api/timeline` 仅返回 `items` 与 `nextCursor`，仅对 spawn/followup 提供 child/run 身份引用；内部执行和持久工具记录不变。文本使用 React 安全渲染与 `white-space: pre-wrap`
 - 所有 API 请求包含 `X-Mira-Client: web`；不把 token 或密钥写入 HTML、URL、日志或浏览器存储
 - 主聊天布局和唯一设置按钮保持不变。设置使用 `#settings` 与原生 dialog，内部四个标签为模型、Memory、扩展与运行记录；支持关闭、Escape、浏览器前进/返回、标签键盘操作和焦点恢复。标签切换保留草稿，关闭清除未保存配置/密钥；已经发出的记忆请求继续由同一主循环处理
 - 设置和发现请求在关闭后取消，离开模型标签也会取消尚未完成的发现；迟到响应不会覆盖新编辑。模型保存有 revision 冲突提示，不静默覆盖
@@ -46,3 +46,5 @@ React + Vite + 原生 CSS 的本地浏览器界面。只有一个持续 Mira 和
 - 双向图片使用紧凑两列圆角缩略图，奇数末张居左；图片和视频可打开原生预览 dialog，支持关闭、Escape、返回/前进和焦点恢复。视频通过有界 Blob 播放，不支持的编码提供下载兜底
 - 上传和读取均使用同源、带 `X-Mira-Client: web` 的 fetch。图片/视频元素只接收有界下载后的 Blob URL，不直接请求受保护 API；关闭预览或卸载时取消读取并释放对象 URL
 - 仅 PNG/JPEG/GIF/WebP 和允许的视频 MIME 可嵌入。PDF、Word、SVG、HTML 及其他文件仅下载/引用，不自动解析或嵌入；下载使用惰性附件内容，不把文件路径或 HTML 当 UI 执行
+
+子任务详情按 child/run 独立每 2 秒刷新，隐藏页面和屏幕外卡片暂停；终态卡片降为每 5 秒检查，以识别同一 child 的后续任务。详情保留明确来源、开始/结束时间、未知结果与截断提示。取消/追加任务仍通过向 Mira 发送普通消息完成，不新增控制面板。

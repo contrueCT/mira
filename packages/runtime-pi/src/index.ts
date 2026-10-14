@@ -22,7 +22,15 @@ export type { RecoveryOperation, ToolDiagnostic } from './observations.ts';
 
 import { contextBudget, estimateRequestTokens, type AutoCompactionOptions } from './budget.ts';
 export type { AutoCompactionOptions } from './budget.ts';
+/** Content-free observations at actual dispatch and durable completion boundaries. */
+export interface PiRuntimeActivity {
+  kind: 'model' | 'tool'; phase: 'started' | 'finished'; occurredAt: string;
+  name: string; callId: string | null;
+  status: 'completed' | 'failed' | 'interrupted' | 'succeeded' | 'unknown' | null;
+}
 export interface PiRuntimeOptions {
+  /** Awaited, no request payloads or provider errors. A write failure stops execution. */
+  onActivity?: (event: PiRuntimeActivity) => Promise<void>;
   autoCompaction?: AutoCompactionOptions;
   writer: DurableWriter;
   model: Model<Api>;
@@ -429,6 +437,13 @@ export class PiDurableRuntime implements CognitionRuntime {
       const outcomes = new Map<string, ToolResultMessage>();
       let awaitingModelCompletion = false;
       let requestActive = false;
+      let activity: Pick<PiRuntimeActivity, 'kind' | 'name' | 'callId'> | null = null;
+      let modelCompletion: { recordId: string; status: PiRuntimeActivity['status'] } | null = null;
+      const observe = async (event: Omit<PiRuntimeActivity, 'occurredAt'>): Promise<void> => {
+        if (event.kind === 'model' && event.phase === 'started') modelCompletion = null;
+        activity = event.phase === 'started' ? { kind: event.kind, name: event.name, callId: event.callId } : null;
+        await this.options.onActivity?.({ ...event, occurredAt: new Date().toISOString() });
+      };
       const live = turn ? this.liveWriter() : undefined;
       let interruption: ToolInterruptionError | ContextOverflowError | LiveInputPendingError | undefined;
       const attemptGate = (): void => { this.gate(); if (interruption) throw interruption; };
@@ -476,6 +491,9 @@ export class PiDurableRuntime implements CognitionRuntime {
                 // A throw may happen after a remote effect. Never manufacture a
                 // definitive failure from it: leave durable intent unresolved.
                 let result: Awaited<ReturnType<AgentTool['execute']>>;
+                await observe({ kind: 'tool', phase: 'started', name: tool.name, callId: id, status: null });
+                attemptGate();
+                toolSignal?.throwIfAborted();
                 try { result = await tool.execute(id, args as never, toolSignal, update); }
                 catch (error) {
                   // Writer loss/cancellation remains fatal. A tool throw alone proves
@@ -534,6 +552,8 @@ export class PiDurableRuntime implements CognitionRuntime {
             await this.verified();
             await checkLiveInput();
             requestActive = true;
+            await observe({ kind: 'model', phase: 'started', name: `${model.provider}/${model.id}`, callId: null, status: null });
+            attemptGate();
             const stream = await this.options.streamFn(model, { ...context, messages: hydrated }, { ...options, maxTokens: Math.min(options?.maxTokens ?? budget.reserveTokens, budget.reserveTokens) });
             return stream;
           } catch (error) { throw fail(error); }
@@ -658,6 +678,7 @@ export class PiDurableRuntime implements CognitionRuntime {
             if (!execution) throw new Error('Outcome without durable intent');
             execution.outcome = outcome;
             outcomes.set(saved.toolCallId, saved);
+            await observe({ kind: 'tool', phase: 'finished', name: saved.toolName, callId: saved.toolCallId, status: saved.isError ? 'failed' : 'succeeded' });
           } catch (error) { throw fail(error); }
         },
       });
@@ -720,6 +741,7 @@ export class PiDurableRuntime implements CognitionRuntime {
           }
           const terminal = turn && message.role === 'assistant' && message.stopReason === 'stop' && !message.content.some(block => block.type === 'toolCall');
           const record = encodeEntry(entry);
+          if (message.role === 'assistant') modelCompletion = { recordId: entry.id, status: message.stopReason === 'error' ? 'failed' : message.stopReason === 'aborted' ? 'interrupted' : 'completed' };
           const next = await this.publish(() => terminal
             ? live ? live.tryAppendWakeFinal(turn!.id, version, record, this.controller.signal)
               : this.wakeWriter().appendWakeFinal(turn!.id, version, record, this.controller.signal)
@@ -730,6 +752,7 @@ export class PiDurableRuntime implements CognitionRuntime {
           parentId = entry.id;
           if (message.role === 'assistant') {
             if (entry.message.role !== 'assistant') throw new Error('Persisted assistant entry mismatch');
+            await observe({ kind: 'model', phase: 'finished', name: `${message.provider}/${message.model}`, callId: null, status: message.stopReason === 'error' ? 'failed' : message.stopReason === 'aborted' ? 'interrupted' : 'completed' });
             for (const block of entry.message.content) if (block.type === 'toolCall') issued.set(block.id, { call: structuredClone(block), recordId: entry.id });
             if (message.stopReason === 'error' || message.stopReason === 'aborted') throw new Error(message.errorMessage ?? `Model ${message.stopReason}`);
           }
@@ -746,7 +769,30 @@ export class PiDurableRuntime implements CognitionRuntime {
         return await this.recoverInternal();
       } finally {
         unsubscribeInput?.(); unsubscribe(); this.agent = undefined;
-        await this.options.finishTools?.();
+        try {
+          // No durable outcome means unknown, even when execute returned before
+          // cancellation or result validation. This never upgrades unknown to running.
+          const unfinished = activity as Pick<PiRuntimeActivity, 'kind' | 'name' | 'callId'> | null;
+          if (unfinished && this.options.onActivity && !this.options.writer.signal.aborted) {
+            let status: PiRuntimeActivity['status'] = unfinished.kind === 'tool' ? 'unknown' : 'interrupted';
+            if (unfinished.kind === 'tool') {
+              // Cancellation may win immediately after finishTool commits, before
+              // attemptGate allows the in-memory outcome map to advance. Reload
+              // authoritative evidence without recovering or replaying anything.
+              const execution = (await this.options.writer.load()).executions.find(item => item.intent.callId === unfinished.callId);
+              if (execution?.outcome) {
+                validateMessage(execution.outcome.payload);
+                const saved = execution.outcome.payload as unknown as ToolResultMessage;
+                if (saved.role !== 'toolResult' || saved.toolCallId !== unfinished.callId || saved.toolName !== unfinished.name || typeof saved.isError !== 'boolean') throw new RecoveryBlockedError('Invalid saved activity outcome');
+                status = saved.isError ? 'failed' : 'succeeded';
+              }
+            } else {
+              const completion = modelCompletion as { recordId: string; status: PiRuntimeActivity['status'] } | null;
+              if (completion && (await this.options.writer.load()).records.some(record => record.id === completion.recordId)) status = completion.status;
+            }
+            await observe({ ...unfinished, phase: 'finished', status });
+          }
+        } finally { await this.options.finishTools?.(); }
       }
   }
 

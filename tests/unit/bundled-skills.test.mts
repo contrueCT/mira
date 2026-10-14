@@ -20,6 +20,7 @@ const bodyHeadings = ['# PDF Skill', '# DOCX Skill', '# Audio Transcribe', '## M
 for (const worker of [false, true]) test(`${worker ? 'worker' : 'Mira'} bundled public skills use the real loader and ordinary read tools`, async t => {
   const miraHome = await mkdtemp(path.join(os.tmpdir(), 'mira-bundled-skills-'));
   t.after(() => rm(miraHome, { recursive: true, force: true }));
+  t.mock.method(os, 'homedir', () => path.join(miraHome, 'user-home'));
   const diagnostics: unknown[] = [];
   const loader = createSkillLoader({ sourceDirectory, miraHome, onDiagnostics: value => diagnostics.push(...value) });
   const skills = await loader(new AbortController().signal);

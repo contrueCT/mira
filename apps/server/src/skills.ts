@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadSkills, type LoadSkillsResult, type Skill } from '@earendil-works/pi-coding-agent';
 
-/** Repository skills precede the user's ordinary files. Pi owns parsing,
+/** Repository, Mira-home, then user-global skills. Pi owns parsing,
  * canonical-path deduplication and first-name-wins collision diagnostics. */
 export interface SkillLoaderOptions {
   sourceDirectory: string;
@@ -16,13 +16,18 @@ export interface SkillLoaderOptions {
 export function createSkillLoader(options: SkillLoaderOptions): (signal: AbortSignal) => Promise<Skill[]> {
   const sourceDirectory = path.resolve(options.sourceDirectory);
   const miraHome = path.resolve(options.miraHome ?? process.env['MIRA_HOME'] ?? path.join(os.homedir(), '.mira'));
-  const roots = [path.join(sourceDirectory, 'skills'), path.join(miraHome, 'skills')];
+  const roots = [
+    path.join(sourceDirectory, 'skills'),
+    path.join(miraHome, 'skills'),
+    path.join(os.homedir(), '.agents', 'skills'),
+  ];
   let previousDiagnostics = '[]';
   return async signal => {
     signal.throwIfAborted();
     const skillPaths: string[] = [];
     // An absent optional directory is an empty catalog, including when the user
-    // has never created ~/.mira/skills. Check again at the next natural request.
+    // has never created ~/.mira/skills or ~/.agents/skills. Check again at the
+    // next natural request, without enabling Pi's project/ancestor discovery.
     for (const root of roots) {
       try { await stat(root); skillPaths.push(root); }
       catch (error) {
