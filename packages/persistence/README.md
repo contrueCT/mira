@@ -241,3 +241,9 @@ another store. Every query remains fixed-Mira, parameterized and read-only with 
 existing timeout and identity checks. A tool outcome or Wake association may be
 completed between pages; revision mismatch explicitly requires a restart. See
 [ADR 0028](../../docs/adr/0028-tool-output-budget.md).
+
+History text-page envelopes intentionally omit original `miraId` and `occurredAt`;
+these values remain exactly preserved inside the paged JSON. Only fixed-size
+id/kind/revision and numeric lengths/offsets accompany bounded text, so a long
+writer-valid timestamp cannot make all pages exceed the response budget. Fixed
+Mira scope is enforced by the query, never a model-supplied parameter.

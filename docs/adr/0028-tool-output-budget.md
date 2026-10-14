@@ -21,7 +21,7 @@ which previously made larger records unreachable through `history_read`.
 - At the disposable active-projection boundary, cap each tool result's combined
   UTF-8 text at 16,384 bytes, including an explicit incomplete-preview notice and
   actionable complete-evidence reference. This covers built-ins, extensions,
-  management, History and child tools using the same runtime. Short results remain
+  management, History and child tools using the same runtime. Short results with sufficient room for media annotations remain
   unchanged. Non-text blocks and metadata keep their original meaning; native
   media still follows its separate existing hydration budget.
 - Use the existing `writeOverflowInput` / `writeWakeInput` immutable ordinary-file
@@ -38,9 +38,22 @@ which previously made larger records unreachable through `history_read`.
   are reachable; a preview never implies the omitted text was reviewed.
 - Recovery first validates original outcome/transcript equality and repairs a
   known outcome missing its append. Only then does it derive bounded projections.
-  Restart reconstructs missing spool files from canonical evidence; a conflicting
-  existing file fails without replacement. Spool/ownership failure prevents model
+  Each fresh runtime restores all potentially referenced result files from the
+  full verified history, including entries entirely outside the compacted tail.
+  Active references are verified on every projection. Archived files are checked
+  once per runtime instance, tracked by disposable immutable History IDs, avoiding
+  repeated lifetime file I/O on each request; the next runtime checks them again.
+  Missing files reconstruct from canonical evidence and conflicts fail without
+  replacement. This cache is not recovery authority. Spool/ownership failure prevents model
   dispatch but cannot relabel a committed known outcome as unknown or replay it.
+- Read-result media annotations get a conservative model-independent allowance
+  when deciding which canonical results need complete-evidence files. Thus even a
+  near-limit original whose file is referenced only after hydration can be restored
+  after compaction or a model change. At the final stream boundary, preserve every
+  media annotation and native-video slot, shortening only original preview text to
+  fit the 16 KiB total. If annotations plus the reference cannot fit, fail before
+  provider dispatch rather than hide them. Request-local native-video/base64 and
+  omission notes never enter the canonical evidence file.
 - Automatic and explicit compaction consume the same bounded projection. Candidate
   fit checks also use it, while authoritative original history remains intact.
   Existing request-budget and compaction logic still bounds aggregate context;
@@ -56,14 +69,18 @@ The model uses the same `history_read` tool with optional `offset` and `revision
 - Omit `offset` for a complete original or an honest `too_large` response.
 - Pass `offset=0` to begin JSON-text pagination, including originals over 1 MiB.
   Text budgets default to 4,096 bytes and accept 4..65,536; response metadata adds
-  bounded overhead. PostgreSQL returns at most `floor(maxBytes/4)` code points per
+  bounded overhead. The page envelope includes only fixed-size identity/revision
+  and numeric pagination fields; original Mira/timestamp strings appear only in
+  paged JSON text, so large valid source metadata cannot make every page too large.
+  PostgreSQL returns at most `floor(maxBytes/4)` code points per
   page, guaranteeing the UTF-8 bound without slicing a multibyte character.
 - Copy `nextOffset` and the first page's SHA-256 `revision` for continuation.
   Offsets count Unicode code points, not JavaScript UTF-16 units or bytes. A null
   next offset is the end. Join page `text` in order to reconstruct the original.
 - Every page is a fixed-Mira read-only query over the original identity/detail
   sources. Only its bounded slice crosses the database connection. Source identity
-  checks, timestamps and parameter validation remain enforced. Tool/Wake records
+  checks and parameter validation remain enforced; original timestamps remain
+  exactly preserved in the paged JSON. Tool/Wake records
   can acquire an outcome or final association; if the source changes, the next
   revision-bound page rejects and tells the caller to restart. There is no cached
   snapshot or new pagination state table. Database timeouts still apply.
@@ -77,7 +94,8 @@ recovery and full SDK compaction. `tests/unit/history.test.mts` covers SQL bound
 scope, code-point offsets, request validation and revision failure.
 
 `tests/integration/history.test.mts` reconstructs a >1 MiB Unicode record through
-real database pages and rejects a changed Wake revision.
+real database pages, including an oversized writer-valid timestamp, and rejects
+a changed Wake revision.
 `tests/recovery/tool-output.test.mts` and its process fixture exercise actual
 PostgreSQL process death after outcome commit, fresh-process reconstruction and
 real runtime `history_read` pagination. The capabilities browser gate adds

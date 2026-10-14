@@ -146,7 +146,7 @@ export class FixtureHistoryReader implements HistoryReader {
     if (request.offset > characters.length || (request.offset > 0 && request.revision !== revision) || (request.revision !== undefined && request.revision !== revision)) invalid('Invalid text continuation; restart at offset=0');
     const text = characters.slice(request.offset, request.offset + Math.floor(maxBytes / 4)).join('');
     const end = request.offset + [...text].length;
-    return { kind: entry.kind, id: entry.id, miraId: entry.miraId, occurredAt: entry.occurredAt, format: 'json-text', text,
+    return { kind: entry.kind, id: entry.id, format: 'json-text', text,
       offset: request.offset, nextOffset: end < characters.length ? end : null, totalChars: characters.length, totalBytes: Buffer.byteLength(json), revision };
   }
   async page(): Promise<never> { throw new Error('This tool-only fixture does not implement timeline pagination'); }

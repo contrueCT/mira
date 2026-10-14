@@ -505,8 +505,10 @@ original History UUID and initial `offset=1, limit=3` guidance. No special reade
 new database table or replacement state store is added.
 
 Recovery validates/repairs the full durable evidence before deriving the bounded
-projection. Missing spool files are reconstructed, conflicts fail without overwrite,
-and spool failure never fabricates an unknown effect or replays a known one.
+projection. A fresh runtime restores even compacted-out result files; active
+references are verified on every projection, while archived files are checked once
+per instance to avoid repeated lifetime file I/O. Missing files are reconstructed,
+conflicts fail without overwrite, and spool failure never fabricates an unknown effect or replays a known one.
 Compaction and candidate budget checks use the same projection; originals stay
 unchanged in History. Non-text content keeps the existing media rules. Aggregate
 request budgets still apply separately. See [ADR 0028](../../docs/adr/0028-tool-output-budget.md).
@@ -516,3 +518,12 @@ above 1 MiB. Copy `nextOffset` and the first-page `revision`; concatenate page t
 in order. Offsets count Unicode code points. Paged `maxBytes` defaults to 4096,
 range 4..65536; omission of `offset` keeps the original complete-read behavior.
 A source revision change requires restarting at zero, never joining stale pages.
+
+The 16 KiB tool text cap also applies after request-local media hydration. Its
+omission notices and media-reference slots remain intact; only original preview
+text is shortened, without moving native-video indices or persisting hydrated
+base64. Canonical near-limit media results reserve possible annotation space when
+deciding whether they need evidence files, so those files remain reconstructible
+after compaction/model changes. Annotations that cannot fit fail before dispatch.
+History text-page envelopes omit unbounded original Mira/timestamp strings; their
+exact values remain inside the lossless paged JSON text.

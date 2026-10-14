@@ -448,15 +448,14 @@ export class PostgresHistoryReader implements RunHistoryReader {
       SELECT *, substring(text FROM $3::integer + 1 FOR $4::integer) AS part,
         char_length(text) AS chars, octet_length(text) AS bytes,
         encode(sha256(convert_to(text, 'UTF8')), 'hex') AS revision FROM serialized
-    ) SELECT json_build_object('kind', body->>'kind', 'id', body->>'id', 'miraId', body->>'miraId',
-      'occurredAt', body->>'occurredAt', 'format', 'json-text', 'text', part, 'offset', $3::integer,
+    ) SELECT json_build_object('kind', body->>'kind', 'id', body->>'id', 'format', 'json-text', 'text', part, 'offset', $3::integer,
       'nextOffset', CASE WHEN $3::integer + char_length(part) < chars THEN $3::integer + char_length(part) ELSE NULL END,
       'totalChars', chars, 'totalBytes', bytes, 'revision', revision) AS body, valid FROM page`;
     const page = response<HistoryTextPage>(await this.#query(bound(sql, '$5'), [this.miraId, request.id, request.offset, Math.floor(maxBytes / 4), 6 * maxBytes + 2048]));
     if (!page) return null;
     try {
       kind(page.kind); historyId(page.id);
-      if (page.miraId !== this.miraId || page.id !== request.id || !Number.isFinite(Date.parse(page.occurredAt))
+      if (Object.keys(page).sort().join(',') !== 'format,id,kind,nextOffset,offset,revision,text,totalBytes,totalChars' || page.id !== request.id
         || page.format !== 'json-text' || page.offset !== request.offset || typeof page.text !== 'string' || !page.text.isWellFormed()
         || Buffer.byteLength(page.text) > maxBytes || !/^[a-f0-9]{64}$/.test(page.revision)) throw Error();
       integer(page.totalChars, 0, 2_147_483_646, 'total text length'); integer(page.totalBytes, page.totalChars, Number.MAX_SAFE_INTEGER, 'total text bytes');

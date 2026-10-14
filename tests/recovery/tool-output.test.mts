@@ -8,7 +8,7 @@ import { createHistoryTools, type RecoveredContext } from '@mira/runtime-pi';
 import type { ToolCall } from '@earendil-works/pi-ai';
 import type { HistoryTextPage } from '@mira/life';
 import { createTestDatabase } from '../integration/database.mts';
-import { assistant, input, model, runtime, streamOf, toolCalls } from './fixtures.mts';
+import { assistant, input, model, runtime, scripted, streamOf, toolCalls } from './fixtures.mts';
 import { fullOutput, largeToolText, outputPath, outputSpool } from './tool-output-fixtures.mts';
 
 const exec = promisify(execFile);
@@ -33,6 +33,19 @@ test('real PostgreSQL process death after outcome commit restores full evidence,
     assert.equal(await readFile(outputPath(output), 'utf8'), original);
     assert.deepEqual(restarted.snapshot.executions, before.executions);
     assert.equal(await readFile(counter, 'utf8'), 'once\n');
+    const compactWriter = await db.acquire(miraId);
+    const compacting = runtime(compactWriter, scripted([assistant('Recent answer'), assistant(`Earlier complete evidence is available at ${outputPath(output)}`)]), {
+      model: { ...model, contextWindow: 200_000 }, writeOverflowInput: outputSpool(spool) });
+    await compacting.run(input('Recent unrelated question'));
+    const compacted = await compacting.compact({ keepRecentTokens: 256, reserveTokens: 512 });
+    assert.ok(!compacted.messages.some(message => message.role === 'toolResult' && message.toolCallId === 'durable-large'));
+    assert.match(JSON.stringify(compacted.messages), /batch.txt/);
+    await compactWriter.close(); await rm(outputPath(output));
+    const archived = JSON.parse((await child('recover')).stdout) as RecoveredContext;
+    assert.equal(await readFile(outputPath(output), 'utf8'), original, 'fresh process restores evidence outside the compacted tail');
+    assert.deepEqual(archived.snapshot, compacted.snapshot, 'file recovery never changes durable history');
+    assert.equal(await readFile(counter, 'utf8'), 'once\n');
+
   } finally { await db.close(); await rm(root, { recursive: true, force: true }); }
 });
 

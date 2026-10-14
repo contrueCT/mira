@@ -70,8 +70,7 @@ export interface HistoryTextRequest extends HistoryReference {
   revision?: string;
 }
 export interface HistoryTextPage extends HistoryMetadata {
-  miraId: string;
-  occurredAt: string;
+  /** Original scope/timestamp remain in text; the page envelope is bounded. */
   format: 'json-text';
   text: string;
   offset: number;

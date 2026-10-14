@@ -270,7 +270,7 @@ test('run refresh cursors retain an exact inclusive tuple while ordinary paginat
 });
 
 const revision = 'a'.repeat(64);
-const pageEntry = { kind: 'event' as const, id, miraId: 'mira-a', occurredAt: now, format: 'json-text' as const,
+const pageEntry = { kind: 'event' as const, id, format: 'json-text' as const,
   text: '😀中\\"', offset: 0, nextOffset: 4, totalChars: 2_000_000, totalBytes: 3_000_000, revision };
 
 test('History text pages keep database transfer bounded and preserve Unicode with explicit continuation identity', async t => {
@@ -280,6 +280,8 @@ test('History text pages keep database transfer bounded and preserve Unicode wit
   assert.match(query.sql, /substring\(text FROM \$3::integer \+ 1 FOR \$4::integer\)/);
   assert.match(query.sql, /sha256\(convert_to\(text, 'UTF8'\)\)/);
   assert.deepEqual(query.parameters, ['mira-a', id, 0, 8, 6 * 32 + 2048]);
+  const envelope = query.sql.slice(query.sql.lastIndexOf("SELECT json_build_object('kind', body"));
+  assert.ok(!envelope.includes('miraId') && !envelope.includes('occurredAt'), 'unbounded original metadata belongs only in paged text');
   assert.equal((query.sql.match(/WHERE h.mira_id = \$1 AND h.id = \$2::uuid/g) ?? []).length, 4);
   assert.equal(mock.queries[0]?.sql, 'BEGIN READ ONLY');
   assert.equal(mock.queries.at(-1)?.sql, 'COMMIT');

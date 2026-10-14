@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, chmod, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createWorkspaceTools, extensionTools } from '@mira/server';
@@ -170,4 +171,107 @@ test('actual history_read dispatch pages an oversized fixture and rejects a stal
   }, { model: largeModel, tools }).run(input());
   assert.equal(state.snapshot.executions.length, 3); assert.ok(state.snapshot.executions.every(execution => execution.outcome));
   assert.deepEqual(state.recovery.operations, []);
+});
+
+
+test('fresh recovery reconstructs fully compacted-out tool files once; active references still revalidate on every recovery', async () => {
+  const root = await mkdtemp('/tmp/mira-tool-output-archived-');
+  try {
+    const writer = new MemoryWriter(); const writes: string[] = [];
+    const spool = outputSpool(path.join(root, 'spool'));
+    const writeOverflowInput = async (id: string, content: string) => { writes.push(id); return spool(id, content); };
+    await seed(writer, [input('old question'), toolCalls('archived-large'), { role: 'toolResult', toolCallId: 'archived-large', toolName: 'effect', content: [{ type: 'text', text: largeToolText }], isError: false, timestamp: 1001 }, assistant('old answer'), input('recent question'), assistant('recent answer')]);
+    const options = { model: largeModel, writeOverflowInput };
+    const active = runtime(writer, undefined, options);
+    const original = (await active.recover()).messages.find(message => message.role === 'toolResult'); assert.ok(original?.role === 'toolResult');
+    const target = outputPath(original), file = await readFile(target, 'utf8');
+    const afterFirst = writes.length;
+    await rm(target); await active.recover(); assert.equal(writes.length, afterFirst + 1); assert.equal(await readFile(target, 'utf8'), file);
+    await chmod(target, 0o600); await writeFile(target, 'active conflict');
+    await assert.rejects(active.recover(), /content conflict/);
+    await rm(target);
+    const compacted = await runtime(writer, scripted([assistant(`Earlier result remains available at ${target}`)]), options).compact({ keepRecentTokens: 256, reserveTokens: 512 });
+    assert.ok(!compacted.messages.some(message => message.role === 'toolResult' && message.toolCallId === 'archived-large'));
+    assert.match(JSON.stringify(compacted.messages), /batch.txt/);
+    const canonical = structuredClone(writer.state); await rm(target);
+    const fresh = runtime(writer, scripted([assistant('Continue without rereading old evidence'), assistant('Another continuation')]), options);
+    const beforeFresh = writes.length;
+    await fresh.recover(); assert.equal(writes.length, beforeFresh + 1); assert.equal(await readFile(target, 'utf8'), file);
+    assert.deepEqual(writer.state, canonical);
+    await fresh.recover(); await fresh.run(input('continue')); await fresh.run(input('continue again'));
+    assert.equal(writes.length, beforeFresh + 1, 'archived lifetime evidence is not repeatedly read/written on natural requests');
+    await chmod(target, 0o600); await writeFile(target, 'archived conflict');
+    await assert.rejects(runtime(writer, undefined, options).recover(), /content conflict/);
+    assert.equal(await readFile(target, 'utf8'), 'archived conflict');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+for (const mode of ['unsupported', 'native', 'media-budget'] as const) test(`final ${mode} hydration stays inside the text cap and preserves exact canonical evidence and media slots`, async () => {
+  const root = await mkdtemp('/tmp/mira-tool-output-hydrated-');
+  try {
+    const writer = new MemoryWriter(), bytes = Buffer.from('synthetic-native-video-do-not-persist');
+    const reference = { id: randomUUID(), name: 'clip.mp4', mimeType: 'video/mp4', size: mode === 'media-budget' ? 13 * 1024 * 1024 : bytes.length,
+      sha256: createHash('sha256').update(bytes).digest('hex'), path: '/private/clip.mp4' };
+    const references = mode === 'native' ? [reference, { ...reference, id: randomUUID(), name: 'second.mp4', path: '/private/second.mp4' }] : [reference];
+    const originalText = 'a'.repeat(mode === 'native' ? 30_000 : 16_300);
+    let requests = 0, resolves = 0;
+    const selected = mode === 'unsupported' ? largeModel : { ...largeModel, api: 'google-generative-ai' as const, provider: 'google', id: 'gemini-synthetic-budget' };
+    const options = { model: selected, writeOverflowInput: outputSpool(path.join(root, 'spool')),
+      tools: [{ ...effectTool(async () => ({ content: [{ type: 'text' as const, text: originalText }], details: { version: 1, type: 'attachment-read', attachments: references } })), name: 'read' }],
+      resolveAttachment: async () => { resolves++; assert.equal(mode, 'native'); return bytes; } };
+    const state = await runtime(writer, async (_model, context) => {
+      requests++;
+      if (requests === 1) return streamOf({ ...toolCalls('hydrated-read'), content: [{ type: 'toolCall', id: 'hydrated-read', name: 'read', arguments: {} }] });
+      const output = context.messages.find(message => message.role === 'toolResult'); assert.ok(output?.role === 'toolResult');
+      assert.ok(textBytes(output) <= TOOL_OUTPUT_TEXT_BYTES);
+      if (mode === 'unsupported') assert.match(JSON.stringify(output.content), /The selected model cannot consume native video\. Video bytes were NOT provided/);
+      else if (mode === 'media-budget') assert.match(JSON.stringify(output.content), /video bytes were NOT provided because this tool result exceeds the remaining 12 MiB/);
+      else {
+        const videos = (output as typeof output & { miraNativeVideos: Array<{ contentIndex: number; data: string; attachmentId: string }> }).miraNativeVideos;
+        assert.equal(videos.length, 2);
+        for (const [index, video] of videos.entries()) {
+          assert.equal(video.data, bytes.toString('base64')); assert.equal(video.attachmentId, references[index]!.id);
+          const slot = output.content[video.contentIndex]; assert.ok(slot?.type === 'text'); assert.match(slot.text, new RegExp(references[index]!.id));
+        }
+      }
+      const full = await fullOutput(output); assert.equal(full.content[0]?.type === 'text' && full.content[0].text, originalText);
+      assert.ok(!JSON.stringify(full).includes('miraNativeVideos')); assert.ok(!JSON.stringify(full).includes(bytes.toString('base64')));
+      assert.ok(!(await readFile(outputPath(output), 'utf8')).includes(bytes.toString('base64')));
+      assert.deepEqual(full, writer.state.executions[0]?.outcome?.payload);
+      return streamOf(assistant('Only the actual supplied media and text were reviewed.'));
+    }, options).run(input());
+    assert.equal(requests, 2); assert.equal(resolves, mode === 'native' ? 2 : 0);
+    assert.ok(!JSON.stringify(state.snapshot).includes('miraNativeVideos'));
+    assert.deepEqual((await runtime(writer, undefined, options).recover()).messages, state.messages);
+    if (mode === 'unsupported') {
+      const original = state.messages.find(message => message.role === 'toolResult'); assert.ok(original?.role === 'toolResult');
+      const target = outputPath(original), file = await readFile(target, 'utf8');
+      const compacting = runtime(writer, scripted([assistant('Recent answer'), assistant(`Earlier result is available at ${target}`)]), options);
+      await compacting.run(input('A newer question'));
+      const compacted = await compacting.compact({ keepRecentTokens: 256, reserveTokens: 512 });
+      assert.ok(!compacted.messages.some(message => message.role === 'toolResult' && message.toolCallId === 'hydrated-read'));
+      await rm(target);
+      await runtime(writer, undefined, { ...options, model: { ...largeModel, api: 'google-generative-ai', provider: 'google', id: 'gemini-after-restart' } }).recover();
+      assert.equal(await readFile(target, 'utf8'), file, 'near-limit media originals remain reconstructible outside the tail and after model change');
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('media annotations that cannot fit fail before provider dispatch without dropping slots or persisting hydrated bytes', async () => {
+  const root = await mkdtemp('/tmp/mira-tool-output-media-too-large-');
+  try {
+    const writer = new MemoryWriter(), bytes = Buffer.from('private-native-byte'); let requests = 0;
+    const references = Array.from({ length: 8 }, (_, index) => ({ id: randomUUID(), name: `clip-${index}.mp4`, mimeType: 'video/mp4', size: bytes.length,
+      sha256: createHash('sha256').update(bytes).digest('hex'), path: '/' + 'p'.repeat(3_000) + index }));
+    const options = { model: { ...largeModel, api: 'google-generative-ai' as const, provider: 'google', id: 'gemini-oversized-annotations' },
+      writeOverflowInput: outputSpool(path.join(root, 'spool')), resolveAttachment: async () => bytes,
+      tools: [{ ...effectTool(async () => ({ content: [{ type: 'text' as const, text: 'original small read' }], details: { version: 1, type: 'attachment-read', attachments: references } })), name: 'read' }] };
+    await assert.rejects(runtime(writer, () => { requests++; return streamOf({ ...toolCalls('huge-media-notes'), content: [{ type: 'toolCall', id: 'huge-media-notes', name: 'read', arguments: {} }] }); }, options).run(input()), /media annotations.*exceed/);
+    assert.equal(requests, 1); assert.ok(writer.state.executions[0]?.outcome);
+    assert.ok(!JSON.stringify(writer.state).includes('miraNativeVideos')); assert.ok(!JSON.stringify(writer.state).includes(bytes.toString('base64')));
+    const state = await runtime(writer, undefined, options).recover(); assert.deepEqual(state.recovery.operations, []);
+    const result = state.messages.find(message => message.role === 'toolResult'); assert.ok(result?.role === 'toolResult');
+    assert.deepEqual(await fullOutput(result), writer.state.executions[0]?.outcome?.payload);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
