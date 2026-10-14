@@ -17,7 +17,7 @@ const run = promisify(execFile);
 const names = ['pdf', 'doc', 'transcribe', 'agent-browser', 'mira-web-search'];
 const bodyHeadings = ['# PDF Skill', '# DOCX Skill', '# Audio Transcribe', '## Mira runtime setup', '# Public web search and extraction'];
 
-test('bundled public skills are discovered by the real loader and read only through ordinary runtime tools', async t => {
+for (const worker of [false, true]) test(`${worker ? 'worker' : 'Mira'} bundled public skills use the real loader and ordinary read tools`, async t => {
   const miraHome = await mkdtemp(path.join(os.tmpdir(), 'mira-bundled-skills-'));
   t.after(() => rm(miraHome, { recursive: true, force: true }));
   const diagnostics: unknown[] = [];
@@ -34,9 +34,10 @@ test('bundled public skills are discovered by the real loader and read only thro
   const read = createWorkspaceTools(sourceDirectory).find(tool => tool.name === 'read')!;
   let requests = 0;
   await new PiDurableRuntime({ writer, model: { ...model, contextWindow: 131_072 }, tools: [read], loadSkills: loader,
-    miraPrompt: { environmentContext: 'Offline bundled skill fixture', authorizationContext: 'Synthetic request to inspect skill instructions' },
+    ...(worker ? {} : { miraPrompt: { environmentContext: 'Offline bundled skill fixture', authorizationContext: 'Synthetic request to inspect skill instructions' } }),
     streamFn: (_model, context) => {
       const system = getCurrentSystemPrompt(context.messages);
+      if (worker) assert.doesNotMatch(system, /# Mira System Prompt|miraMemory/);
       for (const skill of selected) assert.ok(system.includes(skill.name));
       assert.doesNotMatch(system, /Mira adaptation:|# PDF Skill|# Audio Transcribe/);
       const index = requests++;
