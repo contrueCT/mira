@@ -85,7 +85,7 @@ The integration command requires an explicit local `mira_test` database and Post
 
 checkpoint 与 receipt 由只追加表保护；相同输入可重试，替换恢复输入、重新关联不同 commit 或更改无变化结论均拒绝。存在待处理 checkpoint 时，`completeWakeRun` 与 SQL 触发器都禁止完成；`load`/Wake 恢复核对 final 关联和完成状态。所有方法沿用专用连接、实际锁与 epoch 检查。快照 lineage 只说明该 Wake 结束时观察到工作空间版本，不能据此声称全部变更由 agent 创作。
 
-`migrate({direction:'down'})` 一次仅回滚一个迁移。当前六个迁移依次为原始上下文、Wake 队列、Memory lineage、History 索引、Dreaming progress、单次日程；六次 down 才回到初始空库。History 索引回滚不删除原始记录，其它迁移回滚可能丢失数据，只能用于显式隔离测试，不能自动清理用户库。
+`migrate({direction:'down'})` 一次仅回滚一个迁移。当前八个迁移依次为原始上下文、Wake 队列、Memory lineage、History 索引、Dreaming progress、单次日程、用户补充输入、子代理；八次 down 才回到初始空库。History 索引回滚不删除原始记录，其它迁移回滚可能丢失数据，只能用于显式隔离测试，不能自动清理用户库。
 
 ## Read-only History
 

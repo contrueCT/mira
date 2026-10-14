@@ -37,3 +37,4 @@
 见 ADR 0017。`external-http.ts` 和 `http.ts` 在既有 127.0.0.1 listener 上提供三条 `/api/external/*` 路由，Web 同源规则不变。外部请求拒绝浏览器来源，逐次校验 sender/token；`external-access.ts`/`external-access-cli.mts` 管理源码、Memory、artifacts 外的私有配置，默认关闭、CLI 无 token 输出、下次认证生效。`external-ingress.ts` 绑定 external 来源并使用同一 writer；事件与 Wake 保持完整不可变信封。sendNotification 仅保存并投影带来源/时间的 notice，不发模型请求。Secrets 不进入 Event/Context/日志；普通 Shell 与同 OS 账户边界不变。
 
 - `scheduling.ts` 是独立单次UTC投递组装与timer，使用同一fenced writer和Event/Wake队列；不停/重试失败认知、不改Dreaming。日期/时区/提醒策略仅在扩展，见ADR 0022。
+- 组合边界：child wait 查询当前已claim run 的持久 pending input 并监听已提交提示，补 intent→execute 空窗；child completion 与调度都只入普通队列，后台结果不清除失败主轮。child skills 仅独立元数据及普通 read，不能注入主persona/Memory。

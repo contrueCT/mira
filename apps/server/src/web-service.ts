@@ -82,6 +82,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   readonly #attachments: AttachmentStore;
   readonly #writer: DreamingWriter & LiveInputWriter & SubagentWriter;
   readonly #subagents: SubagentManager;
+  readonly #unsubscribeUserInput: () => void;
   readonly #history: RunHistoryReader;
   readonly #subagentReader: SubagentReader;
   readonly #childHistory: (streamId: string) => RunHistoryReader;
@@ -103,6 +104,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   private constructor(options: WebServiceOptions, writer: DreamingWriter & SchedulingWriter & LiveInputWriter & SubagentWriter, history: RunHistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, attachments: AttachmentStore, subagents: SubagentManager, subagentReader: SubagentReader, childHistory: (streamId: string) => RunHistoryReader, host?: ExtensionHost) {
     this.#subagentReader = subagentReader; this.#childHistory = childHistory; this.#subagents = subagents; this.#attachments = attachments; this.#options = options; this.#writer = writer; this.#history = history; this.#settings = settings;
     this.#settingsValue = settingsValue; this.#loop = loop; this.#host = host;
+    this.#unsubscribeUserInput = writer.onLiveInput(() => subagents.onUserInput());
     this.external = createExternalIngress(writer, () => this.#kick());
     if (host) this.#deliveries = new DeliveryTimer(async () => {
       if (this.#closed || writer.signal.aborted) return null;
@@ -152,10 +154,10 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       const extensionHost = host;
       const management = extensionHost ? extensionManagementTools(extensionHost, () => writer.listScheduledDeliveries()) : [];
       const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content });
-      subagents = new SubagentManager({ writer, acquire: streamId => persistence.acquire(streamId),
+      subagents = new SubagentManager({ writer, loadSkills, acquire: streamId => persistence.acquire(streamId),
         tools: streamId => [...createWorkspaceTools(cwd), ...createHistoryTools(persistence.history(streamId))],
         writeOverflowInput, ...(roots ? { memoryRoot: roots.memoryRoot } : {}),
-        onCompletion: () => { if (service) service.#kick(); },
+        onCompletion: () => { if (service && !service.#error) service.#kick(); },
         onFailure: error => { if (service && !service.#closed) service.#error = PersistenceFailureNotice.from(error) ?? publicFailure; },
       });
       await subagents.initialize();
@@ -163,13 +165,13 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       const loop = new WakeLoop({ writer,
         writeOverflowInput,
         ...(roots ? { beforeComplete: memoryCheckpointHook(writer, roots.memoryRoot, roots.repositoryId) } : {}),
-        createRuntime: () => {
+        createRuntime: run => {
           service!.#modelFailure = null;
           const current = service!.#settingsValue;
           if (!options.synthetic && !hasSelectedWebApiKey(current)) throw Error('Choose a model with a saved API key first');
           const transport = options.synthetic ? { model: options.syntheticModel ?? demoModel, streamFn: options.syntheticStream ?? syntheticStream } : settings.transport(current, { onFailure: failure => { service!.#modelFailure = failure; } });
           const childTransport = options.synthetic ? transport : settings.transport(current);
-          const childTools = createSubagentTools(children, childTransport);
+          const childTools = createSubagentTools(children, childTransport, { hasPendingUserInput: async () => (await writer.loadLiveInputs(run.id)).some(input => input.inputRecordId === null) });
           let contextProviders: RegisteredContextProvider[] = [];
           return new PiDurableRuntime({ ...(options.autoCompaction ? { autoCompaction: options.autoCompaction } : {}), writer, ...transport, writeOverflowInput, resolveAttachment: reference => attachments.hydrate(reference), tools: [...baseTools, ...childTools], loadSkills,
             ...(extensionHost ? { prepareTools: async () => {
@@ -259,7 +261,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     }
     // A duplicate is only a receipt check. Never retry cognition merely because
     // an uncertain HTTP response was retried with the same envelope.
-    if (receipt === 'inserted') { this.#subagents.onUserInput(); this.#kick(); }
+    if (receipt === 'inserted') this.#kick();
     return { id: input.id, receipt };
   }
   async timeline(before?: string): Promise<Timeline> {
@@ -407,7 +409,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   }
   async close(): Promise<void> {
     if (this.#closed) return;
-    this.#closed = true; this.#abort.abort(new Error('Mira is stopping'));
+    this.#closed = true; this.#unsubscribeUserInput(); this.#abort.abort(new Error('Mira is stopping'));
     await this.#deliveries?.close();
     await this.#dreaming?.close();
     await this.#subagents.close();

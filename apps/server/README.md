@@ -125,3 +125,13 @@ publication. Completion enters the normal main Event/Wake queue. Followup retain
 prior results and recovery observations. Existing run details display lifecycle
 state; the main UI gains no entry point. See ADR 0025 for context and cancellation
 limits and the distinction from a sandbox or persistent job platform.
+
+### Combined scheduling, live input and children
+
+Only committed Web live-input notifications release an active child wait. Each
+wait also checks pending input for its already-claimed parent run, including input
+committed between the tool intent and execute call. This never cancels the child.
+Child completion and scheduled deadlines remain ordinary queued Event/Wakes;
+background completion does not clear an errored main run or implicitly retry it.
+Children refresh the same file-skill metadata at natural requests through their
+own transcript, without main persona/Memory bootstrap or checkpoint ownership.

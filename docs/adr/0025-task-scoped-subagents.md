@@ -102,3 +102,13 @@ only Mira decides what to relay.
 See [subagent acceptance](../acceptance/subagents.md). Offline Pi mechanics,
 PostgreSQL/restart/service integration, browser UI and live model behavior are
 separate claims. No live provider call is made by this feature's tests.
+
+## Combined feature assembly
+
+The integrated server passes the claimed Wake to tool assembly. `subagent_wait`
+checks that run's durable pending supplemental input as well as committed input
+notifications, so the interval between tool intent and execute cannot lose user
+attention. Completion stays an ordinary queued result and does not clear a failed
+parent run. Child `loadSkills` uses the ordinary source/Mira-home metadata loader
+and a standalone durable system section; it does not render the main Mira persona,
+load main Memory, or read skill bodies automatically.

@@ -380,3 +380,20 @@ test('followup committed during the final registry read is not stranded behind c
     assert.equal(calls, 2); assert.deepEqual(f.errors, []);
   } finally { release.resolve(); await f.manager.close(); }
 });
+
+test('wait observes committed input before execution and while its admission read is in flight', async () => {
+  const f = fixture(); const release = deferred(); const queryEntered = deferred(); const queryRelease = deferred();
+  const t = transport(async () => { await release.promise; return streamOf(assistant('child completes later')); });
+  try {
+    const child = await f.manager.spawn('wait-admission', 'Independent work', 'none', t);
+    await until(() => f.parent.children[0]?.turns[0]?.status === 'running');
+    // The commit notification can precede tool execute, after its durable intent.
+    f.manager.onUserInput();
+    assert.equal((await f.manager.wait(child.id, 10_000, undefined, async () => true)).reason, 'user_input');
+    assert.equal(f.parent.children[0]!.turns[0]!.status, 'running');
+    const waiting = f.manager.wait(child.id, 10_000, undefined, async () => { queryEntered.resolve(); await queryRelease.promise; return false; });
+    await queryEntered.promise; f.manager.onUserInput(); queryRelease.resolve();
+    assert.equal((await waiting).reason, 'user_input');
+    assert.equal((await f.manager.wait(child.id, 0, undefined, async () => false)).reason, 'timeout', 'already consumed input cannot poison later waits');
+  } finally { release.resolve(); queryRelease.resolve(); await f.manager.close(); }
+});
