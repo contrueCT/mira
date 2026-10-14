@@ -230,3 +230,13 @@ test('external SDK stays platform independent and server uses only its public co
     }
   });
 });
+
+
+test('native PTY dependency is allowed only at server composition', async () => {
+  await fixture(async root => {
+    await writeFile(path.join(root, 'apps/server/src/pty-allowed.ts'), "import type { IPty } from 'node-pty'; export type NativePty = IPty;\n");
+    assert.deepEqual(await checkBoundaries(root), []);
+    await writeFile(path.join(root, 'packages/runtime-pi/src/pty-forbidden.ts'), "import 'node-pty';\n");
+    assert.ok((await checkBoundaries(root)).some(error => error.includes('external import not allowed node-pty')));
+  });
+});

@@ -165,3 +165,16 @@ production remains the explicit credential-bound provider path. See ADR 0029.
 设置 → 访问可启用/修改/关闭共用密码，默认关闭。启用后全部私有 Web API 和附件需登录；修改或关闭需当前密码。登录最长 12 小时，服务重启后重登。密码仅以 scrypt hash 存入私有 `web-access.json`。
 
 默认仅监听 `127.0.0.1`；局域网可显式设置 `MIRA_HOST=0.0.0.0 MIRA_PUBLIC_ORIGIN=http://<服务器LAN-IP>:3210` 后按原命令启动，客户端访问该 LAN IP。`0.0.0.0` 不是浏览器访问地址。关闭密码时所有能到达服务的人可访问 Mira；HTTP 不加密，公网使用须自行配置 HTTPS 反向代理并设置精确 HTTPS public origin、保持 Host。External SDK 仍仅允许回环访问。没有自动开放端口、TLS、代理部署或新账户系统。
+
+## Service-scoped terminals
+
+`TerminalManager` and `createTerminalTools` add `exec_command`, `write_stdin` and
+`terminal_close` and `terminal_list` beside the unchanged Pi bash tool. The Web/demo assembly owns the
+manager for its entire lifetime; main and each child stream get separate handles.
+Explicit PTY shells can retain cwd/env across turns. Commands are independent by
+default. Use returned byte offsets for lossless incremental reads and ordinary
+spool index/files for complete observed output. Shutdown cleans managed process
+groups; restart returns unavailable old handles and never replays effects.
+Native setup: `pnpm terminal:prepare` after script-disabled install. Mac/Linux only.
+See [ADR 0032](../../docs/adr/0032-persistent-terminal-processes.md) for bounds,
+cancellation, child isolation and supervision limits.

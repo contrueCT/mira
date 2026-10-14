@@ -40,3 +40,4 @@ ADR 0007 回归直接工具调用与模型普通澄清，保留 schema/参数、
 - 请求重试：`unit/model-retry.test.mts` 注入真实Pi SDK的HTTP/SSE故障，覆盖partial/取消/unknown不重放；`recovery/model-retry.test.mts`走真实PG/service/普通bash与重启，不能用离线fixture替代。浏览器fixture单独验证状态提示。
 
 - 网页密码：`unit/web-auth.test.mts` 验证 hash/cookie/限速/全API保护；`test:auth:e2e` 在真实 PG/HTTP/浏览器链路测试非loopback Host、登录/注销/改密/关闭/附件与截图，不使用真实凭据。
+- 终端：`unit/terminals.test.mts`真实spawn/PTY/进程树与owner崩溃；`recovery/terminals.test.mts`真实PG/service跨轮次与插话边界。执行前显式 `pnpm terminal:prepare`，Mac/Linux CI不可用mock替代真实PTY。

@@ -67,7 +67,7 @@ function toolResult<T>(context: TranscriptContext, callId: string): T {
   return JSON.parse(message.content[0].text) as T;
 }
 const event = (id: string) => ({ id, type: 'synthetic.generated-request', source: 'user' as const, occurredAt: '2026-10-05T08:00:00.000Z', payload: { text: `Synthetic generated lifecycle ${id}` } });
-const builtinNames = ['read', 'write', 'edit', 'grep', 'find', 'ls', 'bash', 'history_search', 'history_read', 'extension_inspect', 'extension_stage', 'extension_manage'];
+const builtinNames = ['read', 'write', 'edit', 'grep', 'find', 'ls', 'bash', 'terminal_list', 'exec_command', 'write_stdin', 'terminal_close', 'history_search', 'history_read', 'extension_inspect', 'extension_stage', 'extension_manage'];
 function messages(snapshot: RecoverySnapshot) {
   return decodeRecords(snapshot.records).flatMap(entry => entry.type === 'message' ? [entry.message] : []);
 }
