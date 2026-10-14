@@ -309,15 +309,23 @@ export class PiDurableRuntime implements CognitionRuntime {
     let current = await this.recoverInternal();
     for (const supplemental of await writer.loadLiveInputs(turn.id)) {
       const { request, inputRecordId } = supplemental;
+      const saved = inputRecordId ? current.entries.find(candidate => candidate.id === inputRecordId) : undefined;
+      const artifact = saved?.type === 'message' ? messageOverflowInput(saved.message) : undefined;
+      // A finalized Wake only validates durable evidence. Its spool is no
+      // longer needed for cognition and must not be recreated during completion.
+      const writeOverflow = finalized ? async (_id: string, content: string) => {
+        if (!artifact || artifact.bytes !== new TextEncoder().encode(content).byteLength)
+          throw new RecoveryBlockedError('Finalized live input overflow evidence differs from its source');
+        return artifact;
+      } : this.options.writeOverflowInput ?? (async () => { throw new Error('Live input overflow requires an ordinary file writer'); });
       const input = await prepareWakeTurn({ id: request.eventId, claimedAt: request.event.occurredAt,
         status: 'running', requests: [request], inputRecordId, finalRecordId: null },
-        this.options.writeOverflowInput ?? (async () => { throw new Error('Live input overflow requires an ordinary file writer'); }), 65_536);
+        writeOverflow, 65_536);
       const message: AgentMessage = Object.assign({ role: 'user' as const, content: input.input, timestamp: Date.parse(input.occurredAt) },
         input.attachments?.length ? { miraAttachments: structuredClone(input.attachments), miraAttachmentsInInput: true } : {},
         input.overflowInput ? { miraOverflowInput: structuredClone(input.overflowInput) } : {});
       if (inputRecordId) {
-        const entry = current.entries.find(candidate => candidate.id === inputRecordId);
-        if (entry?.type !== 'message' || !isDeepStrictEqual(entry.message, message)) throw new RecoveryBlockedError('Live input differs from its persisted message');
+        if (saved?.type !== 'message' || !isDeepStrictEqual(saved.message, message)) throw new RecoveryBlockedError('Live input differs from its persisted message');
       } else {
         if (finalized) throw new RecoveryBlockedError('Finalized Wake has an unread live input');
         const entry = messageEntry(message, current.entries.at(-1)?.id ?? null);

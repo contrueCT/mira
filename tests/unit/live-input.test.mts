@@ -157,3 +157,19 @@ for (const malformed of ['unknown-tool', 'invalid-arguments'] as const) test(`pe
   await entered.promise; await add(writer, 'correct-invalid-batch'); release.resolve(); await work;
   assert.equal(effects, 1); assert.equal(requests, 2); assert.ok(writer.run.finalRecordId);
 });
+
+test('finalized supplemental overflow validates durable evidence without requiring or rewriting its spool', async () => {
+  const writer = new LiveMemoryWriter(); let writes = 0, requests = 0;
+  await writer.receiveLiveInput(userEvent('large-live-input', 'large content '.repeat(6000)), userWake('large-live-input'));
+  await new PiDurableRuntime({ writer, model,
+    writeOverflowInput: async (id, content) => { writes++; return { path: `/tmp/${id}.txt`, bytes: Buffer.byteLength(content) }; },
+    streamFn: () => { requests++; return streamOf(assistant('Read the file when needed')); },
+  }).continueTurn(await writer.turn());
+  assert.equal(writes, 1);
+  for (const writeOverflowInput of [undefined, async () => { writes++; throw Error('A finalized Wake must not write files'); }]) {
+    await new PiDurableRuntime({ writer, model, ...(writeOverflowInput ? { writeOverflowInput } : {}),
+      streamFn: () => { requests++; throw Error('No new model request'); },
+    }).continueTurn({ ...await writer.turn(), input: '' });
+  }
+  assert.equal(writes, 1); assert.equal(requests, 1);
+});
