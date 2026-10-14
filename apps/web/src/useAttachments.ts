@@ -1,3 +1,4 @@
+import { browserUuid } from './uuid.ts';
 import { useEffect, useRef, useState } from 'react';
 import { errorText } from './api.ts';
 import { uploadAttachment, validateSelection } from './attachments.ts';
@@ -19,7 +20,7 @@ export function useAttachments() {
   };
   const add = (files: File[]) => {
     const error = validateSelection(ref.current.map(item => item.file), files); if (error) return error;
-    const added = files.map(file => ({ key: crypto.randomUUID(), file, controller: new AbortController() }));
+    const added = files.map(file => ({ key: browserUuid(), file, controller: new AbortController() }));
     update([...ref.current, ...added]); for (const draft of added) upload(draft); return null;
   };
   const remove = (key: string) => { ref.current.find(item => item.key === key)?.controller.abort(); update(ref.current.filter(item => item.key !== key)); };

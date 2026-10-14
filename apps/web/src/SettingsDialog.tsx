@@ -1,3 +1,4 @@
+import { browserUuid } from './uuid.ts';
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, RefObject } from 'react';
 import { ApiError, api, errorText } from './api.ts';
@@ -179,7 +180,7 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
     setLoadVersion(value => value + 1);
   };
   const addConnection = () => {
-    const id = `custom-${crypto.randomUUID().slice(0, 8)}`;
+    const id = `custom-${browserUuid().slice(0, 8)}`;
     const next: CustomConnectionWrite = { id, baseUrl: '', api: 'openai-completions', hasApiKey: false, models: [] };
     stopDiscovery(); setConnectionId(id); setModelDraft(blankModel());
     change(current => ({ ...current, selection: null, configuration: { ...current.configuration, customConnections: [...current.configuration.customConnections, next] } }));

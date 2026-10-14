@@ -50,17 +50,19 @@ test('optional password gates real private HTTP and attachments with remote Host
     };
     await start(); await page.goto(origin);
     await expect(page.locator('form.composer')).toBeVisible();
-    // Actual immutable attachment storage and PG receipt precede enabling auth.
-    const attachment = await page.evaluate(async () => {
-      const response = await fetch('/api/attachments?name=synthetic.txt', { method: 'POST', headers: { 'x-mira-client': 'web', 'content-type': 'application/octet-stream' }, body: 'private synthetic attachment' });
-      if (response.status !== 201) throw Error(`Upload failed: ${response.status}`);
-      return await response.json() as { id: string };
-    });
-    expect(await page.evaluate(async attachmentId => (await fetch('/api/messages', {
-      method: 'POST', headers: { 'x-mira-client': 'web', 'content-type': 'application/json' },
-      body: JSON.stringify({ id: crypto.randomUUID(), text: 'Password access synthetic test', occurredAt: new Date().toISOString(), attachmentIds: [attachmentId] }),
-    })).status, attachment.id)).toBe(201);
+    expect(await page.evaluate(() => window.isSecureContext)).toBe(false);
+    // Exercise production draft UUID generation, upload, receipt, PG attachment
+    // binding and runtime through the actual UI on an insecure LAN-style origin.
+    const picker = page.waitForEvent('filechooser');
+    await page.getByRole('button', { name: '添加附件', exact: true }).click();
+    await (await picker).setFiles({ name: 'synthetic.txt', mimeType: 'text/plain', buffer: Buffer.from('private synthetic attachment') });
+    await page.locator('form.composer textarea').fill('Password access synthetic test');
+    await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeEnabled();
+    await page.getByRole('button', { name: '发送消息', exact: true }).click();
     await expect.poll(async () => (await service!.timeline()).items.length).toBeGreaterThan(1);
+    const attachment = (await service!.timeline()).items.find(item => item.role === 'user')?.attachments?.[0];
+    expect(attachment).toBeDefined();
+    if (!attachment) throw Error('Actual user message did not persist its attachment');
     await access(page); await page.getByRole('switch', { name: '使用访问密码' }).check();
     await page.getByLabel('设置访问密码', { exact: true }).fill(password);
     await page.getByLabel('再次输入新密码', { exact: true }).fill(password);
