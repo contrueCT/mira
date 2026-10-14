@@ -222,3 +222,37 @@ test('registry metadata is paginated in SQL and recent-turn reads remain bounded
     assert.deepEqual(await db.store.subagents('different-parent').readSubagentCalls(['bounded-spawn-0']),[]);
   } finally { await db.close(); }
 });
+
+test('PostgreSQL pre-input child interruption retains original assignment and frozen constraints on explicit followup', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase();
+  let writer = await db.acquire('pre-input-parent'); let manager: SubagentManager | undefined;
+  let phase = 'spawn'; let childId = ''; let childCalls = 0; let seen = '';
+  const stream: StreamFn = (_m, context) => {
+    if (childContext(context.messages)) { childCalls++; seen = JSON.stringify(context.messages); return streamOf(assistant('recovered task')); }
+    if (context.messages.at(-1)?.role === 'toolResult') return streamOf(assistant('parent available'));
+    return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: `pre-input-${phase}`, name: phase === 'spawn' ? 'subagent_spawn' : 'subagent_send', arguments: phase === 'spawn' ? { task: 'ORIGINAL_TASK_SENTINEL', fork: 'all' } : { id: childId, message: 'FOLLOWUP_SENTINEL: inspect interrupted work' } }] });
+  };
+  const transport = { model: { ...model, contextWindow: 100_000 }, streamFn: stream };
+  const makeManager = (failBeforeInput: boolean) => new SubagentManager({ writer, acquire: async id => {
+    if (failBeforeInput) throw new Error('Synthetic process initialization interruption before child input');
+    return db.acquire(id);
+  }, tools: () => [], writeOverflowInput: async () => { throw Error('Unexpected overflow'); }, onCompletion: () => {}, onFailure: error => { throw error; } });
+  try {
+    manager = makeManager(true); await manager.initialize();
+    await new PiDurableRuntime({ writer, ...transport, tools: createSubagentTools(manager, transport) }).run(input('FROZEN_CONSTRAINT_SENTINEL: delegate the task'));
+    await until(async () => (await writer.listSubagents()).children[0]?.status === 'interrupted');
+    childId = (await writer.listSubagents()).children[0]!.id;
+    const child = (await writer.getSubagent(childId))!;
+    assert.equal((await db.admin.query('SELECT count(*) FROM context_records WHERE mira_id=$1', [child.streamId])).rows[0].count, '0');
+    assert.equal(childCalls, 0);
+    await manager.close(); await writer.close();
+    writer = await db.acquire('pre-input-parent'); manager = makeManager(false); await manager.initialize();
+    phase = 'followup';
+    await new PiDurableRuntime({ writer, ...transport, tools: createSubagentTools(manager, transport) }).run(input('Explicitly resume the worker'));
+    await until(async () => (await writer.getSubagent(childId))?.turns.at(-1)?.status === 'completed');
+    assert.equal(childCalls, 1);
+    assert.match(seen, /ORIGINAL_TASK_SENTINEL/); assert.match(seen, /FROZEN_CONSTRAINT_SENTINEL/); assert.match(seen, /FOLLOWUP_SENTINEL/);
+    assert.match(seen, /quoted reference data/);
+    assert.equal((await writer.getSubagent(childId))!.turns[0]!.status, 'interrupted');
+  } finally { await manager?.close(); await writer.close(); await db.close(); }
+});

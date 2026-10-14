@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import { getCurrentSystemMessage, getSystemMessageText, getCurrentTools } from '@earendil-works/pi-ai';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
@@ -254,4 +254,37 @@ test('followup arriving before cancelled tool cleanup cannot overwrite the cance
     await until(() => f.parent.children[0]!.turns[1]?.status === 'completed');
     assert.deepEqual(f.parent.children[0]!.turns[0], cancelled); assert.deepEqual(f.errors, []); assert.equal(calls, 2);
   } finally { release.resolve(); await f.manager.close(); }
+});
+
+
+test('followup after interruption before first child input retains original task and frozen constraints', async () => {
+  for (const mode of ['none', 'all'] as const) for (const systemOnly of [false, true]) {
+    const parent = new Parent(); await seed(parent, [input('FROZEN_CONSTRAINT_SENTINEL')]);
+    const f = fixture(parent); let seen = ''; let calls = 0;
+    const t = transport((_m, context) => { calls++; seen = JSON.stringify(context.messages); return streamOf(assistant('recovered')); });
+    const frozen = freezeSubagentContext(await parent.load());
+    const child = await parent.createSubagent(`crashed-${mode}-${systemOnly}`, {
+      task: 'ORIGINAL_TASK_SENTINEL',
+      fork: { mode, ...frozen, ...(mode === 'none' ? { text: '', bytes: 0 } : {}) },
+      model: { provider: model.provider, id: model.id, api: model.api, configurationHash: createHash('sha256').update(JSON.stringify(model)).digest('hex') },
+    }, 4);
+    if (systemOnly) {
+      const writer = new MemoryWriter();
+      await seed(writer, [{ role: 'system', content: 'task-scoped worker', timestamp: Date.now() }]);
+      f.writers.set(child.streamId, writer);
+    }
+    try {
+      await f.manager.initialize();
+      assert.equal(calls, 0);
+      await f.manager.send(`resume-${mode}-${systemOnly}`, child.id, 'FOLLOWUP_SENTINEL: inspect the interrupted assignment', t);
+      await until(() => parent.children[0]!.turns[1]!.status === 'completed');
+      assert.equal(parent.children[0]!.turns[0]!.status, 'interrupted');
+      assert.equal(calls, 1);
+      assert.match(seen, /ORIGINAL_TASK_SENTINEL/);
+      assert.match(seen, /FOLLOWUP_SENTINEL/);
+      if (mode === 'all') assert.match(seen, /FROZEN_CONSTRAINT_SENTINEL/);
+      else assert.doesNotMatch(seen, /FROZEN_CONSTRAINT_SENTINEL/);
+      assert.match(seen, /quoted reference data/);
+    } finally { await f.manager.close(); }
+  }
 });

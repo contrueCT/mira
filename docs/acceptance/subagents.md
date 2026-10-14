@@ -6,7 +6,7 @@ from test presence.
 ## Offline Pi runtime
 
 `tests/unit/subagents.test.mts` uses real Pi runtime/Agent calls with deterministic
-provider responses and a test-only in-memory registry. Twelve focused tests passed:
+provider responses and a test-only in-memory registry. Thirteen focused tests passed:
 
 - Parent continues before child completion; isolated child transcript and asynchronous result
 - Followup continues the same transcript; retrying a spawn call does not create another child
@@ -76,3 +76,19 @@ A fresh rereview and revised-head CI remain required.
 The earlier `d0f1c0d` passed complete CI run 38515268026, including PostgreSQL,
 SIGKILL/atomic rollback and all browser gates. That success does not establish the
 later review fixes; their exact-head result will be recorded separately.
+
+
+A second fresh review of `b0f8cf7` confirmed both earlier fixes and found two more
+P2 issues: pre-first-input interruption could lose the original assignment/frozen
+constraints on explicit followup, and run-record pagination could retain stale
+child statuses. The revision uses durable child user-input presence rather than
+turn sequence for initial reference injection, and monotonic child-turn merging.
+Offline regressions cover empty/system-only transcripts in fresh/inherited modes;
+PostgreSQL covers restart before first input, and web tests cover older/gap pages
+and stale responses. A further fresh review and exact-head CI are required.
+The known completion/error-latch guard and child skill discovery are assigned to
+the combined integration branch and must be verified there before merge.
+
+`b0f8cf7` subsequently passed complete CI run 38516468348 (PostgreSQL and all
+browser gates included). This predates the second review fixes above and is not
+evidence that those later fixes passed.

@@ -20,13 +20,18 @@ export function acceptRunRecords(current: RunRecordsState, page: { executions: R
     if (known >= 0) {
       const previous = executions[known]!;
       const durableToolOutcome = previous.kind === 'tool' && (previous.status === 'succeeded' || previous.status === 'failed');
+      const durableChildOutcome = previous.kind === 'subagent' && ['completed', 'failed', 'interrupted', 'cancelled'].includes(previous.status);
+      const advancingChild = previous.kind === 'subagent' && incoming.kind === 'subagent' &&
+        ((previous.status === 'queued' && incoming.status === 'running') ||
+          (['queued', 'running'].includes(previous.status) && ['completed', 'failed', 'interrupted', 'cancelled'].includes(incoming.status)));
       const unavailableRecord = previous.kind === 'unavailable' && previous.status === 'unavailable';
       const resolvedTool = previous.kind === 'tool' && previous.status === 'unknown' && ((incoming.kind === 'tool' && (incoming.status === 'succeeded' || incoming.status === 'failed')) || (incoming.kind === 'unavailable' && incoming.status === 'unavailable'));
-      // Tool outcomes are immutable after persistence. A later page can learn
+      // Tool outcomes and terminal child turns are immutable after persistence. A later page can learn
       // one after the tool has aged out of the latest page; any stale response
       // must still leave an already-known outcome or explicit display-limit
       // reference unchanged. The original oversized record remains on server.
-      if (!durableToolOutcome && !unavailableRecord && (!request || resolvedTool)) executions[known] = incoming;
+      if (!durableToolOutcome && !durableChildOutcome && !unavailableRecord &&
+        (previous.kind === 'subagent' ? advancingChild : (!request || resolvedTool))) executions[known] = incoming;
       insertion = known + 1; continue;
     }
     const nextKnown = page.executions.slice(i + 1).map(item => executions.findIndex(existing => existing.id === item.id)).find(index => index >= 0);

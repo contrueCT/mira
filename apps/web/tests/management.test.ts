@@ -144,3 +144,24 @@ test('an oversized durable result in an older gap page replaces unknown after le
   assert.deepEqual(state.executions.find(item => item.id === 'old-tool'), unavailable);
   assert.deepEqual(state.executions.map(item => item.id), ['old-tool', ...newer.map(item => item.id)]);
 });
+
+
+test('child turn status advances through older and gap pages without stale response regression', () => {
+  const child = (status: string): RunExecution => ({ ...execution('child-turn', status), kind: 'subagent', name: 'child-id' });
+  for (const terminal of ['completed', 'cancelled', 'interrupted', 'failed']) for (const gapPage of [false, true]) {
+    let state = acceptRunRecords(emptyRunRecords(), { executions: [child('queued')], nextCursor: gapPage ? null : 'older' });
+    if (gapPage) state = acceptRunRecords(state, { executions: [execution('newer', 'succeeded')], nextCursor: 'gap' });
+    const request = nextRunRecords(state)!;
+    state = acceptRunRecords(state, { executions: [child('running')], nextCursor: null }, request);
+    assert.equal(state.executions.find(item => item.id === 'child-turn')?.status, 'running');
+    state = acceptRunRecords(state, { executions: [child('queued')], nextCursor: null });
+    assert.equal(state.executions.find(item => item.id === 'child-turn')?.status, 'running');
+    state = acceptRunRecords(state, { executions: [child(terminal)], nextCursor: null }, request);
+    assert.equal(state.executions.find(item => item.id === 'child-turn')?.status, terminal);
+    for (const stale of ['queued', 'running', 'failed']) {
+      state = acceptRunRecords(state, { executions: [child(stale)], nextCursor: null }, request);
+      state = acceptRunRecords(state, { executions: [child(stale)], nextCursor: null });
+      assert.equal(state.executions.find(item => item.id === 'child-turn')?.status, terminal);
+    }
+  }
+});
