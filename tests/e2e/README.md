@@ -17,3 +17,12 @@ PostgreSQL, Pi runtime and actual bash effects. It verifies request cancellation
 one-tool rather than batch latency, unstarted sibling suppression, duplicate
 receipts and restart; only model output is scripted. Evidence is written beneath
 `test-results/live-input-real/`. Requires the same isolated test database.
+
+`pnpm test:capabilities:e2e` verifies the combined features in one real
+Chromium → HTTP → PostgreSQL → runtime chain: a fresh child discovers and reads
+an official skill, a reminder becomes due while a real bash tool is active,
+child completion also queues, and an ordinary user send steers before the next
+sibling tool. The next Wake consumes reminder and child result together, and
+service restart repeats neither effects nor receipts. Main Memory stays intact
+and child transcripts never create main Memory checkpoints. Only provider output
+is synthetic; desktop/narrow screenshots live in `test-results/agent-capabilities-real/`.

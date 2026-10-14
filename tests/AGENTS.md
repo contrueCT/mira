@@ -35,3 +35,5 @@ ADR 0007 回归直接工具调用与模型普通澄清，保留 schema/参数、
 - 附件：`test:attachments:e2e` 是独立真实浏览器→HTTP→PG→Wake/runtime→实际 `send_attachment`→不可变存储 gate（只替换 provider 返回），包括重启、重复 receipt、上传失败与截图。`recovery/attachments.test.mts` 为 PG 重启恢复，`unit/model-video-transport.test.mts` 为真实 SDK 请求的注入 fetch 验证，不可混称 live 模型。
 
 - 调度：`unit/reminders.test.mts`、`unit/scheduling-host.test.mts`验证扩展/DST/生命周期/timer；`integration/scheduling.test.mts`覆盖真实PG及COMMIT前后子进程死亡；`recovery/scheduling-service.test.mts`穿过真实reminder_create与活动Wake/重启补扫。后两者不能用mock或standalone SQL代替。
+
+- 组合：`recovery/agent-capabilities.test.mts` 用真实 PG/service 验证 child wait 的用户插话及后台完成不清除失败主轮；`test:capabilities:e2e` 将提醒到期、child skills/read/完成、单工具插话及重启不重复放入同一真实浏览器链路，不调用真实模型。

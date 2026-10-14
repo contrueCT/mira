@@ -8,7 +8,7 @@ import { testDatabaseUrl } from '../tests/integration/database.mts';
 
 // Fail, rather than skip, when the isolated real-database gate is unconfigured.
 const suite = process.argv[2];
-if (suite !== 'external' && suite !== 'management' && suite !== 'attachments' && suite !== 'live-input') throw Error('Choose external, management attachments or live-input real-browser suite');
+if (suite !== 'external' && suite !== 'management' && suite !== 'attachments' && suite !== 'live-input' && suite !== 'agent-capabilities') throw Error('Choose external, management, attachments, live-input or agent-capabilities real-browser suite');
 const connectionString = testDatabaseUrl();
 // Resolve the installed browser before replacing HOME. CI always uses the
 // official Playwright installation, never a developer executable override.
