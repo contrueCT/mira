@@ -55,6 +55,8 @@ jobs:
         run: pnpm test:management:e2e
       - name: Verify bidirectional attachments through browser, PostgreSQL and runtime
         run: pnpm test:attachments:e2e
+      - name: Verify live user steering through browser, PostgreSQL and single-tool execution
+        run: pnpm test:live-input:e2e
       - name: Keep synthetic browser verification evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
