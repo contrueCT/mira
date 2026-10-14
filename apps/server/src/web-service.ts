@@ -7,7 +7,7 @@ import { realpath, stat } from 'node:fs/promises';
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Api } from '@earendil-works/pi-ai';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { ExtensionHost, ExtensionRevisionConflictError, type LocalExtensionEntry, type RegisteredContextProvider, type ExtensionChange } from '@mira/extension-host';
-import { HistoryError, WakeLoop, type HistoryEntry, type RunHistoryReader, type DreamingWriter } from '@mira/life';
+import { HistoryError, WakeLoop, type HistoryEntry, type RunHistoryReader, type DreamingWriter, type SchedulingWriter } from '@mira/life';
 import { migrate, PostgresPersistence, PersistenceError } from '@mira/persistence';
 import { PiDurableRuntime, type AutoCompactionOptions, createHistoryTools, decodeRecords } from '@mira/runtime-pi';
 import { writeWakeInput, setupMemoryWorkspace, loadMemoryBootstrap, MemoryReadLimitError } from '@mira/workspace';
@@ -20,6 +20,7 @@ import { WebHttpError, type WebBackend } from './http.ts';
 import type { ManagementBackend, MessageStatusView, RunDetailView, ExtensionMutation, ExtensionMutationView, ExtensionsView } from './management.ts';
 import { assistantReply, extensionView, memoryReceipt, runExecution } from './management-projections.ts';
 import { createSkillLoader } from './skills.ts';
+import { DeliveryTimer, extensionScheduling } from './scheduling.ts';
 import { DreamingScheduler, dreamingInstruction, dreamingPolicy, type DreamingOptions } from './dreaming.ts';
 import { createExternalIngress, type ExternalIngress } from './external-ingress.ts';
 
@@ -82,6 +83,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   readonly #settings: WebSettingsStore;
   readonly #loop: WakeLoop;
   readonly #host: ExtensionHost | undefined;
+  readonly #deliveries: DeliveryTimer | undefined;
   readonly #dreaming: DreamingScheduler | undefined;
   readonly #abort = new AbortController();
   #drain: Promise<void> | undefined;
@@ -93,10 +95,18 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   #settingsGeneration = 0;
   #kickRequested = false;
   readonly #cache = new Map<string, Timeline['items'][number] | null>();
-  private constructor(options: WebServiceOptions, writer: DreamingWriter, history: RunHistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, attachments: AttachmentStore, host?: ExtensionHost) {
+  private constructor(options: WebServiceOptions, writer: DreamingWriter & SchedulingWriter, history: RunHistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, attachments: AttachmentStore, host?: ExtensionHost) {
     this.#attachments = attachments; this.#options = options; this.#writer = writer; this.#history = history; this.#settings = settings;
     this.#settingsValue = settingsValue; this.#loop = loop; this.#host = host;
     this.external = createExternalIngress(writer, () => this.#kick());
+    if (host) this.#deliveries = new DeliveryTimer(async () => {
+      if (this.#closed || writer.signal.aborted) return null;
+      const result = await host.withScheduledOwners(owners => writer.dispatchScheduledDeliveries(owners));
+      // Enqueue even during cognition or a model error. A new timer must not
+      // silently retry an already-failed cognitive run.
+      if (result.enqueued && !this.#error) this.#kick();
+      return result.nextDueAt;
+    }, error => { if (!this.#closed) this.#error = PersistenceFailureNotice.from(error) ?? publicFailure; });
     const policy = dreamingPolicy(options.dreaming);
     if (options.memoryRoot && policy.enabled !== false) {
       this.#dreaming = new DreamingScheduler(async () => {
@@ -126,7 +136,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       const roots = options.memoryRoot ? await setupMemoryWorkspace({ memoryRoot: options.memoryRoot, sourceDirectory: options.sourceDirectory }) : undefined;
       const baseTools = [createAttachmentTool(attachments, cwd), ...createWorkspaceTools(cwd).map(tool => withVideoRead(tool, attachments, cwd)), ...createHistoryTools(persistence.history(writer.miraId))];
       if (options.extensions) {
-        host = new ExtensionHost({ ...options.extensions, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage'], receive: async (extensionId, event, wake) => {
+        host = new ExtensionHost({ ...options.extensions, schedules: extensionScheduling(writer), onSchedulesChanged: () => { if (service) service.#deliveries?.schedule(); }, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage'], receive: async (extensionId, event, wake) => {
           const receipt = await extensionReceiver(writer)(extensionId, event, wake);
           if (wake && receipt === 'inserted' && service) service.#kick();
           return receipt;
@@ -134,7 +144,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
         await host.start();
       }
       const extensionHost = host;
-      const management = extensionHost ? extensionManagementTools(extensionHost) : [];
+      const management = extensionHost ? extensionManagementTools(extensionHost, () => writer.listScheduledDeliveries()) : [];
       const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content });
       const loop = new WakeLoop({ writer,
         writeOverflowInput,
@@ -162,6 +172,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       if (roots && options.dreaming?.enabled !== false) await writer.initializeDreaming();
       service = new LocalWebService(options, writer, persistence.history(writer.miraId), settings, settingsValue, loop, attachments, host);
       // Existing durable pending runs resume through the same recovery contracts.
+      service.#deliveries?.schedule();
       service.#kick();
       return service;
     } catch (error) { try { await host?.close(); } finally { await writer.close(); } throw error; }
@@ -349,6 +360,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true; this.#abort.abort(new Error('Mira is stopping'));
+    await this.#deliveries?.close();
     await this.#dreaming?.close();
     await this.#drain;
     try { await this.#host?.close(); } finally { await this.#writer.close(); }

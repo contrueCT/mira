@@ -344,7 +344,9 @@ test('wake slice down/up preserves earlier receipts and context for a fresh clai
     await first.receive(event('legacy'), wake('legacy'));
     await first.append(0, record(uuid('legacy-record')));
     await first.close();
-    // Roll back the newer search and Memory migrations before the Wake slice.
+    // Roll back Scheduling, Dreaming, search and Memory before the Wake slice.
+    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
+    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });

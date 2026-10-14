@@ -78,3 +78,4 @@ pnpm check
 - 后续代码经草稿 PR 提交；未经用户确认不合并、不绕过保护、不部署
 - 行为、配置、命令、依赖、公开接口变化与对应文档/本指引在同一 PR 更新
 - 不输出或提交用户秘密；不自动引入付费调用、账户、凭据或权限扩张
+- [ADR 0022](docs/adr/0022-durable-single-shot-delivery.md)：持久单次UTC投递与版本CAS；Event/Wake和入队状态同一fenced事务，扩展负责提醒/时区/DST/过期政策。owner使用持久安装身份，disable/remove保留pending暂停；不改Dreaming、不加通用job引擎。
