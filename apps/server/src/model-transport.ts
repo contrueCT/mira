@@ -213,6 +213,9 @@ export function createModelTransport(configuration: ModelConfiguration, selectio
       const requestSettings = safeOptions(streamOptions, canonicalModel, undefined);
       const nativeVideo = prepareNativeVideoRequest(canonicalModel, structuredClone(context));
       return retryModelRequest(canonicalModel, (failure, onFailure) => {
+        // Every fresh SDK instance re-reads its logging/cloud environment.
+        // Recheck after backoff before it can receive credentials or responses.
+        checkSdkEnvironment(canonicalModel);
         let key: string | undefined;
         let betas: string[] = [];
         // Request-local state prevents concurrent calls or key rotation from

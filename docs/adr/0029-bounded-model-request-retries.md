@@ -37,3 +37,7 @@ Abort during backoff settles the same stream as aborted and prevents the next re
 `tests/e2e/web.spec.ts` checks the retry indicator on a narrow screen, refresh, phase changes and completion using the established browser fixture. This UI fixture does not claim PostgreSQL or provider connectivity. Real PG and browser gates must run in CI if local socket/browser restrictions prevent execution. No live provider, paid model or deployment was used.
 
 `pnpm test:capabilities:e2e` additionally includes a real browser → HTTP → PostgreSQL → runtime → credential-bound SDK/fetch test. A real ordinary bash effect is followed by injected HTTP 429, visible backoff, recovery, browser refresh and service restart. It checks one effect and absence of intermediate failure records; provider responses alone are synthetic. The fixture-only status test is supplemental, not a replacement for this gate.
+
+Each retry repeats the SDK logging/cloud-environment guard before constructing
+a fresh SDK instance or resolving credentials. An unsafe environment change during
+backoff stops the request before another fetch and cannot enable raw SDK logging.

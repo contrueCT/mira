@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { normalizeContext } from '@earendil-works/pi-ai';
 import { PiDurableRuntime } from '@mira/runtime-pi';
+import { createModelTransport } from '@mira/server';
 import { boundedRetryAfter, retryableTransportError, type ModelRetryStatus } from '../../apps/server/src/model-retry.ts';
 import { MemoryWriter, effectTool, input, result } from '../recovery/fixtures.mts';
-import { retryTransport, retryResponse, retryFailure, brokenPartialResponse, syntheticRetryKey } from '../recovery/model-retry-fixtures.mts';
+import { retryTransport, retryResponse, retryFailure, brokenPartialResponse, syntheticRetryKey, retryConfiguration, retrySelection } from '../recovery/model-retry-fixtures.mts';
 const context = normalizeContext({ messages: [{ role: 'user', content: 'Synthetic retry test', timestamp: 1 }] });
 
 test('actual SDK retries only the buffered request and reports transient status without publishing failed attempts', async () => {
@@ -116,4 +117,24 @@ test('retries freeze request content and output settings even if the original ca
   });
   assert.equal((await (await transport.streamFn(transport.model, requestContext, requestOptions)).result()).stopReason, 'stop');
   assert.equal(bodies.length, 2); assert.equal(bodies[0], bodies[1]); assert.doesNotMatch(bodies[1]!, /Changed later/);
+});
+
+
+for (const api of ['openai-completions', 'openai-responses', 'anthropic-messages'] as const) test(`retry rechecks ${api} SDK logging before a fresh attempt`, async t => {
+  const variable = api === 'anthropic-messages' ? 'ANTHROPIC_LOG' : 'OPENAI_LOG';
+  const previous = process.env[variable]; delete process.env[variable];
+  const logs: unknown[][] = []; let calls = 0;
+  for (const method of ['log', 'debug', 'info', 'warn', 'error'] as const) t.mock.method(console, method, (...args: unknown[]) => { logs.push(args); });
+  try {
+    const configuration = { ...retryConfiguration, customConnections: retryConfiguration.customConnections.map(connection => ({ ...connection, api })) };
+    const transport = createModelTransport(configuration, retrySelection, { env: () => syntheticRetryKey,
+      fetch: async () => { calls++; const response = retryFailure(503); response.headers.set('x-debug-key', syntheticRetryKey); return response; },
+      onRetry: status => { if (status?.phase === 'waiting') process.env[variable] = 'debug'; },
+    });
+    const message = await (await transport.streamFn(transport.model, context)).result();
+    assert.equal(message.stopReason, 'error');
+    assert.equal(calls, 1, 'a newly unsafe SDK environment must stop before another fetch');
+    assert.doesNotMatch(JSON.stringify(logs), new RegExp(syntheticRetryKey));
+    assert.doesNotMatch(message.errorMessage ?? '', new RegExp(syntheticRetryKey));
+  } finally { if (previous === undefined) delete process.env[variable]; else process.env[variable] = previous; }
 });
