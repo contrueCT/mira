@@ -95,9 +95,12 @@ test('due reminder and child completion queue behind user steering at one real t
     await page.screenshot({ path: testInfo.outputPath('joined-capabilities-mobile.png'), fullPage: true });
     await app!.close(); app = undefined; await service!.close(); service = undefined;
     await start(); await page.reload();
+    await expect(page.getByText('已按新消息跳过后面的工具。', { exact: true })).toBeVisible();
     await expect(page.getByText('提醒和子任务结果已一并处理。', { exact: true })).toBeVisible();
     await expect.poll(async () => (await service!.status()).state).toBe('idle');
     expect(parentContexts).toHaveLength(4); expect(childCalls).toBe(2); expect(await readFile(effect, 'utf8')).toBe('once');
+    expect((await db.admin.query("SELECT count(*)::int AS n FROM life_events WHERE event->>'type'='subagent.result'")).rows[0].n).toBe(1);
+    expect((await db.admin.query("SELECT count(*)::int AS n FROM life_events WHERE event->>'type'='reminder.due'")).rows[0].n).toBe(1);
     expect((await db.admin.query('SELECT count(*)::int AS n FROM wake_runs')).rows[0].n).toBe(2);
   } finally { childRelease.resolve(); await writeFile(release, 'cleanup'); await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
