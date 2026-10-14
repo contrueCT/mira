@@ -35,6 +35,9 @@ test('optional password gates real private HTTP and attachments with remote Host
   let service: LocalWebService | undefined;
   let app: ReturnType<typeof createLocalHttp> | undefined;
   let auth: WebAccessAuth;
+  let pauseNextRotation = false;
+  let heldRotation: Promise<void> = Promise.resolve();
+  let releaseRotation = () => {};
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   try {
     db = await createTestDatabase();
@@ -45,6 +48,15 @@ test('optional password gates real private HTTP and attachments with remote Host
       service = await LocalWebService.open(options);
       auth = await WebAccessAuth.open({ miraHome: root, sourceDirectory });
       app = createLocalHttp({ backend: service, auth, port, publicOrigin: origin, assetsDirectory: path.join(sourceDirectory, 'apps/web/dist') });
+      // Test-only response scheduling: production handlers and cookies remain
+      // unchanged, and the old-cookie polling failure comes from the real server.
+      app.addHook('onSend', async (request, reply, payload) => {
+        if (pauseNextRotation && request.method === 'PUT' && request.routeOptions.url === '/api/auth/settings' && reply.statusCode === 200) {
+          pauseNextRotation = false;
+          await heldRotation;
+        }
+        return payload;
+      });
       await app.listen({ port, host: '127.0.0.1' });
     };
     await start(); await page.goto(origin);
@@ -82,22 +94,11 @@ test('optional password gates real private HTTP and attachments with remote Host
     await login(other, password); await expect(other.locator('form.composer')).toBeVisible();
     expect(await status(other, `/api/attachments/${attachment.id}`)).toBe(200);
     // Password change invalidates the second browser's previously valid session.
-    // Hold the real rotation response while the app's next old-cookie poll is
-    // rejected: private DOM must disappear, then the latest successful write
-    // must restore authenticated access rather than being lost on unmount.
+    // Delay the real Set-Cookie response until a real old-cookie poll gets 401.
+    // This avoids Node-side DNS/relay behavior and tests the production gate.
     await page.bringToFront();
-    let releaseRotation!: () => void;
-    const heldRotation = new Promise<void>(resolve => { releaseRotation = resolve; });
-    await page.route(`${origin}/api/auth/settings`, async route => {
-      if (route.request().method() !== 'PUT') { await route.continue(); return; }
-      const response = await route.fetch();
-      expect(response.status()).toBe(200);
-      // Inject one delayed old-cookie failure: route.fetch may already update
-      // Playwright's cookie jar before the browser receives the held response.
-      await page.route(`${origin}/api/status`, route => route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Please sign in to Mira' }) }), { times: 1 });
-      await heldRotation;
-      await route.fulfill({ response });
-    });
+    heldRotation = new Promise<void>(resolve => { releaseRotation = resolve; });
+    pauseNextRotation = true;
     await page.getByRole('button', { name: '更改访问密码', exact: true }).click();
     await page.getByLabel('当前访问密码', { exact: true }).fill(password);
     await page.getByLabel('新访问密码', { exact: true }).fill('synthetic-replacement-password');
@@ -107,7 +108,6 @@ test('optional password gates real private HTTP and attachments with remote Host
     await expect(page.locator('form.composer')).toHaveCount(0);
     releaseRotation();
     await expect(page.locator('form.composer')).toBeVisible();
-    await page.unroute(`${origin}/api/auth/settings`);
     await access(page);
     await expect(page.getByRole('switch', { name: '使用访问密码' })).toBeChecked();
     await other.reload(); await expect(other.getByLabel('访问密码', { exact: true })).toBeVisible();
@@ -133,6 +133,7 @@ test('optional password gates real private HTTP and attachments with remote Host
     await page.screenshot({ path: testInfo.outputPath('first-failure.png'), fullPage: true }).catch(() => undefined);
     throw error;
   } finally {
+    releaseRotation();
     await browser.close(); await app?.close(); await service?.close(); await db?.close(); await rm(root, { recursive: true, force: true });
   }
 });

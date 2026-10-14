@@ -34,4 +34,4 @@ without executing the extension again. Desktop/narrow screenshots use the same
 `test-results/agent-capabilities-real/` directory. This does not replace the
 fresh-process PG crash tests or establish live-provider behavior.
 
-`pnpm test:auth:e2e` 从默认无密码开始，经真实 HTTP/PG/service 与不可变附件存储启用密码、错误登录、成功登录、改密、注销、重启与关闭，使用显式非loopback浏览器hostname（只解析到隔离回环listener，不部署公共服务）。私有API和附件未登录均需401，桌面与窄屏实际截图在 `test-results/auth-real/`。改密竞态段故意持有实际PUT响应并注入一条旧cookie轮询401，验证私有DOM立即撤下、迟到成功响应安全恢复；此单点故障注入不冒充真实网络故障。其余登录/凭据/附件路径为生产实现，模型为合成。保留首次失败截图与trace。
+`pnpm test:auth:e2e` 从默认无密码开始，经真实 HTTP/PG/service 与不可变附件存储启用密码、错误登录、成功登录、改密、注销、重启与关闭，使用显式非loopback浏览器hostname（只解析到隔离回环listener，不部署公共服务）。私有API和附件未登录均需401，桌面与窄屏实际截图在 `test-results/auth-real/`。改密竞态段只在测试服务器 onSend 暂时持有实际 PUT/Set-Cookie 响应，让浏览器旧 cookie 轮询由生产鉴权返回真实 401，验证私有 DOM 立即撤下、迟到成功响应安全恢复。响应延迟是测试安排，不冒充自然网络故障；没有 route.fetch 转发或伪造 401。其余登录/凭据/附件路径为生产实现，模型为合成。保留首次失败截图与trace。
