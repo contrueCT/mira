@@ -4,9 +4,9 @@ import path from 'node:path';
 import test from 'node:test';
 import { getCurrentSystemMessage, getSystemMessageText } from '@earendil-works/pi-ai';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
-import { LocalWebService } from '@mira/server';
+import { LocalWebService, WebHttpError, WebSettingsStore } from '@mira/server';
 import { createTestDatabase } from '../integration/database.mts';
-import { assistant, model, streamOf } from './fixtures.mts';
+import { assistant, model, streamOf, deferred } from './fixtures.mts';
 
 async function until(check: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 10_000;
@@ -53,4 +53,50 @@ test('PostgreSQL Web settings drive main, child and Dreaming reasoning and remai
     assert.ok(JSON.stringify(records.rows).includes('Run the synthetic child'));
     assert.equal((await db.admin.query("SELECT count(*) FROM subagents")).rows[0].count, '1');
   } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('real Web service refuses settings saves while a child outlives an idle main, then preserves its next authenticated model request', { timeout: 30_000 }, async t => {
+  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-child-reasoning-settings-');
+  const release = deferred(); let service: LocalWebService | undefined; let childCalls = 0; let parentCalls = 0;
+  const key = 'sk-synthetic-child-reasoning'; const levels: { child: boolean; level: unknown }[] = [];
+  const response = (text: string, call?: { id: string; name: string; arguments: Record<string, string> }): Response => new Response([
+    { id: 'reasoning-response', choices: [{ index: 0, delta: call ? { role: 'assistant', tool_calls: [{ index: 0, id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) } }] } : { role: 'assistant', content: text }, finish_reason: null }] },
+    { id: 'reasoning-response', choices: [{ index: 0, delta: {}, finish_reason: call ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 } }, '[DONE]',
+  ].map(event => `data: ${typeof event === 'string' ? event : JSON.stringify(event)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } });
+  t.mock.method(globalThis, 'fetch', async (url: string | URL | Request, init?: RequestInit) => {
+    assert.equal(new URL(String(url)).origin, 'https://synthetic-child.example');
+    assert.equal(new Headers(init?.headers).get('authorization'), `Bearer ${key}`);
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    const child = JSON.stringify(body['messages']).includes('task-scoped worker'); levels.push({ child, level: body['reasoning_effort'] });
+    if (child) {
+      childCalls++;
+      if (childCalls === 1) { await release.promise; return response('', { id: 'child-directory', name: 'ls', arguments: { path: root } }); }
+      return response('Child finished after its real ordinary ls tool.');
+    }
+    parentCalls++;
+    return parentCalls === 1 ? response('', { id: 'spawn-held-child', name: 'subagent_spawn', arguments: { task: 'Inspect the synthetic test directory' } }) : response('Main remains available.');
+  });
+  try {
+    const settingsFile = path.join(root, 'models.json'); const store = new WebSettingsStore(settingsFile, process.cwd());
+    const saved = await store.save({ ...await store.get(), selection: { kind: 'custom', connection: 'fixture', model: 'reasoner' }, configuration: { defaultThinkingLevel: 'high', builtinCredentials: {}, customConnections: [{ id: 'fixture', api: 'openai-completions', baseUrl: 'https://synthetic-child.example/v1', apiKey: key, models: [{ id: 'reasoner', reasoning: true, input: ['text'], contextWindow: 100_000, maxTokens: 8192 }] }] } });
+    service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'child-reasoning-settings', sourceDirectory: process.cwd(), workingDirectory: root, miraHome: root, spoolDirectory: path.join(root, 'spool'), settingsFile, synthetic: false, dreaming: { enabled: false }, autoCompaction: { enabled: false } });
+    await until(async () => (await service!.status()).state === 'idle');
+    await service.submit({ id: 'held-child', text: 'Delegate and stay available', occurredAt: '2026-10-14T02:00:00Z' });
+    await until(async () => parentCalls === 2 && childCalls === 1 && (await service!.status()).state === 'idle');
+    await assert.rejects(service.saveSettings({ ...saved, configuration: { ...saved.configuration, defaultThinkingLevel: 'low' } }), error => error instanceof WebHttpError && error.code === 'busy');
+    assert.equal((await store.get()).revision, saved.revision);
+    release.resolve();
+    await until(async () => childCalls === 2 && parentCalls >= 3 && (await service!.status()).state === 'idle');
+    assert.deepEqual(levels.filter(item => item.child).map(item => item.level), ['high', 'high']);
+    const child = await db.admin.query("SELECT status FROM subagent_turns"); assert.equal(child.rows[0].status, 'completed');
+    let changed = false;
+    await until(async () => {
+      try { await service!.saveSettings({ ...saved, configuration: { ...saved.configuration, defaultThinkingLevel: 'low' } }); changed = true; return true; }
+      catch (error) { if (error instanceof WebHttpError && error.code === 'busy') return false; throw error; }
+    });
+    assert.equal(changed, true); assert.equal((await store.get()).configuration.defaultThinkingLevel, 'low');
+    const before = parentCalls; await service.submit({ id: 'after-child-settings', text: 'Continue with the saved preference', occurredAt: '2026-10-14T02:01:00Z' });
+    await until(async () => parentCalls > before && (await service!.status()).state === 'idle');
+    assert.deepEqual(levels.at(-1), { child: false, level: 'low' });
+  } finally { release.resolve(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });

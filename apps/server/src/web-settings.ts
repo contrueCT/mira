@@ -1,4 +1,5 @@
 import { constants } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 import { lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -253,7 +254,9 @@ export class WebSettingsStore {
         signal.throwIfAborted();
         const latest = await this.snapshot();
         signal.throwIfAborted();
-        if (latest.revision !== current.revision || JSON.stringify(project(latest.data, latest.revision)) !== JSON.stringify(current)) throw new WebSettingsError('settings_conflict');
+        // Both values are validated public snapshots. JSON object key order is
+        // irrelevant; array order and every actual setting must still match.
+        if (latest.revision !== current.revision || !isDeepStrictEqual(project(latest.data, latest.revision), current)) throw new WebSettingsError('settings_conflict');
         if (selection.kind === 'builtin') {
           const entry = latest.data.configuration.builtinCredentials[selection.provider];
           return entry?.binding === builtinBinding(selection.provider) ? entry.apiKey ?? undefined : undefined;

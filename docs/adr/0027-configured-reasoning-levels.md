@@ -9,7 +9,7 @@
 - Web 既有模型设置及 CLI/程序化 configuration 新增可选 `defaultThinkingLevel`，支持 `off | minimal | low | medium | high | xhigh | max`。未配置时采用 `medium`。
 - 能力只来自固定 Pi 公开 `getSupportedThinkingLevels` / `clampThinkingLevel`；非推理模型实际 `off`。自定义模型沿用明确声明的 reasoning 布尔能力及 Pi 默认档位，不凭发现结果猜能力、额外协议字段或极高档支持。
 - 保存的是默认偏好；实际档位按当前模型适配。例如无 xhigh 的模型使用 high，不能关闭推理的模型会使用其最低支持档位。Pi 的公开规则优先找不低于请求档位的支持项，再向下找；界面展示当前可选档位及保留的偏好。它是确定性的能力适配，不是模型或工具可触发的升档策略。
-- 主 Mira、child 与 Dreaming 通过相同 runtime 接收实际档位。一个运行中的实例保留启动时快照，新 Wake/child turn 使用组装时设置；不改变正在执行的工具、不新建 Wake。偏好通过原私有设置文件和 revision CAS 保存，重启继续读取；不新增数据库表、迁移或日志。
+- 主 Mira、child 与 Dreaming 通过相同 runtime 接收实际档位。一个运行中的实例保留启动时快照，新 Wake/child turn 使用组装时设置；Web 保存需主循环和全部 child 执行槽都空闲，取消后的工具收尾及已完成 child 的异步清理也继续占槽；不改变正在执行的工具、不新建 Wake。偏好通过原私有设置文件和 revision CAS 保存，重启继续读取；不新增数据库表、迁移或日志。
 - Runtime API 为 `PiRuntimeOptions.thinkingLevel`。`createModelTransport` 返回解析后的 `thinkingLevel`，组装必须一起传入 runtime。单独直接调用 `streamFn` 仍只遵循显式请求 options，不隐藏地填入会污染压缩的会话默认值。
 
 ## 压缩和输出预算
@@ -28,9 +28,9 @@
 
 ## 验证
 
-- `tests/unit/reasoning-settings.test.mts`：真实 Pi Chat Completions / Responses / Anthropic SSE 序列化及 Google SDK fetch 拦截；覆盖高/关闭/非推理、能力适配、预算上限、过小 Anthropic cap 的零请求失败、恢复后档位、压缩独立档位、私有设置重启/CAS/非法输入。所有凭据与响应均合成，没有付费请求。
+- `tests/unit/reasoning-settings.test.mts`：真实 Pi Chat Completions / Responses / Anthropic SSE 序列化及 Google SDK fetch 拦截；覆盖高/关闭/非推理、能力适配、预算上限、过小 Anthropic cap 的零请求失败、恢复后档位、压缩独立档位、私有设置重启/CAS/非法输入。保存后的 WebSettingsStore 实际取密钥并运行真实协议；快照比较忽略对象键插入顺序，但真实配置差异、数组顺序与 revision 变化仍在发请求前拒绝。所有凭据与响应均合成，没有付费请求。
 - `apps/web/tests/reasoning.test.ts`：浏览器当前档位预览。
-- `tests/recovery/reasoning-settings.test.mts`：生产 Web service、真实 PostgreSQL、主/child/Dreaming 与设置重启链路，只有模型输出合成。必须由 `pnpm test:integration` 使用隔离 `mira_test` 库执行，不跳过。
-- `tests/e2e/web.spec.ts`：现有真实 Chromium UI fixture 覆盖切换能力、取消、保存去重、浏览器历史、窄屏截图、冲突与重读；它不是 PG 或真实供应商验收。
+- `tests/recovery/reasoning-settings.test.mts`：生产 Web service、真实 PostgreSQL、主/child/Dreaming 与设置重启链路，另覆盖主循环空闲但真实 child 未结束时拒绝保存，保留已保存凭据的真实 SDK 请求并在 child 完成后允许保存；包括真实普通工具及下一模型请求。只有模型输出合成。必须由 `pnpm test:integration` 使用隔离 `mira_test` 库执行，不跳过。
+- `tests/e2e/web.spec.ts`：现有真实 Chromium UI fixture 覆盖切换能力、取消、保存去重、浏览器历史、窄屏截图、冲突、子任务忙碌时保留可重试草稿与重读；它不是 PG 或真实供应商验收。
 
 本地离线通过不代表 PostgreSQL、浏览器或真实模型验收。该执行环境的 PG/Chromium 启动受 Unix socket EPERM 阻塞，不改变隔离规则规避；真实 PG 与浏览器验证以精确提交的 CI 结果为准。未执行真实供应商付费调用。

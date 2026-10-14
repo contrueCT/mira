@@ -253,7 +253,7 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
       if (!controller.signal.aborted && aliveRef.current && version === editVersionRef.current) { originalConnectionsRef.current = structuredClone(result.configuration.customConnections); originalCredentialsRef.current = structuredClone(result.configuration.builtinCredentials); setDraft(result); setDirty(false); setSaved(true); setConflict(false); setModelDraft(null); onSaved(); }
     } catch (cause) {
       if (!controller.signal.aborted && aliveRef.current) {
-        if (cause instanceof ApiError && cause.status === 409 && cause.message === 'Mira is working; retry when it is idle') setError('Mira 正在处理消息，暂时不能修改配置。编辑仍保留，等处理结束后可以再次保存。');
+        if (cause instanceof ApiError && cause.status === 409 && cause.message === 'Mira is working; retry when it is idle') setError('Mira 或子任务仍在运行，暂时不能修改配置。编辑仍保留，等全部结束后可以再次保存。');
         else if (cause instanceof ApiError && cause.status === 409) { setConflict(true); setError('配置已在别处更新。你的编辑仍保留，请重新读取最新配置后再修改。'); }
         else setError('尚未确认保存结果，请重新读取配置核对后再修改。');
       }

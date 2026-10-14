@@ -147,3 +147,65 @@ test('actual Google SDK serializes configured reasoning budgets and explicit off
   assert.equal(first['maxOutputTokens'], 4096); assert.deepEqual(first['thinkingConfig'], { includeThoughts: true, thinkingBudget: 2048 });
   assert.equal(second['maxOutputTokens'], 4096); assert.deepEqual(second['thinkingConfig'], { thinkingBudget: 0 });
 });
+
+for (const api of ['openai-completions', 'openai-responses', 'anthropic-messages'] as const) {
+  test(`saved Web reasoning settings dispatch through real ${api} serialization while stale or forged snapshots cannot resolve a key`, async () => {
+    const root = await mkdtemp('/tmp/mira-web-reasoning-transport-'); const source = path.join(root, 'source'); await mkdir(source);
+    try {
+      const file = path.join(root, 'data', 'models.json'); const store = new WebSettingsStore(file, source);
+      const { apiKeyEnv: _env, ...connection } = configuration(api).customConnections[0]!;
+      let saved = await store.save({ ...await store.get(), selection, configuration: { defaultThinkingLevel: 'high', builtinCredentials: {}, customConnections: [{ ...connection, apiKey: key }] } });
+      const bodies: Record<string, unknown>[] = [];
+      const fetch: typeof globalThis.fetch = async (url, init) => {
+        assert.equal(new URL(String(url)).origin, 'https://synthetic.example');
+        assert.equal(new Headers(init?.headers).get(api === 'anthropic-messages' ? 'x-api-key' : 'authorization'), api === 'anthropic-messages' ? key : `Bearer ${key}`);
+        bodies.push(JSON.parse(String(init?.body))); return response(api);
+      };
+      const run = async (transport: ReturnType<WebSettingsStore['transport']>) => new PiDurableRuntime({ writer: new MemoryWriter(), ...transport, autoCompaction: { enabled: false, reserveTokens: 4096 } }).run(input());
+      await run(store.transport(saved, { fetch }));
+      // A reopened store and reordered public keys describe the same persisted
+      // snapshot. Property insertion order must never decide credential access.
+      const reopened = new WebSettingsStore(file, source); const restored = await reopened.get();
+      await run(reopened.transport({ selection: restored.selection, configuration: { customConnections: restored.configuration.customConnections, builtinCredentials: restored.configuration.builtinCredentials, defaultThinkingLevel: restored.configuration.defaultThinkingLevel! }, revision: restored.revision }, { fetch }));
+      assert.equal(bodies.length, 2);
+      for (const body of bodies) {
+        if (api === 'openai-completions') assert.equal(body['reasoning_effort'], 'high');
+        if (api === 'openai-responses') assert.deepEqual(body['reasoning'], { effort: 'high', summary: 'auto' });
+        if (api === 'anthropic-messages') assert.deepEqual(body['thinking'], { type: 'enabled', budget_tokens: 3072, display: 'summarized' });
+      }
+      for (const configuration of [
+        { ...saved.configuration, defaultThinkingLevel: 'low' as const },
+        { ...saved.configuration, customConnections: saved.configuration.customConnections.map(entry => ({ ...entry, baseUrl: 'https://different.example/v1' })) },
+      ]) await assert.rejects(run(store.transport({ ...saved, configuration }, { fetch })), /Unable to read the configured API key/);
+      assert.equal(bodies.length, 2, 'a correct revision alone never authorizes changed metadata or a new credential destination');
+      const stale = store.transport(saved, { fetch });
+      saved = await store.save({ ...saved, configuration: { ...saved.configuration, defaultThinkingLevel: 'off' } });
+      await assert.rejects(run(stale), /Unable to read the configured API key/);
+      assert.equal(bodies.length, 2, 'an actual revision change invalidates captured transports before dispatch');
+      await run(store.transport(saved, { fetch }));
+      assert.equal(bodies.length, 3);
+      const disabled = bodies.at(-1)!;
+      assert.equal(disabled['reasoning_effort'], undefined);
+      assert.deepEqual(disabled['reasoning'], api === 'openai-responses' ? { effort: 'none' } : undefined);
+      assert.deepEqual(disabled['thinking'], api === 'anthropic-messages' ? { type: 'disabled' } : undefined);
+      assert.doesNotMatch(JSON.stringify(saved), /sk-synthetic-reasoning-key/);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+}
+
+test('pinned Google discrete-thinking model serializes explicit and capability-adapted native levels without a token budget', async t => {
+  const bodies: Record<string, unknown>[] = [];
+  t.mock.method(globalThis, 'fetch', async (_url: string | URL | Request, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return new Response(`data: ${JSON.stringify({ candidates: [{ content: { role: 'model', parts: [{ text: 'Synthetic discrete-thinking answer' }] }, finishReason: 'STOP' }], usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3, totalTokenCount: 5 } })}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+  });
+  for (const defaultThinkingLevel of ['high', 'off'] as const) {
+    const transport = createModelTransport({ defaultThinkingLevel, builtinCredentials: { google: { apiKeyEnv: 'SYNTHETIC' } }, customConnections: [] }, { kind: 'builtin', provider: 'google', model: 'gemini-3.1-pro-preview' }, { env: () => key });
+    assert.equal(transport.thinkingLevel, defaultThinkingLevel === 'off' ? 'low' : 'high');
+    await new PiDurableRuntime({ writer: new MemoryWriter(), ...transport, autoCompaction: { reserveTokens: 4096 } }).run(input());
+  }
+  for (const [index, level] of ['HIGH', 'LOW'].entries()) {
+    const config = bodies[index]!['generationConfig'] as Record<string, unknown>;
+    assert.equal(config['maxOutputTokens'], 4096); assert.deepEqual(config['thinkingConfig'], { includeThoughts: true, thinkingLevel: level });
+  }
+});

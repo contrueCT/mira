@@ -365,11 +365,13 @@ test('close waits for the final child registry read before releasing its tracked
   try {
     await f.manager.spawn('cleanup-read-spawn', 'Finish quickly', 'none', transport(() => streamOf(assistant('done'))));
     await entered.promise;
+    assert.equal(f.manager.hasActiveWork, true, 'terminal persistence does not release the active cleanup slot');
     const closing = f.manager.close().then(() => { closed = true; });
     await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(f.manager.hasActiveWork, true);
     assert.equal(closed, false, 'close must retain ownership until the final registry read settles');
     release.resolve(); await closing;
-    assert.equal(closed, true); assert.deepEqual(f.errors, []);
+    assert.equal(closed, true); assert.equal(f.manager.hasActiveWork, false); assert.deepEqual(f.errors, []);
   } finally { release.resolve(); await f.manager.close(); }
 });
 
@@ -469,6 +471,7 @@ test('concurrent admissions cannot spend a cancelling execution slot twice', asy
   try {
     const first = await f.manager.spawn('capacity-cancelling', 'Work', 'none', t); await until(() => effects === 1);
     await f.manager.cancel(first.id);
+    assert.equal(f.manager.hasActiveWork, true, 'cancellation receipt does not release an executing tool slot');
     const results = await Promise.allSettled([f.manager.spawn('concurrent-one', 'Work', 'none', t), f.manager.spawn('concurrent-two', 'Work', 'none', t)]);
     assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
     const rejected = results.find(result => result.status === 'rejected')!;

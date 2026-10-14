@@ -231,7 +231,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     return structuredClone(this.#settingsValue);
   }
   async saveSettings(value: unknown): Promise<WebSettings> {
-    if (this.#closed || this.#drain || this.#configurationWrite) throw new WebHttpError('busy');
+    if (this.#closed || this.#drain || this.#configurationWrite || this.#subagents.hasActiveWork) throw new WebHttpError('busy');
     this.#configurationWrite = true; this.#settingsGeneration++;
     try { const saved = await this.#settings.save(value); this.#settingsGeneration++; this.#settingsValue = saved; return structuredClone(saved); }
     finally {

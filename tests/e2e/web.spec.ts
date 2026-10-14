@@ -729,3 +729,20 @@ test('reasoning settings retain an unsaved edit on revision conflict and discard
   await expect(page.getByRole('button', { name: '保存设置', exact: true })).toBeDisabled();
   await page.getByRole('button', { name: '重新读取并放弃当前编辑', exact: true }).click(); await expect(level).toHaveValue('low');
 });
+
+test('reasoning edit stays retryable when active child work makes settings temporarily busy', async ({ page }) => {
+  const initial = settingsFixture(); initial.configuration.customConnections[0]!.models[0]!.reasoning = true;
+  initial.selection = { kind: 'custom', connection: 'existing-local', model: 'original-model' }; initial.configuration.defaultThinkingLevel = 'low';
+  await mockSettings(page, initial); let writes = 0;
+  await page.route('**/api/settings', route => {
+    if (route.request().method() !== 'PUT') return route.fulfill({ json: initial });
+    writes++;
+    return writes === 1 ? route.fulfill({ status: 409, json: { error: 'Mira is working; retry when it is idle' } }) : route.fulfill({ json: publicSettings(route.request().postDataJSON() as SettingsWrite) });
+  });
+  await openSettings(page); const level = page.getByLabel('默认推理强度', { exact: true });
+  await level.selectOption('high'); await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  await expect(page.getByText('Mira 或子任务仍在运行，暂时不能修改配置。编辑仍保留，等全部结束后可以再次保存。')).toBeVisible();
+  await expect(level).toHaveValue('high'); await expect(page.getByRole('button', { name: '保存设置', exact: true })).toBeEnabled();
+  expect(writes).toBe(1);
+  await page.getByRole('button', { name: '保存设置', exact: true }).click(); await expect(page.getByText(/配置已保存/)).toBeVisible(); expect(writes).toBe(2);
+});
