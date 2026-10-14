@@ -51,6 +51,7 @@
     "tests/unit/system-prompt.test.mts",
     "tests/unit/skills.test.mts",
     "tests/unit/model-connections.test.mts",
+    "tests/unit/model-retry.test.mts",
     "tests/unit/model-tool-names.test.mts",
     "tests/unit/model-discovery.test.mts",
     "apps/web",

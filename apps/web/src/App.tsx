@@ -313,7 +313,7 @@ export function App() {
               {message.state === 'uncertain' && <p className="pending-help">{message.error ?? '刷新前的发送尚未确认'}。不会自动重发</p>}
             </article>)}
           </div>
-          {status?.state === 'working' && !connectionError && <div className="working-indicator" role="status"><span className="working-dots" aria-hidden="true">•••</span>Mira 正在处理</div>}
+          {status?.state === 'working' && !connectionError && <div className="working-indicator" role="status"><span className="working-dots" aria-hidden="true">•••</span>{status.modelRetry ? (status.modelRetry.phase === 'waiting' ? `模型请求暂时失败，等待重试（第 ${status.modelRetry.attempt}/${status.modelRetry.maxAttempts} 次）` : `正在重试模型请求（第 ${status.modelRetry.attempt}/${status.modelRetry.maxAttempts} 次）`) : 'Mira 正在处理'}</div>}
         </div>
       </main>
 

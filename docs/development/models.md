@@ -143,3 +143,15 @@ Web 既有模型设置及 CLI configuration 可保存 `defaultThinkingLevel`，�
 界面保留默认偏好并显示当前有效档位；例如 xhigh 在不支持该档位的模型上会变成 high。不能关闭的模型使用其支持项，Pi 能力适配可能选择高于请求值的最低支持档位；这不是模型自主升档。Main、child 和 Dreaming 都显式接收档位；已运行实例不被设置编辑改变，后续实例读取设置。程序化组装需同时传 `transport.thinkingLevel`，直接调用 `streamFn` 时仍需显式传 reasoning，避免会话默认污染独立摘要策略。
 
 压缩固定选择最低支持档，通常 off，不继承 high/xhigh/max。更高档可能增加耗时与成本；相对努力档位不保证固定 token 数。预算型 Anthropic 的思考和答案共用原总输出 cap，思考预算会缩至最多 cap 减 1024；cap 小于 2048 明确失败且不发送请求，不放大 cap 或静默关闭推理。默认 runtime reserve 也限制总输出，可按既有程序化 autoCompaction.reserveTokens 配置；不改变现有上下文预算语义。详见 [ADR 0027](../adr/0027-configured-reasoning-levels.md)。
+
+## Transient request failures
+
+The explicit transport retries a buffered, not-yet-published model request up to
+three attempts for verified transient HTTP/network failures. Backoff is 250 ms,
+then 1 s; HTTP Retry-After can raise each wait to at most 10 s. Cancellation stops
+backoff and prevents another dispatch. Partial responses do not enter history or
+execute tools. Authentication, configuration, invalid output, unknown failures,
+tool effects and persistence writes are not retried. SDK maxRetries stays zero.
+The Web working indicator shows actual waiting/retrying state; exhaustion keeps
+bounded sanitized first/last diagnostics. See [ADR 0029](../adr/0029-bounded-model-request-retries.md)
+for exact codes, restart semantics and provider-observability limits.

@@ -1,3 +1,4 @@
+import { retryConfiguration, retrySelection, retryResponse, retryFailure, syntheticRetryKey } from '../recovery/model-retry-fixtures.mts';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -329,4 +330,53 @@ export default defineExtension({ name: 'large-output', apply(api) { api.register
     await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({ path: testInfo.outputPath('tool-output-recovered-mobile.png'), fullPage: true });
   } finally { if (app) await app.close(); if (service) await service.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('real browser observes request retry through PG and the credential-bound SDK without duplicate effects', async ({ page }, testInfo) => {
+  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-retry-browser-');
+  let service: LocalWebService | undefined; let app: ReturnType<typeof createLocalHttp> | undefined;
+  let calls = 0; const effect = path.join(root, 'effect');
+  const settingsFile = path.join(root, 'models.json');
+  const store = new WebSettingsStore(settingsFile, sourceDirectory);
+  const initial = await store.get();
+  const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'retry-browser', sourceDirectory, workingDirectory: root, miraHome: root,
+    settingsFile, spoolDirectory: path.join(root, 'spool'), autoCompaction: { enabled: false }, dreaming: { enabled: false },
+    modelFetch: (async () => {
+      calls++;
+      if (calls === 1) return retryResponse('', 'browser-once-call', 'bash', { command: `printf once >> ${JSON.stringify(effect)}` });
+      if (calls === 2) { const response = retryFailure(429, 'PRIVATE_RETRY_FAILURE'); response.headers.set('retry-after', '3'); return response; }
+      return retryResponse('模型请求已恢复，只执行了一次工具。');
+    }) as typeof globalThis.fetch };
+  const start = async () => {
+    service = await LocalWebService.open(options);
+    app = createLocalHttp({ backend: service, port, assetsDirectory: path.join(sourceDirectory, 'apps/web/dist') });
+    await app.listen({ port, host: '127.0.0.1' });
+  };
+  try {
+    await store.save({ revision: initial.revision, selection: retrySelection, configuration: { builtinCredentials: {},
+      customConnections: retryConfiguration.customConnections.map(({ apiKeyEnv: _env, ...connection }) => ({ ...connection, apiKey: syntheticRetryKey })) } });
+    await start(); await page.goto(origin);
+    await page.getByLabel('给 Mira 发消息', { exact: true }).fill('执行一次合成工具，然后回复。');
+    await page.getByRole('button', { name: '发送消息', exact: true }).click();
+    await expect(page.getByRole('status').filter({ hasText: '等待重试（第 2/3 次）' })).toBeVisible();
+    expect((await service!.status()).state).toBe('working'); expect((await service!.status()).error).toBeNull();
+    await page.screenshot({ path: testInfo.outputPath('model-retry-real-desktop.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: testInfo.outputPath('model-retry-real-narrow.png'), fullPage: true });
+    await expect(page.getByText('模型请求已恢复，只执行了一次工具。', { exact: true })).toBeVisible();
+    await expect(page.locator('.working-indicator')).toHaveCount(0);
+    expect(calls).toBe(3); expect(await readFile(effect, 'utf8')).toBe('once');
+    expect((await db.admin.query('SELECT count(*)::int AS n FROM tool_executions')).rows[0].n).toBe(1);
+    const records = (await db.admin.query('SELECT envelope FROM context_records ORDER BY version')).rows;
+    expect(JSON.stringify(records)).not.toContain('PRIVATE_RETRY_FAILURE');
+    expect(JSON.stringify(records)).not.toContain(syntheticRetryKey);
+    await expect(page.getByText('PRIVATE_RETRY_FAILURE')).toHaveCount(0);
+    await page.reload(); await expect(page.getByText('模型请求已恢复，只执行了一次工具。', { exact: true })).toBeVisible();
+    await app!.close(); app = undefined; await service!.close(); service = undefined;
+    await start(); await page.reload();
+    await expect(page.getByText('模型请求已恢复，只执行了一次工具。', { exact: true })).toBeVisible();
+    await expect(page.locator('.working-indicator')).toHaveCount(0);
+    expect(calls).toBe(3); expect(await readFile(effect, 'utf8')).toBe('once');
+    expect((await db.admin.query('SELECT envelope FROM context_records ORDER BY version')).rows).toEqual(records);
+  } finally { await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });

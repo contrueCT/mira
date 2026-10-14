@@ -1,3 +1,5 @@
+import type { ModelRetryReason } from './model-retry.ts';
+
 /** Only bounded, redacted model diagnostics cross persistence and public HTTP. */
 const limit = 2_048;
 const omitted = '[redacted]';
@@ -55,11 +57,15 @@ function reason(value: unknown, secret?: string): string {
   if (containsHtml(json)) return 'Provider returned an HTML error page';
   return value;
 }
-export interface ModelFailureContext { status?: number; requestId?: string; transportReason?: string; providerReason?: string }
+export interface ModelFailureContext { status?: number; requestId?: string; transportReason?: string; providerReason?: string; retryReason?: ModelRetryReason; retryAfterMs?: number }
 /** Minted at the credential-owning transport; never a raw Error or response. */
 export class ModelRequestFailure {
   readonly message: string;
   private constructor(message: string) { this.message = message; Object.freeze(this); }
+  static afterAttempts(first: ModelRequestFailure, last: ModelRequestFailure, attempts: number): ModelRequestFailure {
+    if (attempts === 1) return last;
+    return new ModelRequestFailure(bounded(`Model request failed after ${attempts} attempts · First: ${clip(first.message, 850)} · Last: ${clip(last.message, 850)}`));
+  }
   static from(value: unknown, context: ModelFailureContext, secret?: string): ModelRequestFailure {
     const details = [context.status === undefined ? '' : `HTTP ${context.status}`,
       context.requestId ? `request ID: ${clip(redact(context.requestId, secret), 128)}` : '', context.transportReason ?? context.providerReason ?? reason(value, secret)].filter(Boolean);

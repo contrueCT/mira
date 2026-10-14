@@ -244,7 +244,7 @@ export class WebSettingsStore {
     return project(current.data, current.revision);
   }
   /** Keys are read only at request time and stay inside the server auth closure. */
-  transport(settings: WebSettings, options: Pick<ModelTransportOptions, 'fetch' | 'onFailure'> = {}): ModelTransport {
+  transport(settings: WebSettings, options: Pick<ModelTransportOptions, 'fetch' | 'onFailure' | 'onRetry'> = {}): ModelTransport {
     const current = parseWebSettings(settings);
     if (!current.selection) return invalid();
     const selection = current.selection;

@@ -4,6 +4,7 @@ import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completio
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
 import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messages.lazy';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
+import { boundedRetryAfter, retryableHttpStatus, retryableTransportError, retryModelRequest, type ModelRetryStatus } from './model-retry.ts';
 import { prepareNativeVideoRequest } from './model-video-transport.ts';
 import { ModelRequestFailure, containsPercentEncodedSecret, providerFailureReason, secretVariants, transportFailureReason, type ModelFailureContext } from './model-errors.ts';
 import { builtinApiKeySupport, createBuiltinCatalog, protocolDescription } from './model-catalog.ts';
@@ -11,8 +12,10 @@ import { parseModelConfiguration, validateBaseUrl, type CustomProtocol, type Mod
 
 export type ModelSelection = { kind: 'builtin'; provider: string; model: string } | { kind: 'custom'; connection: string; model: string };
 export interface ModelTransportOptions {
-  /** Request-local sanitized failure; null clears an earlier attempt. */
+  /** Terminal sanitized failure; null clears the earlier request diagnostic. */
   onFailure?: (failure: ModelRequestFailure | null) => void;
+  /** Ephemeral request retry status; null clears it on completion/cancellation. */
+  onRetry?: (status: ModelRetryStatus | null) => void;
   /** Only the selected, explicitly configured variable is read, at request time. */
   env?: (name: string) => string | undefined;
   /** Server-owned literal credential resolver; when present, no environment key is read. */
@@ -49,6 +52,10 @@ function scopedModelFetch(baseUrl: string, fetch: typeof globalThis.fetch, heade
       const response = await fetch(input, { ...init, headers: headers(), redirect: 'error', credentials: 'omit', referrerPolicy: 'no-referrer' });
       if (!response.ok) {
         failure.status = response.status;
+        const retryReason = retryableHttpStatus(response.status);
+        if (retryReason) failure.retryReason = retryReason;
+        const retryAfterMs = boundedRetryAfter(response.headers.get('retry-after'));
+        if (retryAfterMs !== undefined) failure.retryAfterMs = retryAfterMs;
         const id = response.headers.get('x-request-id') ?? response.headers.get('request-id');
         if (id) failure.requestId = id;
       }
@@ -59,9 +66,29 @@ function scopedModelFetch(baseUrl: string, fetch: typeof globalThis.fetch, heade
         // body whose truncation could erase the useful provider message/code.
         return new Response(JSON.stringify({ error: { message: failure.providerReason } }), { status: response.status, headers: { 'content-type': 'application/json' } });
       }
-      return response;
+      if (!response.body) return response;
+      const reader = response.body.getReader();
+      return new Response(new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          try {
+            const next = await reader.read();
+            if (next.done) { reader.releaseLock(); controller.close(); }
+            else controller.enqueue(next.value);
+          } catch (error) {
+            const retryReason = retryableTransportError(error);
+            if (retryReason) failure.retryReason = retryReason;
+            failure.transportReason = transportFailureReason(error, secret());
+            controller.error(Error(failure.transportReason));
+          }
+        },
+        async cancel(reason) { try { await reader.cancel(reason); } finally { reader.releaseLock(); } },
+      }), { status: response.status, statusText: response.statusText, headers: response.headers });
     }
-    catch (error) { failure.transportReason = transportFailureReason(error, secret()); throw Error(failure.transportReason); }
+    catch (error) {
+      const retryReason = retryableTransportError(error);
+      if (retryReason) failure.retryReason = retryReason;
+      failure.transportReason = transportFailureReason(error, secret()); throw Error(failure.transportReason);
+    }
   };
 }
 function safeOptions(options: SimpleStreamOptions | undefined, model: Model<Api>, fetch: typeof globalThis.fetch | undefined): SimpleStreamOptions {
@@ -109,6 +136,8 @@ function maskProviderErrors(source: AssistantMessageEventStream, model: Model<Ap
         if (safe.type === 'done') { sanitizeMessage(safe.message, failure, secret()); terminal = true; }
         if (safe.type === 'error') {
           sanitizeMessage(safe.error, failure, secret());
+          // A failed partial is never an executable assistant/tool intent.
+          safe.error.content = [];
           if (signal?.aborted) { safe.reason = 'aborted'; safe.error.stopReason = 'aborted'; }
           if (safe.reason === 'aborted') safe.error.errorMessage = 'Model request was cancelled';
           terminal = true;
@@ -120,7 +149,7 @@ function maskProviderErrors(source: AssistantMessageEventStream, model: Model<Ap
           const diagnostic = ModelRequestFailure.from(event.type === 'error' ? event.error.errorMessage : undefined, failure, secret());
           safe.error.errorMessage = diagnostic.message; onFailure?.(diagnostic);
         }
-        output.push(safe);
+        output.push(safe); break;
       }
       if (!terminal) fail('Provider stream ended without a terminal message');
     } catch (error) { fail(transportFailureReason(error, secret())); }
@@ -180,80 +209,82 @@ export function createModelTransport(configuration: ModelConfiguration, selectio
     streamFn: (requested, context, streamOptions) => {
       if (requested.id !== canonicalModel.id || requested.provider !== canonicalModel.provider || requested.api !== canonicalModel.api) throw Error('Injected transport is bound to a different model');
       checkSdkEnvironment(canonicalModel);
-      options.onFailure?.(null);
-      const nativeVideo = prepareNativeVideoRequest(canonicalModel, context);
-      const failure: ModelFailureContext = {};
-      let key: string | undefined;
-      let betas: string[] = [];
-      // Request-local state prevents concurrent calls or key rotation from
-      // sharing credentials/header state. No credential is stored in the model.
-      const collection = createModels({ authContext: { env: async () => undefined, fileExists: async () => false } });
-      collection.setProvider({ ...provider, auth: { apiKey: { name: 'Explicit configured API key', resolve: async ({ signal }) => {
-        signal.throwIfAborted();
-        if (options.resolveApiKey) {
-          try { key = await options.resolveApiKey(signal); } catch { throw Error('Unable to read the configured API key'); }
+      // Validate caller options synchronously, before any credential or retry work.
+      const requestSettings = safeOptions(streamOptions, canonicalModel, undefined);
+      const nativeVideo = prepareNativeVideoRequest(canonicalModel, structuredClone(context));
+      return retryModelRequest(canonicalModel, (failure, onFailure) => {
+        let key: string | undefined;
+        let betas: string[] = [];
+        // Request-local state prevents concurrent calls or key rotation from
+        // sharing credentials/header state. No credential is stored in the model.
+        const collection = createModels({ authContext: { env: async () => undefined, fileExists: async () => false } });
+        collection.setProvider({ ...provider, auth: { apiKey: { name: 'Explicit configured API key', resolve: async ({ signal }) => {
           signal.throwIfAborted();
-          if (!key || !/^[\x21-\x7e]{1,16384}$/u.test(key) || key.includes('sk-ant-oat')) throw Error('The configured API key is missing or invalid');
-        } else key = resolveConfiguredApiKey(apiKeyEnv, env);
-        // Pi treats a non-sk- credential at this exact endpoint as ChatGPT
-        // sign-in and silently removes output/sampling fields. That auth mode
-        // is outside this API-key-only composition.
-        if (canonicalModel.provider === 'openai' && canonicalModel.baseUrl === 'https://api.openai.com/v1' && !key.startsWith('sk-')) throw Error('The built-in OpenAI connection requires an API key, not a ChatGPT access token');
-        return { auth: { apiKey: key }, source: options.resolveApiKey ? 'explicit server credential' : 'explicit environment reference' };
-      } } } });
-      const headers = (): Headers => {
-        if (!key) throw Error('Explicit API key was not resolved');
-        // SDK constructors also read *_CUSTOM_HEADERS, organization and project
-        // variables. Rebuild from request-owned data instead of filtering that
-        // already-contaminated header bag or altering process.env.
-        const result = new Headers({ accept: 'text/event-stream', 'content-type': 'application/json' });
-        for (const source of [provider.headers, canonicalModel.headers]) for (const [name, value] of Object.entries(source ?? {})) {
-          if (value !== null) result.set(name, value);
-        }
-        result.delete('authorization'); result.delete('x-api-key');
-        if (canonicalModel.api === 'anthropic-messages') {
-          result.set('x-api-key', key); result.set('anthropic-version', '2023-06-01');
-          if (betas.length) result.set('anthropic-beta', betas.join(','));
-        } else result.set('authorization', `Bearer ${key}`);
-        return result;
-      };
-      const fetch = canonicalModel.api === 'google-generative-ai' ? undefined : scopedModelFetch(canonicalModel.baseUrl, options.fetch ?? globalThis.fetch, headers, failure, () => key);
-      const requestOptions = safeOptions(streamOptions, canonicalModel, fetch);
-      const cap = streamOptions?.maxTokens ?? canonicalModel.maxTokens;
-      requestOptions.onPayload = payload => {
-        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw Error('Invalid model request payload');
-        const body = payload as Record<string, unknown>;
-        nativeVideo.apply(body);
-        // Pi's budget-based Anthropic adapter adds thinking to maxTokens. Mira's
-        // existing cap covers the entire output, including thinking, not just text.
-        if (canonicalModel.api === 'anthropic-messages' && body['thinking'] && typeof body['thinking'] === 'object') {
-          const thinking = body['thinking'] as Record<string, unknown>;
-          if (thinking['type'] === 'enabled' && typeof body['max_tokens'] === 'number' && typeof thinking['budget_tokens'] === 'number') {
-            const total = Math.min(body['max_tokens'], cap);
-            if (total < 2048) throw Error('Budget-based Anthropic reasoning requires at least 2048 output tokens including 1024 answer tokens');
-            body['max_tokens'] = total;
-            thinking['budget_tokens'] = Math.min(thinking['budget_tokens'], total - 1024);
+          if (options.resolveApiKey) {
+            try { key = await options.resolveApiKey(signal); } catch { throw Error('Unable to read the configured API key'); }
+            signal.throwIfAborted();
+            if (!key || !/^[\x21-\x7e]{1,16384}$/u.test(key) || key.includes('sk-ant-oat')) throw Error('The configured API key is missing or invalid');
+          } else key = resolveConfiguredApiKey(apiKeyEnv, env);
+          // Pi treats a non-sk- credential at this exact endpoint as ChatGPT
+          // sign-in and silently removes output/sampling fields. That auth mode
+          // is outside this API-key-only composition.
+          if (canonicalModel.provider === 'openai' && canonicalModel.baseUrl === 'https://api.openai.com/v1' && !key.startsWith('sk-')) throw Error('The built-in OpenAI connection requires an API key, not a ChatGPT access token');
+          return { auth: { apiKey: key }, source: options.resolveApiKey ? 'explicit server credential' : 'explicit environment reference' };
+        } } } });
+        const headers = (): Headers => {
+          if (!key) throw Error('Explicit API key was not resolved');
+          // SDK constructors also read *_CUSTOM_HEADERS, organization and project
+          // variables. Rebuild from request-owned data instead of filtering that
+          // already-contaminated header bag or altering process.env.
+          const result = new Headers({ accept: 'text/event-stream', 'content-type': 'application/json' });
+          for (const source of [provider.headers, canonicalModel.headers]) for (const [name, value] of Object.entries(source ?? {})) {
+            if (value !== null) result.set(name, value);
           }
-        }
-        let limits: unknown[];
-        switch (canonicalModel.api) {
-          case 'openai-completions': limits = [body['max_tokens'], body['max_completion_tokens']].filter(value => value !== undefined); break;
-          case 'openai-responses': limits = [body['max_output_tokens']]; break;
-          case 'anthropic-messages': limits = [body['max_tokens']]; break;
-          case 'mistral-conversations': limits = [body['maxTokens']]; break;
-          case 'google-generative-ai': {
-            const config = body['config'];
-            limits = [config && typeof config === 'object' && !Array.isArray(config) ? (config as Record<string, unknown>)['maxOutputTokens'] : undefined];
-            break;
+          result.delete('authorization'); result.delete('x-api-key');
+          if (canonicalModel.api === 'anthropic-messages') {
+            result.set('x-api-key', key); result.set('anthropic-version', '2023-06-01');
+            if (betas.length) result.set('anthropic-beta', betas.join(','));
+          } else result.set('authorization', `Bearer ${key}`);
+          return result;
+        };
+        const fetch = canonicalModel.api === 'google-generative-ai' ? undefined : scopedModelFetch(canonicalModel.baseUrl, options.fetch ?? globalThis.fetch, headers, failure, () => key);
+        const requestOptions = safeOptions(requestSettings, canonicalModel, fetch);
+        const cap = requestSettings.maxTokens ?? canonicalModel.maxTokens;
+        requestOptions.onPayload = payload => {
+          if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw Error('Invalid model request payload');
+          const body = payload as Record<string, unknown>;
+          nativeVideo.apply(body);
+          // Pi's budget-based Anthropic adapter adds thinking to maxTokens. Mira's
+          // existing cap covers the entire output, including thinking, not just text.
+          if (canonicalModel.api === 'anthropic-messages' && body['thinking'] && typeof body['thinking'] === 'object') {
+            const thinking = body['thinking'] as Record<string, unknown>;
+            if (thinking['type'] === 'enabled' && typeof body['max_tokens'] === 'number' && typeof thinking['budget_tokens'] === 'number') {
+              const total = Math.min(body['max_tokens'], cap);
+              if (total < 2048) throw Error('Budget-based Anthropic reasoning requires at least 2048 output tokens including 1024 answer tokens');
+              body['max_tokens'] = total;
+              thinking['budget_tokens'] = Math.min(thinking['budget_tokens'], total - 1024);
+            }
           }
-          default: throw Error('This model protocol has no verified output-cap mapping in this composition');
-        }
-        if (!limits.length || limits.some(value => typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0 || value > cap)) throw Error('Protocol request must contain an output limit within the explicitly configured/requested cap');
-        // Capture Pi-authored beta names before the SDK adds ambient headers.
-        if (Array.isArray(body['betas']) && body['betas'].every(value => typeof value === 'string')) betas = [...body['betas']] as string[];
-        return undefined;
-      };
-      return maskProviderErrors(collection.streamSimple(structuredClone(canonicalModel), nativeVideo.context, requestOptions), canonicalModel, () => key, streamOptions?.signal, failure, options.onFailure);
+          let limits: unknown[];
+          switch (canonicalModel.api) {
+            case 'openai-completions': limits = [body['max_tokens'], body['max_completion_tokens']].filter(value => value !== undefined); break;
+            case 'openai-responses': limits = [body['max_output_tokens']]; break;
+            case 'anthropic-messages': limits = [body['max_tokens']]; break;
+            case 'mistral-conversations': limits = [body['maxTokens']]; break;
+            case 'google-generative-ai': {
+              const config = body['config'];
+              limits = [config && typeof config === 'object' && !Array.isArray(config) ? (config as Record<string, unknown>)['maxOutputTokens'] : undefined];
+              break;
+            }
+            default: throw Error('This model protocol has no verified output-cap mapping in this composition');
+          }
+          if (!limits.length || limits.some(value => typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0 || value > cap)) throw Error('Protocol request must contain an output limit within the explicitly configured/requested cap');
+          // Capture Pi-authored beta names before the SDK adds ambient headers.
+          if (Array.isArray(body['betas']) && body['betas'].every(value => typeof value === 'string')) betas = [...body['betas']] as string[];
+          return undefined;
+        };
+        return maskProviderErrors(collection.streamSimple(structuredClone(canonicalModel), structuredClone(nativeVideo.context), requestOptions), canonicalModel, () => key, requestSettings.signal, failure, onFailure);
+      }, requestSettings.signal, options.onRetry, options.onFailure);
     },
   };
 }
