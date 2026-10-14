@@ -3,10 +3,10 @@ import { childActivity } from './management-projections.ts';
 import type { AgentTool, StreamFn } from '@earendil-works/pi-agent-core';
 import { Type, type Api, type Model } from '@earendil-works/pi-ai';
 import { SubagentError, type DurableWriter, type SubagentRecord, type SubagentWriter, type SubagentTurn, type SubagentResult, type SubagentActivityInput } from '@mira/life';
-import { PiDurableRuntime, freezeSubagentContext, type RecoveredContext, type PiRuntimeOptions } from '@mira/runtime-pi';
+import { PiDurableRuntime, freezeSubagentContext, type RecoveredContext, type PiRuntimeOptions, type ThinkingLevel } from '@mira/runtime-pi';
 import type { WriteOverflowInput } from '@mira/cognition';
 
-export interface SubagentTransport { model: Model<Api>; streamFn: StreamFn }
+export interface SubagentTransport { thinkingLevel?: ThinkingLevel; model: Model<Api>; streamFn: StreamFn }
 export interface SubagentManagerOptions {
   writer: SubagentWriter;
   acquire: (streamId: string) => Promise<DurableWriter>;
@@ -46,6 +46,8 @@ export class SubagentManager {
   #userInputVersion = 0;
   #closed = false;
   #admission: Promise<void> = Promise.resolve();
+  /** Occupied execution slots include cancellation and awaited cleanup. */
+  get hasActiveWork(): boolean { return this.#active.size > 0; }
   get maxConcurrent(): number { return this.#options.maxConcurrent ?? 8; }
   async #admit<T>(work: () => Promise<T>): Promise<T> {
     const prior = this.#admission;

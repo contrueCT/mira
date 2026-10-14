@@ -1,3 +1,4 @@
+import { supportedThinkingLevels } from '@mira/runtime-pi';
 import type { Api, Model, Provider } from '@earendil-works/pi-ai';
 import { builtinModels, getBuiltinModelDataGeneratedAt } from '@earendil-works/pi-ai/providers/all';
 import { validateBaseUrl } from './model-config.ts';
@@ -34,7 +35,7 @@ export function describeCatalogModel(model: Model<Api>) {
   return {
     id: model.id, name: model.name, provider: model.provider, protocol: protocolDescription(model.api),
     catalogBaseUrl, endpointNote: 'Catalog base endpoint, not a guarantee of the final request URL; protocol adapters may append paths or require account configuration.',
-    contextWindow: model.contextWindow, maxTokens: model.maxTokens, reasoning: model.reasoning, input: [...model.input],
+    contextWindow: model.contextWindow, maxTokens: model.maxTokens, reasoning: model.reasoning, thinkingLevels: supportedThinkingLevels(model), input: [...model.input],
     pricing: { source: 'bundled-pi-catalog', rates: structuredClone(model.cost), note: 'Catalog estimates may be stale. Zero or absent rates do not establish that a model is free.' },
   };
 }

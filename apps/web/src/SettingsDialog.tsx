@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, RefObject } from 'react';
 import { ApiError, api, errorText } from './api.ts';
+import { effectiveThinkingLevel, thinkingLabels, thinkingLevels } from './reasoning.ts';
 import { ApiKeyField } from './ApiKeyField.tsx';
 import { hasUsableApiKey, sameCredentialTarget, validateApiKey, withApiKey } from './credentials.ts';
 import { CloseIcon } from './icons.tsx';
@@ -8,7 +9,7 @@ import { MemoryPanel } from './MemoryPanel.tsx';
 import type { MemoryPanelProps } from './MemoryPanel.tsx';
 import { ExtensionsPanel } from './ExtensionsPanel.tsx';
 import { RunsPanel } from './RunsPanel.tsx';
-import type { BuiltinCatalog, CustomConnection, CustomConnectionWrite, CustomModel, CustomProtocol, Discovery, Settings, SettingsWrite } from './types.ts';
+import type { BuiltinCatalog, CustomConnection, CustomConnectionWrite, CustomModel, CustomProtocol, Discovery, Settings, SettingsWrite, ThinkingLevel } from './types.ts';
 
 interface Props { synthetic: boolean; onClose: () => void; onSaved: () => void; returnFocus: RefObject<HTMLButtonElement | null>; memoryRequest: MemoryPanelProps['request']; memoryPending: MemoryPanelProps['pending']; sending: boolean; storageError: string | null; onMemorySubmit: MemoryPanelProps['onSubmit']; onMemoryRetry: MemoryPanelProps['onRetry'] }
 type SettingsTab = 'model' | 'memory' | 'extensions' | 'runs';
@@ -123,6 +124,10 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
   const selection = draft?.selection;
   const selectedBuiltin = provider?.models.find(model => selection?.kind === 'builtin' && selection.provider === provider.id && model.id === selection.model);
   const selectedCustom = connection?.models.find(model => selection?.kind === 'custom' && selection.connection === connection.id && model.id === selection.model);
+  const reasoningSupported = mode === 'builtin' ? selectedBuiltin?.reasoning : modelDraft ? modelDraft.reasoning === 'true' : selectedCustom?.reasoning;
+  const availableThinkingLevels = mode === 'builtin' && selectedBuiltin?.thinkingLevels ? selectedBuiltin.thinkingLevels : reasoningSupported ? thinkingLevels.slice(0, 5) : ['off'] as ThinkingLevel[];
+  const requestedThinkingLevel = draft?.configuration.defaultThinkingLevel ?? 'medium';
+  const activeThinkingLevel = effectiveThinkingLevel(requestedThinkingLevel, availableThinkingLevels);
   const credential = draft?.configuration.builtinCredentials[providerId] ?? { hasApiKey: false };
   const originalConnection = originalConnectionsRef.current.find(item => item.id === connectionId);
   const targetChanged = !!connection && !!originalConnection && !sameCredentialTarget(connection, originalConnection);
@@ -248,7 +253,7 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
       if (!controller.signal.aborted && aliveRef.current && version === editVersionRef.current) { originalConnectionsRef.current = structuredClone(result.configuration.customConnections); originalCredentialsRef.current = structuredClone(result.configuration.builtinCredentials); setDraft(result); setDirty(false); setSaved(true); setConflict(false); setModelDraft(null); onSaved(); }
     } catch (cause) {
       if (!controller.signal.aborted && aliveRef.current) {
-        if (cause instanceof ApiError && cause.status === 409 && cause.message === 'Mira is working; retry when it is idle') setError('Mira 正在处理消息，暂时不能修改配置。编辑仍保留，等处理结束后可以再次保存。');
+        if (cause instanceof ApiError && cause.status === 409 && cause.message === 'Mira is working; retry when it is idle') setError('Mira 或子任务仍在运行，暂时不能修改配置。编辑仍保留，等全部结束后可以再次保存。');
         else if (cause instanceof ApiError && cause.status === 409) { setConflict(true); setError('配置已在别处更新。你的编辑仍保留，请重新读取最新配置后再修改。'); }
         else setError('尚未确认保存结果，请重新读取配置核对后再修改。');
       }
@@ -308,6 +313,14 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
               </div>}
             </>}
           </section>}
+          <section className="settings-group" aria-label="默认推理设置">
+            <label className="field-label" htmlFor="thinking-level">默认推理强度</label>
+            <select id="thinking-level" value={activeThinkingLevel} disabled={!reasoningSupported} onChange={event => change(current => ({ ...current, configuration: { ...current.configuration, defaultThinkingLevel: event.target.value as ThinkingLevel } }))}>
+              {availableThinkingLevels.map(level => <option key={level} value={level}>{thinkingLabels[level]}</option>)}
+            </select>
+            <p className="field-hint">用于 Mira、子任务和 Memory 整理；压缩摘要独立使用最低支持档位。更高强度可能增加耗时和费用，实际推理预算仍受总输出上限约束。</p>
+            <p className="field-hint">{reasoningSupported ? `当前模型档位：${thinkingLabels[activeThinkingLevel]}。` : '当前模型不支持推理，使用关闭档位。'}{requestedThinkingLevel !== activeThinkingLevel ? `默认偏好“${thinkingLabels[requestedThinkingLevel]}”仍保留，切换模型时按能力适配。` : ''}</p>
+          </section>
         </fieldset>
         {error && <div className="settings-error" role="alert"><p>{error}</p><button type="button" className="text-button" disabled={saving} onClick={reloadSettings}>重新读取并放弃当前编辑</button></div>}
         {saved && <p className="saved-notice" role="status">配置已保存。{draft.selection === null ? '当前未启用模型，请选择模型并填写 API Key 后再发送消息。' : synthetic ? '当前仍为模拟模式；重新启动服务并移除 --synthetic 后使用真实模型。' : '下一条新消息将使用所选模型。'}连接是否可用取决于密钥与服务商权限。</p>}

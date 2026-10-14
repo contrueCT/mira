@@ -29,6 +29,7 @@ const backend: WebBackend = {
   async saveSettings(value) {
     const write = value as WebSettingsWrite;
     settings = { selection: write.selection, revision: '1'.repeat(64), configuration: {
+      ...(write.configuration.defaultThinkingLevel === undefined ? {} : { defaultThinkingLevel: write.configuration.defaultThinkingLevel }),
       builtinCredentials: Object.fromEntries(Object.entries(write.configuration.builtinCredentials).map(([id, entry]) => [id, { hasApiKey: typeof entry.apiKey === 'string' || (entry.apiKey !== null && entry.hasApiKey === true) }])),
       customConnections: write.configuration.customConnections.map(connection => ({ ...webConnectionMetadata(connection), hasApiKey: typeof connection.apiKey === 'string' || (connection.apiKey !== null && connection.hasApiKey === true) })),
     } };

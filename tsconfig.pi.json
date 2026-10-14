@@ -48,7 +48,8 @@
     "tests/unit/bundled-skills.test.mts",
     "tests/unit/subagents.test.mts",
     "tests/unit/child-management.test.mts",
-    "tests/unit/task-compaction-activity.test.mts"
+    "tests/unit/task-compaction-activity.test.mts",
+    "tests/unit/reasoning-settings.test.mts"
   ],
   "exclude": [
     "node_modules",

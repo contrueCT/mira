@@ -1,3 +1,4 @@
+import { parseThinkingLevel, type ThinkingLevel } from '@mira/runtime-pi';
 import { createBuiltinCatalog } from './model-catalog.ts';
 import { parseModelConfiguration, type CustomConnection, type ModelConfiguration } from './model-config.ts';
 
@@ -6,10 +7,12 @@ export interface WebCredentialWrite { hasApiKey?: boolean; apiKey?: string | nul
 export type WebCustomConnection = Omit<CustomConnection, 'apiKeyEnv'> & WebCredential;
 export type WebCustomConnectionWrite = Omit<CustomConnection, 'apiKeyEnv'> & WebCredentialWrite;
 export interface WebModelConfiguration {
+  defaultThinkingLevel?: ThinkingLevel;
   builtinCredentials: Record<string, WebCredential>;
   customConnections: WebCustomConnection[];
 }
 export interface WebModelConfigurationWrite {
+  defaultThinkingLevel?: ThinkingLevel;
   builtinCredentials: Record<string, WebCredentialWrite>;
   customConnections: WebCustomConnectionWrite[];
 }
@@ -57,7 +60,7 @@ function parseConnection(value: unknown, write: boolean): WebCustomConnectionWri
 }
 export function parseWebConnectionWrite(value: unknown): WebCustomConnectionWrite { return parseConnection(value, true); }
 function parseConfiguration(value: unknown, write: boolean): WebModelConfigurationWrite {
-  const root = object(value); fields(root, ['builtinCredentials', 'customConnections']);
+  const root = object(value); fields(root, ['builtinCredentials', 'customConnections', 'defaultThinkingLevel']);
   const builtinCredentials: WebModelConfigurationWrite['builtinCredentials'] = Object.create(null) as WebModelConfigurationWrite['builtinCredentials'];
   const catalog = createBuiltinCatalog();
   for (const [provider, raw] of Object.entries(object(root['builtinCredentials'] ?? {}))) {
@@ -69,12 +72,13 @@ function parseConfiguration(value: unknown, write: boolean): WebModelConfigurati
   if (!Array.isArray(entries) || entries.length > 100) return invalid();
   const customConnections = entries.map(entry => parseConnection(entry, write));
   if (new Set(customConnections.map(entry => entry.id)).size !== customConnections.length) invalid();
-  return { builtinCredentials: Object.fromEntries(Object.entries(builtinCredentials)), customConnections };
+  return { builtinCredentials: Object.fromEntries(Object.entries(builtinCredentials)), customConnections, ...(root['defaultThinkingLevel'] === undefined ? {} : { defaultThinkingLevel: parseThinkingLevel(root['defaultThinkingLevel']) }) };
 }
 export function parseWebModelConfiguration(value: unknown): WebModelConfiguration { return parseConfiguration(value, false) as WebModelConfiguration; }
 export function parseWebModelConfigurationWrite(value: unknown): WebModelConfigurationWrite { return parseConfiguration(value, true); }
 export function webTransportConfiguration(configuration: WebModelConfiguration | WebModelConfigurationWrite): ModelConfiguration {
   return {
+    ...(configuration.defaultThinkingLevel === undefined ? {} : { defaultThinkingLevel: configuration.defaultThinkingLevel }),
     builtinCredentials: Object.fromEntries(Object.keys(configuration.builtinCredentials).map(provider => [provider, { apiKeyEnv: webCredentialReference }])),
     customConnections: configuration.customConnections.map(connection => ({ ...webConnectionMetadata(connection), apiKeyEnv: webCredentialReference })),
   };

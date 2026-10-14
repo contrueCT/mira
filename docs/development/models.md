@@ -23,6 +23,7 @@ pnpm models details openai '<model-id-from-list>'
 
 ```json
 {
+  "defaultThinkingLevel": "medium",
   "builtinCredentials": {
     "openai": { "apiKeyEnv": "MIRA_OPENAI_KEY" }
   },
@@ -101,6 +102,7 @@ const runtime = new PiDurableRuntime({
   writer, tools, miraPrompt,
   model: transport.model,
   streamFn: transport.streamFn,
+  thinkingLevel: transport.thinkingLevel,
 });
 ```
 
@@ -108,7 +110,7 @@ const runtime = new PiDurableRuntime({
 
 本阶段 transport 只向调用方输出完整的终止消息事件，上游 SSE 分片在内部消费；不暴露实时 text/thinking/tool delta，避免跨分片拼接泄露凭据。未来交互 CLI 若需要逐 token 显示，应单独设计凭据安全的流式接口；当前不会用一套脆弱的增量替换规则改写有效 payload。
 
-transport 通过 Pi `Models.streamSimple` 调用，Runtime 保持注入接口、同轮工具、持久 intent/outcome、恢复与显式压缩路径；不把 provider registry/auth 搬进 life/context/runtime-pi，不增加授权门禁。模型重试设为零，不自动重发不确定的网络调用；取消沿用 runtime signal。采样参数仅保留 runtime 显式 temperature/reasoning/maxTokens，没有本阶段新增默认采样策略。Pi 组装完成的实际 output token 字段必须存在，并按协议再次校验上限（包括 Mistral 和 Google 的相应字段）；如果协议把低限额自动放大（例如 Responses 最低 16），超过配置／请求上限会在发出前失败，不悄悄扩大限额。
+transport 通过 Pi `Models.streamSimple` 调用，Runtime 保持注入接口、同轮工具、持久 intent/outcome、恢复与显式压缩路径；不把 provider registry/auth 搬进 life/context/runtime-pi，不增加授权门禁。模型重试设为零，不自动重发不确定的网络调用；取消沿用 runtime signal。采样参数仅保留 runtime 显式 temperature/reasoning/maxTokens；推理默认值与能力适配见下节，其余采样不新增默认策略。Pi 组装完成的实际 output token 字段必须存在，并按协议再次校验上限（包括 Mistral 和 Google 的相应字段）；如果协议把低限额自动放大（例如 Responses 最低 16），超过配置／请求上限会在发出前失败，不悄悄扩大限额。
 
 自定义价格明确为 unknown。Pi Model/usage 要求数值 cost，当前内部零值仅为满足 SDK 的计算占位，绝不是免费或实际账单；消费者不能用这些零值做费用报告。内置也只提供目录估计。HTTP 错误响应和异常细节不会直接输出，避免服务器回显密钥；诊断只展示下文约定的有界脱敏错误字段；清理最终消息的原始错误／diagnostics；如果完整内容、工具参数或其它返回字段回显当前请求 Key，整条响应失败，不静默改写成不同的可执行工具调用。取消仍报告 aborted。
 
@@ -133,3 +135,11 @@ HTTP 错误体在 Pi 截断前最多读取64 KiB并提取白名单字段；超�
 这是直接改名，不存在旧名称别名、协议映射或历史迁移。已保存的原始历史不改写；如果某条历史里已经有旧点号 assistant 工具调用，严格 provider 仍可能拒绝那段原始调用历史。新工具声明和新调用均使用当前名称，但不宣称旧调用已经迁移；程序不会为此删除、重置数据库或上下文。实际需要处理这种已有数据时须另行明确决定。
 
 命名参考 [Pi 工具注册](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/index.ts)、[Codex 计划工具](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/plan.rs)、[OpenCode read](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/tool/read.ts)。
+
+## 默认推理强度
+
+Web 既有模型设置及 CLI configuration 可保存 `defaultThinkingLevel`，允许 `off/minimal/low/medium/high/xhigh/max`，缺省 `medium`。这改变了此前 Agent 未传 thinkingLevel 时隐式 off 的行为。实际档位由固定 Pi 1.0.2 模型能力适配，非推理模型 off；目录响应的 `thinkingLevels` 给出支持项。自定义模型的 `reasoning` 必须明确提供，不从模型发现结果猜能力。
+
+界面保留默认偏好并显示当前有效档位；例如 xhigh 在不支持该档位的模型上会变成 high。不能关闭的模型使用其支持项，Pi 能力适配可能选择高于请求值的最低支持档位；这不是模型自主升档。Main、child 和 Dreaming 都显式接收档位；已运行实例不被设置编辑改变，后续实例读取设置。程序化组装需同时传 `transport.thinkingLevel`，直接调用 `streamFn` 时仍需显式传 reasoning，避免会话默认污染独立摘要策略。
+
+压缩固定选择最低支持档，通常 off，不继承 high/xhigh/max。更高档可能增加耗时与成本；相对努力档位不保证固定 token 数。预算型 Anthropic 的思考和答案共用原总输出 cap，思考预算会缩至最多 cap 减 1024；cap 小于 2048 明确失败且不发送请求，不放大 cap 或静默关闭推理。默认 runtime reserve 也限制总输出，可按既有程序化 autoCompaction.reserveTokens 配置；不改变现有上下文预算语义。详见 [ADR 0027](../adr/0027-configured-reasoning-levels.md)。

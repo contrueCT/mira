@@ -1,4 +1,5 @@
 import { open } from 'node:fs/promises';
+import { parseThinkingLevel, type ThinkingLevel } from '@mira/runtime-pi';
 
 export const customProtocols = ['openai-completions', 'openai-responses', 'anthropic-messages'] as const;
 export type CustomProtocol = typeof customProtocols[number];
@@ -20,6 +21,7 @@ export interface CustomConnection {
   models: CustomModelConfiguration[];
 }
 export interface ModelConfiguration {
+  defaultThinkingLevel?: ThinkingLevel;
   builtinCredentials: Record<string, { apiKeyEnv: string }>;
   customConnections: CustomConnection[];
 }
@@ -54,7 +56,7 @@ export function validateBaseUrl(value: unknown): string {
   return url.href.replace(/\/+$/u, '');
 }
 export function parseModelConfiguration(value: unknown): ModelConfiguration {
-  const root = object(value); fields(root, ['builtinCredentials', 'customConnections']);
+  const root = object(value); fields(root, ['builtinCredentials', 'customConnections', 'defaultThinkingLevel']);
   const builtinCredentials: ModelConfiguration['builtinCredentials'] = Object.create(null) as ModelConfiguration['builtinCredentials'];
   for (const [id, raw] of Object.entries(object(root['builtinCredentials'] ?? {}))) {
     text(id); const credential = object(raw); fields(credential, ['apiKeyEnv']);
@@ -90,7 +92,7 @@ export function parseModelConfiguration(value: unknown): ModelConfiguration {
     if (modelsUrl && new URL(modelsUrl).origin !== new URL(baseUrl).origin) throw Error('modelsUrl must use the same origin as baseUrl');
     return { id, ...(modelsUrl ? { modelsUrl } : {}), ...(item['name'] === undefined ? {} : { name: text(item['name']) }), baseUrl, api: api as CustomProtocol, apiKeyEnv: envName(item['apiKeyEnv']), models };
   });
-  return { builtinCredentials, customConnections };
+  return { builtinCredentials, customConnections, ...(root['defaultThinkingLevel'] === undefined ? {} : { defaultThinkingLevel: parseThinkingLevel(root['defaultThinkingLevel']) }) };
 }
 export async function readModelConfiguration(file: string): Promise<ModelConfiguration> {
   const handle = await open(file, 'r');

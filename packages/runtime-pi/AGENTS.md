@@ -61,3 +61,5 @@ real PostgreSQL recovery tests under `tests/recovery/`, needs the explicit isola
 `MIRA_TEST_DATABASE_URL`, and fails rather than silently skipping absent service.
 `pnpm check:all` is the full gate. Tests and claims must distinguish offline,
 real database, and live model validation. See recovery README for exact setup.
+
+- ADR 0027: explicitly initialize Agent thinkingLevel with the configured preference (default medium) adapted by Pi public model capabilities. Main/child/Dreaming share this option; summaries use the lowest supported level independently, never inherit costly conversation settings or autonomously escalate.

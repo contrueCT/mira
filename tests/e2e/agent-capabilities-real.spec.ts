@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 import { getCurrentSystemPrompt, getCurrentTools, type TranscriptContext } from '@earendil-works/pi-ai';
-import { createLocalHttp, LocalWebService } from '@mira/server';
+import { createLocalHttp, LocalWebService, WebSettingsStore } from '@mira/server';
 import { readExtensionConfiguration } from '@mira/extension-host';
 import { createTestDatabase } from '../integration/database.mts';
 import { assistant, deferred, model, streamOf } from '../recovery/fixtures.mts';
@@ -219,4 +219,56 @@ test('long child compacts through real tools and PostgreSQL, remains inspectable
     await expect(dialog.getByText('CHILD_COMPACTED_FINDING', { exact: true })).toBeVisible();
     expect(childCalls).toBe(oldCalls); expect(summaries).toBe(1);
   } finally { summaryRelease.resolve(); await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('reasoning saved in the real browser reaches credential-bound SDK payloads and survives restart', async ({ page }, testInfo) => {
+  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-reasoning-browser-');
+  const originalFetch = globalThis.fetch; const levels: unknown[] = [];
+  let service: LocalWebService | undefined, app: ReturnType<typeof createLocalHttp> | undefined;
+  const settingsFile = path.join(root, 'models.json');
+  const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'reasoning-browser', sourceDirectory,
+    workingDirectory: root, miraHome: root, settingsFile, spoolDirectory: path.join(root, 'spool'), dreaming: { enabled: false }, autoCompaction: { enabled: false } };
+  const start = async () => {
+    service = await LocalWebService.open(options);
+    app = createLocalHttp({ backend: service, port, assetsDirectory: path.join(sourceDirectory, 'apps/web/dist') });
+    await app.listen({ port, host: '127.0.0.1' });
+  };
+  const send = async (text: string) => { await page.getByLabel('给 Mira 发消息', { exact: true }).fill(text); await page.getByRole('button', { name: '发送消息', exact: true }).click(); };
+  const saveLevel = async (level: string) => {
+    await page.getByRole('button', { name: '模型设置', exact: true }).click();
+    await page.getByLabel('默认推理强度', { exact: true }).selectOption(level);
+    await page.getByRole('button', { name: '保存设置', exact: true }).click();
+    await expect(page.getByText(/配置已保存/)).toBeVisible();
+    await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+  };
+  try {
+    const store = new WebSettingsStore(settingsFile, sourceDirectory); const initial = await store.get();
+    await store.save({ revision: initial.revision, selection: { kind: 'custom', connection: 'browser-wire', model: 'browser-reasoner' },
+      configuration: { defaultThinkingLevel: 'medium', builtinCredentials: {}, customConnections: [{ id: 'browser-wire', api: 'openai-completions', baseUrl: 'https://reasoning-browser.invalid/v1', apiKey: 'sk-synthetic-browser-reasoning',
+        models: [{ id: 'browser-reasoner', reasoning: true, input: ['text'], contextWindow: 100_000, maxTokens: 4096 }] }] } });
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+      if (url.origin !== 'https://reasoning-browser.invalid') return originalFetch(input, init);
+      const payload = JSON.parse(String(init?.body)); levels.push(payload.reasoning_effort);
+      return new Response([
+        { id: 'wire-response', choices: [{ index: 0, delta: { role: 'assistant', content: `WIRE_LEVEL_${payload.reasoning_effort}` }, finish_reason: null }] },
+        { id: 'wire-response', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }, '[DONE]',
+      ].map(event => `data: ${typeof event === 'string' ? event : JSON.stringify(event)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } });
+    };
+    await start(); await page.goto(origin); await expect.poll(async () => (await service!.status()).state).toBe('idle');
+    await saveLevel('high'); await send('验证保存的高推理档位。');
+    await expect(page.getByText('WIRE_LEVEL_high', { exact: true })).toBeVisible(); expect(levels).toEqual(['high']);
+    await expect.poll(async () => (await service!.status()).state).toBe('idle');
+    await app!.close(); app = undefined; await service!.close(); service = undefined; await start(); await page.reload();
+    await expect.poll(async () => (await service!.status()).state).toBe('idle');
+    await page.getByRole('button', { name: '模型设置', exact: true }).click();
+    await expect(page.getByLabel('默认推理强度', { exact: true })).toHaveValue('high');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: testInfo.outputPath('reasoning-real-settings-mobile.png'), fullPage: true });
+    await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+    await saveLevel('low'); await send('继续验证低推理档位。');
+    await expect(page.getByText('WIRE_LEVEL_low', { exact: true })).toBeVisible(); expect(levels).toEqual(['high', 'low']);
+    expect((await db.admin.query("SELECT count(*)::int AS n FROM context_records WHERE envelope::text LIKE '%sk-synthetic-browser-reasoning%'")).rows[0].n).toBe(0);
+  } finally { await app?.close(); await service?.close(); globalThis.fetch = originalFetch; await db.close(); await rm(root, { recursive: true, force: true }); }
 });

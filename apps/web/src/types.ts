@@ -14,6 +14,7 @@ export interface TimelinePage { items: TimelineItem[]; nextCursor: string | null
 export interface ServerStatus { state: 'idle' | 'working' | 'error' | 'stopped'; mode: 'synthetic' | 'live'; model: string | null; error: string | null }
 export interface MessageEnvelope { id: string; text: string; occurredAt: string; attachmentIds?: string[] }
 export interface PendingMessage extends MessageEnvelope { state: 'sending' | 'uncertain' | 'queued'; error?: string }
+export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type CustomProtocol = 'openai-completions' | 'openai-responses' | 'anthropic-messages';
 export interface CustomModel {
   id: string;
@@ -35,10 +36,10 @@ export interface CustomConnection {
 export type ModelSelection = { kind: 'builtin'; provider: string; model: string } | { kind: 'custom'; connection: string; model: string } | null;
 export interface Settings {
   revision: string;
-  configuration: { builtinCredentials: Record<string, ApiKeyStatus>; customConnections: CustomConnection[] };
+  configuration: { defaultThinkingLevel?: ThinkingLevel; builtinCredentials: Record<string, ApiKeyStatus>; customConnections: CustomConnection[] };
   selection: ModelSelection;
 }
-export interface CatalogModel extends CustomModel { provider: string; protocol: { id: string; name: string }; catalogBaseUrl: string | null }
+export interface CatalogModel extends CustomModel { thinkingLevels: ThinkingLevel[]; provider: string; protocol: { id: string; name: string }; catalogBaseUrl: string | null }
 export interface CatalogProvider { id: string; name: string; apiKeySupport: { supported: boolean; explanation: string }; models: CatalogModel[] }
 export interface BuiltinCatalog { source: string; generatedAt: string | null; providers: CatalogProvider[] }
 export interface Discovery { endpoint: string; models: { id: string; name?: string }[] }
@@ -48,7 +49,7 @@ export interface ApiKeyStatus { hasApiKey: boolean }
 export interface ApiKeyWrite extends ApiKeyStatus { apiKey?: string | null }
 export interface CustomConnectionWrite extends CustomConnection { apiKey?: string | null }
 export interface SettingsWrite extends Omit<Settings, 'configuration'> {
-  configuration: { builtinCredentials: Record<string, ApiKeyWrite>; customConnections: CustomConnectionWrite[] };
+  configuration: { defaultThinkingLevel?: ThinkingLevel; builtinCredentials: Record<string, ApiKeyWrite>; customConnections: CustomConnectionWrite[] };
 }
 
 /** Independent browser management DTOs. Never import server/runtime types here. */
