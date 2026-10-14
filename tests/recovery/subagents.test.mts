@@ -141,3 +141,26 @@ test('SIGKILL during a real child effect releases writer ownership; restart does
     assert.equal(await readFile(marker, 'utf8'), 'effect dispatched once');
   } finally { if (worker.exitCode === null && worker.signalCode === null) worker.kill('SIGKILL'); await manager?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test('terminal result and parent Wake roll back together on a failed database transaction', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase();
+  try {
+    let writer = await db.acquire('atomic-parent');
+    await seed(writer, [{ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'atomic-spawn', name: 'subagent_spawn', arguments: { task: 'atomic fixture' } }] }]);
+    const state = await writer.load();
+    await writer.beginTool(state.version, { callId: 'atomic-spawn', assistantRecordId: state.records.at(-1)!.id, toolName: 'subagent_spawn', requestedArguments: { task: 'atomic fixture' }, arguments: { task: 'atomic fixture' }, occurredAt: new Date().toISOString() });
+    const child = await writer.createSubagent('atomic-spawn', { task: 'atomic fixture', fork: { mode: 'none', text: '', bytes: 0, parentVersion: state.version, parentHead: state.records.at(-1)!.id }, model: { provider: model.provider, id: model.id, api: model.api, configurationHash: 'a'.repeat(64) } }, 4);
+    const turn = (await writer.claimSubagentTurn(child.id))!;
+    await db.admin.query(`CREATE FUNCTION fail_child_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.event->>'type'='subagent.result' THEN RAISE EXCEPTION 'synthetic receipt failure'; END IF; RETURN NEW; END $$`);
+    await db.admin.query('CREATE TRIGGER fail_child_receipt BEFORE INSERT ON life_events FOR EACH ROW EXECUTE FUNCTION fail_child_receipt()');
+    await assert.rejects(writer.finishSubagentTurn(turn.id, 'completed', { text: 'result', truncated: false, fullResultPath: null, finalRecordId: null }));
+    assert.equal((await db.admin.query('SELECT status FROM subagent_turns WHERE turn_id=$1', [turn.id])).rows[0].status, 'running');
+    assert.equal((await db.admin.query("SELECT count(*) FROM life_events WHERE event->>'type'='subagent.result'")).rows[0].count, '0');
+    assert.equal((await db.admin.query('SELECT count(*) FROM wake_requests WHERE mira_id=$1', ['atomic-parent'])).rows[0].count, '0');
+    await writer.close(); await db.admin.query('DROP TRIGGER fail_child_receipt ON life_events');
+    writer = await db.acquire('atomic-parent'); await writer.interruptSubagents();
+    assert.equal((await writer.getSubagent(child.id))!.turns[0]!.status, 'interrupted');
+    assert.equal((await db.admin.query("SELECT count(*) FROM life_events WHERE event->>'type'='subagent.result'")).rows[0].count, '1');
+    assert.equal((await db.admin.query('SELECT count(*) FROM wake_requests WHERE mira_id=$1', ['atomic-parent'])).rows[0].count, '1');
+  } finally { await db.close(); }
+});
