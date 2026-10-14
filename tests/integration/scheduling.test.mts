@@ -273,7 +273,12 @@ test('scheduling down/up removes only its own slice and preserves ordinary histo
   try {
     const writer = await db.acquire(); const value = input();
     await writer.createScheduledDelivery(owner, value); await writer.dispatchScheduledDeliveries([owner]); await writer.close();
-    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
+    // Later independent feature slices must be removed in migration order first.
+    for (const table of ['subagent_turns', 'wake_live_inputs', 'scheduled_deliveries']) {
+      await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
+      assert.equal((await db.admin.query('SELECT to_regclass($1) AS name', [table])).rows[0].name, null);
+      assert.deepEqual(await counts(db), { events: 1, wakes: 1 });
+    }
     assert.equal((await db.admin.query("SELECT to_regclass('scheduled_deliveries') AS name")).rows[0].name, null);
     assert.deepEqual(await counts(db), { events: 1, wakes: 1 });
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'up' });
