@@ -61,10 +61,12 @@ export interface ModelFailureContext { status?: number; requestId?: string; tran
 /** Minted at the credential-owning transport; never a raw Error or response. */
 export class ModelRequestFailure {
   readonly message: string;
-  private constructor(message: string) { this.message = message; Object.freeze(this); }
+  /** Last failure only, for matching the runtime error without altering its classification. */
+  readonly terminalMessage: string;
+  private constructor(message: string, terminalMessage = message) { this.message = message; this.terminalMessage = terminalMessage; Object.freeze(this); }
   static afterAttempts(first: ModelRequestFailure, last: ModelRequestFailure, attempts: number): ModelRequestFailure {
     if (attempts === 1) return last;
-    return new ModelRequestFailure(bounded(`Model request failed after ${attempts} attempts · First: ${clip(first.message, 850)} · Last: ${clip(last.message, 850)}`));
+    return new ModelRequestFailure(bounded(`Model request failed after ${attempts} attempts · First: ${clip(first.message, 850)} · Last: ${clip(last.message, 850)}`), last.terminalMessage);
   }
   static from(value: unknown, context: ModelFailureContext, secret?: string): ModelRequestFailure {
     const details = [context.status === undefined ? '' : `HTTP ${context.status}`,

@@ -59,9 +59,11 @@ export function retryModelRequest(
   onRetry?.(null); onFailure?.(null);
   void (async () => {
     let first: ModelRequestFailure | undefined;
+    let attemptNumber = 0;
     let terminal: Extract<AssistantMessageEvent, { type: 'error' }> | undefined;
     try {
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        attemptNumber = attempt;
         const failure: ModelFailureContext = {};
         let diagnostic: ModelRequestFailure | undefined;
         const stream = start(failure, value => { diagnostic = value ?? undefined; });
@@ -74,7 +76,10 @@ export function retryModelRequest(
           if (!failure.retryReason || attempt === maxAttempts) {
             if (diagnostic) {
               const final = ModelRequestFailure.afterAttempts(first ?? diagnostic, diagnostic, attempt);
-              event.error.errorMessage = final.message; onFailure?.(final);
+              // Runtime/Pi classification must see only the terminal failure;
+              // an earlier 429 must not veto a later context-overflow recovery.
+              // Keep attempt history in the separate sanitized UI diagnostic.
+              onFailure?.(final);
             }
             output.push(event); return;
           }
@@ -102,7 +107,7 @@ export function retryModelRequest(
       } else {
         // Setup/observer failures are never reclassified as a provider retry.
         const failure = ModelRequestFailure.from(undefined, {});
-        terminal.error.errorMessage = failure.message; onFailure?.(failure);
+        terminal.error.errorMessage = failure.message; onFailure?.(first ? ModelRequestFailure.afterAttempts(first, failure, attemptNumber) : failure);
       }
       output.push(terminal);
     } finally { onRetry?.(null); }

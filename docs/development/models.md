@@ -153,5 +153,13 @@ backoff and prevents another dispatch. Partial responses do not enter history or
 execute tools. Authentication, configuration, invalid output, unknown failures,
 tool effects and persistence writes are not retried. SDK maxRetries stays zero.
 The Web working indicator shows actual waiting/retrying state; exhaustion keeps
-bounded sanitized first/last diagnostics. See [ADR 0029](../adr/0029-bounded-model-request-retries.md)
+bounded sanitized first/last diagnostics separately from the last error used by runtime classification. A received permanent HTTP status vetoes retries even if its error body is interrupted. See [ADR 0029](../adr/0029-bounded-model-request-retries.md)
 for exact codes, restart semantics and provider-observability limits.
+
+
+SDK logging/cloud environment is checked after async credentials and immediately
+before synchronous client construction through the pinned public eager adapters.
+The SDK modules are loaded at startup, without credentials or network calls;
+provider metadata and the public OpenCode routing wrapper are retained. Mistral's
+unrelated provider dispatch is unchanged. Global environment/console values are
+never modified to suppress SDK logging.

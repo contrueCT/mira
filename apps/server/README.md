@@ -154,5 +154,8 @@ HTTP/network failures before publishing a complete assistant message. It uses at
 most three attempts with cancellable bounded backoff; it never replays a Wake,
 tool or unknown effect. The existing status response optionally includes a safe
 `modelRetry` observation for the main request. Child requests cannot change it.
-Programmatic `WebServiceOptions.modelFetch` injects the HTTP boundary for tests;
+Runtime error classification uses only the last failure; temporary Web diagnostics
+retain bounded first/last attempt information separately. SDK environment checks
+run after authentication immediately before eager SDK construction, without
+mutating global environment or console. Programmatic `WebServiceOptions.modelFetch` injects the HTTP boundary for tests;
 production remains the explicit credential-bound provider path. See ADR 0029.

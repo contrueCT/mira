@@ -14,7 +14,7 @@ No whole Wake, tool batch, unknown external effect or persistence operation is a
 - Backoff before attempts two and three is 250 ms and 1,000 ms. An observed HTTP `Retry-After` may raise a delay up to 10 seconds. No timer survives cancellation or process exit.
 - Explicit retryable HTTP statuses are 408, 429, 500, 502, 503, 504 and 529.
 - Explicit transport codes are `ETIMEDOUT`, `UND_ERR_CONNECT_TIMEOUT`, `UND_ERR_HEADERS_TIMEOUT`, `UND_ERR_BODY_TIMEOUT`, `ECONNRESET`, `ECONNREFUSED`, `EPIPE`, `EAI_AGAIN` and `UND_ERR_SOCKET`. Inspect at most three cause levels, without guessing from diagnostic text. Response-body errors are observed at the actual fetch/reader boundary before the SDK flattens them.
-- Authentication/configuration/schema errors, redirects, TLS certificate failures, permanent DNS failures, unknown errors, invalid provider output and cancellation are not retryable. No credential, URL, provider body or arbitrary error field enters retry status.
+- Authentication/configuration/schema errors, redirects, TLS certificate failures, permanent DNS failures, unknown errors, invalid provider output and cancellation are not retryable. Once a non-success HTTP status is received, it owns classification: a network reset while reading a permanent 400/401/403/422 error body cannot make that request retryable. No credential, URL, provider body or arbitrary error field enters retry status.
 - Each attempt creates fresh request-local auth/header/failure state. The configured model, request context and explicit output/reasoning options remain the same. Web credential revision checks run again before dispatch.
 - Providers without a verified observable fetch boundary, including the pinned Pi Google adapter, do not gain text-inferred retries. Existing upstream behavior remains unchanged.
 
@@ -22,7 +22,7 @@ The attempt count and delays bound retry overhead, not the duration of a single 
 
 ## Errors, cancellation and status
 
-Intermediate errors are not persisted as assistant messages and do not set the Web error state. Exhaustion publishes one sanitized error with bounded first and last diagnostics and the actual attempt count. Successful recovery clears temporary status. Existing credential-echo rejection and bounded diagnostic redaction apply to every attempt.
+Intermediate errors are not persisted as assistant messages and do not set the Web error state. Runtime receives one sanitized terminal error containing only the last failure. Bounded first/last diagnostics and the actual attempt count stay in the separate `ModelRequestFailure.message` for Web status; its `terminalMessage` links that diagnostic to the thrown runtime error. This prevents an earlier rate-limit message from masking Pi’s final context-overflow classification and existing compaction recovery. Successful recovery clears temporary status. Existing credential-echo rejection and bounded diagnostic redaction apply to every attempt.
 
 The main Web request exposes an optional `modelRetry` observation via the existing status endpoint: phase (`waiting`/`requesting`), attempt, maximum attempts, delay and a fixed reason category. The ordinary working indicator displays waiting/retrying text. It is transient, clears on success/failure/cancellation/close, and is not a Timeline event or a durable retry log. Child model activity remains scoped to the child and cannot overwrite the main retry status.
 
@@ -41,3 +41,12 @@ Abort during backoff settles the same stream as aborted and prevents the next re
 Each retry repeats the SDK logging/cloud-environment guard before constructing
 a fresh SDK instance or resolving credentials. An unsafe environment change during
 backoff stops the request before another fetch and cannot enable raw SDK logging.
+
+
+## SDK-construction guard
+
+The pinned public eager OpenAI Completions, OpenAI Responses, Anthropic Messages and Google Generative AI implementations are imported before requests. Models still performs explicit async authentication; its `streamSimple` dispatch then checks SDK logging/cloud environment and synchronously enters the eager implementation. In Pi 1.0.2 these implementations construct the client before their first await. Checking only at request entry, retry entry or before a lazy adapter import leaves a gap in which a newly set logging variable can leak response headers.
+
+No global environment, console, SDK package or logging implementation is mutated. Static loading adds the already-installed SDK modules to startup, with no credential resolution or network request. Builtin identity, model metadata, compatibility options and headers remain intact; OpenCode/OpenCode Go reuse the public `withOpenCodeSessionHeader` wrapper. Deferred Cloudflare/Copilot integrations remain excluded. Unrelated implementations, including Mistral, keep their provider-owned dispatch.
+
+Fresh-process real-SDK regression tests cover all three logging protocols, custom and builtin connections, credential-resolution changes, the former lazy-load window, HTTP-200 response-header echoes, and Google cloud-mode changes. Permanent HTTP broken-body failures remain single-attempt; retryable 5xx and 2xx stream resets retain retries. A real runtime path verifies settled tool → 429 → 400 context overflow → transient summary retry → one compaction → final response, without repeating the tool. These are injected protocol responses, not live provider validation.

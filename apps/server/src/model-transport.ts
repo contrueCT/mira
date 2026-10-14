@@ -1,8 +1,10 @@
 import { resolveThinkingLevel, type ThinkingLevel } from '@mira/runtime-pi';
 import { createModels, createProvider, createAssistantMessageEventStream, type Api, type Model, type Provider, type ProviderStreams, type SimpleStreamOptions, type AssistantMessageEventStream, type AssistantMessage, type AssistantMessageEvent } from '@earendil-works/pi-ai';
-import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
-import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
-import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messages.lazy';
+import * as openAICompletionsApi from '@earendil-works/pi-ai/api/openai-completions';
+import * as openAIResponsesApi from '@earendil-works/pi-ai/api/openai-responses';
+import * as anthropicMessagesApi from '@earendil-works/pi-ai/api/anthropic-messages';
+import * as googleGenerativeAiApi from '@earendil-works/pi-ai/api/google-generative-ai';
+import { withOpenCodeSessionHeader } from '@earendil-works/pi-ai/providers/opencode-headers';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { boundedRetryAfter, retryableHttpStatus, retryableTransportError, retryModelRequest, type ModelRetryStatus } from './model-retry.ts';
 import { prepareNativeVideoRequest } from './model-video-transport.ts';
@@ -31,9 +33,9 @@ export interface ModelTransport {
   description: { source: 'builtin' | 'custom'; provider: string; model: string; protocol: { id: string; name: string }; pricing: 'catalog-estimate' | 'unknown' };
 }
 const adapters: Record<CustomProtocol, () => ProviderStreams> = {
-  'openai-completions': openAICompletionsApi,
-  'openai-responses': openAIResponsesApi,
-  'anthropic-messages': anthropicMessagesApi,
+  'openai-completions': () => openAICompletionsApi,
+  'openai-responses': () => openAIResponsesApi,
+  'anthropic-messages': () => anthropicMessagesApi,
 };
 export function resolveConfiguredApiKey(name: string, env: (name: string) => string | undefined): string {
   let value: string | undefined;
@@ -86,7 +88,9 @@ function scopedModelFetch(baseUrl: string, fetch: typeof globalThis.fetch, heade
     }
     catch (error) {
       const retryReason = retryableTransportError(error);
-      if (retryReason) failure.retryReason = retryReason;
+      // Once a non-success HTTP status is observed it owns classification.
+      // A reset while reading 401/422 diagnostics cannot authorize a retry.
+      if (failure.status === undefined && retryReason) failure.retryReason = retryReason;
       failure.transportReason = transportFailureReason(error, secret()); throw Error(failure.transportReason);
     }
   };
@@ -163,6 +167,22 @@ function checkSdkEnvironment(model: Model<Api>): void {
     throw Error('Unset GOOGLE_GENAI_USE_VERTEXAI and GOOGLE_GENAI_USE_ENTERPRISE before using this explicit Gemini API-key connection');
   }
 }
+/** Use the pinned public eager implementations so the post-auth guard and SDK
+ * constructor run in one synchronous call. Guarding a lazy wrapper leaves another
+ * import/continuation gap after authentication. Builtin model/compat/header data
+ * stays intact; reuse the only supported provider-specific routing wrapper.
+ * Deferred Cloudflare/Copilot providers remain excluded by builtinApiKeySupport. */
+function sdkStreams(model: Model<Api>): ProviderStreams | undefined {
+  let streams: ProviderStreams;
+  switch (model.api) {
+    case 'openai-completions': streams = openAICompletionsApi; break;
+    case 'openai-responses': streams = openAIResponsesApi; break;
+    case 'anthropic-messages': streams = anthropicMessagesApi; break;
+    case 'google-generative-ai': streams = googleGenerativeAiApi; break;
+    default: return undefined; // Unrelated implementations, including Mistral, stay provider-owned.
+  }
+  return model.provider === 'opencode' || model.provider === 'opencode-go' ? withOpenCodeSessionHeader(streams) : streams;
+}
 /** Pure setup: no credentials are read and no model request occurs until streamFn is called. */
 export function createModelTransport(configuration: ModelConfiguration, selection: ModelSelection, options: ModelTransportOptions = {}): ModelTransport {
   const config = parseModelConfiguration(configuration);
@@ -196,6 +216,7 @@ export function createModelTransport(configuration: ModelConfiguration, selectio
     provider = createProvider({ id, name: connection.name ?? connection.id, models: [model], api: { [connection.api]: adapters[connection.api]() }, auth: { apiKey: { name: 'Explicit custom API key', resolve: async () => undefined } } });
   } else throw Error('Unknown model selection kind');
   const canonicalModel = structuredClone(model);
+  const eagerStreams = sdkStreams(canonicalModel);
   const env = options.env ?? (name => process.env[name]);
   // Pi's Google SDK adapter rejects custom fetch and does not expose its SDK
   // cloud-mode constructor flags. Reject ambient cloud mode rather than silently
@@ -221,7 +242,15 @@ export function createModelTransport(configuration: ModelConfiguration, selectio
         // Request-local state prevents concurrent calls or key rotation from
         // sharing credentials/header state. No credential is stored in the model.
         const collection = createModels({ authContext: { env: async () => undefined, fileExists: async () => false } });
-        collection.setProvider({ ...provider, auth: { apiKey: { name: 'Explicit configured API key', resolve: async ({ signal }) => {
+        collection.setProvider({ ...provider,
+          ...(eagerStreams ? { streamSimple: ((model, context, options) => {
+            // Models invokes this only after awaited credential resolution. The
+            // eager adapter constructs its SDK client before its first await.
+            options?.signal?.throwIfAborted();
+            checkSdkEnvironment(model);
+            return eagerStreams.streamSimple(model, context, options);
+          }) satisfies Provider['streamSimple'] } : {}),
+          auth: { apiKey: { name: 'Explicit configured API key', resolve: async ({ signal }) => {
           signal.throwIfAborted();
           if (options.resolveApiKey) {
             try { key = await options.resolveApiKey(signal); } catch { throw Error('Unable to read the configured API key'); }

@@ -75,3 +75,25 @@ test('real PG shutdown during backoff cancels its timer and recovery preserves t
     assert.equal((await service.status()).modelRetry, null);
   } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test('real PG service keeps first-last HTTP diagnostics separate from its persisted terminal error', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-retry-terminal-pg-'); let service: LocalWebService | undefined;
+  let calls = 0;
+  const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'retry-terminal', sourceDirectory: process.cwd(), workingDirectory: root, miraHome: root,
+    spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), autoCompaction: { enabled: false }, dreaming: { enabled: false },
+    modelFetch: (async () => retryFailure(503, `PUBLIC_FAILURE_${++calls}`, `attempt-${calls}`)) as typeof globalThis.fetch };
+  try {
+    await settings(options.settingsFile); service = await LocalWebService.open(options);
+    await service.submit({ id: 'terminal-input', text: 'Synthetic failing request', occurredAt: '2026-10-14T00:00:00.000Z' });
+    await until(async () => (await service!.status()).state !== 'working', 'Request did not settle');
+    assert.equal((await service.status()).state, 'error'); assert.equal(calls, 3);
+    const app = createLocalHttp({ backend: service, port: 4318 });
+    try {
+      const response = await app.inject({ url: '/api/status', headers: { host: '127.0.0.1:4318', 'x-mira-client': 'web' } });
+      assert.match(response.json().error, /after 3 attempts.*PUBLIC_FAILURE_1.*PUBLIC_FAILURE_3/);
+      assert.equal(response.json().modelRetry, undefined);
+    } finally { await app.close(); }
+    const records = JSON.stringify((await db.admin.query('SELECT envelope FROM context_records ORDER BY version')).rows);
+    assert.match(records, /PUBLIC_FAILURE_3/); assert.doesNotMatch(records, /PUBLIC_FAILURE_1|PUBLIC_FAILURE_2/);
+  } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});

@@ -207,7 +207,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     this.#kickRequested = false;
     this.#error = null; this.#modelFailure = null;
     this.#drain = this.#loop.drain(this.#abort.signal).then(() => {}).catch((error: unknown) => {
-      if (!this.#closed) this.#error = PersistenceFailureNotice.from(error) ?? (error instanceof Error && error.message === this.#modelFailure?.message ? this.#modelFailure : publicFailure);
+      if (!this.#closed) this.#error = PersistenceFailureNotice.from(error) ?? (error instanceof Error && error.message === this.#modelFailure?.terminalMessage ? this.#modelFailure : publicFailure);
     }).finally(() => {
       this.#modelRetry = null;
       this.#drain = undefined;
