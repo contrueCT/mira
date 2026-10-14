@@ -6,7 +6,7 @@ import type { RunHistoryReader } from '@mira/life';
 import { DurableOperationError, type DurableFailureCategory } from '@mira/life';
 import { assertJson, assertRecord } from '@mira/context';
 import type { RuntimeRecord } from '@mira/context';
-import type { DreamingRequest, DreamingRequestResult, DreamingWriter, LifeEvent, MemoryCheckpoint, MemoryCheckpointState, MemorySnapshotReceipt, RecoverySnapshot, ToolIntent, ToolOutcome, WakeReceipt, WakeRun } from '@mira/life';
+import type { DreamingRequest, DreamingRequestResult, DreamingWriter, LifeEvent, MemoryCheckpoint, MemoryCheckpointState, MemorySnapshotReceipt, RecoverySnapshot, ScheduledDelivery, ScheduledDeliveryInput, ScheduledMutation, SchedulingWriter, ToolIntent, ToolOutcome, WakeReceipt, WakeRun } from '@mira/life';
 export { migrate } from './migrate.ts';
 export type { MigrationOptions } from './migrate.ts';
 
@@ -43,6 +43,17 @@ interface DreamingProgressRow {
   idle_since: Date;
   consumed_receipt_order: string;
   checkpoint_version: string;
+}
+interface ScheduledDeliveryRow {
+  owner_id: string;
+  schedule_key: string;
+  version: string;
+  status: ScheduledDelivery['status'];
+  due_at: Date;
+  expires_at: Date | null;
+  input: ScheduledDeliveryInput;
+  created_at: Date;
+  updated_at: Date;
 }
 interface MemoryCheckpointRow {
   run_id: string;
@@ -88,6 +99,32 @@ function validateEvent(event: LifeEvent): void {
   if (!['user', 'mira', 'system', 'extension', 'external'].includes(event.source)) fail('invalid', 'Invalid event source');
 }
 function validateWake(wake: WakeReceipt): void { text(wake.id, 'wake ID'); text(wake.reason, 'wake reason'); }
+function schedulingTimestamp(value: unknown): void {
+  if (typeof value !== 'string' || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/.test(value) || value.startsWith('0000-') ||
+    !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value) fail('invalid', 'Invalid schedule timestamp: canonical UTC milliseconds required');
+}
+function schedulingVersion(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 1) fail('invalid', 'Invalid schedule version');
+}
+function validateScheduledInput(input: ScheduledDeliveryInput): void {
+  text(input.key, 'schedule key'); schedulingTimestamp(input.dueAt);
+  if (input.expiresAt !== undefined) {
+    schedulingTimestamp(input.expiresAt);
+    if (input.expiresAt < input.dueAt) fail('invalid', 'Schedule expiry precedes due time');
+  }
+  validateEvent(input.event);
+  if (input.wake !== undefined) validateWake(input.wake);
+}
+function scheduledDelivery(row: ScheduledDeliveryRow): ScheduledDelivery {
+  try {
+    validateScheduledInput(row.input); text(row.owner_id, 'schedule owner'); schedulingVersion(Number(row.version));
+    if (row.schedule_key !== row.input.key || row.due_at.toISOString() !== row.input.dueAt ||
+      (row.expires_at?.toISOString() ?? undefined) !== row.input.expiresAt ||
+      !['pending', 'enqueued', 'cancelled', 'expired'].includes(row.status)) throw new Error('Mismatched schedule metadata');
+    return copy({ ...row.input, owner: row.owner_id, version: Number(row.version), status: row.status,
+      createdAt: row.created_at.toISOString(), updatedAt: row.updated_at.toISOString() });
+  } catch { fail('corrupt', 'Invalid persisted scheduled delivery'); }
+}
 function validateMemoryCheckpoint(checkpoint: MemoryCheckpoint): void {
   historyId(checkpoint.runId, 'run ID'); historyId(checkpoint.finalRecordId, 'final record ID'); date(checkpoint.preparedAt); assertJson(checkpoint.payload);
 }
@@ -107,7 +144,7 @@ export class PostgresPersistence {
   /** Scoped read-only access does not acquire or displace the durable writer. */
   history(miraId: string): RunHistoryReader { return new PostgresHistoryReader(this.#options, miraId); }
 
-  async acquire(miraId: string): Promise<DreamingWriter> {
+  async acquire(miraId: string): Promise<DreamingWriter & SchedulingWriter> {
     text(miraId, 'Mira ID');
     const client = new Client({
       connectionString: this.#options.connectionString,
@@ -166,7 +203,7 @@ const heldExpression = `EXISTS (
 )`;
 const lockQuery = `SELECT ${heldExpression} AS held`;
 
-class PostgresWriter implements DreamingWriter {
+class PostgresWriter implements DreamingWriter, SchedulingWriter {
   readonly miraId: string;
   readonly epoch: string;
   readonly signal: AbortSignal;
@@ -495,6 +532,108 @@ class PostgresWriter implements DreamingWriter {
       await this.#touchDreamingIdle();
     }
     return 'inserted';
+  }
+  async #scheduled(owner: string, key: string): Promise<ScheduledDeliveryRow | undefined> {
+    return (await this.#client.query<ScheduledDeliveryRow>(
+      'SELECT * FROM scheduled_deliveries WHERE mira_id = $1 AND owner_id = $2 AND schedule_key = $3',
+      [this.miraId, owner, key])).rows[0];
+  }
+  createScheduledDelivery(owner: string, input: ScheduledDeliveryInput): Promise<ScheduledMutation> {
+    text(owner, 'schedule owner');
+    const value = copy(input); validateScheduledInput(value);
+    return this.#transaction(async () => {
+      const previous = await this.#scheduled(owner, value.key);
+      if (previous) return { status: isDeepStrictEqual(previous.input, value) ? 'duplicate' : 'conflict', delivery: scheduledDelivery(previous) };
+      const result = await this.#client.query<ScheduledDeliveryRow>(
+        `INSERT INTO scheduled_deliveries(mira_id, owner_id, schedule_key, due_at, expires_at, input)
+         VALUES ($1, $2, $3, $4, $5, $6::json) RETURNING *`,
+        [this.miraId, owner, value.key, value.dueAt, value.expiresAt ?? null, JSON.stringify(value)]);
+      if (!result.rows[0]) fail('corrupt', 'Scheduled delivery was not persisted');
+      return { status: 'updated', delivery: scheduledDelivery(result.rows[0]) };
+    });
+  }
+  getScheduledDelivery(owner: string, key: string): Promise<ScheduledDelivery | null> {
+    text(owner, 'schedule owner'); text(key, 'schedule key');
+    return this.#transaction(async () => {
+      const row = await this.#scheduled(owner, key);
+      return row ? scheduledDelivery(row) : null;
+    });
+  }
+  listScheduledDeliveries(owner?: string): Promise<ScheduledDelivery[]> {
+    if (owner !== undefined) text(owner, 'schedule owner');
+    return this.#transaction(async () => {
+      const result = await this.#client.query<ScheduledDeliveryRow>(
+        'SELECT * FROM scheduled_deliveries WHERE mira_id = $1 AND ($2::text IS NULL OR owner_id = $2) ORDER BY due_at, owner_id COLLATE "C", schedule_key COLLATE "C"', [this.miraId, owner ?? null]);
+      return result.rows.map(scheduledDelivery);
+    });
+  }
+  replaceScheduledDelivery(owner: string, expectedVersion: number, input: ScheduledDeliveryInput): Promise<ScheduledMutation> {
+    text(owner, 'schedule owner'); schedulingVersion(expectedVersion);
+    const value = copy(input); validateScheduledInput(value);
+    return this.#transaction(async () => {
+      const previous = await this.#scheduled(owner, value.key);
+      if (!previous) return { status: 'missing', delivery: null };
+      const delivery = scheduledDelivery(previous);
+      if (delivery.status !== 'pending') return { status: 'settled', delivery };
+      if (delivery.version !== expectedVersion) return { status: 'conflict', delivery };
+      if (expectedVersion === Number.MAX_SAFE_INTEGER) fail('invalid', 'Schedule version exhausted');
+      const result = await this.#client.query<ScheduledDeliveryRow>(
+        `UPDATE scheduled_deliveries SET version = version + 1, due_at = $4, expires_at = $5, input = $6::json,
+         updated_at = date_trunc('milliseconds', clock_timestamp())
+         WHERE mira_id = $1 AND owner_id = $2 AND schedule_key = $3 AND version = $7 AND status = 'pending' RETURNING *`,
+        [this.miraId, owner, value.key, value.dueAt, value.expiresAt ?? null, JSON.stringify(value), expectedVersion]);
+      if (!result.rows[0]) fail('corrupt', 'Scheduled replacement was not persisted');
+      return { status: 'updated', delivery: scheduledDelivery(result.rows[0]) };
+    });
+  }
+  cancelScheduledDelivery(owner: string, key: string, expectedVersion: number): Promise<ScheduledMutation> {
+    text(owner, 'schedule owner'); text(key, 'schedule key'); schedulingVersion(expectedVersion);
+    return this.#transaction(async () => {
+      const previous = await this.#scheduled(owner, key);
+      if (!previous) return { status: 'missing', delivery: null };
+      const delivery = scheduledDelivery(previous);
+      if (delivery.status !== 'pending') return { status: 'settled', delivery };
+      if (delivery.version !== expectedVersion) return { status: 'conflict', delivery };
+      return { status: 'updated', delivery: await this.#settleScheduled(delivery, 'cancelled') };
+    });
+  }
+  async #settleScheduled(delivery: ScheduledDelivery, status: 'cancelled' | 'enqueued' | 'expired'): Promise<ScheduledDelivery> {
+    if (delivery.version === Number.MAX_SAFE_INTEGER) fail('invalid', 'Schedule version exhausted');
+    const result = await this.#client.query<ScheduledDeliveryRow>(
+      `UPDATE scheduled_deliveries SET status = $4, version = version + 1, updated_at = date_trunc('milliseconds', clock_timestamp())
+       WHERE mira_id = $1 AND owner_id = $2 AND schedule_key = $3 AND version = $5 AND status = 'pending' RETURNING *`,
+      [this.miraId, delivery.owner, delivery.key, status, delivery.version]);
+    if (!result.rows[0]) fail('corrupt', 'Scheduled terminal status was not persisted');
+    return scheduledDelivery(result.rows[0]);
+  }
+  dispatchScheduledDeliveries(owners: readonly string[]): Promise<{ enqueued: number; nextDueAt: string | null }> {
+    const activeOwners = [...new Set(owners)];
+    for (const owner of activeOwners) text(owner, 'schedule owner');
+    return this.#transaction(async () => {
+      if (!activeOwners.length) return { enqueued: 0, nextDueAt: null };
+      const now = (await this.#client.query<{ now: Date }>("SELECT date_trunc('milliseconds', clock_timestamp()) AS now")).rows[0]?.now;
+      if (!now || !Number.isFinite(now.getTime())) fail('corrupt', 'Invalid database clock');
+      const due = await this.#client.query<ScheduledDeliveryRow>(
+        `SELECT * FROM scheduled_deliveries WHERE mira_id = $1 AND owner_id = ANY($2::text[]) AND status = 'pending' AND due_at <= $3
+         ORDER BY due_at, owner_id COLLATE "C", schedule_key COLLATE "C"`, [this.miraId, activeOwners, now]);
+      let enqueued = 0;
+      for (const row of due.rows) {
+        const delivery = scheduledDelivery(row);
+        if (row.expires_at !== null && row.expires_at.getTime() <= now.getTime()) {
+          await this.#settleScheduled(delivery, 'expired');
+        } else {
+          // The same fenced transaction owns both ordinary ingress and its
+          // terminal marker. A lost receipt is resolved by reading this row.
+          await this.#receive(delivery.event, delivery.wake ?? null);
+          await this.#settleScheduled(delivery, 'enqueued');
+          enqueued++;
+        }
+      }
+      const next = (await this.#client.query<{ due_at: Date | null }>(
+        "SELECT min(due_at) AS due_at FROM scheduled_deliveries WHERE mira_id = $1 AND owner_id = ANY($2::text[]) AND status = 'pending'",
+        [this.miraId, activeOwners])).rows[0]?.due_at;
+      return { enqueued, nextDueAt: next?.toISOString() ?? null };
+    });
   }
   async #touchDreamingIdle(): Promise<void> {
     await this.#client.query("UPDATE dreaming_progress SET idle_since = date_trunc('milliseconds', clock_timestamp()) WHERE mira_id = $1", [this.miraId]);

@@ -13,7 +13,7 @@ import { Context, type Fiber, type Disposable } from 'cordis';
 import Loader, { type EntryOptions } from '@cordisjs/plugin-loader';
 import Hmr from '@cordisjs/plugin-hmr';
 import Timer from '@cordisjs/plugin-timer';
-import { serviceKey, type Cleanup, type ContextProvider, type ExtensionContext, type ExtensionEvent, type ExtensionTool, type ExtensionWake, type Json } from '@mira/extension-sdk';
+import { serviceKey, type Cleanup, type ContextProvider, type ExtensionContext, type ExtensionEvent, type ExtensionTool, type ExtensionWake, type ExtensionSchedules, type ExtensionScheduleInput, type Json } from '@mira/extension-sdk';
 
 export interface LocalExtensionEntry {
   id: string;
@@ -22,6 +22,8 @@ export interface LocalExtensionEntry {
   enabled?: boolean;
   config?: Json;
   generated?: GeneratedVersion;
+  /** Manual installation identity; saved before scheduling is exposed. */
+  installationId?: string;
 }
 export interface GeneratedRevision { id: string; digest: string; config: Json }
 export interface GeneratedVersion { digest: string; revision: string; history: GeneratedRevision[] }
@@ -30,6 +32,8 @@ export interface ExtensionHostOptions {
   reservedToolNames?: string[];
   /** Identity is bound by the host; extension-supplied source fields are ignored. */
   receive(source: string, event: ExtensionEvent, wake?: { id: string; reason: string }): Promise<'inserted' | 'duplicate'>;
+  schedules?: (owner: string, extensionId: string) => ExtensionSchedules;
+  onSchedulesChanged?: () => void;
   hmr?: boolean;
   /** Optional same-file desired configuration persistence; otherwise runtime-only. */
   configurationFile?: string;
@@ -101,6 +105,7 @@ export class ExtensionHost {
     this.hmrEnabled = options.hmr ?? false;
     for (const entry of options.entries) {
       if (!/^[a-zA-Z][\w-]*$/.test(entry.id) || this.entries.has(entry.id)) throw new Error(`Invalid or duplicate extension ID: ${entry.id}`);
+      if (entry.installationId !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(entry.installationId)) throw new Error('Invalid extension installation identity');
       if (entry.enabled !== undefined && typeof entry.enabled !== 'boolean') throw new Error('Extension enabled must be boolean');
       if (!path.isAbsolute(entry.path)) throw new Error(`Extension path must be absolute: ${entry.id}`);
       validateConfig(entry.config ?? null);
@@ -119,6 +124,16 @@ export class ExtensionHost {
     if (this.started || this.closed) throw new Error('Extension host cannot be started twice');
     this.started = true;
     if (this.options.configurationFile) this.configuration = await ConfigurationWriter.open(this.options.configurationFile, this.options.entries, this.hmrEnabled, this.options.artifactsDirectory);
+    // Existing generated revision history already owns an installation identity.
+    // Manual entries get one only when it can survive process restart.
+    if (this.options.schedules && this.configuration) {
+      for (const entry of this.entries.values()) {
+        if (entry.generated || entry.installationId) continue;
+        const saved = { ...entry, installationId: randomUUID() };
+        await this.configuration.replace(entry.id, saved);
+        this.entries.set(entry.id, saved);
+      }
+    }
     this.ctx.baseUrl = pathToFileURL(`${process.cwd()}${path.sep}`).href;
     this.ctx.logger.exporter({ export: message => {
       if (message.type !== 'error' && message.type !== 'warn') return;
@@ -272,6 +287,7 @@ export class ExtensionHost {
     };
     const context: ExtensionContext = {
       id,
+      schedules: this.scopedSchedules(id, () => { canRegister(); }),
       registerTool: tool => {
         canRegister();
         const name = tool.name, description = tool.description, parameters = tool.parameters, execute = tool.execute;
@@ -379,6 +395,42 @@ export class ExtensionHost {
     return context;
   }
 
+  private scheduleOwner(id: string): string | null {
+    const entry = this.entries.get(id);
+    if (!entry) return null;
+    const identity = entry.generated?.history[0]?.id ?? entry.installationId;
+    return identity ? JSON.stringify(['extension', id, identity]) : null;
+  }
+  private scopedSchedules(id: string, assertActive: () => void): ExtensionSchedules {
+    const owner = this.scheduleOwner(id);
+    const api = owner ? this.options.schedules?.(owner, id) : undefined;
+    const invoke = async <T>(action: (service: ExtensionSchedules) => Promise<T>, changed = false): Promise<T> => {
+      assertActive();
+      if (!api) throw new Error('Persistent scheduling requires a durable installation identity and a scheduling-capable host');
+      const result = await action(api);
+      if (changed) this.options.onSchedulesChanged?.();
+      return result;
+    };
+    return {
+      create: input => invoke(api => api.create(validatedSchedule(input)), true),
+      get: key => invoke(api => api.get(key)),
+      list: () => invoke(api => api.list()),
+      replace: (expectedVersion, input) => invoke(api => api.replace(expectedVersion, validatedSchedule(input)), true),
+      cancel: (key, expectedVersion) => invoke(api => api.cancel(key, expectedVersion), true),
+    };
+  }
+  /** Serialize the enqueue boundary with explicit lifecycle mutations. No code
+   * from an extension runs here; pending deliveries retain their frozen data. */
+  async withScheduledOwners<T>(dispatch: (owners: string[]) => Promise<T>): Promise<T> {
+    this.assertOpen();
+    return this.serialize(async () => {
+      await this.ctx.loader.await();
+      const owners = this.snapshot().filter(entry => entry.status === 'active' && entry.enabled)
+        .map(entry => this.scheduleOwner(entry.id)).filter((owner): owner is string => owner !== null);
+      return dispatch(owners);
+    });
+  }
+
   /** Save desired configuration, then await the actual lifecycle outcome. */
   async requestChange(id: string, change: ExtensionChange, options?: { expectedRevision: string }): Promise<ChangeStatus> {
     this.assertOpen();
@@ -405,6 +457,7 @@ export class ExtensionHost {
       finally { this.cleanupScope = undefined; }
       receipt.runtime = this.snapshot().find(entry => entry.id === id) ?? null;
       this.receipts.push(receipt);
+      this.options.onSchedulesChanged?.();
       return structuredClone(receipt);
     });
   }
@@ -632,6 +685,14 @@ export class ExtensionHost {
     })();
     return this.closeTask;
   }
+}
+function validatedSchedule(input: ExtensionScheduleInput): ExtensionScheduleInput {
+  const snapshot = structuredClone(input);
+  snapshot.event = validatedEvent(snapshot.event);
+  if (snapshot.wake && (typeof snapshot.wake.id !== 'string' || !snapshot.wake.id || typeof snapshot.wake.reason !== 'string' || !snapshot.wake.reason.trim())) {
+    throw new Error('Scheduled Wake needs a stable ID and reason');
+  }
+  return snapshot;
 }
 function validatedEvent(event: ExtensionEvent): ExtensionEvent {
   if (!event.id || !event.type || !Number.isFinite(Date.parse(event.occurredAt))) throw new Error('Event requires a stable ID, type and timestamp');

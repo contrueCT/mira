@@ -98,3 +98,12 @@ The Web service owns a private source-external `attachments/` directory beside `
 - Model-facing references include immutable local paths for ordinary file tools. Runtime hydrates supported media through a hash-verified resolver, preserving durable reference metadata rather than base64 in event/context history. Capability and model request payload limits can produce an explicit file-reference fallback.
 
 `tests/unit/attachments.test.mts` tests storage, bounds, path/symlink rejection, inert MIME and protected HTTP. `tests/recovery/attachments.test.mts` uses isolated PostgreSQL to check immutable envelopes, explicit publication and restart. Synthetic provider checks do not establish live model connectivity.
+
+## One-shot delayed delivery
+
+Web exposes persistent extension scheduling and rescans active installations at
+startup/UTC deadlines independently of Dreaming or active model work.
+`extension_inspect` includes records from removed installations for reconciliation.
+The finite demo CLI only scans at startup. Reminder rules live in
+`examples/extensions/reminders.ts`; it is not installed automatically. See
+[ADR 0022](../../docs/adr/0022-durable-single-shot-delivery.md).

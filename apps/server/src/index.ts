@@ -1,3 +1,4 @@
+import { extensionScheduling } from './scheduling.ts';
 import { ExtensionHost, type LocalExtensionEntry, type RegisteredContextProvider } from '@mira/extension-host';
 import { extensionManagementTools, extensionReceiver, extensionTools } from './extensions.ts';
 export { extensionManagementTools, extensionReceiver, extensionTools } from './extensions.ts';
@@ -76,11 +77,12 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
     for (const { event, wake } of options.events) await writer.receive(event, wake);
     const baseTools = [...createWorkspaceTools(workingDirectory), ...createHistoryTools(persistence.history(writer.miraId))];
     if (options.extensions) {
-      extensions = new ExtensionHost({ ...options.extensions, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage'], receive: extensionReceiver(writer) });
+      extensions = new ExtensionHost({ ...options.extensions, schedules: extensionScheduling(writer), reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage'], receive: extensionReceiver(writer) });
       await extensions.start();
+      await extensions.withScheduledOwners(owners => writer.dispatchScheduledDeliveries(owners));
     }
     const host = extensions;
-    const managementTools = host ? extensionManagementTools(host) : [];
+    const managementTools = host ? extensionManagementTools(host, () => writer.listScheduledDeliveries()) : [];
     const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content });
     const loop = new WakeLoop({
       writer,

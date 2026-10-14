@@ -18,8 +18,34 @@ export interface ContextProvider {
 }
 export interface ExtensionEvent { id: string; type: string; occurredAt: string; payload: Json }
 export interface ExtensionWake { id: string; reason: string; event: ExtensionEvent }
+/** Persistent one-shot UTC delivery; time-zone and reminder policy stay in extensions. */
+export interface ExtensionScheduleInput {
+  key: string;
+  dueAt: string;
+  expiresAt?: string;
+  event: ExtensionEvent;
+  wake?: { id: string; reason: string };
+}
+export interface ExtensionSchedule extends ExtensionScheduleInput {
+  version: number;
+  status: 'pending' | 'enqueued' | 'cancelled' | 'expired';
+  createdAt: string;
+  updatedAt: string;
+}
+export type ExtensionScheduleMutation =
+  | { status: 'updated' | 'duplicate' | 'conflict' | 'settled'; delivery: ExtensionSchedule }
+  | { status: 'missing'; delivery: null };
+export interface ExtensionSchedules {
+  create(input: ExtensionScheduleInput): Promise<ExtensionScheduleMutation>;
+  get(key: string): Promise<ExtensionSchedule | null>;
+  list(): Promise<ExtensionSchedule[]>;
+  replace(expectedVersion: number, input: ExtensionScheduleInput): Promise<ExtensionScheduleMutation>;
+  cancel(key: string, expectedVersion: number): Promise<ExtensionScheduleMutation>;
+}
 export interface ExtensionContext {
   readonly id: string;
+  /** Host-scoped stable installation identity; retired activations cannot write. */
+  readonly schedules: ExtensionSchedules;
   registerTool(tool: ExtensionTool): void;
   registerContextProvider(provider: ContextProvider): void;
   emitEvent(event: ExtensionEvent): Promise<'inserted' | 'duplicate'>;

@@ -34,3 +34,5 @@
 ## External SDK 接入
 
 见 ADR 0017。`external-http.ts` 和 `http.ts` 在既有 127.0.0.1 listener 上提供三条 `/api/external/*` 路由，Web 同源规则不变。外部请求拒绝浏览器来源，逐次校验 sender/token；`external-access.ts`/`external-access-cli.mts` 管理源码、Memory、artifacts 外的私有配置，默认关闭、CLI 无 token 输出、下次认证生效。`external-ingress.ts` 绑定 external 来源并使用同一 writer；事件与 Wake 保持完整不可变信封。sendNotification 仅保存并投影带来源/时间的 notice，不发模型请求。Secrets 不进入 Event/Context/日志；普通 Shell 与同 OS 账户边界不变。
+
+- `scheduling.ts` 是独立单次UTC投递组装与timer，使用同一fenced writer和Event/Wake队列；不停/重试失败认知、不改Dreaming。日期/时区/提醒策略仅在扩展，见ADR 0022。
