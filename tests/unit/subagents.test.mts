@@ -188,3 +188,25 @@ test('followup queued during a running child executes once; cancelling completed
     await f.manager.cancel(c.id); assert.deepEqual(f.parent.children[0]!.turns, saved);
   } finally { release.resolve(); await f.manager.close(); }
 });
+
+
+test('explicit followup sees the model-facing unknown recovery wording, not internal status fields', async () => {
+  const entered = deferred(); let effects = 0; let calls = 0;
+  const f = fixture(new Parent(), () => [effectTool(async (_id, _args, signal) => {
+    effects++; entered.resolve(); await new Promise<void>((_resolve, reject) => signal!.addEventListener('abort', () => reject(signal!.reason), { once: true })); return result;
+  })]);
+  const t = transport((_m, context) => {
+    calls++;
+    if (calls === 1) return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'original-effect', name: 'effect', arguments: {} }] });
+    assert.match(JSON.stringify(context.messages), /no durable outcome exists/);
+    return streamOf(assistant('Checked unknown effect without repeating it'));
+  });
+  try {
+    const c = await f.manager.spawn('unknown-spawn', 'Work', 'none', t); await entered.promise;
+    await f.manager.cancel(c.id); await until(() => [...f.writers.values()][0]?.signal.aborted ?? false);
+    await f.manager.send('unknown-followup', c.id, 'Inspect unknown effects before acting', t);
+    await until(() => f.parent.children[0]!.turns[1]?.status === 'completed');
+    assert.equal(effects, 1); assert.equal(calls, 2);
+    assert.match(JSON.stringify([...f.writers.values()][0]!.state.records), /outcome-unknown/);
+  } finally { await f.manager.close(); }
+});

@@ -101,13 +101,14 @@ test('parent ownership loss interrupts real child effects; restart preserves unk
     const rows = await db.admin.query('SELECT outcome FROM tool_executions WHERE mira_id=$1', [c.streamId]); assert.equal(rows.rows.length, 1); assert.equal(rows.rows[0].outcome, null);
     let observedUnknown = false;
     const resumedTransport = { model, streamFn: ((_m, context) => {
-      if (childContext(context.messages)) { observedUnknown = JSON.stringify(context.messages).includes('outcome-unknown'); return streamOf(assistant('Unknown effect inspected, no replay')); }
+      if (childContext(context.messages)) { observedUnknown = JSON.stringify(context.messages).includes('no durable outcome exists'); return streamOf(assistant('Unknown effect inspected, no replay')); }
       if (context.messages.at(-1)?.role === 'toolResult') return streamOf(assistant('followup sent'));
       return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'resume-lost-child', name: 'subagent_send', arguments: { id: childId, message: 'Inspect the interrupted work, do not repeat the effect' } }] });
     }) as StreamFn };
     await new PiDurableRuntime({ writer, ...resumedTransport, tools: createSubagentTools(manager, resumedTransport) }).run(input('inspect worker'));
     await until(async () => (await writer.getSubagent(childId))?.turns[1]?.status === 'completed');
     assert.equal(observedUnknown, true); assert.equal(effectCount, 1);
+    assert.match(JSON.stringify((await db.admin.query('SELECT envelope FROM context_records WHERE mira_id=$1', [c.streamId])).rows), /outcome-unknown/);
   } finally { await manager?.close(); await db.close(); }
 });
 
@@ -131,7 +132,7 @@ test('SIGKILL during a real child effect releases writer ownership; restart does
     const executions = await db.admin.query('SELECT intent,outcome FROM tool_executions WHERE mira_id=$1', [child.streamId]);
     assert.equal(executions.rows.length, 1); assert.equal(executions.rows[0].intent.callId, 'killed-effect'); assert.equal(executions.rows[0].outcome, null);
     const transport = { model, streamFn: ((_m, context) => {
-      requests++; if (childContext(context.messages)) { assert.match(JSON.stringify(context.messages), /outcome-unknown/); return streamOf(assistant('Unknown effect retained without replay')); }
+      requests++; if (childContext(context.messages)) { assert.match(JSON.stringify(context.messages), /no durable outcome exists/); return streamOf(assistant('Unknown effect retained without replay')); }
       if (context.messages.at(-1)?.role === 'toolResult') return streamOf(assistant('explicit followup sent'));
       return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'after-kill-send', name: 'subagent_send', arguments: { id: child.id, message: 'Inspect unknown effect; do not repeat it' } }] });
     }) as StreamFn };

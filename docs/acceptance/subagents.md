@@ -6,7 +6,7 @@ from test presence.
 ## Offline Pi runtime
 
 `tests/unit/subagents.test.mts` uses real Pi runtime/Agent calls with deterministic
-provider responses and a test-only in-memory registry. Nine focused tests passed:
+provider responses and a test-only in-memory registry. Ten focused tests passed:
 
 - Parent continues before child completion; isolated child transcript and asynchronous result
 - Followup continues the same transcript; retrying a spawn call does not create another child
@@ -45,3 +45,16 @@ interaction is exercised by the existing CI gates; the added UI field uses the
 existing run-record layout and does not add a main-chat entry point. The shared
 filesystem contract is not adversarial isolation and does not prevent a misbehaving
 worker from using shell access to reach main Memory.
+
+
+## First CI observation
+
+The first PostgreSQL CI run at `b8af10c` executed 177 integration/recovery tests:
+175 passed and two new child-recovery tests failed. Both expected the internal
+`outcome-unknown` enum in the provider-facing text; the actual Pi conversion correctly
+renders “no durable outcome exists” and keeps the enum only in durable observation
+details. One assertion threw inside the synthetic provider and caused the second
+test to wait for an impossible completed state. The tests now check the real
+model-facing evidence and separately assert the durable enum; an offline regression
+covers explicit followup without repeating the effect. This first failure is kept
+here; the corrected exact-head PostgreSQL run is still required.
