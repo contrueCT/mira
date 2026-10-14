@@ -78,6 +78,7 @@
     "tests/unit/scheduling-host.test.mts",
     "tests/unit/live-input.test.mts",
     "tests/unit/bundled-skills.test.mts",
-    "tests/unit/subagents.test.mts"
+    "tests/unit/subagents.test.mts",
+    "tests/unit/child-management.test.mts"
   ]
 }

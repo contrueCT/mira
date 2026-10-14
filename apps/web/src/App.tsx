@@ -1,3 +1,4 @@
+import { ChildCard } from './Subagents.tsx';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent } from 'react';
 import { AttachmentList, AttachmentPreview } from './Attachments.tsx';
@@ -295,6 +296,7 @@ export function App() {
               return <div key={item.id}>
                 {showDate && <p className="date-divider">{date}</p>}
                 <article data-message-id={item.id} className={`message-row ${item.role}`} aria-label={item.role === 'user' ? '你的消息' : item.role === 'assistant' ? 'Mira 的消息' : '服务通知'}>
+                  {item.child && <ChildCard id={item.child.id} runId={item.child.runId} active={!settingsOpen && !preview} />}
                   {item.text && <div className="message-bubble">{item.text}</div>}
                   {!!item.attachments?.length && <AttachmentList attachments={item.attachments} onPreview={openPreview} />}
                   <time className="message-time" dateTime={item.occurredAt}>{timeLabel(item.occurredAt)}</time>

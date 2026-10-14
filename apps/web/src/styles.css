@@ -329,3 +329,28 @@ button:disabled { opacity: .48; }
   .add-attachment-button { width: 32px; height: 35px; }
   .draft-attachments { max-height: 180px; }
 }
+
+/* Task-scoped observations remain compact in the single conversation. */
+.child-card { display: block; width: min(100%, 440px); min-width: 240px; padding: 13px 16px; margin: 6px 0; text-align: left; border: 1px solid var(--line); border-radius: 12px; color: inherit; background: #fafbfc; cursor: pointer; }
+.child-card:hover { border-color: var(--blue); }
+.child-card-top { display: flex; gap: 18px; justify-content: space-between; align-items: baseline; font-size: 13px; }
+.child-card-top strong { overflow-wrap: anywhere; }
+.child-card-top > span { white-space: nowrap; color: var(--blue-dark); font-size: 12px; }
+.child-card-activity { display: block; font-size: 12px; color: var(--muted); margin-top: 7px; overflow-wrap: anywhere; }
+.child-dialog { border: 1px solid var(--line); border-radius: 18px; padding: 0; width: min(720px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); color: var(--ink); background: #fff; box-shadow: 0 24px 80px #29334726; }
+.child-dialog::backdrop { background: #20253066; }
+.child-dialog-header { display: flex; justify-content: space-between; align-items: start; gap: 20px; padding: 22px 26px; border-bottom: 1px solid var(--line); }
+.child-dialog-header h2 { margin: 6px 0 0; font-size: 21px; overflow-wrap: anywhere; }
+.child-dialog-body { padding: 20px 26px; }
+.child-current { border-left: 3px solid var(--blue); padding: 10px 14px; background: #f0f4f8; font-size: 14px; }
+.child-turn { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); }
+.child-turn h3 { display: flex; align-items: center; gap: 12px; font-size: 15px; }
+.child-activities { margin: 16px 0; padding: 0; list-style: none; }
+.child-activities li { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.child-activities li > div { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; color: var(--muted); font-size: 11px; }
+.child-activities p, .child-result p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.7; margin: 7px 0; }
+.child-source { font-weight: 600; }
+.child-result { padding: 14px 16px; background: #f3f5f8; border-radius: 10px; }
+.child-result h4 { margin: 0 0 8px; }
+.run-children .child-card { width: 100%; }
+@media (max-width: 560px) { .child-dialog { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); } .child-dialog-header, .child-dialog-body { padding: 16px; } .child-card { min-width: 0; width: 100%; } .child-card-top { gap: 12px; } }

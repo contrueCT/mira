@@ -73,19 +73,20 @@ test('real web service keeps parent available, child completion wakes an idle pa
     assert.equal(await readFile(path.join(root, 'Memory', 'MEMORY.md'), 'utf8'), memoryBefore);
     const timeline = await service.timeline(); assert.ok(!JSON.stringify(timeline).includes('CHILD_PRIVATE_RAW_FINDING'), 'child output is only relayed when main model chooses to');
     const runs = await service.runs(); const details = await Promise.all(runs.items.map(run => service!.run(run.id)));
-    assert.ok(details.some(d => d!.executions.some(e => e.kind === 'subagent' && e.status === 'completed')));
-    assert.ok(details.some(d => d!.executions.some(e => e.name?.includes('(latest activity)'))));
-    for (const detail of details) for (const execution of detail!.executions) {
-      if (execution.kind === 'subagent' || execution.name?.includes('(latest activity)')) assert.equal(execution.supplemental, true);
-    }
+    assert.ok(details.every(d => d!.executions.every(e => !Object.hasOwn(e, 'supplemental') && !e.name?.includes('(latest activity)'))));
+    const childPages = await Promise.all(runs.items.map(run => service!.children(run.id)));
+    const childSummary = childPages.flatMap(page => page.items)[0]!; assert.ok(childSummary);
+    const childDetail = await service.child(childSummary.runId, childSummary.id); assert(childDetail);
+    assert.equal(childDetail.status, 'completed'); assert.equal(childDetail.current, null);
+    assert.equal(childDetail.turns[0]!.result?.text, 'CHILD_PRIVATE_RAW_FINDING');
     assert.ok(!JSON.stringify(details).includes('CHILD_PRIVATE_RAW_FINDING'));
     const ownerPid = (await db.admin.query("SELECT l.pid FROM pg_locks l JOIN mira_owners o ON l.objid=o.lock_key::oid WHERE l.locktype='advisory' AND l.classid=1296650817::oid AND l.objsubid=2 AND l.database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND o.mira_id='web-parent'")).rows[0].pid;
     await db.admin.query('SELECT pg_terminate_backend($1)', [ownerPid]);
     await until(async () => (await service!.status()).state === 'stopped');
     const afterLoss = await Promise.all(runs.items.map(run => service!.run(run.id)));
     assert.equal(afterLoss.length, details.length);
-    assert.ok(afterLoss.some(d => d!.executions.some(e => e.kind === 'subagent')));
-    assert.ok(afterLoss.some(d => !d!.executions.some(e => e.kind === 'subagent')), 'ordinary parent runs remain inspectable too');
+    assert.ok(afterLoss.every(d => d!.executions.every(e => !Object.hasOwn(e, 'supplemental'))));
+    assert.equal((await service.child(childSummary.runId, childSummary.id))?.status, 'completed');
     await service.close(); service = await LocalWebService.open(options); await until(async () => (await service!.status()).state === 'idle'); assert.equal(parentCalls, 4); assert.equal(childCalls, 1);
   } finally { release.resolve(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
@@ -109,6 +110,7 @@ test('parent ownership loss interrupts real child effects; restart preserves unk
     await writer.close(); await manager.close();
     writer = await db.acquire('lost-parent'); manager = makeManager(); await manager.initialize();
     const c = (await writer.getSubagent(childId))!; assert.equal(c.turns[0]!.status, 'interrupted'); assert.equal(effectCount, 1);
+    assert.equal(c.turns[0]!.activity.current, null); assert.equal(c.turns[0]!.activity.events.at(-1)?.status, 'unknown');
     const rows = await db.admin.query('SELECT outcome FROM tool_executions WHERE mira_id=$1', [c.streamId]); assert.equal(rows.rows.length, 1); assert.equal(rows.rows[0].outcome, null);
     let observedUnknown = false;
     const resumedTransport = { model, streamFn: ((_m, context) => {
@@ -140,6 +142,7 @@ test('SIGKILL during a real child effect releases writer ownership; restart does
     manager = new SubagentManager({ writer, acquire: id => db.acquire(id), tools: () => [], writeOverflowInput: async () => { throw Error('unused'); }, onCompletion: () => {}, onFailure: () => {} });
     await manager.initialize(); const child = (await writer.getSubagent((await writer.listSubagents()).children[0]!.id))!;
     assert.equal(child.turns[0]!.status, 'interrupted');
+    assert.equal(child.turns[0]!.activity.current, null); assert.equal(child.turns[0]!.activity.events.at(-1)?.status, 'unknown');
     const executions = await db.admin.query('SELECT intent,outcome FROM tool_executions WHERE mira_id=$1', [child.streamId]);
     assert.equal(executions.rows.length, 1); assert.equal(executions.rows[0].intent.callId, 'killed-effect'); assert.equal(executions.rows[0].outcome, null);
     const transport = { model, streamFn: ((_m, context) => {

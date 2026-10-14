@@ -1,6 +1,7 @@
 /** Read DTOs contain no runtime trace, raw tool data or stored credentials. */
 export interface Attachment { id: string; name: string; mimeType: string; size: number; sha256: string }
 export interface TimelineItem {
+  child?: { id: string; runId: string };
   attachments?: Attachment[];
   /** Original request identity for pending-message acknowledgement only. */
   externalEventId?: string;
@@ -74,13 +75,28 @@ export interface ExtensionMutationResult {
 }
 export interface RunSummary { id: string; occurredAt: string; status: 'running' | 'completed'; requestCount: number }
 export interface RunsView { items: RunSummary[]; nextCursor: string | null }
-export interface RunExecution { supplemental?: true; id: string; occurredAt: string; kind: 'model' | 'tool' | 'subagent' | 'compaction' | 'recovery' | 'unavailable'; name: string | null; status: string; error: string | null }
+export interface RunExecution { id: string; occurredAt: string; kind: 'model' | 'tool' | 'compaction' | 'recovery' | 'unavailable'; name: string | null; status: string; error: string | null }
 export interface RunRequest { eventId: string; source: string; type: string; reason: string | null }
 export interface RunRequestsPage { items: RunRequest[]; nextCursor: string | null }
 export interface RunDetail extends RunSummary {
-  childDetailsUnavailable?: true;
-  refreshCursor?: string;
   requests: RunRequest[]; nextRequestsCursor: string | null;
   assistant: AssistantReply | null; memory: MemoryReceipt; executions: RunExecution[]; nextCursor: string | null;
   compactionErrors: 'not-recorded'; error: string | null;
 }
+
+export interface ChildActivityView {
+  sequence: number; occurredAt: string; source: 'runtime' | 'worker';
+  kind: 'model' | 'tool' | 'progress'; phase: 'started' | 'finished' | 'reported';
+  name: string | null; status: string | null; text: string | null;
+}
+export interface ChildSummaryView {
+  id: string; runId: string; title: string; createdAt: string; status: string;
+  current: ChildActivityView | null; updatedAt: string | null;
+}
+export interface ChildDetailView extends ChildSummaryView {
+  turns: Array<{ id: string; sequence: number; status: string; createdAt: string; startedAt: string | null; finishedAt: string | null;
+    activities: ChildActivityView[]; droppedActivities: number;
+    result: { text: string; truncated: boolean } | null }>;
+  olderTurns: number;
+}
+export interface ChildrenView { items: ChildSummaryView[]; nextCursor: string | null }

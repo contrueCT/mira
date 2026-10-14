@@ -61,3 +61,5 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 - [0024 运行中用户插话](0024-live-user-input.md)：Accepted。请求级让出、单工具边界、冻结原始输入与持久补充关联、终态原子仲裁；长工具延迟保留。
 - [0023 公开技能与按需工具](0023-on-demand-public-skills.md)：Accepted，2026-10-14；复用公开 OpenAI 文档/转写和 agent-browser 技能，Tavily 直接 CLI，按需用户态依赖，保持普通 read/bash 与主模型判断。
 - [0025 Task-scoped subagents](0025-task-scoped-subagents.md): Accepted scope, 2026-10-14; asynchronous bounded Pi workers with isolated PostgreSQL transcripts, durable parent result Wake, explicit followup/cancellation and fresh/frozen projected context. No second Mira Life or main-chat entry point.
+
+- [0026: Observable delegated work and global skills](0026-subagent-observation-and-global-skills.md) — approved scope, implementation under verification.

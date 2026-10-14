@@ -18,7 +18,7 @@
 - API 必须区分 emit event 与 request wake，并在边界验证不可信输入
 - cwd 只是默认位置，无应用目录限制或产品隔离环境；主模型通过自然语言 Prompt/对话决定调用或澄清，不注入 authorize 或合成批准证据
 - 完整 Mira Prompt 必须到达实际请求，包括无 Memory 和当前上下文恢复；`loadMemory` 在初始化及压缩刷新时读取当前 Memory；普通请求/重启沿用最新持久快照，不得变成每 Wake 重读/重注入或文件变更通知；自动压缩沿用 runtime 默认预算，见 ADR 0016
-- `skills.ts` 仅加载源码 `skills/` 与 `${MIRA_HOME}/skills`（默认 `~/.mira/skills`），使用 Pi 显式路径及 `includeDefaults:false`；内置同名优先并报告诊断，缺失用户目录为空，不扩大到 `.pi` / `.agents` 扫描
+- `skills.ts` 按顺序仅加载源码 `skills/`、`${MIRA_HOME}/skills`（默认 `~/.mira/skills`）、运行用户 `os.homedir()` 下的 `~/.agents/skills`，使用 Pi 显式路径及 `includeDefaults:false`；同名首项优先并报告诊断、真实路径去重、缺失目录为空。`MIRA_HOME` 不重定位全局目录，`MIRA_CWD` 不引入项目/祖先扫描，不默读 `.agent` / `.pi`。主与 child 每自然请求刷新元数据，正文普通 read 按需读取
 - ADR 0024：普通 Web submit 使用 receiveLiveInput，先持久补充输入再让出模型请求；当前单工具不取消，HTTP receipt 不代表模型已读。外部 ingress 继续普通 receive，不加停止/暂停按钮。
 - 启动恢复、停机和错误处理不能生成第二个活跃认知写者
 - 持久化故障只通过现有 status/HTTP 显示固定临时 notice，明确无诊断落库承诺；仅接受可信实例标签，普通错误仍受保护，不添加工具 chip/trace 或成本字段

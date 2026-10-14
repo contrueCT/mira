@@ -28,7 +28,8 @@
 - [ADR 0021](docs/adr/0021-chat-attachments.md)：聊天共用不可变附件存储与引用，正文/有序附件原子绑定既有 Event/Wake；send_attachment 仅显式已知发布投影。图片原生输入，视频统一普通文件，只有模型显式 read 后内置 Google Gemini 的 MP4/WebM 才通过公开 payload hook 原生理解；PDF/Word只给工具引用，历史不存媒体 base64。
 - [ADR 0024](docs/adr/0024-live-user-input.md)：普通 Web 插话先持久保存为冻结原始 Wake 之外的有序补充输入；生成请求让出，当前单工具完成后先读新输入，旧 siblings 保持 not-started；final 与输入原子仲裁，无暂停按钮/关键词判定。
 - [ADR 0023](docs/adr/0023-on-demand-public-skills.md)：公开 OpenAI pdf/doc/transcribe、agent-browser 与 Tavily CLI 指导；只随源码分发技能/必要脚本及许可，依赖由模型普通工具按需准备，应用不自动解析附件、不捆绑浏览器或模型。
-- [ADR 0025](docs/adr/0025-task-scoped-subagents.md)：task-scoped child 复用 Pi/PG 独立 transcript，主 Mira 唯一 WakeLoop/Memory；4 并发、无嵌套、完成与父 Event/Wake 原子提交；重启 interrupted 不重放，fork=all 是显式有界角色投影而非原协议克隆。
+- [ADR 0025](docs/adr/0025-task-scoped-subagents.md)：task-scoped child 复用 Pi/PG 独立 transcript，主 Mira 唯一 WakeLoop/Memory；默认 8 并发、启动可配 1..32、无嵌套、完成与父 Event/Wake 原子提交；重启 interrupted 不重放，fork=all 是显式有界角色投影而非原协议克隆。
+- [ADR 0026](docs/adr/0026-subagent-observation-and-global-skills.md)：子代理显式公开标题/进度、真实模型/工具活动、有界独立 child/run 只读详情；主聊天仅在有 child 时显示紧凑卡片，不显示思考或原始参数；默认并发 8、启动可配 1..32，全局技能第三优先级。
 - 实际允许依赖和出口以 `scripts/boundaries.json` 与各包 `package.json` 为准；新增时最小开放
 
 ## 按需指引
@@ -72,7 +73,7 @@ pnpm check
 - 主模型依据用户对话、上下文和自然语言 Prompt 决定调用或澄清；无 authorize 回调、allowed/evidence/denial 决策或替代引擎/额外模型调用。authorizationContext 仅为事实语境；schema、不可变 intent/outcome、来源、去重、真实身份/OS 权限和数据完整性仍是硬边界
 - 超限唤醒保存普通文本文件并告知路径；复用普通文件工具，不构建专用消息读取/分页服务
 - [ADR 0012](docs/adr/0012-global-history-identities.md)：四类 History 采用全局 UUID 薄身份表；read 只接收 ID，外部事件/工具协议标识分离；Memory commit 保存直接 History-Id。新空库/数据目录启动，不添加旧库检测、映射、兼容或清理
-- [ADR 0011](docs/adr/0011-conversation-context-and-skills.md)：正常聊天不展示工具活动；Wake 精简正文但保留业务 payload；Pi Skills 只扫描源码 skills/ 与 Mira home skills/，每自然请求更新目录、正文按需 read，不额外 Wake
+- [ADR 0011](docs/adr/0011-conversation-context-and-skills.md)：正常聊天不展示工具活动；Wake 精简正文但保留业务 payload；Pi Skills 按优先级扫描源码 skills/、Mira home skills/ 与运行用户 ~/.agents/skills/，每自然请求更新目录、正文按需 read，不额外 Wake
 - 用户批准的 v0.2 纯文本聊天修订保留其他原文；来源 manifest 同时记录原始与当前 SHA，不可把修订伪称原始附件字节
 - 早期开发只维护当前 v0.5/v0.2 设计，不保留旧 State/Prompt 配置、别名或迁移层；继续保护当前持久上下文、历史、恢复/压缩与 Memory Git 完整性，不引入用户数据清理/重置
 - 重要技术选择与范围变化先向用户确认，状态记录在 `docs/adr/`；不能把建议当批准

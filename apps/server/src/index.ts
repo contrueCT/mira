@@ -43,7 +43,7 @@ export interface DemoOptions {
   spoolDirectory: string;
   /** Existing ordinary cwd, default process.cwd(); never a path confinement. */
   workingDirectory?: string;
-  /** User skills live under this directory; defaults to MIRA_HOME or ~/.mira. */
+  /** Mira-specific skills live here; OS-home ~/.agents/skills is an independent third-priority root. */
   miraHome?: string;
   /** Ordinary persistent Memory root, independent of the source Git repository. */
   memory?: { memoryRoot: string };

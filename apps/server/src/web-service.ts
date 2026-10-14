@@ -1,5 +1,5 @@
 import { SubagentManager, createSubagentTools } from './subagents.ts';
-import type { SubagentWriter, SubagentReader, SubagentCallView } from '@mira/life';
+import type { SubagentWriter, SubagentReader } from '@mira/life';
 import { withVideoRead } from './video-read-tool.ts';
 import path from 'node:path';
 import { AttachmentStore, attachmentDescriptor, attachmentPublication, createAttachmentTool } from './attachments.ts';
@@ -9,7 +9,7 @@ import { realpath, stat } from 'node:fs/promises';
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Api } from '@earendil-works/pi-ai';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { ExtensionHost, ExtensionRevisionConflictError, type LocalExtensionEntry, type RegisteredContextProvider, type ExtensionChange } from '@mira/extension-host';
-import { HistoryError, WakeLoop, type HistoryEntry, type RunHistoryReader, type DreamingWriter, type SchedulingWriter, type LiveInputWriter } from '@mira/life';
+import { HistoryError, SubagentError, WakeLoop, type HistoryEntry, type RunHistoryReader, type DreamingWriter, type SchedulingWriter, type LiveInputWriter } from '@mira/life';
 import { migrate, PostgresPersistence, PersistenceError } from '@mira/persistence';
 import { PiDurableRuntime, type AutoCompactionOptions, createHistoryTools, decodeRecords } from '@mira/runtime-pi';
 import { writeWakeInput, setupMemoryWorkspace, loadMemoryBootstrap, MemoryReadLimitError } from '@mira/workspace';
@@ -20,13 +20,15 @@ import { ModelRequestFailure } from './model-errors.ts';
 import { PersistenceFailureNotice } from './persistence-errors.ts';
 import { WebHttpError, type WebBackend } from './http.ts';
 import type { ManagementBackend, MessageStatusView, RunDetailView, ExtensionMutation, ExtensionMutationView, ExtensionsView } from './management.ts';
-import { assistantReply, extensionView, memoryReceipt, runExecution } from './management-projections.ts';
+import { assistantReply, extensionView, memoryReceipt, runExecution, childDetail, publicChildText } from './management-projections.ts';
 import { createSkillLoader } from './skills.ts';
 import { DeliveryTimer, extensionScheduling } from './scheduling.ts';
 import { DreamingScheduler, dreamingInstruction, dreamingPolicy, type DreamingOptions } from './dreaming.ts';
 import { createExternalIngress, type ExternalIngress } from './external-ingress.ts';
 
 export interface WebServiceOptions {
+  /** Startup-only child concurrency, default 8, bounded 1..32. */
+  subagentConcurrency?: number;
   /** Runtime context budgets; omitted uses automatic compaction defaults. */
   autoCompaction?: AutoCompactionOptions;
   /** Proactive memory housekeeping; enabled by default when Memory is configured. */
@@ -34,7 +36,7 @@ export interface WebServiceOptions {
   connectionString: string; schema: string; miraId: string;
   sourceDirectory: string; spoolDirectory: string; settingsFile: string;
   workingDirectory?: string; memoryRoot?: string; attachmentsDirectory?: string;
-  /** User skills live under this directory; defaults to MIRA_HOME or ~/.mira. */
+  /** Mira-specific skills live here; OS-home ~/.agents/skills is an independent third-priority root. */
   miraHome?: string;
   extensions?: { entries: LocalExtensionEntry[]; hmr?: boolean; configurationFile?: string; artifactsDirectory?: string };
   synthetic?: boolean;
@@ -85,7 +87,6 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   readonly #unsubscribeUserInput: () => void;
   readonly #history: RunHistoryReader;
   readonly #subagentReader: SubagentReader;
-  readonly #childHistory: (streamId: string) => RunHistoryReader;
   readonly #settings: WebSettingsStore;
   readonly #loop: WakeLoop;
   readonly #host: ExtensionHost | undefined;
@@ -100,9 +101,9 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   #configurationWrite = false;
   #settingsGeneration = 0;
   #kickRequested = false;
-  readonly #cache = new Map<string, Timeline['items'][number] | null>();
-  private constructor(options: WebServiceOptions, writer: DreamingWriter & SchedulingWriter & LiveInputWriter & SubagentWriter, history: RunHistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, attachments: AttachmentStore, subagents: SubagentManager, subagentReader: SubagentReader, childHistory: (streamId: string) => RunHistoryReader, host?: ExtensionHost) {
-    this.#subagentReader = subagentReader; this.#childHistory = childHistory; this.#subagents = subagents; this.#attachments = attachments; this.#options = options; this.#writer = writer; this.#history = history; this.#settings = settings;
+  readonly #cache = new Map<string, { item: Timeline['items'][number] | null; childCallId?: string }>();
+  private constructor(options: WebServiceOptions, writer: DreamingWriter & SchedulingWriter & LiveInputWriter & SubagentWriter, history: RunHistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, attachments: AttachmentStore, subagents: SubagentManager, subagentReader: SubagentReader, host?: ExtensionHost) {
+    this.#subagentReader = subagentReader; this.#subagents = subagents; this.#attachments = attachments; this.#options = options; this.#writer = writer; this.#history = history; this.#settings = settings;
     this.#settingsValue = settingsValue; this.#loop = loop; this.#host = host;
     this.#unsubscribeUserInput = writer.onLiveInput(() => subagents.onUserInput());
     this.external = createExternalIngress(writer, () => this.#kick());
@@ -154,7 +155,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       const extensionHost = host;
       const management = extensionHost ? extensionManagementTools(extensionHost, () => writer.listScheduledDeliveries()) : [];
       const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content });
-      subagents = new SubagentManager({ writer, loadSkills, acquire: streamId => persistence.acquire(streamId),
+      subagents = new SubagentManager({ writer, loadSkills, ...(options.subagentConcurrency === undefined ? {} : { maxConcurrent: options.subagentConcurrency }), acquire: streamId => persistence.acquire(streamId),
         tools: streamId => [...createWorkspaceTools(cwd), ...createHistoryTools(persistence.history(streamId))],
         writeOverflowInput, ...(roots ? { memoryRoot: roots.memoryRoot } : {}),
         onCompletion: () => { if (service && !service.#error) service.#kick(); },
@@ -188,7 +189,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
         },
       });
       if (roots && options.dreaming?.enabled !== false) await writer.initializeDreaming();
-      service = new LocalWebService(options, writer, persistence.history(writer.miraId), settings, settingsValue, loop, attachments, children, persistence.subagents(writer.miraId), streamId => persistence.history(streamId), host);
+      service = new LocalWebService(options, writer, persistence.history(writer.miraId), settings, settingsValue, loop, attachments, children, persistence.subagents(writer.miraId), host);
       // Existing durable pending runs resume through the same recovery contracts.
       service.#deliveries?.schedule();
       service.#kick();
@@ -267,23 +268,42 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   async timeline(before?: string): Promise<Timeline> {
     const page = await this.#history.page({ kinds: ['event', 'context', 'tool'], limit: 50, ...(before ? { before } : {}) });
     const items: Timeline['items'] = [];
+    const calls = new Map<string, string>();
     for (const ref of page.hits) {
       const key = ref.id;
-      if (!this.#cache.has(key)) {
+      let cached = this.#cache.get(key);
+      if (!cached) {
         try {
           const entry = await this.#history.read({ id: ref.id, maxBytes: 1_048_576 });
-          // Tool intents are visible to history before their outcome commits. Do not
-          // cache an absent publication while the immutable outcome is pending.
-          if (entry?.kind !== 'tool' || entry.outcome !== null) this.#cache.set(key, entry ? visible(entry) : null);
+          const childCallId = entry?.kind === 'tool' && ['subagent_spawn', 'subagent_send'].includes(entry.intent.toolName) ? entry.intent.callId : undefined;
+          cached = { item: entry ? visible(entry) : null, ...(childCallId ? { childCallId } : {}) };
+          // A pending tool can acquire both an attachment publication or a child
+          // association later. Its identity and visible value share one cache.
+          if (entry?.kind !== 'tool' || entry.outcome !== null) this.#cache.set(key, cached);
         } catch (error) {
           if (!(error instanceof HistoryError) || error.code !== 'too_large') throw error;
-          // An unreadable tool/context record cannot be verified as public. Keep
-          // private activity hidden; attachment publications are bounded descriptors.
-          this.#cache.set(key, ref.kind === 'tool' || ref.kind === 'context' ? null : { id: key, role: 'notice', text: '此历史记录超过界面读取上限，原始记录仍完整保存。', occurredAt: ref.occurredAt });
+          cached = { item: ref.kind === 'tool' || ref.kind === 'context' ? null : { id: key, role: 'notice', text: '此历史记录超过界面读取上限，原始记录仍完整保存。', occurredAt: ref.occurredAt } };
+          this.#cache.set(key, cached);
         }
         if (this.#cache.size > 1000) this.#cache.delete(this.#cache.keys().next().value!);
       }
-      const item = this.#cache.get(key); if (item) items.push(item);
+      if (cached.item) items.push(cached.item);
+      if (cached.childCallId) calls.set(key, cached.childCallId);
+    }
+    if (calls.size) {
+      // Child identity is public only after its durable parent-call linkage exists.
+      // A metadata outage must not discard ordinary conversation history.
+      try {
+        const children = await this.#subagentReader.readSubagentCalls([...calls.values()]);
+        const byCall = new Map(children.map(child => [child.callId, child]));
+        for (const ref of page.hits) {
+          const call = calls.get(ref.id); const child = call ? byCall.get(call) : null;
+          if (child?.runId) items.push({ id: ref.id, role: 'assistant', text: '', occurredAt: ref.occurredAt,
+            child: { id: child.childId, runId: child.runId } });
+        }
+        const order = new Map(page.hits.map((ref, index) => [ref.id, index]));
+        items.sort((a,b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+      } catch { /* Read-only child UI retries independently; main history remains available. */ }
     }
     return { items, nextCursor: page.nextCursor };
   }
@@ -361,51 +381,31 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     const requestsPage = await this.#history.readRunRequests({ id });
     if (!requestsPage) return null;
     const executions: RunDetailView['executions'] = [];
-    const childCallIds: string[] = [];
     for (const ref of page.records) {
       try {
         const entry = await this.#history.read({ id: ref.id, maxBytes: 1_048_576 });
         const visible = entry ? runExecution(entry) : null; if (visible) executions.push(visible);
-        if (entry?.kind === 'tool' && ['subagent_spawn', 'subagent_send'].includes(entry.intent.toolName)) childCallIds.push(entry.intent.callId);
       } catch (error) {
         if (!(error instanceof HistoryError) || error.code !== 'too_large') throw error;
         executions.push({ id: ref.id, occurredAt: ref.occurredAt, kind: 'unavailable', name: null, status: 'unavailable', error: 'This durable record exceeds the display read limit; the original is still preserved.' });
       }
     }
-    // Independent bounded reads keep preserved evidence inspectable after owner loss.
-    let children: SubagentCallView[] = [];
-    let childDetailsUnavailable = false;
-    try { if (childCallIds.length) children = await this.#subagentReader.readSubagentCalls(childCallIds); }
-    catch {
-      childDetailsUnavailable = true;
-    }
-    const shownChildren = new Set<string>();
-    for (const child of children) {
-      executions.push({ supplemental: true, id: child.turnId, occurredAt: child.createdAt, kind: 'subagent', name: child.childId,
-        status: child.status, error: child.status === 'interrupted' || child.status === 'cancelled' ? 'Work stopped; preserved tool outcomes may be unknown. No automatic replay.' : null });
-      if (shownChildren.has(child.childId)) continue;
-      shownChildren.add(child.childId);
-      try {
-        const history = this.#childHistory(child.streamId);
-        const recent = await history.page({ kinds: ['context', 'tool'], limit: 10 });
-        for (const childRef of recent.hits) {
-          try {
-            const detail = await history.read({ id: childRef.id, maxBytes: 1_048_576 });
-            const execution = detail ? runExecution(detail) : null;
-            if (execution) executions.push({ ...execution, supplemental: true, name: `${child.childId} (latest activity): ${execution.name ?? execution.kind}` });
-          } catch (error) {
-            if (!(error instanceof HistoryError) || error.code !== 'too_large') throw error;
-            executions.push({ supplemental: true, id: childRef.id, occurredAt: childRef.occurredAt, kind: 'unavailable', name: child.childId, status: 'unavailable', error: 'Child record exceeds the display budget; its original is preserved.' });
-          }
-        }
-      } catch {
-        childDetailsUnavailable = true;
-      }
-    }
-    return { ...(childDetailsUnavailable ? { childDetailsUnavailable: true } : {}), ...(page.refreshCursor ? { refreshCursor: page.refreshCursor } : {}), id, occurredAt: page.run.occurredAt, status: page.run.status, requestCount: page.run.requestCount,
+    return { id, occurredAt: page.run.occurredAt, status: page.run.status, requestCount: page.run.requestCount,
       requests: requestsPage.items, nextRequestsCursor: requestsPage.nextCursor, assistant: await this.#reply(page.run.finalRecordId), memory: memoryReceipt(page.memory), executions,
       nextCursor: page.nextCursor, compactionErrors: 'not-recorded',
-      error: childDetailsUnavailable ? 'Child details are temporarily unavailable; preserved parent history is still shown.' : page.run.status === 'running' && !this.#drain && this.#error ? publicFailure : null };
+      error: page.run.status === 'running' && !this.#drain && this.#error ? publicFailure : null };
+  }
+  async children(runId: string, before?: string) {
+    const page = await this.#subagentReader.readSubagentsForRun(runId, before).catch(error => {
+      if (error instanceof SubagentError && ['invalid', 'missing'].includes(error.code)) throw new WebHttpError('invalid_input');
+      throw error;
+    });
+    return { items: page.children.map(child => ({ id: child.id, runId, title: publicChildText(child.title ?? '子任务'), createdAt: child.createdAt,
+      status: child.status, current: null, updatedAt: null })), nextCursor: page.nextCursor };
+  }
+  async child(runId: string, id: string) {
+    const child = await this.#subagentReader.getSubagentForRun(id, runId);
+    return child ? childDetail(child, runId) : null;
   }
   async close(): Promise<void> {
     if (this.#closed) return;

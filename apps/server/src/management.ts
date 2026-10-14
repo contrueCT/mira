@@ -39,17 +39,13 @@ export interface ExtensionMutationView {
 export interface RunSummaryView { id: string; occurredAt: string; status: 'running' | 'completed'; requestCount: number }
 export interface RunsView { items: RunSummaryView[]; nextCursor: string | null }
 export interface RunExecutionView {
-  /** Child projections do not belong to the parent run cursor frontier. */
-  supplemental?: true;
   id: string; occurredAt: string;
-  kind: 'model' | 'tool' | 'subagent' | 'compaction' | 'recovery' | 'unavailable';
+  kind: 'model' | 'tool' | 'compaction' | 'recovery' | 'unavailable';
   name: string | null; status: string;
   /** Whitelisted fixed diagnostic only, never raw errors or payload fragments. */
   error: string | null;
 }
 export interface RunDetailView extends RunSummaryView {
-  childDetailsUnavailable?: true;
-  refreshCursor?: string;
   requests: Array<{ eventId: string; source: string; type: string; reason: string | null }>;
   nextRequestsCursor: string | null;
   assistant: AssistantReplyView | null; memory: MemoryReceiptView;
@@ -58,7 +54,25 @@ export interface RunDetailView extends RunSummaryView {
   compactionErrors: 'not-recorded';
   error: string | null;
 }
+export interface ChildActivityView {
+  sequence: number; occurredAt: string; source: 'runtime' | 'worker';
+  kind: 'model' | 'tool' | 'progress'; phase: 'started' | 'finished' | 'reported';
+  name: string | null; status: string | null; text: string | null;
+}
+export interface ChildSummaryView {
+  id: string; runId: string; title: string; createdAt: string; status: string;
+  current: ChildActivityView | null; updatedAt: string | null;
+}
+export interface ChildDetailView extends ChildSummaryView {
+  turns: Array<{ id: string; sequence: number; status: string; createdAt: string; startedAt: string | null; finishedAt: string | null;
+    activities: ChildActivityView[]; droppedActivities: number;
+    result: { text: string; truncated: boolean } | null }>;
+  olderTurns: number;
+}
+export interface ChildrenView { items: ChildSummaryView[]; nextCursor: string | null }
 export interface ManagementBackend {
+  children(runId: string, before?: string): Promise<ChildrenView>;
+  child(runId: string, id: string): Promise<ChildDetailView | null>;
   memory(): Promise<MemoryView>;
   messageStatus(id: string): Promise<MessageStatusView>;
   extensions(): Promise<ExtensionsView>;

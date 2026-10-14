@@ -32,11 +32,11 @@ CLI 设置 `MIRA_DEMO_MEMORY` 即可启用 Memory；只支持当前 Memory 配�
 
 ## 普通技能目录
 
-Demo 与 Web 都使用 `createSkillLoader` 调用 Pi 1.0.2 的公开 `loadSkills`，仅按顺序加载当前源码仓库的 `skills/`、`${MIRA_HOME}/skills`。`MIRA_HOME` 默认 `~/.mira`；程序化 `runDemo` / `LocalWebService.open` 可用 `miraHome` 指定同一根目录。用户技能目录尚不存在时视为空目录，不创建文件，也不持续报警。内置技能不复制到用户目录。
+Demo 与 Web 都使用 `createSkillLoader` 调用 Pi 1.0.2 的公开 `loadSkills`，按优先级依次加载当前源码仓库的 `skills/`、`${MIRA_HOME}/skills`、运行用户的 `~/.agents/skills`。`MIRA_HOME` 默认 `~/.mira`；程序化 `runDemo` / `LocalWebService.open` 可用 `miraHome` 指定 Mira 数据目录。全局目录始终基于 `os.homedir()`，不随 `MIRA_HOME` / `miraHome` 移动。用户技能目录尚不存在或为空时视为空目录，不创建文件，也不持续报警。内置技能不复制到用户目录。
 
-加载器显式传入 `skillPaths` 与 `includeDefaults: false`，不扫描 `.pi`、`.agents`、祖先目录或包资源。沿用 Pi 的普通 Markdown / `SKILL.md` 发现、frontmatter 校验、真实路径去重和同名首项优先规则。内置技能优先；重名诊断包含胜出与被遮蔽的路径。诊断发生变化时在终端报告类型与路径，解析错误不把文件片段写入日志。显式 `onDiagnostics` 回调可取得完整 Pi 诊断。
+加载器显式传入 `skillPaths` 与 `includeDefaults: false`，不开启默认发现；除明确的全局 `~/.agents/skills` 外，不扫描项目或祖先 `.agents`、`.agent`、`.pi` 或包资源，`MIRA_CWD` 不增加搜索路径。沿用 Pi 的普通 Markdown / `SKILL.md` 发现、frontmatter 校验、真实路径去重和同名首项优先规则。源码技能优先于 Mira-home，Mira-home 优先于全局；重名诊断包含胜出与被遮蔽的路径，指向同一真实文件的符号链接不重复加载。诊断发生变化时在终端报告类型与路径，解析错误不把文件片段写入日志。显式 `onDiagnostics` 回调可取得完整 Pi 诊断。
 
-每个自然模型请求前刷新元数据，目录只向 Prompt 提供名称、描述和绝对路径。模型按任务需要调用现有 `read` 读取正文与相对引用，不新增技能工具或 `/skill` 命令。`disable-model-invocation: true` 沿用 Pi 行为，不进入模型目录；用户仍可明确指定文件路径让模型读取。普通文件编辑不额外 Wake，当前请求保留自己的已持久化目录快照，下一自然请求才看到新增、修改和移除。恢复使用最新持久 system/Memory；压缩保持本次已准备的技能目录，仅在摘要成功后刷新 Memory 并原子保存新 system。
+主 Mira 与 task-scoped child 的每个自然模型请求前刷新相同根目录的元数据，目录只向 Prompt 提供名称、描述和绝对路径。child 使用独立技能 section，不因技能发现注入主 Mira 人格或 Memory。模型按任务需要调用现有 `read` 读取正文与相对引用，不新增技能工具或 `/skill` 命令。`disable-model-invocation: true` 沿用 Pi 行为，不进入模型目录；用户仍可明确指定文件路径让模型读取。普通文件编辑不额外 Wake，当前请求保留自己的已持久化目录快照，下一自然请求才看到新增、修改和移除。恢复使用最新持久 system/Memory；压缩保持本次已准备的技能目录，仅在摘要成功后刷新 Memory 并原子保存新 system。
 
 仓库内置的 [扩展开发技能](../../skills/mira-extension-authoring/SKILL.md) 跟随当前 Mira SDK 更新。技能不能创建用户授权，也不改变宿主 OS 权限、普通工具 intent/outcome、历史或 Memory 的边界。
 
@@ -119,11 +119,12 @@ Event/Wake ingress continues to queue normally. See [ADR 0024](../../docs/adr/00
 LocalWebService exposes `subagent_spawn`, `subagent_status`, `subagent_send`,
 `subagent_wait`, and `subagent_cancel` to the main model. Workers use the same Pi
 runtime and inherited injected transport, separate PostgreSQL transcripts, ordinary
-workspace tools and their own read-only history. Four active workers maximum;
+workspace tools and their own read-only history. Eight active workers by default (`MIRA_SUBAGENT_CONCURRENCY=1..32` at startup);
 no child-to-child spawning, main Memory lifecycle, direct chat or attachment
 publication. Completion enters the normal main Event/Wake queue. Followup retains
-prior results and recovery observations. Existing run details display lifecycle
-state; the main UI gains no entry point. See ADR 0025 for context and cancellation
+prior results and recovery observations. Compact cards appear only for delegated tasks and open independently refreshed
+read-only child details with explicit public progress, actual model/tool activity
+and bounded results; no permanent main UI entry point or control panel is added. See ADR 0025 for context and cancellation
 limits and the distinction from a sandbox or persistent job platform.
 
 ### Combined scheduling, live input and children
@@ -135,3 +136,5 @@ Child completion and scheduled deadlines remain ordinary queued Event/Wakes;
 background completion does not clear an errored main run or implicitly retry it.
 Children refresh the same file-skill metadata at natural requests through their
 own transcript, without main persona/Memory bootstrap or checkpoint ownership.
+
+ADR 0026 provides `/api/runs/:id/subagents` and `/api/runs/:id/subagents/:childId` (optional `?view=summary`). Parent-call version ownership is checked independently of parent history pages. No task/context bodies, tool arguments, hidden reasoning, arbitrary spool paths or unpublished files are returned.

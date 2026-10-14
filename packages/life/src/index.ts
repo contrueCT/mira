@@ -82,4 +82,5 @@ export type { DreamingRequest, DreamingRequestResult, DreamingWriter } from './d
 export type { ScheduledDeliveryInput, ScheduledDelivery, ScheduledMutation, SchedulingWriter } from './scheduling.ts';
 export type { LiveInputWriter, LiveWakeInput } from './live-input.ts';
 export { SubagentError, subagentCompletionPayload } from './subagents.ts';
-export type { SubagentReader, SubagentPage, SubagentSummary, SubagentCallView, SubagentWriter, SubagentRecord, SubagentTurn, SubagentStatus, SubagentSpec, SubagentResult } from './subagents.ts';
+export { emptySubagentActivity } from './subagents.ts';
+export type { SubagentActivity, SubagentActivityEvent, SubagentActivityInput, SubagentReader, SubagentPage, SubagentSummary, SubagentCallView, SubagentWriter, SubagentRecord, SubagentTurn, SubagentStatus, SubagentSpec, SubagentResult } from './subagents.ts';

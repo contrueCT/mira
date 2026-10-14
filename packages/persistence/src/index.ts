@@ -277,6 +277,9 @@ class PostgresWriter implements DreamingWriter, SchedulingWriter, LiveInputWrite
   findSubagentCall: SubagentWriter['findSubagentCall'] = callId => this.#subagents.findCall(callId);
   readSubagentCalls: SubagentWriter['readSubagentCalls'] = callIds => this.#subagents.readCalls(callIds);
   getSubagent: SubagentWriter['getSubagent'] = id => this.#subagents.get(id);
+  getSubagentForRun: SubagentWriter['getSubagentForRun'] = (...args) => this.#subagents.getForRun(...args);
+  readSubagentsForRun: SubagentWriter['readSubagentsForRun'] = (...args) => this.#subagents.listForRun(...args);
+  recordSubagentActivity: SubagentWriter['recordSubagentActivity'] = (...args) => this.#subagents.activity(...args);
   sendSubagent: SubagentWriter['sendSubagent'] = (...args) => this.#subagents.send(...args);
   claimSubagentTurn: SubagentWriter['claimSubagentTurn'] = id => this.#subagents.claim(id);
   finishSubagentTurn: SubagentWriter['finishSubagentTurn'] = (...args) => this.#subagents.finish(...args);
