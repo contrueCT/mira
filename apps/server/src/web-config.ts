@@ -15,3 +15,16 @@ export function subagentConcurrency(value: string | undefined): number {
   if (!/^(?:[1-9]|[12][0-9]|3[0-2])$/.test(value)) throw new Error('MIRA_SUBAGENT_CONCURRENCY must be an integer from 1 to 32');
   return Number(value);
 }
+
+/** An explicit single browser origin, never a wildcard or the bind address. */
+export function webPublicOrigin(value: string): string {
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error('MIRA_PUBLIC_ORIGIN must be an exact http(s) origin, for example http://192.168.1.20:3210'); }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/' || value !== url.origin || ['0.0.0.0', '[::]'].includes(url.hostname)) throw new Error('MIRA_PUBLIC_ORIGIN must be an exact http(s) origin without path, credentials or wildcard bind address');
+  return url.origin;
+}
+export function webListenHost(value: string | undefined): '127.0.0.1' | '0.0.0.0' {
+  if (value === undefined || value === '127.0.0.1') return '127.0.0.1';
+  if (value === '0.0.0.0') return value;
+  throw new Error('MIRA_HOST must be 127.0.0.1 or 0.0.0.0');
+}

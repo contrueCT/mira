@@ -87,3 +87,9 @@ MIRA_DATABASE_URL=postgres://mira@127.0.0.1:5432/mira pnpm start
 模型目录与协议配置详见 [模型配置与发现](docs/development/models.md)。
 
 模型设置现可选择默认推理强度，缺省为中档，按 Pi 模型能力适配；主 Mira、子任务与 Dreaming 使用同一偏好，压缩摘要独立使用最低支持档。更高档可能增加耗时和费用，实际推理预算仍受总输出上限限制，详见 [ADR 0027](docs/adr/0027-configured-reasoning-levels.md)。
+
+## 可选网页密码与局域网访问
+
+设置 → 访问可启用/修改/关闭共用密码，默认关闭。启用后全部私有 Web API 和附件需登录；修改或关闭需当前密码。登录最长 12 小时，服务重启后重登。密码仅以 scrypt hash 存入私有 `web-access.json`。
+
+默认仅监听 `127.0.0.1`；局域网可显式设置 `MIRA_HOST=0.0.0.0 MIRA_PUBLIC_ORIGIN=http://<服务器LAN-IP>:3210` 后按原命令启动，客户端访问该 LAN IP。`0.0.0.0` 不是浏览器访问地址。关闭密码时所有能到达服务的人可访问 Mira；HTTP 不加密，公网使用须自行配置 HTTPS 反向代理并设置精确 HTTPS public origin、保持 Host。External SDK 仍仅允许回环访问。没有自动开放端口、TLS、代理部署或新账户系统。

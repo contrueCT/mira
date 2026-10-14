@@ -157,3 +157,5 @@ export type { ExternalHttpOptions } from './external-http.ts';
 export { dreamingDefaults, type DreamingOptions } from './dreaming.ts';
 
 export type { MemoryView, MemoryReceiptView, AssistantReplyView, MessageStatusView, ExtensionView, ExtensionsView, ExtensionMutation, ExtensionMutationView, RunSummaryView, RunsView, RunExecutionView, RunDetailView, ManagementBackend } from './management.ts';
+
+export { WebAccessAuth, WebAuthError } from './web-auth.ts';

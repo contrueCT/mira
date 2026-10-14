@@ -159,3 +159,9 @@ retain bounded first/last attempt information separately. SDK environment checks
 run after authentication immediately before eager SDK construction, without
 mutating global environment or console. Programmatic `WebServiceOptions.modelFetch` injects the HTTP boundary for tests;
 production remains the explicit credential-bound provider path. See ADR 0029.
+
+## 可选网页密码与局域网访问
+
+设置 → 访问可启用/修改/关闭共用密码，默认关闭。启用后全部私有 Web API 和附件需登录；修改或关闭需当前密码。登录最长 12 小时，服务重启后重登。密码仅以 scrypt hash 存入私有 `web-access.json`。
+
+默认仅监听 `127.0.0.1`；局域网可显式设置 `MIRA_HOST=0.0.0.0 MIRA_PUBLIC_ORIGIN=http://<服务器LAN-IP>:3210` 后按原命令启动，客户端访问该 LAN IP。`0.0.0.0` 不是浏览器访问地址。关闭密码时所有能到达服务的人可访问 Mira；HTTP 不加密，公网使用须自行配置 HTTPS 反向代理并设置精确 HTTPS public origin、保持 Host。External SDK 仍仅允许回环访问。没有自动开放端口、TLS、代理部署或新账户系统。

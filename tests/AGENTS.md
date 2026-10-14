@@ -38,3 +38,5 @@ ADR 0007 回归直接工具调用与模型普通澄清，保留 schema/参数、
 
 - 组合：`recovery/agent-capabilities.test.mts` 用真实 PG/service 验证 child wait 的用户插话及后台完成不清除失败主轮；`test:capabilities:e2e` 将提醒到期、child skills/read/完成、单工具插话及重启不重复放入同一真实浏览器链路，不调用真实模型。
 - 请求重试：`unit/model-retry.test.mts` 注入真实Pi SDK的HTTP/SSE故障，覆盖partial/取消/unknown不重放；`recovery/model-retry.test.mts`走真实PG/service/普通bash与重启，不能用离线fixture替代。浏览器fixture单独验证状态提示。
+
+- 网页密码：`unit/web-auth.test.mts` 验证 hash/cookie/限速/全API保护；`test:auth:e2e` 在真实 PG/HTTP/浏览器链路测试非loopback Host、登录/注销/改密/关闭/附件与截图，不使用真实凭据。
