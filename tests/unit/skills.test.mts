@@ -225,11 +225,11 @@ test('committed skill prompt survives an uncertain append response without dupli
   assert.equal(calls, 1); assert.equal(memoryLoads, 1); assert.deepEqual(revisions(), committed);
 });
 
-for (const fault of ['cas', 'owner-loss', 'loader'] as const) test(`skill preparation ${fault} failure fences model requests`, async t => {
+for (const worker of [false, true]) for (const fault of ['cas', 'owner-loss', 'loader'] as const) test(`${worker ? 'worker' : 'Mira'} skill preparation ${fault} failure fences model requests`, async t => {
   const { sourceDirectory, miraHome } = await fixture(t); await skill(miraHome, 'fenced', 'FENCED_METADATA');
   const writer = new MemoryWriter(); const loader = createSkillLoader({ sourceDirectory, miraHome }); let calls = 0;
-  if (fault === 'cas') writer.beforeAppend = async record => { if (JSON.stringify(record.payload).includes(MIRA_PROMPT_SECTION)) writer.state.version++; };
-  await assert.rejects(new PiDurableRuntime({ writer, model, miraPrompt: prompt, loadSkills: async abort => {
+  if (fault === 'cas') writer.beforeAppend = async record => { if (JSON.stringify(record.payload).includes(worker ? 'mira.skills.v1' : MIRA_PROMPT_SECTION)) writer.state.version++; };
+  await assert.rejects(new PiDurableRuntime({ writer, model, ...(worker ? {} : { miraPrompt: prompt }), loadSkills: async abort => {
     const skills = await loader(abort);
     if (fault === 'owner-loss') writer.controller.abort(Error('Skill refresh ownership loss'));
     if (fault === 'loader') throw Error('Skill loader failed');
