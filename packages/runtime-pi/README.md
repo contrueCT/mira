@@ -472,3 +472,7 @@ in the same SDK hook and rejects main `miraPrompt`/Memory configuration. Summary
 failure or cancellation preserves history and requires an explicit followup;
 queued followups stay outside the frozen summary candidate. Child checkpoints
 never enter main-stream Dreaming counts. See [ADR 0030](../../docs/adr/0030-task-scoped-compaction.md).
+
+Compaction emits the same awaited content-free model activity with the fixed
+`context-compaction` name, starting at actual summary dispatch and finishing
+after authoritative checkpoint confirmation, including cancellation/append ambiguity.

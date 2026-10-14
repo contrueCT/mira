@@ -38,6 +38,12 @@ and Dreaming's main-stream query remain separate. Child completion still queues
 its normal sourced parent result, but does not itself become a fresh user
 experience or a main compaction.
 
+Summary dispatch records content-free model start activity; completion is reported
+only after the checkpoint is durably confirmed. Child details label this as
+context compaction. Failure/cancellation reports its actual terminal state, and
+ambiguous append responses consult the authoritative checkpoint before declaring
+interruption. An activity write failure stops further provider work.
+
 ## Validation and limits
 
 Offline dispatcher tests drive actual Pi requests and the public summary hook

@@ -47,7 +47,8 @@
     "tests/unit/live-input.test.mts",
     "tests/unit/bundled-skills.test.mts",
     "tests/unit/subagents.test.mts",
-    "tests/unit/child-management.test.mts"
+    "tests/unit/child-management.test.mts",
+    "tests/unit/task-compaction-activity.test.mts"
   ],
   "exclude": [
     "node_modules",

@@ -609,12 +609,15 @@ test('long child followups compact their own transcript with task-only instructi
     }
     assert.equal(summaries, 1);
     await summarizing.promise;
+    assert.equal(f.parent.children[0]!.turns.at(-1)!.activity.current?.name, 'context-compaction');
+    assert.equal(f.parent.children[0]!.turns.at(-1)!.activity.current?.phase, 'started');
     const currentCount = f.parent.children[0]!.turns.length;
     await f.manager.send('compact-queued', childId, 'QUEUED_DURING_SUMMARY: inspect the new evidence only', t);
     assert.equal(f.parent.children[0]!.turns.at(-1)!.status, 'queued');
     release.resolve();
     await until(() => f.parent.children[0]!.turns.every(turn => turn.status === 'completed'));
     assert.equal(f.parent.children[0]!.turns.length, currentCount + 1);
+    assert.ok(f.parent.children[0]!.turns.flatMap(turn => turn.activity.events).some(event => event.name === 'context-compaction' && event.phase === 'finished' && event.status === 'completed'));
     assert.match(seen.at(-1)!, /QUEUED_DURING_SUMMARY/);
     assert.match(seen.at(-1)!, /TASK_SUMMARY/);
     const childWriter = [...f.writers.values()][0]!;
@@ -657,6 +660,7 @@ for (const failure of ['error', 'cancel'] as const) test(`child summary ${failur
     if (failure === 'cancel') { await f.manager.cancel(childId); release.resolve(); }
     await until(() => [...f.writers.values()][0]!.signal.aborted);
     assert.equal(f.parent.children[0]!.turns.at(-1)!.status, failure === 'cancel' ? 'cancelled' : 'failed');
+    if (failure === 'error') assert.ok(f.parent.children[0]!.turns.at(-1)!.activity.events.some(event => event.name === 'context-compaction' && event.phase === 'finished' && event.status === 'failed'));
     const saved = structuredClone([...f.writers.values()][0]!.state.records);
     assert.equal(saved.filter(record => record.kind === 'checkpoint').length, 0);
     const oldCalls = calls; await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(calls, oldCalls); assert.equal(summaries, 1);

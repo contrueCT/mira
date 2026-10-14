@@ -163,17 +163,19 @@ test('long child compacts through real tools and PostgreSQL, remains inspectable
   const evidence = path.join(root, 'evidence.txt'); await writeFile(evidence, 'read-only evidence line\n'.repeat(520));
   let app: ReturnType<typeof createLocalHttp> | undefined; let service: LocalWebService | undefined;
   let childCalls = 0, summaries = 0, parentCalls = 0;
+  const summaryRelease = deferred();
   const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'compaction-browser-parent', sourceDirectory,
     workingDirectory: root, miraHome: root, memoryRoot: path.join(root, 'Memory'), spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'),
     synthetic: true, syntheticModel: { ...model, contextWindow: 100_000 }, dreaming: { enabled: false }, autoCompaction: { enabled: false } };
   const start = async () => {
-    service = await LocalWebService.open({ ...options, syntheticStream: (_m, context) => {
+    service = await LocalWebService.open({ ...options, syntheticStream: async (_m, context) => {
       const system = getCurrentSystemPrompt(context.messages);
       if (system.includes('Summarize this task-scoped worker')) {
         summaries++;
         const data = JSON.parse(String(context.messages.find(message => message.role === 'user')?.content));
         expect(data.memory_snapshot).toBeNull(); expect(data.persona_context).not.toContain('MAIN_PRIVATE_MEMORY');
         expect(JSON.stringify(data.source_messages)).toContain('read-only evidence');
+        await summaryRelease.promise;
         return streamOf(assistant('BROWSER_TASK_SUMMARY: inspected evidence, no publication or external effects.'));
       }
       if (system.includes('task-scoped worker')) {
@@ -194,6 +196,13 @@ test('long child compacts through real tools and PostgreSQL, remains inspectable
     await page.goto(origin);
     await page.getByLabel('给 Mira 发消息', { exact: true }).fill('让子任务检查指定证据。');
     await page.getByRole('button', { name: '发送消息', exact: true }).click();
+    await expect.poll(() => summaries, { timeout: 60_000 }).toBe(1);
+    await page.getByRole('button', { name: '查看子任务 长任务压缩验证', exact: true }).click();
+    const activeDialog = page.getByRole('dialog', { name: '长任务压缩验证', exact: true });
+    await expect(activeDialog.locator('.child-current')).toContainText('整理任务上下文 · 已开始');
+    await page.screenshot({ path: testInfo.outputPath('child-compacting-desktop.png'), fullPage: true });
+    await activeDialog.getByRole('button', { name: '关闭', exact: true }).click();
+    summaryRelease.resolve();
     await expect(page.getByText('子任务压缩后已完成。', { exact: true })).toBeVisible({ timeout: 60_000 });
     expect(summaries).toBe(1);
     const checkpoints = (await db.admin.query("SELECT mira_id FROM context_records WHERE envelope->>'kind'='checkpoint'")).rows;
@@ -209,5 +218,5 @@ test('long child compacts through real tools and PostgreSQL, remains inspectable
     await page.getByRole('button', { name: '查看子任务 长任务压缩验证', exact: true }).click();
     await expect(dialog.getByText('CHILD_COMPACTED_FINDING', { exact: true })).toBeVisible();
     expect(childCalls).toBe(oldCalls); expect(summaries).toBe(1);
-  } finally { await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+  } finally { summaryRelease.resolve(); await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
