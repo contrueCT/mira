@@ -76,8 +76,9 @@ export async function prepareWakeTurn(run: WakeRun, writeOverflowInput: WriteOve
     ...(attachments.length ? { attachments } : {}), ...(overflowInput ? { overflowInput } : {}) };
 }
 
-/** Drain only explicit wake requests, never event-only history. Arrivals during
- * cognition are claimed in the next batch; an active turn is never preempted. */
+/** Drain only explicit wake requests, never event-only history. Ordinary arrivals
+ * are claimed in the next batch. A LiveInputWriter/runtime may append user input
+ * inside the active Wake; the loop still owns one continuous run at a time. */
 export class WakeLoop {
   private readonly options: WakeLoopOptions;
   constructor(options: WakeLoopOptions) {

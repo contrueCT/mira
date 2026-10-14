@@ -61,7 +61,8 @@ export interface WakeRun {
 /** Durable consumption uses the same fenced writer as context publication. */
 export interface WakeWriter extends DurableWriter {
   /** Resume the active run, otherwise atomically claim all currently pending
-   * requests. New receipts never join an already claimed run. */
+   * requests. Original batch membership stays frozen; LiveInputWriter owns
+   * separately linked supplemental user input. */
   claimWakeBatch(): Promise<WakeRun | null>;
   loadWakeRun(runId: string): Promise<WakeRun>;
   /** Append and bind in one transaction; retries verify identical evidence. */
