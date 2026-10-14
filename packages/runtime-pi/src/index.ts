@@ -710,6 +710,9 @@ export class PiDurableRuntime implements CognitionRuntime {
         if (input) await agent.prompt(structuredClone(input));
         else await agent.continue();
         attemptGate();
+        // Pi may end after a known tool result carrying terminate:true, without
+        // another prepareRequest. Pending user input still owns the next request.
+        await checkLiveInput();
         if (agent.state.errorMessage) throw new Error(agent.state.errorMessage);
         return await this.recoverInternal();
       } finally {

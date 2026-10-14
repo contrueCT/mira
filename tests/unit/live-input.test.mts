@@ -173,3 +173,17 @@ test('finalized supplemental overflow validates durable evidence without requiri
   }
   assert.equal(writes, 1); assert.equal(requests, 1);
 });
+
+test('pending user input is consumed after a known terminating tool result rather than leaving the Wake unfinished', async () => {
+  const writer = new LiveMemoryWriter(); let effects = 0, requests = 0;
+  await new PiDurableRuntime({ writer, model, tools: [effectTool(async () => {
+    effects++; await add(writer, 'after-terminating-tool'); return { ...result, terminate: true };
+  })], streamFn: (_model, context) => {
+    if (++requests === 1) return streamOf(toolCalls('terminating-tool'));
+    assert.match(JSON.stringify(context.messages), /after-terminating-tool/);
+    assert.ok(context.messages.some(message => message.role === 'toolResult' && message.toolCallId === 'terminating-tool'));
+    return streamOf(assistant('The new message was considered'));
+  } }).continueTurn(await writer.turn());
+  assert.equal(effects, 1); assert.equal(requests, 2); assert.ok(writer.run.finalRecordId);
+  assert.ok(writer.state.executions[0]!.outcome);
+});
