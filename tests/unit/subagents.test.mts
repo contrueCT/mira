@@ -210,3 +210,25 @@ test('explicit followup sees the model-facing unknown recovery wording, not inte
     assert.match(JSON.stringify([...f.writers.values()][0]!.state.records), /outcome-unknown/);
   } finally { await f.manager.close(); }
 });
+
+
+test('followup cannot bypass the concurrency cap while cancelled effects are still settling', async () => {
+  const release = deferred(); let block = false; let effects = 0;
+  const f = fixture(new Parent(), () => [effectTool(async () => { effects++; await release.promise; return result; })]);
+  let call = 0;
+  const t = transport(() => {
+    if (!block) return streamOf(assistant('idle worker'));
+    return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: `blocked-effect-${++call}`, name: 'effect', arguments: {} }] });
+  });
+  try {
+    const idle = await f.manager.spawn('idle-spawn', 'Ready', 'none', t);
+    await until(() => [...f.writers.values()][0]?.signal.aborted ?? false);
+    block = true;
+    const active = [];
+    for (let i = 0; i < 4; i++) active.push(await f.manager.spawn(`blocked-${i}`, 'Wait in effect', 'none', t));
+    await until(() => effects === 4);
+    await f.manager.cancel(active[0]!.id);
+    await assert.rejects(f.manager.send('extra-followup', idle.id, 'Continue', t), (error: unknown) => error instanceof SubagentError && error.code === 'capacity');
+    assert.equal(f.parent.children[0]!.turns.length, 1);
+  } finally { release.resolve(); await f.manager.close(); }
+});

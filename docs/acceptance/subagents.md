@@ -6,7 +6,7 @@ from test presence.
 ## Offline Pi runtime
 
 `tests/unit/subagents.test.mts` uses real Pi runtime/Agent calls with deterministic
-provider responses and a test-only in-memory registry. Ten focused tests passed:
+provider responses and a test-only in-memory registry. Eleven focused tests passed:
 
 - Parent continues before child completion; isolated child transcript and asynchronous result
 - Followup continues the same transcript; retrying a spawn call does not create another child
@@ -18,6 +18,7 @@ provider responses and a test-only in-memory registry. Ten focused tests passed:
 - Four simultaneous children are independent; a fifth receives a capacity result
 - Section-based system constraints and existing compaction summaries survive the projection
 - Running-child followup queues once and cancellation does not overwrite completed results
+- Followup cannot exceed the concurrency cap while cancelled effects are still settling
 
 These are runtime mechanics tests, not a live model quality claim or a PostgreSQL pass.
 

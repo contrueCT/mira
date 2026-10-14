@@ -70,6 +70,7 @@ export class SubagentManager {
     if (this.#closed) throw new SubagentError('invalid', 'Child dispatcher is closed');
     const child = await this.#child(id);
     if (!sameModel(child, transport)) throw new SubagentError('model_changed', 'The parent model selection changed. Use a fresh child or restore the original selection before following up.');
+    if (!this.#active.has(id) && this.#active.size >= (this.#options.maxConcurrent ?? 4)) throw new SubagentError('capacity', 'Child slots are still occupied, including cancelling work');
     const updated = await this.#options.writer.sendSubagent(callId, id, instruction, this.#options.maxConcurrent ?? 4);
     this.#cancelled.delete(id);
     this.#start(id, transport);
