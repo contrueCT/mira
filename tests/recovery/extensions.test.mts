@@ -240,7 +240,9 @@ test('real PostgreSQL model configure, reload and remove await lifecycle changes
   const initialConfig = { ...fixture.config, lifecyclePath: fixture.lifecyclePath, configurationFile, revision: 1 };
   const updatedParameters = { ...fixtureParameters, properties: { ...fixtureParameters.properties, count: { type: 'number', minimum: 2 } } };
   const updatedConfig = { ...initialConfig, revision: 2, parameters: updatedParameters };
-  const initialEntry = { id: 'manual', path: fixture.modulePath, enabled: true, config: initialConfig };
+  // Pin this fixture's installation so exact saved-config assertions also verify
+  // it survives configure/reload/restart; auto-allocation is covered separately.
+  const initialEntry = { id: 'manual', path: fixture.modulePath, enabled: true, config: initialConfig, installationId: '00000000-0000-4000-8000-000000000022' };
   const updatedEntry = { ...initialEntry, config: updatedConfig };
   const metadata = { comment: 'Synthetic owner metadata survives management' };
   const options = { connectionString: db.connectionString, schema: db.schema, miraId, sourceDirectory: process.cwd(), spoolDirectory: path.join(fixture.root, 'spool'), workingDirectory: fixture.root };
