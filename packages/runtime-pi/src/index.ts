@@ -365,8 +365,6 @@ export class PiDurableRuntime implements CognitionRuntime {
         current = await this.recoverInternal();
       }
       await this.runInternal(undefined, turn);
-      const completed = await writer.loadWakeRun(turn.id);
-      if (!completed.finalRecordId) throw new Error('Wake did not produce a successful terminal assistant reply');
     }, signal);
   }
 
@@ -379,7 +377,19 @@ export class PiDurableRuntime implements CognitionRuntime {
     while (true) {
       try {
         if (turn) await this.consumeLiveInputs(turn);
-        return await this.runAttempt(input, turn);
+        const result = await this.runAttempt(input, turn);
+        if (!turn) return result;
+        const completed = await this.wakeWriter().loadWakeRun(turn.id);
+        if (completed.finalRecordId) return result;
+        // Pi may terminate after a known tool result without a final. Read
+        // pending input after recovery/link awaits, preserving this run's single
+        // overflow-recovery allowance when the newest receipt continues it.
+        const live = this.liveWriter();
+        if (live && (await live.loadLiveInputs(turn.id)).some(item => item.inputRecordId === null)) {
+          input = undefined;
+          continue;
+        }
+        throw new Error('Wake did not produce a successful terminal assistant reply');
       }
       catch (error) {
         if (error instanceof ContextOverflowError && !overflowRecovered && contextBudget(this.options.model, this.options.autoCompaction).enabled) {
@@ -653,7 +663,12 @@ export class PiDurableRuntime implements CognitionRuntime {
           // Pi validates names/schemas before beforeToolCall; even malformed
           // old siblings must yield to pending user input at the public start event.
           if (event.type === 'tool_execution_start') await checkLiveInput();
-          if (event.type === 'tool_execution_end' && !outcomes.has(event.toolCallId)) throw new Error(`Tool did not produce a durable outcome: ${event.toolCallId}`);
+          if (event.type === 'tool_execution_end' && !outcomes.has(event.toolCallId)) {
+            // Invalid names/schemas bypass the intent hook. A receipt arriving
+            // after their start snapshot must still precede this stale error.
+            await checkLiveInput();
+            throw new Error(`Tool did not produce a durable outcome: ${event.toolCallId}`);
+          }
           if (event.type !== 'message_end') return;
           const message = event.message;
           if (message.role === 'assistant') requestActive = false;
@@ -710,9 +725,6 @@ export class PiDurableRuntime implements CognitionRuntime {
         if (input) await agent.prompt(structuredClone(input));
         else await agent.continue();
         attemptGate();
-        // Pi may end after a known tool result carrying terminate:true, without
-        // another prepareRequest. Pending user input still owns the next request.
-        await checkLiveInput();
         if (agent.state.errorMessage) throw new Error(agent.state.errorMessage);
         return await this.recoverInternal();
       } finally {

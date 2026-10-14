@@ -187,3 +187,73 @@ test('pending user input is consumed after a known terminating tool result rathe
   assert.equal(effects, 1); assert.equal(requests, 2); assert.ok(writer.run.finalRecordId);
   assert.ok(writer.state.executions[0]!.outcome);
 });
+
+for (const invalid of ['unknown-tool', 'invalid-arguments'] as const) test(`a live-writer snapshot race before ${invalid} completion still yields to new input`, async () => {
+  const writer = new LiveMemoryWriter(); let injected = false, requests = 0, effects = 0;
+  const load = writer.loadLiveInputs;
+  writer.loadLiveInputs = async () => {
+    const snapshot = await load();
+    if (!injected && writer.state.executions[0]?.outcome) {
+      injected = true;
+      // Contract-level race: receipt commits after this read's snapshot, before
+      // Pi's immediate invalid-tool result. This does not simulate PG timing.
+      await add(writer, 'after-start-snapshot');
+    }
+    return snapshot;
+  };
+  const tool = effectTool(async () => { effects++; return result; });
+  tool.parameters = Type.Object({ value: Type.Number() });
+  await new PiDurableRuntime({ writer, model, tools: [tool], streamFn: (_model, context) => {
+    if (++requests === 1) return streamOf({ ...assistant(), stopReason: 'toolUse', content: [
+      { type: 'toolCall', id: 'valid-first', name: 'effect', arguments: { value: 1 } },
+      { type: 'toolCall', id: 'bad-sibling', name: invalid === 'unknown-tool' ? 'missing' : 'effect', arguments: { value: 'not-a-number' } },
+    ] });
+    assert.match(JSON.stringify(context.messages), /after-start-snapshot/);
+    assert.match(JSON.stringify(context.messages), /Execution did not start/);
+    return streamOf(assistant('New input consumed after the stale snapshot'));
+  } }).continueTurn(await writer.turn());
+  assert.equal(effects, 1); assert.equal(requests, 2); assert.ok(writer.run.finalRecordId);
+});
+
+for (const boundary of ['context-recovery', 'final-link-read'] as const) test(`input during ${boundary} after terminate:true is consumed before an unfinished-Wake error`, async () => {
+  const writer = new LiveMemoryWriter(); let injected = false, requests = 0, effects = 0;
+  const inject = async () => {
+    if (!injected && writer.state.records.some(record => (record.payload as { message?: { role?: string } }).message?.role === 'toolResult')) {
+      injected = true; await add(writer, 'after-termination-read');
+    }
+  };
+  if (boundary === 'context-recovery') {
+    const load = writer.load.bind(writer);
+    writer.load = async () => { const snapshot = await load(); await inject(); return snapshot; };
+  } else {
+    const load = writer.loadWakeRun;
+    writer.loadWakeRun = async () => { const run = await load(); await inject(); return run; };
+  }
+  await new PiDurableRuntime({ writer, model, tools: [effectTool(async () => { effects++; return { ...result, terminate: true }; })],
+    streamFn: (_model, context) => {
+      if (++requests === 1) return streamOf(toolCalls('terminating-tool'));
+      assert.match(JSON.stringify(context.messages), /after-termination-read/);
+      return streamOf(assistant('New input reached the model despite the late receipt'));
+    },
+  }).continueTurn(await writer.turn());
+  assert.equal(effects, 1); assert.equal(requests, 2); assert.ok(writer.run.finalRecordId);
+});
+
+test('live continuation after terminate:true retains the same Wake single overflow-recovery allowance', async () => {
+  const writer = new LiveMemoryWriter(); let requests = 0, summaries = 0, effects = 0;
+  await seed(writer, [input('Older question '.repeat(150)), assistant('Earlier answer '.repeat(150))]);
+  const work = new PiDurableRuntime({ writer, model, autoCompaction: { threshold: 1, keepRecentTokens: 1 },
+    tools: [effectTool(async () => { effects++; await add(writer, 'continue-after-terminate'); return { ...result, terminate: true }; })],
+    streamFn: (_model, context) => {
+      const system = getCurrentSystemMessage(context.messages);
+      if (system && getSystemMessageText(system).startsWith('你负责压缩 Mira 的 Working Context')) {
+        summaries++; return streamOf(assistant('One bounded overflow recovery summary'));
+      }
+      requests++;
+      if (requests === 2) return streamOf(toolCalls('terminating-after-overflow'));
+      return streamOf({ ...assistant(''), stopReason: 'error', errorMessage: 'maximum context length exceeded' });
+    },
+  }).continueTurn(await writer.turn());
+  await assert.rejects(work, /overflow/i);
+  assert.equal(effects, 1); assert.equal(requests, 3); assert.equal(summaries, 1);
+});

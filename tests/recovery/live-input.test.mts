@@ -134,3 +134,36 @@ test('real PostgreSQL new input during compaction commits after its frozen check
     assert.deepEqual(await restarted.load(), state);
   } finally { release.resolve(); await db.close(); }
 });
+
+test('real PostgreSQL receipt committed during post-termination recovery reaches the next model request', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase();
+  try {
+    const writer = await db.acquire(); await writer.receiveLiveInput(userEvent('original'), userWake('original'));
+    const run = await writer.claimWakeBatch(); assert.ok(run); let injected = false, effects = 0, requests = 0;
+    const wrapped = new Proxy(writer, { get(target, key) {
+      if (key === 'load') return async () => {
+        const snapshot = await target.load();
+        if (!injected && snapshot.records.some(record => (record.payload as { message?: { role?: string } }).message?.role === 'toolResult')) {
+          injected = true;
+          // A real committed receipt between the runtime's recovery read and
+          // its final-link check, with no model stream left to abort.
+          await target.receiveLiveInput(userEvent('late-after-terminate'), userWake('late-after-terminate'));
+        }
+        return snapshot;
+      };
+      const value = Reflect.get(target, key); return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    await new PiDurableRuntime({ writer: wrapped, model,
+      tools: [effectTool(async () => { effects++; return { ...result, terminate: true }; })],
+      streamFn: (_model, context) => {
+        if (++requests === 1) return streamOf(toolCalls('terminate-once'));
+        assert.match(JSON.stringify(context.messages), /late-after-terminate/);
+        return streamOf(assistant('The late message was read before finalization'));
+      },
+    }).continueTurn(await turnFor(run));
+    assert.equal(effects, 1); assert.equal(requests, 2);
+    assert.ok((await writer.loadWakeRun(run.id)).finalRecordId);
+    assert.ok((await writer.loadLiveInputs(run.id))[0]!.inputRecordId);
+    assert.equal((await writer.load()).executions.length, 1);
+  } finally { await db.close(); }
+});
