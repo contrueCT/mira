@@ -1,3 +1,4 @@
+import { browserUuid } from './uuid.ts';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent } from 'react';
 import { AttachmentList, AttachmentPreview } from './Attachments.tsx';
@@ -234,7 +235,7 @@ export function App() {
     event?.preventDefault();
     const text = composer.trim();
     if ((!text && !attachments.drafts.length) || !attachments.ready || sendingRef.current || recovered.error) return;
-    const envelope: MessageEnvelope = { id: crypto.randomUUID(), text, occurredAt: new Date().toISOString(), ...(attachments.attachments.length ? { attachmentIds: attachments.attachments.map(item => item.id) } : {}) };
+    const envelope: MessageEnvelope = { id: browserUuid(), text, occurredAt: new Date().toISOString(), ...(attachments.attachments.length ? { attachmentIds: attachments.attachments.map(item => item.id) } : {}) };
     if (new TextEncoder().encode(JSON.stringify(envelope)).byteLength > 65_536) { setComposerError('消息太长，请缩短后再发送（上限约 64 KB）'); return; }
     setComposerError(null);
     scrollToLatest();

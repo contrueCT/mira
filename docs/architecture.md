@@ -119,3 +119,7 @@ Extension SDK 绑定持久安装身份，扩展负责时区、DST、提醒内容
 ## 工具输出与完整证据
 
 [ADR 0028](adr/0028-tool-output-budget.md) 将所有工具模型投影的文字统一限制为16KiB，包含明确的部分预览提示与完整普通文件引用。原始outcome和transcript先完整保存，附件和非文本元数据保留；恢复与压缩使用同一投影，文件可由数据库重建且不重放工具。巨型单行结果采用普通read可分页的JSONL无损分块，History超过1MiB则可通过同一history_read的offset/revision文本分页读取，不增加状态引擎或表。
+
+## 可选网页访问密码
+
+[ADR 0033](adr/0033-web-password-access.md) 扩展本地 Web 的技术访问边界：精确 public origin 加可选共用密码，不增加认知会话、账户系统或模型动作批准。只有静态登录壳/auth 状态与登录公开，私有 API 和附件统一校验 cookie；External SDK 保持回环来源限制。

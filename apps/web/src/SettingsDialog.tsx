@@ -1,3 +1,4 @@
+import { browserUuid } from './uuid.ts';
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, RefObject } from 'react';
 import { ApiError, api, errorText } from './api.ts';
@@ -9,11 +10,12 @@ import { MemoryPanel } from './MemoryPanel.tsx';
 import type { MemoryPanelProps } from './MemoryPanel.tsx';
 import { ExtensionsPanel } from './ExtensionsPanel.tsx';
 import { RunsPanel } from './RunsPanel.tsx';
+import { AccessPanel } from './AccessPanel.tsx';
 import type { BuiltinCatalog, CustomConnection, CustomConnectionWrite, CustomModel, CustomProtocol, Discovery, Settings, SettingsWrite, ThinkingLevel } from './types.ts';
 
 interface Props { synthetic: boolean; onClose: () => void; onSaved: () => void; returnFocus: RefObject<HTMLButtonElement | null>; memoryRequest: MemoryPanelProps['request']; memoryPending: MemoryPanelProps['pending']; sending: boolean; storageError: string | null; onMemorySubmit: MemoryPanelProps['onSubmit']; onMemoryRetry: MemoryPanelProps['onRetry'] }
-type SettingsTab = 'model' | 'memory' | 'extensions' | 'runs';
-const tabs: { id: SettingsTab; label: string }[] = [{ id: 'model', label: '模型' }, { id: 'memory', label: 'Memory' }, { id: 'extensions', label: '扩展' }, { id: 'runs', label: '运行记录' }];
+type SettingsTab = 'model' | 'memory' | 'extensions' | 'runs' | 'access';
+const tabs: { id: SettingsTab; label: string }[] = [{ id: 'model', label: '模型' }, { id: 'memory', label: 'Memory' }, { id: 'extensions', label: '扩展' }, { id: 'runs', label: '运行记录' }, { id: 'access', label: '访问' }];
 interface ModelDraft { originalId: string | null; id: string; name: string; contextWindow: string; maxTokens: string; reasoning: '' | 'true' | 'false'; input: '' | 'text' | 'image' | 'text-image' }
 const blankModel = (id = '', name = ''): ModelDraft => ({ originalId: null, id, name, contextWindow: '', maxTokens: '', reasoning: '', input: '' });
 function modelDraftFrom(model: CustomModel): ModelDraft {
@@ -178,7 +180,7 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
     setLoadVersion(value => value + 1);
   };
   const addConnection = () => {
-    const id = `custom-${crypto.randomUUID().slice(0, 8)}`;
+    const id = `custom-${browserUuid().slice(0, 8)}`;
     const next: CustomConnectionWrite = { id, baseUrl: '', api: 'openai-completions', hasApiKey: false, models: [] };
     stopDiscovery(); setConnectionId(id); setModelDraft(blankModel());
     change(current => ({ ...current, selection: null, configuration: { ...current.configuration, customConnections: [...current.configuration.customConnections, next] } }));
@@ -331,5 +333,6 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
     <section id="settings-panel-memory" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-memory" hidden={tab !== 'memory'}><MemoryPanel active={tab === 'memory'} request={memoryRequest} pending={memoryPending} sending={sending} storageError={storageError} onSubmit={onMemorySubmit} onRetry={onMemoryRetry} /></section>
     <section id="settings-panel-extensions" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-extensions" hidden={tab !== 'extensions'}><ExtensionsPanel active={tab === 'extensions'} /></section>
     <section id="settings-panel-runs" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-runs" hidden={tab !== 'runs'}><RunsPanel active={tab === 'runs'} /></section>
+    <section id="settings-panel-access" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-access" hidden={tab !== 'access'}><AccessPanel active={tab === 'access'} onClose={onClose} /></section>
   </dialog>;
 }

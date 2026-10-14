@@ -30,7 +30,7 @@
 
 ## 本地 Web
 
-固定 127.0.0.1/精确 Host、Origin 和请求头检查不可放宽；HTTP 来源防护不等于自然语言工具授权。Web 模型设置接收 write-only API Key，源码外的私有文件保存明文密钥并限制权限；公开响应仅返回 hasApiKey。禁止密钥进入日志、数据库、Prompt 或历史。CLI 仍使用显式环境变量引用；revision 冲突不能静默覆盖。Timeline 只返回白名单展示字段，不发送 system/thinking/原始工具参数。界面通过确定性 fixture 测试，真实 PostgreSQL 恢复单独验收。
+按 ADR 0033 默认 127.0.0.1，可显式 MIRA_HOST=0.0.0.0 与 MIRA_PUBLIC_ORIGIN；精确 Host、Origin 和请求头检查不可放宽为通配。可选网页密码统一保护私有 API/附件；HTTP 来源防护不等于自然语言工具授权。Web 模型设置接收 write-only API Key，源码外的私有文件保存明文密钥并限制权限；公开响应仅返回 hasApiKey。禁止密钥进入日志、数据库、Prompt 或历史。CLI 仍使用显式环境变量引用；revision 冲突不能静默覆盖。Timeline 只返回白名单展示字段，不发送 system/thinking/原始工具参数。界面通过确定性 fixture 测试，真实 PostgreSQL 恢复单独验收。
 
 ## External SDK 接入
 
@@ -40,3 +40,5 @@
 - 组合边界：child wait 查询当前已claim run 的持久 pending input 并监听已提交提示，补 intent→execute 空窗；child completion 与调度都只入普通队列，后台结果不清除失败主轮。child skills 仅独立元数据及普通 read，不能注入主persona/Memory。
 
 - ADR 0027：configuration.defaultThinkingLevel 只保存用户默认偏好；transport.thinkingLevel 是 Pi 能力适配后的 runtime 注入值。主/child/Dreaming 同路；压缩独立最低档，不在 streamFn 隐式填会话默认，Anthropic 思考与答案共同受原输出 cap 限制。
+
+- ADR 0033：web-auth.ts 管理独立网页密码 hash 与短期 cookie；External SDK 继续实际 loopback 地址+Host 限制，不跟随 Web 暴露。

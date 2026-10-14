@@ -49,6 +49,8 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
       - name: Verify browser interactions and render screenshots
         run: pnpm test:e2e
+      - name: Verify password access through real HTTP, PostgreSQL and browser
+        run: pnpm test:auth:e2e
       - name: Verify the joined external SDK, PostgreSQL, runtime and browser chain
         run: pnpm test:external:e2e
       - name: Verify settings through PostgreSQL, runtime tools and Memory Git

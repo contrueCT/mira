@@ -1,3 +1,4 @@
+import { browserUuid } from './uuid.ts';
 import type { MessageEnvelope } from './types.ts';
 
 export const MEMORY_REQUEST_KEY = 'mira.memory-request.v1';
@@ -6,7 +7,7 @@ export interface MemoryRequestIdentity { id: string; occurredAt: string }
 export function createMemoryRequest(text: string): MessageEnvelope {
   const trimmed = text.trim();
   if (!trimmed) throw new Error('请先写下你想修改的记忆');
-  const envelope = { id: crypto.randomUUID(), text: `${MEMORY_REQUEST_PREFIX}${trimmed}`, occurredAt: new Date().toISOString() };
+  const envelope = { id: browserUuid(), text: `${MEMORY_REQUEST_PREFIX}${trimmed}`, occurredAt: new Date().toISOString() };
   if (new TextEncoder().encode(JSON.stringify(envelope)).byteLength > 65_536) throw new Error('修改要求太长，请缩短后再发送（上限约 64 KB）');
   return envelope;
 }

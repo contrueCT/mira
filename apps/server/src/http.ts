@@ -1,3 +1,5 @@
+import { WebAccessAuth, WebAuthError, type WebAuthWrite } from './web-auth.ts';
+import { webPublicOrigin } from './web-config.ts';
 import { AttachmentError, attachmentDescriptor, attachmentLimits, type AttachmentDescriptor } from './attachments.ts';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import fastifyStatic from '@fastify/static';
@@ -58,23 +60,32 @@ const safeErrors = {
   unavailable: { status: 503, text: 'Mira is unavailable; check the local server' },
   invalid_input: { status: 400, text: 'Invalid request' },
 } as const;
-/** Fastify composition only. The CLI binds 127.0.0.1 and owns backend shutdown. */
-export function createLocalHttp(options: { backend: WebBackend; port: number; assetsDirectory?: string; external?: ExternalHttpOptions }): FastifyInstance {
+/** Fastify composition only. The CLI owns binding and backend shutdown. */
+export function createLocalHttp(options: { backend: WebBackend; port: number; assetsDirectory?: string; external?: ExternalHttpOptions; auth?: WebAccessAuth; publicOrigin?: string }): FastifyInstance {
   if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65_535) throw Error('A fixed local HTTP port from 1 to 65535 is required');
   const host = `127.0.0.1:${options.port}`; const origin = `http://${host}`;
+  const publicOrigin = options.publicOrigin === undefined ? undefined : webPublicOrigin(options.publicOrigin);
+  const origins = new Map([[host, origin]]);
+  if (publicOrigin) {
+    const publicHost = new URL(publicOrigin).host;
+    if (publicHost === host && publicOrigin !== origin) throw Error('Public origin conflicts with the local HTTP origin');
+    origins.set(publicHost, publicOrigin);
+  }
+  const secure = (request: FastifyRequest) => origins.get(request.headers.host ?? '')?.startsWith('https://') === true;
   const app = Fastify({
     logger: false, trustProxy: false, exposeHeadRoutes: false,
     bodyLimit: 65_536, connectionTimeout: 20_000, requestTimeout: 20_000, keepAliveTimeout: 5_000, maxRequestsPerSocket: 1_000,
     ajv: { customOptions: { removeAdditional: false, coerceTypes: false, useDefaults: false } },
     onProtoPoisoning: 'error', onConstructorPoisoning: 'error',
     // Malformed URLs can fail in the router before normal hooks/error handlers.
-    frameworkErrors: (_error, request, reply: FastifyReply) => reply.headers(securityHeaders).code(request.headers.host === host ? 400 : 403).send({ error: 'Invalid local request' }),
+    frameworkErrors: (_error, request, reply: FastifyReply) => reply.headers(securityHeaders).code(origins.has(request.headers.host ?? '') ? 400 : 403).send({ error: 'Invalid local request' }),
   });
   const backend = options.backend;
   const externalSenders = new WeakMap<FastifyRequest, string>();
   const active = new WeakSet<FastifyRequest>(); let inFlight = 0;
   let interval = performance.now(); let reads = 0; let writes = 0; let discoveries = 0; let discovering = false;
   const methods = new Map<string, readonly string[]>([
+    ['/api/auth/status', ['GET']], ['/api/auth/login', ['POST']], ['/api/auth/logout', ['POST']], ['/api/auth/settings', ['GET', 'PUT']],
     ['/api/attachments', ['POST']], ['/api/attachments/:id', ['GET']], ['/api/status', ['GET']], ['/api/timeline', ['GET', 'POST']], ['/api/messages', ['POST']], ['/api/settings', ['GET', 'PUT']],
     ['/api/memory', ['GET']], ['/api/messages/:id/status', ['GET']], ['/api/extensions', ['GET']], ['/api/extensions/:id', ['POST']], ['/api/runs', ['GET']], ['/api/runs/:id', ['GET']], ['/api/runs/:id/requests', ['GET']],
     ['/api/models/catalog', ['GET']], ['/api/models/discover', ['POST']],
@@ -85,11 +96,18 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     const pathname = request.url.split('?', 1)[0] ?? '';
     const route = request.routeOptions.url;
     const api = pathname === '/api' || pathname.startsWith('/api/') || (typeof route === 'string' && route.startsWith('/api/'));
-    // Check raw Host, not forwarded host or a URL-normalized hostname. IPv6,
-    // localhost aliases, rebinding domains, duplicate values and other ports fail.
-    if (request.headers.host !== host) return reply.code(403).send({ error: 'Untrusted local host' });
+    const uniqueHeaders = new Set(['host', 'origin', 'x-mira-client', 'cookie']);
+    const receivedHeaders = new Set<string>();
+    for (let i = 0; i < request.raw.rawHeaders.length; i += 2) {
+      const name = request.raw.rawHeaders[i]!.toLowerCase();
+      if (uniqueHeaders.has(name) && receivedHeaders.has(name)) return reply.code(403).send({ error: 'Duplicate security header' });
+      receivedHeaders.add(name);
+    }
+    // Exact configured authorities only; never trust arbitrary Host/Forwarded headers.
+    const expectedOrigin = origins.get(request.headers.host ?? '');
+    if (!expectedOrigin) return reply.code(403).send({ error: 'Untrusted host; configure MIRA_PUBLIC_ORIGIN for remote access' });
     const requestOrigin = request.headers.origin;
-    if (requestOrigin !== undefined && requestOrigin !== origin) return reply.code(403).send({ error: 'Untrusted origin' });
+    if (requestOrigin !== undefined && requestOrigin !== expectedOrigin) return reply.code(403).send({ error: 'Untrusted origin' });
     const site = request.headers['sec-fetch-site'];
     if (site !== undefined && site !== 'same-origin' && site !== 'none') return reply.code(403).send({ error: 'Cross-site requests are not allowed' });
     // Fastify decodes static route segments before matching. Reject encoded
@@ -98,6 +116,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     if (!api) return;
     const external = pathname === '/api/external' || pathname.startsWith('/api/external/');
     if (external) {
+      if (request.headers.host !== host || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.ip)) return reply.code(403).send({ error: 'External programs require loopback access' });
       if (!options.external) return reply.code(404).send({ error: 'Not found' });
       if (requestOrigin !== undefined || site !== undefined || request.headers['sec-fetch-dest'] !== undefined
         || request.headers['x-mira-client'] !== 'external') return reply.code(403).send({ error: 'External programs only' });
@@ -133,9 +152,11 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     const allowed = methods.get(pathname) ?? (typeof route === 'string' ? methods.get(route) : undefined);
     if (allowed && !allowed.includes(request.method)) return reply.code(405).header('allow', allowed.join(', ')).send({ error: 'Method not allowed' });
     const write = request.method !== 'GET' && request.method !== 'HEAD';
-    if (write && requestOrigin !== origin) return reply.code(403).send({ error: 'A same-origin write is required' });
+    if (write && requestOrigin !== expectedOrigin) return reply.code(403).send({ error: 'A same-origin write is required' });
     if (write && pathname === '/api/attachments' && request.headers['content-type'] !== 'application/octet-stream') return reply.code(415).send({ error: 'Binary content type is required' });
     if (write && pathname !== '/api/attachments' && !/^application\/json(?:\s*;\s*charset\s*=\s*utf-8)?$/iu.test(request.headers['content-type'] ?? '')) return reply.code(415).send({ error: 'JSON content type is required' });
+    const publicAuthRoute = pathname === '/api/auth/status' || pathname === '/api/auth/login';
+    if (!publicAuthRoute && options.auth && !options.auth.status(request.headers.cookie).authenticated) return reply.code(401).send({ error: 'Please sign in to Mira' });
     const now = performance.now();
     if (now - interval >= 60_000) { interval = now; reads = 0; writes = 0; discoveries = 0; }
     if (inFlight >= 32 || (write ? ++writes > 60 : ++reads > 600) || (pathname === '/api/models/discover' && ++discoveries > 6)) return reply.code(429).header('retry-after', '60').send({ error: 'Too many local requests; retry shortly' });
@@ -149,6 +170,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     if (error instanceof AttachmentError) return reply.code(error.code === 'too_large' ? 413 : error.code === 'invalid' ? 400 : 404).send({ error: error.code === 'too_large' ? 'Attachment exceeds the file or message size limit' : 'Attachment unavailable or invalid' });
     if (error instanceof HistoryError && error.code === 'invalid') return reply.code(400).send({ error: 'Invalid history request' });
     if (error instanceof HistoryError && error.code === 'too_large') return reply.code(413).send({ error: 'The durable record exceeds the display limit; the original is preserved' });
+    if (error instanceof WebAuthError) { if (error.status === 429) reply.header('retry-after', '60'); return reply.code(error.status).send({ error: error.message }); }
     if (error instanceof ExternalProtocolError) return reply.code(400).send({ error: 'Invalid external request' });
     if (error instanceof PersistenceError && error.code === 'duplicate') return reply.code(409).send({ error: 'The request conflicts with previously saved data' });
     const persistence = PersistenceFailureNotice.from(error);
@@ -167,6 +189,25 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     const sender = externalSenders.get(request);
     if (!sender) throw new WebHttpError('unavailable');
     return sender;
+  });
+  app.get('/api/auth/status', { schema: { querystring: noQuery } }, async request => options.auth?.status(request.headers.cookie) ?? { enabled: false, authenticated: true });
+  app.post<{ Body: { password: string } }>('/api/auth/login', { bodyLimit: 4096, schema: { querystring: noQuery, body: objectSchema({ password: { type: 'string', maxLength: 1024 } }, ['password']) } }, async (request, reply) => {
+    if (!options.auth) throw new WebAuthError(503, 'Web access settings are unavailable');
+    const cookie = await options.auth.login(request.body.password, request.ip, secure(request));
+    return reply.header('set-cookie', cookie).send({ enabled: true, authenticated: true });
+  });
+  app.post('/api/auth/logout', { schema: { querystring: noQuery, body: noQuery } }, async (request, reply) => {
+    if (!options.auth) throw new WebAuthError(503, 'Web access settings are unavailable');
+    return reply.header('set-cookie', options.auth.logout(request.headers.cookie, secure(request))).send(options.auth.status());
+  });
+  app.get('/api/auth/settings', { schema: { querystring: noQuery } }, async () => {
+    if (!options.auth) throw new WebAuthError(503, 'Web access settings are unavailable');
+    return options.auth.settings();
+  });
+  app.put<{ Body: WebAuthWrite }>('/api/auth/settings', { bodyLimit: 8192, schema: { querystring: noQuery, body: objectSchema({ revision: { type: 'string', format: 'uuid' }, enabled: { type: 'boolean' }, currentPassword: { type: 'string', maxLength: 1024 }, password: { type: 'string', maxLength: 1024 } }, ['revision', 'enabled']) } }, async (request, reply) => {
+    if (!options.auth) throw new WebAuthError(503, 'Web access settings are unavailable');
+    const cookie = await options.auth.save(request.body, request.headers.cookie, request.ip, secure(request));
+    return reply.header('set-cookie', cookie).send({ ...options.auth.settings(), authenticated: true });
   });
   registerManagementHttp(app, backend);
   app.setNotFoundHandler((_request, reply) => reply.code(404).send({ error: 'Not found' }));

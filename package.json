@@ -24,7 +24,8 @@
     "test:management:e2e": "node scripts/run-real-web-tests.mts management",
     "test:attachments:e2e": "node scripts/run-real-web-tests.mts attachments",
     "test:live-input:e2e": "node scripts/run-real-web-tests.mts live-input",
-    "test:capabilities:e2e": "node scripts/run-real-web-tests.mts agent-capabilities"
+    "test:capabilities:e2e": "node scripts/run-real-web-tests.mts agent-capabilities",
+    "test:auth:e2e": "node scripts/run-real-web-tests.mts auth"
   },
   "devDependencies": {
     "@types/node": "24.19.1",

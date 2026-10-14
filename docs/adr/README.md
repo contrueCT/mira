@@ -72,3 +72,5 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 - [0029: Bounded model-request retries](0029-bounded-model-request-retries.md): Accepted scope, 2026-10-14; at most three transport attempts before a complete assistant message is published, explicit transient evidence, cancellation and temporary status, without whole-Wake/tool replay.
 
 - [0031 子任务详情仅保留在运行记录](0031-child-details-in-settings.md)：Accepted scope，2026-10-14；移除主聊天任务卡片与专用 Timeline 投影，保留设置中的独立 child/run 活动详情与后端执行。
+
+- [0033 可选网页访问密码](0033-web-password-access.md)：已授权实现，独立草稿 PR 验证；不含正式部署。
