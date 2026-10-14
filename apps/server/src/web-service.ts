@@ -363,11 +363,11 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     let children: SubagentCallView[] = [];
     try { if (childCallIds.length) children = await this.#subagentReader.readSubagentCalls(childCallIds); }
     catch {
-      executions.push({ id: page.run.id, occurredAt: page.run.occurredAt, kind: 'unavailable', name: 'Subagent metadata', status: 'unavailable', error: 'Child details are temporarily unavailable; preserved parent history is still shown.' });
+      executions.push({ supplemental: true, id: page.run.id, occurredAt: page.run.occurredAt, kind: 'unavailable', name: 'Subagent metadata', status: 'unavailable', error: 'Child details are temporarily unavailable; preserved parent history is still shown.' });
     }
     const shownChildren = new Set<string>();
     for (const child of children) {
-      executions.push({ id: child.turnId, occurredAt: child.createdAt, kind: 'subagent', name: child.childId,
+      executions.push({ supplemental: true, id: child.turnId, occurredAt: child.createdAt, kind: 'subagent', name: child.childId,
         status: child.status, error: child.status === 'interrupted' || child.status === 'cancelled' ? 'Work stopped; preserved tool outcomes may be unknown. No automatic replay.' : null });
       if (shownChildren.has(child.childId)) continue;
       shownChildren.add(child.childId);
@@ -378,14 +378,14 @@ export class LocalWebService implements WebBackend, ManagementBackend {
           try {
             const detail = await history.read({ id: childRef.id, maxBytes: 1_048_576 });
             const execution = detail ? runExecution(detail) : null;
-            if (execution) executions.push({ ...execution, name: `${child.childId} (latest activity): ${execution.name ?? execution.kind}` });
+            if (execution) executions.push({ ...execution, supplemental: true, name: `${child.childId} (latest activity): ${execution.name ?? execution.kind}` });
           } catch (error) {
             if (!(error instanceof HistoryError) || error.code !== 'too_large') throw error;
-            executions.push({ id: childRef.id, occurredAt: childRef.occurredAt, kind: 'unavailable', name: child.childId, status: 'unavailable', error: 'Child record exceeds the display budget; its original is preserved.' });
+            executions.push({ supplemental: true, id: childRef.id, occurredAt: childRef.occurredAt, kind: 'unavailable', name: child.childId, status: 'unavailable', error: 'Child record exceeds the display budget; its original is preserved.' });
           }
         }
       } catch {
-        executions.push({ id: `${child.turnId}:activity`, occurredAt: child.createdAt, kind: 'unavailable', name: child.childId, status: 'unavailable', error: 'Latest child activity is temporarily unavailable; preserved parent history is still shown.' });
+        executions.push({ supplemental: true, id: `${child.turnId}:activity`, occurredAt: child.createdAt, kind: 'unavailable', name: child.childId, status: 'unavailable', error: 'Latest child activity is temporarily unavailable; preserved parent history is still shown.' });
       }
     }
     return { id, occurredAt: page.run.occurredAt, status: page.run.status, requestCount: page.run.requestCount,

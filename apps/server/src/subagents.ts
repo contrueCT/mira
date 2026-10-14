@@ -37,6 +37,7 @@ export class SubagentManager {
   readonly #options: SubagentManagerOptions;
   readonly #active = new Map<string, { controller: AbortController; done: Promise<void> }>();
   readonly #cancelled = new Set<string>();
+  readonly #transports = new Map<string, SubagentTransport>();
   readonly #changes = new Set<() => void>();
   #userInputVersion = 0;
   #closed = false;
@@ -65,7 +66,8 @@ export class SubagentManager {
     const snapshot = await this.#options.writer.load();
     const frozen = mode === 'all' ? freezeSubagentContext(snapshot, Math.min(131_072, transport.model.contextWindow)) : { text: '', bytes: 0, parentVersion: snapshot.version, parentHead: snapshot.records.at(-1)?.id ?? null };
     const child = await this.#options.writer.createSubagent(callId, { task, fork: { mode, ...frozen }, model: modelIdentity(transport.model) }, this.#options.maxConcurrent ?? 4);
-    this.#start(child.id, transport);
+    this.#transports.set(callId, transport);
+    this.#start(child.id);
     return brief(child);
   }
   async send(callId: string, id: string, instruction: string, transport: SubagentTransport) {
@@ -78,9 +80,14 @@ export class SubagentManager {
     }
     if (!sameModel(child, transport)) throw new SubagentError('model_changed', 'The parent model selection changed. Use a fresh child or restore the original selection before following up.');
     if (!this.#active.has(id) && this.#active.size >= (this.#options.maxConcurrent ?? 4)) throw new SubagentError('capacity', 'Child slots are still occupied, including cancelling work');
-    const updated = await this.#options.writer.sendSubagent(callId, id, instruction, this.#options.maxConcurrent ?? 4);
+    // Register before the durable write: the running child may claim the queued
+    // turn as soon as that transaction commits. Credentials stay process-local.
+    this.#transports.set(callId, transport);
+    let updated: SubagentRecord;
+    try { updated = await this.#options.writer.sendSubagent(callId, id, instruction, this.#options.maxConcurrent ?? 4); }
+    catch (error) { this.#transports.delete(callId); throw error; }
     this.#cancelled.delete(id);
-    this.#start(id, transport);
+    this.#start(id);
     return brief(updated);
   }
   async status(id?: string, before?: string) {
@@ -91,16 +98,16 @@ export class SubagentManager {
     return this.#options.writer.listSubagents(before);
   }
 
-  #start(id: string, transport: SubagentTransport): void {
+  #start(id: string): void {
     if (this.#active.has(id) || this.#closed) return;
     const controller = new AbortController();
     // Install the slot before entering async work (including fast synthetic streams).
-    const done = Promise.resolve().then(() => this.#run(id, transport, controller.signal)).catch(error => {
+    const done = Promise.resolve().then(() => this.#run(id, controller.signal)).catch(error => {
       if (!this.#closed && !this.#options.writer.signal.aborted) this.#options.onFailure(error);
     }).finally(async () => {
       this.#active.delete(id); this.#notify();
       if (!this.#closed && !this.#cancelled.has(id) && !this.#options.writer.signal.aborted) {
-        try { if ((await this.#child(id)).turns.some(turn => turn.status === 'queued')) this.#start(id, transport); }
+        try { if ((await this.#child(id)).turns.some(turn => turn.status === 'queued')) this.#start(id); }
         catch (error) { this.#options.onFailure(error); }
       }
     });
@@ -116,7 +123,7 @@ export class SubagentManager {
     while (Buffer.byteLength(excerpt) > 16_000) excerpt = excerpt.slice(0, -1);
     return { text: `${excerpt}\n[Full result preserved in the referenced ordinary file.]`, truncated: true, fullResultPath: full.path, finalRecordId: final.id };
   }
-  async #run(id: string, transport: SubagentTransport, abort: AbortSignal): Promise<void> {
+  async #run(id: string, abort: AbortSignal): Promise<void> {
     const signal = AbortSignal.any([abort, this.#options.writer.signal]);
     let writer: DurableWriter | undefined;
     let running: SubagentTurn | null = null;
@@ -129,6 +136,9 @@ export class SubagentManager {
         signal.throwIfAborted();
         running = await this.#options.writer.claimSubagentTurn(id);
         if (!running) break;
+        const transport = this.#transports.get(running.callId);
+        this.#transports.delete(running.callId);
+        if (!transport) throw new Error('Child dispatch is unavailable; explicitly follow up without replaying the old turn');
         const runtime = new PiDurableRuntime({ writer, ...transport, tools, autoCompaction: { enabled: false } });
         const state = await runtime.recover();
         if (!state.snapshot.records.length) await runtime.appendMessage({ role: 'system', content: childSystem(this.#options, child), timestamp: Date.now() });
@@ -154,19 +164,23 @@ export class SubagentManager {
       if (this.#options.writer.signal.aborted) throw error;
       if (!running && abort.reason !== childCancellation) {
         const child = await this.#child(id);
-        for (const pending of child.turns.filter(turn => turn.status === 'queued')) await this.#options.writer.finishSubagentTurn(pending.id, 'interrupted', {
-          text: 'Child initialization did not complete; no automatic retry was attempted. Inspect status and explicitly follow up.', truncated: false, fullResultPath: null, finalRecordId: null });
+        for (const pending of child.turns.filter(turn => turn.status === 'queued')) {
+          this.#transports.delete(pending.callId);
+          await this.#options.writer.finishSubagentTurn(pending.id, 'interrupted', {
+            text: 'Child initialization did not complete; no automatic retry was attempted. Inspect status and explicitly follow up.', truncated: false, fullResultPath: null, finalRecordId: null });
+        }
         this.#options.onCompletion(); this.#notify();
       }
     } finally { await writer?.close(); }
   }
   async cancel(id: string) {
-    await this.#child(id);
+    const child = await this.#child(id);
     this.#cancelled.add(id);
     const active = this.#active.get(id);
     active?.controller.abort(childCancellation);
     // Runtime stops effects through its writer/abort checks; do not erase or roll back history.
     await this.#options.writer.cancelSubagent(id);
+    for (const turn of child.turns) this.#transports.delete(turn.callId);
     this.#notify(); this.#options.onCompletion();
     return this.status(id);
   }
@@ -191,6 +205,7 @@ export class SubagentManager {
     this.#closed = true; this.#notify();
     for (const active of this.#active.values()) active.controller.abort(new Error('Child dispatcher closing'));
     await Promise.all([...this.#active.values()].map(active => active.done));
+    this.#transports.clear();
   }
 }
 

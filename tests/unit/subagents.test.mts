@@ -288,3 +288,22 @@ test('followup after interruption before first child input retains original task
     } finally { await f.manager.close(); }
   }
 });
+
+
+test('queued followup uses the accepting parent turn transport after a same-model settings refresh', async () => {
+  const f = fixture(); const release = deferred(); let oldCalls = 0; let newCalls = 0; let newestCalls = 0;
+  const oldTransport = transport(async () => { oldCalls++; await release.promise; return streamOf(assistant('old turn complete')); });
+  const newTransport = transport(() => { newCalls++; return streamOf(assistant('new transport result')); });
+  const newestTransport = transport(() => { newestCalls++; return streamOf(assistant('newest transport result')); });
+  try {
+    const child = await f.manager.spawn('transport-spawn', 'Hold the initial task', 'none', oldTransport);
+    await until(() => oldCalls === 1);
+    await f.manager.send('transport-followup', child.id, 'Use the refreshed parent transport', newTransport);
+    await f.manager.send('transport-followup-next', child.id, 'Use the next parent transport', newestTransport);
+    release.resolve();
+    await until(() => f.parent.children[0]!.turns[2]!.status === 'completed');
+    assert.equal(oldCalls, 1); assert.equal(newCalls, 1); assert.equal(newestCalls, 1);
+    assert.equal(f.parent.children[0]!.turns[1]!.result?.text, 'new transport result');
+    assert.equal(f.parent.children[0]!.turns[2]!.result?.text, 'newest transport result');
+  } finally { release.resolve(); await f.manager.close(); }
+});

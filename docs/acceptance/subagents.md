@@ -6,7 +6,7 @@ from test presence.
 ## Offline Pi runtime
 
 `tests/unit/subagents.test.mts` uses real Pi runtime/Agent calls with deterministic
-provider responses and a test-only in-memory registry. Thirteen focused tests passed:
+provider responses and a test-only in-memory registry. Fourteen focused tests passed:
 
 - Parent continues before child completion; isolated child transcript and asynchronous result
 - Followup continues the same transcript; retrying a spawn call does not create another child
@@ -92,3 +92,23 @@ the combined integration branch and must be verified there before merge.
 `b0f8cf7` subsequently passed complete CI run 38516468348 (PostgreSQL and all
 browser gates included). This predates the second review fixes above and is not
 evidence that those later fixes passed.
+
+
+A third fresh review of `361212a` verified the previous fixes and found that an
+active child's queued followup reused its initial transport closure after a
+same-model settings refresh. The dispatcher now retains each accepted turn's
+transport only in process memory, selects it at claim time, and clears it when
+claimed/cancelled/closed. No credentials are persisted. The regression queues two
+followups with distinct same-model transports and verifies each runs with its own
+accepting parent-turn transport. Further fresh review and exact-head CI remain
+required; the known integration error-latch guard remains assigned as above.
+
+The same third review also found repeated latest-child activity could falsely
+bridge disjoint parent cursor windows. Child projections are now explicitly
+supplemental; parent pagination frontiers and insertion anchors exclude them.
+A web regression preserves the gap across repeated child rows and verifies all
+parent records remain reachable in durable order.
+
+`361212a` passed full CI run 38517250051, including the newly added pre-first-input
+PostgreSQL recovery case and all browser gates. This predates the transport and
+supplemental-pagination fixes and does not establish their acceptance.

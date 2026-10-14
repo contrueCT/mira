@@ -74,7 +74,7 @@ export interface ExtensionMutationResult {
 }
 export interface RunSummary { id: string; occurredAt: string; status: 'running' | 'completed'; requestCount: number }
 export interface RunsView { items: RunSummary[]; nextCursor: string | null }
-export interface RunExecution { id: string; occurredAt: string; kind: 'model' | 'tool' | 'subagent' | 'compaction' | 'recovery' | 'unavailable'; name: string | null; status: string; error: string | null }
+export interface RunExecution { supplemental?: true; id: string; occurredAt: string; kind: 'model' | 'tool' | 'subagent' | 'compaction' | 'recovery' | 'unavailable'; name: string | null; status: string; error: string | null }
 export interface RunRequest { eventId: string; source: string; type: string; reason: string | null }
 export interface RunRequestsPage { items: RunRequest[]; nextCursor: string | null }
 export interface RunDetail extends RunSummary {

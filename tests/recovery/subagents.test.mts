@@ -75,6 +75,9 @@ test('real web service keeps parent available, child completion wakes an idle pa
     const runs = await service.runs(); const details = await Promise.all(runs.items.map(run => service!.run(run.id)));
     assert.ok(details.some(d => d!.executions.some(e => e.kind === 'subagent' && e.status === 'completed')));
     assert.ok(details.some(d => d!.executions.some(e => e.name?.includes('(latest activity)'))));
+    for (const detail of details) for (const execution of detail!.executions) {
+      if (execution.kind === 'subagent' || execution.name?.includes('(latest activity)')) assert.equal(execution.supplemental, true);
+    }
     assert.ok(!JSON.stringify(details).includes('CHILD_PRIVATE_RAW_FINDING'));
     const ownerPid = (await db.admin.query("SELECT l.pid FROM pg_locks l JOIN mira_owners o ON l.objid=o.lock_key::oid WHERE l.locktype='advisory' AND l.classid=1296650817::oid AND l.objsubid=2 AND l.database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND o.mira_id='web-parent'")).rows[0].pid;
     await db.admin.query('SELECT pg_terminate_backend($1)', [ownerPid]);

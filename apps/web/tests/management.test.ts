@@ -165,3 +165,20 @@ test('child turn status advances through older and gap pages without stale respo
     }
   }
 });
+
+
+test('repeated supplemental child activity never bridges disjoint parent cursor windows', () => {
+  const childActivity: RunExecution = { ...execution('shared-child-effect', 'succeeded'), supplemental: true };
+  const childTurn: RunExecution = { ...execution('shared-child-turn', 'running'), kind: 'subagent', supplemental: true };
+  let state = acceptRunRecords(emptyRunRecords(), { executions: [execution('spawn-parent'), childTurn, childActivity], nextCursor: null });
+  state = acceptRunRecords(state, { executions: [execution('newer-send-parent'), childTurn, childActivity], nextCursor: 'before-newer-send' });
+  let gap = nextRunRecords(state)!;
+  assert.equal(gap.cursor, 'before-newer-send');
+  assert.deepEqual(state.pagination.gaps[0]!.boundaryIds, ['spawn-parent']);
+  state = acceptRunRecords(state, { executions: [execution('middle-parent'), childTurn, childActivity], nextCursor: 'before-middle' }, gap);
+  gap = nextRunRecords(state)!;
+  assert.equal(gap.cursor, 'before-middle', 'shared child activity must not falsely close the parent gap');
+  state = acceptRunRecords(state, { executions: [execution('spawn-parent'), childTurn, childActivity], nextCursor: null }, gap);
+  assert.equal(nextRunRecords(state), null);
+  assert.deepEqual(state.executions.filter(item => !item.supplemental).map(item => item.id), ['spawn-parent', 'middle-parent', 'newer-send-parent']);
+});

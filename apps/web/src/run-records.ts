@@ -32,14 +32,17 @@ export function acceptRunRecords(current: RunRecordsState, page: { executions: R
       // reference unchanged. The original oversized record remains on server.
       if (!durableToolOutcome && !durableChildOutcome && !unavailableRecord &&
         (previous.kind === 'subagent' ? advancingChild : (!request || resolvedTool))) executions[known] = incoming;
-      insertion = known + 1; continue;
+      if (!incoming.supplemental) insertion = known + 1;
+      continue;
     }
-    const nextKnown = page.executions.slice(i + 1).map(item => executions.findIndex(existing => existing.id === item.id)).find(index => index >= 0);
+    const nextKnown = page.executions.slice(i + 1).filter(item => !item.supplemental).map(item => executions.findIndex(existing => existing.id === item.id)).find(index => index >= 0);
     const at = nextKnown ?? insertion;
     executions.splice(at, 0, incoming); insertion = at + 1;
   }
-  const projected = { items: page.executions, nextCursor: page.nextCursor };
-  const pagination = request ? olderPagination(current.pagination, request, projected) : latestPagination(current.pagination, current.executions, projected, current.initialized);
+  // Latest child activity can repeat across disjoint parent call pages. It is
+  // display evidence, never proof that a parent cursor gap was traversed.
+  const projected = { items: page.executions.filter(item => !item.supplemental), nextCursor: page.nextCursor };
+  const pagination = request ? olderPagination(current.pagination, request, projected) : latestPagination(current.pagination, current.executions.filter(item => !item.supplemental), projected, current.initialized);
   return { executions, pagination, initialized: true };
 }
 export function nextRunRecords(state: RunRecordsState): HistoryRequest | null { return nextHistoryRequest(state.pagination); }
