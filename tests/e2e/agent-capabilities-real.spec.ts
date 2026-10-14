@@ -272,3 +272,60 @@ test('reasoning saved in the real browser reaches credential-bound SDK payloads 
     expect((await db.admin.query("SELECT count(*)::int AS n FROM context_records WHERE envelope::text LIKE '%sk-synthetic-browser-reasoning%'")).rows[0].n).toBe(0);
   } finally { await app?.close(); await service?.close(); globalThis.fetch = originalFetch; await db.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test('oversized extension output remains bounded and readable through ordinary file tools across a real browser/service restart', async ({ page }, testInfo) => {
+  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-output-browser-');
+  let service: LocalWebService | undefined, app: ReturnType<typeof createLocalHttp> | undefined;
+  const modulePath = path.join(root, 'large-extension.mjs'), counter = path.join(root, 'effects');
+  const sdk = pathToFileURL(path.join(sourceDirectory, 'packages/extension-sdk/src/index.ts')).href;
+  await writeFile(modulePath, `import { appendFile } from 'node:fs/promises';
+import { defineExtension } from ${JSON.stringify(sdk)};
+export default defineExtension({ name: 'large-output', apply(api) { api.registerTool({ name: 'large_output', description: 'Synthetic large output fixture', parameters: { type: 'object', properties: {} }, async execute() { await appendFile(${JSON.stringify(counter)}, ${JSON.stringify('once\n')}); return { text: ${JSON.stringify(largeToolText)}, details: { receipt: 'complete' } }; } }); } });`);
+  let requests = 0, savedPath = '';
+  const start = async () => {
+    service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'browser-output-budget', sourceDirectory,
+      workingDirectory: root, miraHome: root, spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'),
+      extensions: { entries: [{ id: 'large-output', path: modulePath }] }, synthetic: true, syntheticModel: { ...model, contextWindow: 200_000 },
+      dreaming: { enabled: false }, autoCompaction: { enabled: false }, syntheticStream: async (_model, context) => {
+        requests++;
+        if (requests === 1) return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'large-browser-call', name: 'large_output', arguments: {} }] });
+        const output = context.messages.find(message => message.role === 'toolResult' && message.toolCallId === 'large-browser-call');
+        expect(output?.role).toBe('toolResult'); if (output?.role !== 'toolResult') throw Error('Missing known result');
+        expect(output.content.reduce((bytes, block) => bytes + (block.type === 'text' ? Buffer.byteLength(block.text) : 0), 0)).toBeLessThanOrEqual(16_384);
+        expect(JSON.stringify(output.content)).not.toContain('FULL_ORIGINAL_TAIL');
+        const full = await fullOutput(output); expect(full.content[0]?.type === 'text' && full.content[0].text).toBe(largeToolText);
+        savedPath = outputPath(output);
+        if (requests === 2) {
+          const lines = (await readFile(savedPath, 'utf8')).trimEnd().split('\n').length;
+          return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'read-large-tail', name: 'read', arguments: { path: savedPath, offset: lines - 1, limit: 2 } }] });
+        }
+        if (requests === 3) {
+          const tail = context.messages.find(message => message.role === 'toolResult' && message.toolCallId === 'read-large-tail');
+          expect(JSON.stringify(tail)).toContain('FULL_ORIGINAL_TAIL');
+          return streamOf(assistant('完整结果已保留，并读取了末尾证据。'));
+        }
+        expect(requests).toBe(4);
+        return streamOf(assistant('已恢复相同原文，没有重执行工具。'));
+      } });
+    app = createLocalHttp({ backend: service, port, assetsDirectory: path.join(sourceDirectory, 'apps/web/dist') });
+    await app.listen({ port, host: '127.0.0.1' });
+  };
+  const send = async (text: string) => { await page.getByLabel('给 Mira 发消息', { exact: true }).fill(text); await page.getByRole('button', { name: '发送消息', exact: true }).click(); };
+  try {
+    await start(); await page.goto(origin); await send('读取大工具结果的末尾。');
+    await expect(page.getByText('完整结果已保留，并读取了末尾证据。', { exact: true })).toBeVisible();
+    await expect.poll(async () => (await service!.status()).state).toBe('idle');
+    expect(await readFile(counter, 'utf8')).toBe('once\n');
+    const saved = (await db.admin.query("SELECT outcome FROM tool_executions WHERE call_id='large-browser-call'")).rows[0].outcome;
+    expect(saved.payload.content[0].text).toBe(largeToolText);
+    await page.screenshot({ path: testInfo.outputPath('tool-output-complete-desktop.png'), fullPage: true });
+    await app!.close(); app = undefined; await service!.close(); service = undefined;
+    await rm(savedPath); await start(); await page.reload(); await send('核对刚才的原文仍可读取。');
+    await expect(page.getByText('已恢复相同原文，没有重执行工具。', { exact: true })).toBeVisible();
+    await expect.poll(async () => (await service!.status()).state).toBe('idle');
+    expect(await readFile(counter, 'utf8')).toBe('once\n');
+    expect((await db.admin.query("SELECT outcome FROM tool_executions WHERE call_id='large-browser-call'")).rows[0].outcome).toEqual(saved);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: testInfo.outputPath('tool-output-recovered-mobile.png'), fullPage: true });
+  } finally { if (app) await app.close(); if (service) await service.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});

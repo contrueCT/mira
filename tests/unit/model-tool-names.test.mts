@@ -115,7 +115,7 @@ for (const api of ['openai-completions', 'openai-responses', 'anthropic-messages
     const allCalls = [...firstCalls, ...nextCalls];
     const runtimeId = (id: string) => api === 'openai-responses' ? `${id}|fc_${id}` : id;
     const history = createHistoryTools({ miraId: writer.miraId,
-      page: async () => ({ hits: [], nextCursor: null }),
+      page: async () => ({ hits: [], nextCursor: null }), readText: async () => null,
       search: async request => {
         historyRequests.push(request);
         return { query: request.query, mode: request.mode ?? 'full_text', fullTextPrefixChars: 65536, hits: [], hasMore: false };

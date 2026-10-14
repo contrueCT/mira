@@ -49,7 +49,8 @@
     "tests/unit/subagents.test.mts",
     "tests/unit/child-management.test.mts",
     "tests/unit/task-compaction-activity.test.mts",
-    "tests/unit/reasoning-settings.test.mts"
+    "tests/unit/reasoning-settings.test.mts",
+    "tests/unit/tool-output.test.mts"
   ],
   "exclude": [
     "node_modules",

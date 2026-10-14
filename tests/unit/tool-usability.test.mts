@@ -40,7 +40,7 @@ test('tool CLI exposes live declarations, bounded history results and production
     assert.deepEqual(list.tools.map((tool: { name: string }) => tool.name), ['history_search', 'history_read', 'extension_inspect', 'extension_stage', 'extension_manage']);
     assert.match(list.historyBackend, /not PostgreSQL/);
     const readSchema = list.tools.find((tool: { name: string }) => tool.name === 'history_read').parameters;
-    assert.deepEqual(Object.keys(readSchema.properties).sort(), ['id', 'maxBytes']);
+    assert.deepEqual(Object.keys(readSchema.properties).sort(), ['id', 'maxBytes', 'offset', 'revision']);
     assert.deepEqual(readSchema.required, ['id']);
     assert.equal(readSchema.additionalProperties, false);
     assert.match(fixtureHistoryIds.requirement, new RegExp(readSchema.properties.id.pattern));

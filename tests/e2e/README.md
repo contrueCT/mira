@@ -26,3 +26,10 @@ sibling tool. The next Wake consumes reminder and child result together, and
 service restart repeats neither effects nor receipts. Main Memory stays intact
 and child transcripts never create main Memory checkpoints. Only provider output
 is synthetic; desktop/narrow screenshots live in `test-results/agent-capabilities-real/`.
+
+The capabilities gate also tests oversized extension output through the actual
+runtime text budget, complete persisted outcome and ordinary `read` line pages.
+After a service restart it reconstructs a deleted disposable spool file from PG
+without executing the extension again. Desktop/narrow screenshots use the same
+`test-results/agent-capabilities-real/` directory. This does not replace the
+fresh-process PG crash tests or establish live-provider behavior.

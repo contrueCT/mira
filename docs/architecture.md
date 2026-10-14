@@ -115,3 +115,7 @@ Extension SDK 绑定持久安装身份，扩展负责时区、DST、提醒内容
 ## 运行中用户插话
 
 [ADR 0024](adr/0024-live-user-input.md) 增加可选 LiveInputWriter：普通 Web 用户输入先持久保存、按顺序追加到活动 Wake，原始输入冻结。生成中的模型请求让出；当前单工具完成后新输入先入模型，旧批次未启动工具如实收束为 not-started。final 与新输入在同一 fenced 事务仲裁。没有暂停按钮、关键词判定或未知操作重放。
+
+## 工具输出与完整证据
+
+[ADR 0028](adr/0028-tool-output-budget.md) 将所有工具模型投影的文字统一限制为16KiB，包含明确的部分预览提示与完整普通文件引用。原始outcome和transcript先完整保存，附件和非文本元数据保留；恢复与压缩使用同一投影，文件可由数据库重建且不重放工具。巨型单行结果采用普通read可分页的JSONL无损分块，History超过1MiB则可通过同一history_read的offset/revision文本分页读取，不增加状态引擎或表。

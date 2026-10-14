@@ -10,7 +10,7 @@ type GuidanceSchema = { description?: string; properties?: Record<string, Guidan
 
 const history = createHistoryTools({ miraId: 'synthetic-guidance',
   search: async request => ({ query: request.query, mode: request.mode ?? 'full_text', fullTextPrefixChars: 65536, hits: [], hasMore: false }),
-  read: async () => null, page: async () => ({ hits: [], nextCursor: null }),
+  readText: async () => null, read: async () => null, page: async () => ({ hits: [], nextCursor: null }),
 });
 
 test('production search guidance explains all selectors, defaults, empty results and non-pagination', () => {

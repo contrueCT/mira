@@ -26,6 +26,7 @@ export { thinkingLevels, defaultThinkingLevel, parseThinkingLevel, resolveThinki
 export type { ThinkingLevel } from './reasoning.ts';
 
 import { contextBudget, estimateRequestTokens, type AutoCompactionOptions } from './budget.ts';
+import { projectToolOutputs } from './tool-output.ts';
 export type { AutoCompactionOptions } from './budget.ts';
 /** Content-free observations at actual dispatch and durable completion boundaries. */
 export interface PiRuntimeActivity {
@@ -50,8 +51,8 @@ export interface PiRuntimeOptions {
   tools?: AgentTool[];
   /** Resolves only immutable, validated references at the model request boundary. */
   resolveAttachment?: ResolveAttachment;
-  /** Existing immutable ordinary-file spool writer. Required for attachment
-   * compaction; stores only current source refs and the previous index pointer. */
+  /** Existing immutable ordinary-file spool writer. Required for oversized tool
+   * output projections and attachment compaction. Full outcomes stay durable. */
   writeOverflowInput?: WriteOverflowInput;
   /** Complete registry, prepared before the first request and after each settled
    * tool batch that naturally continues. Replaces tools when provided. The source
@@ -272,7 +273,9 @@ export class PiDurableRuntime implements CognitionRuntime {
       await append(observationEntry(incomplete, entries.at(-1)?.id ?? null));
       operations.push(...incomplete);
     }
-    const projectionEntries = projectMiraPrompt(sanitizeEntries(entries, operations));
+    const projectionEntries = await projectToolOutputs(projectMiraPrompt(sanitizeEntries(entries, operations)),
+      this.options.writer.miraId, this.options.writeOverflowInput, this.controller.signal);
+    await this.verified();
     const projection = buildSessionProjection(projectionEntries);
     const observedAssistantIds = new Set(operations.map(operation => operation.assistantRecordId));
     // Pi's public converter preserves empty assistants, and injected streams need
@@ -674,7 +677,7 @@ export class PiDurableRuntime implements CognitionRuntime {
             attemptGate();
             let saved: ToolResultMessage;
             try {
-              saved = jsonValue({ role: 'toolResult', toolCallId: context.toolCall.id, toolName: context.toolCall.name,
+              saved = jsonValue({ ...context.result, role: 'toolResult', toolCallId: context.toolCall.id, toolName: context.toolCall.name,
                 content: context.result.content ?? [], details: context.result.details, usage: context.result.usage,
                 isError: context.isError, timestamp: Date.now() }) as unknown as ToolResultMessage;
               validateMessage(saved);
@@ -871,7 +874,9 @@ export class PiDurableRuntime implements CognitionRuntime {
       // snapshot and its rendered system are one checkpoint/one fenced CAS append.
       if (memory !== null) Object.assign(checkpoint, refreshMiraMemory(checkpoint.systemMessage, before.entries, memory, memoryConfigured(before.entries) || config!.loadMemory !== undefined));
       const candidateEntries = [...before.entries, checkpoint];
-      const messages = withRecoveryAdvisory(buildSessionProjection(projectMiraPrompt(sanitizeEntries(candidateEntries, before.recovery.operations))).messages,
+      const candidateProjection = await projectToolOutputs(projectMiraPrompt(sanitizeEntries(candidateEntries, before.recovery.operations)),
+        this.options.writer.miraId, this.options.writeOverflowInput, this.controller.signal);
+      const messages = withRecoveryAdvisory(buildSessionProjection(candidateProjection).messages,
         before.recovery.operations, Date.parse(checkpoint.timestamp));
       validateProjection(messages);
       const afterTokens = estimateRequestTokens(messages, tools, this.options.model);

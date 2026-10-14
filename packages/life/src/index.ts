@@ -77,7 +77,7 @@ export type { DurableFailureCategory } from './durable-errors.ts';
 export type { WakeLoopOptions } from './loop.ts';
 export type { MemoryCheckpoint, MemoryCheckpointState, MemoryCheckpointWriter, MemorySnapshotReceipt } from './memory-lifecycle.ts';
 export { HistoryError } from './history.ts';
-export type { HistoryKind, HistorySearchMode, HistoryReference, HistoryMetadata, HistorySearchRequest, HistoryHit, HistorySearchResult, HistoryPageCursor, HistoryPageRequest, HistoryPageHit, HistoryPageResult, HistoryReadRequest, HistoryEvent, HistoryContext, HistoryTool, HistoryWake, HistoryEntry, HistoryReader, HistoryEventRun, HistoryRunPageRequest, HistoryRunPage, HistoryRunHeader, HistoryRunRequestsPage, RunHistoryReader } from './history.ts';
+export type { HistoryKind, HistorySearchMode, HistoryReference, HistoryMetadata, HistorySearchRequest, HistoryHit, HistorySearchResult, HistoryPageCursor, HistoryPageRequest, HistoryPageHit, HistoryPageResult, HistoryReadRequest, HistoryTextRequest, HistoryTextPage, HistoryEvent, HistoryContext, HistoryTool, HistoryWake, HistoryEntry, HistoryReader, HistoryEventRun, HistoryRunPageRequest, HistoryRunPage, HistoryRunHeader, HistoryRunRequestsPage, RunHistoryReader } from './history.ts';
 export type { DreamingRequest, DreamingRequestResult, DreamingWriter } from './dreaming.ts';
 export type { ScheduledDeliveryInput, ScheduledDelivery, ScheduledMutation, SchedulingWriter } from './scheduling.ts';
 export type { LiveInputWriter, LiveWakeInput } from './live-input.ts';

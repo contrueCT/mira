@@ -486,3 +486,33 @@ independent from whether its summary checkpoint committed.
 ## Configured reasoning
 
 `PiRuntimeOptions.thinkingLevel` defaults to `medium` and is adapted through Pi 1.0.2 public model capabilities before being explicitly installed in `Agent.initialState`. Non-reasoning models use `off`. Summary hooks independently select the lowest supported level, normally `off`, rather than inheriting conversation effort. This applies to the same runtime used by main, child and Dreaming; there is no model-selected escalation or extra request. See [ADR 0027](../../docs/adr/0027-configured-reasoning-levels.md).
+
+## Unified tool-result text budget
+
+All tool paths use a 16,384 UTF-8 byte budget per result's combined model-facing
+text, including its explicit partial-preview/reference notice. Full normalized
+outcomes and exact transcript JSON are still persisted first, including all defined
+opaque fields, images, attachment metadata, `structuredContent` and `terminate`.
+`normalizeToolResult` remains a shape validator, not a truncator. The existing
+Pi bash truncation/full-file behavior is unchanged.
+
+Oversized active results require `writeOverflowInput`. The complete canonical
+result JSON is encoded as small ordered JSONL string chunks in an existing
+immutable ordinary-file spool; join decoded `text` values after the header to
+reconstruct the exact original. This also makes giant single-line results readable
+with normal `read` line pagination. The notice supplies the path, file size,
+original History UUID and initial `offset=1, limit=3` guidance. No special reader,
+new database table or replacement state store is added.
+
+Recovery validates/repairs the full durable evidence before deriving the bounded
+projection. Missing spool files are reconstructed, conflicts fail without overwrite,
+and spool failure never fabricates an unknown effect or replays a known one.
+Compaction and candidate budget checks use the same projection; originals stay
+unchanged in History. Non-text content keeps the existing media rules. Aggregate
+request budgets still apply separately. See [ADR 0028](../../docs/adr/0028-tool-output-budget.md).
+
+`history_read({id,offset:0})` opts into bounded JSON-text pages, including originals
+above 1 MiB. Copy `nextOffset` and the first-page `revision`; concatenate page text
+in order. Offsets count Unicode code points. Paged `maxBytes` defaults to 4096,
+range 4..65536; omission of `offset` keeps the original complete-read behavior.
+A source revision change requires restarting at zero, never joining stale pages.
