@@ -53,10 +53,5 @@
     "tests/unit/reasoning-settings.test.mts",
     "tests/unit/tool-output.test.mts",
     "tests/unit/tool-output-wire.test.mts",
-    "tests/unit/web-auth.test.mts"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist"
-  ]
-}
+    "tests/unit/web-auth.test.mts",
+    "tests/unit/terminals.test.mts"

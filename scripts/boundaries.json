@@ -16,7 +16,8 @@
       "@earendil-works/pi-ai",
       "@earendil-works/pi-coding-agent",
       "fastify",
-      "@fastify/static"
+      "@fastify/static",
+      "node-pty"
     ]
   },
   "@mira/web": {

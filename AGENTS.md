@@ -34,6 +34,7 @@
 - [ADR 0027](docs/adr/0027-configured-reasoning-levels.md)：模型设置的默认推理偏好为 medium，Pi 能力适配后显式传入 main/child/Dreaming；压缩独立最低支持档，总输出 cap 不扩大，不提供模型自行升档工具。
 
 - [ADR 0028](docs/adr/0028-tool-output-budget.md)：工具完整结果先持久化，模型投影统一16KiB文字预算与普通文件完整引用；恢复/压缩同边界、未知结果不重放，History原文超过1MiB可按revision绑定的文本页读取。
+- [ADR 0032](docs/adr/0032-persistent-terminal-processes.md)：service-scoped terminal exec/write/close，显式PTY保留shell状态，跨轮次不跨服务重启；main/child句柄隔离、普通spool日志、无重放与新UI。node-pty通过显式 `pnpm terminal:prepare` 准备，依赖脚本仍关闭。
 - 实际允许依赖和出口以 `scripts/boundaries.json` 与各包 `package.json` 为准；新增时最小开放
 
 ## 按需指引
@@ -61,6 +62,7 @@
 
 ```sh
 pnpm install --frozen-lockfile --ignore-scripts
+pnpm terminal:prepare
 pnpm check
 ```
 

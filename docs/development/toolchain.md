@@ -19,6 +19,7 @@ pnpm 12 当前采用原生可执行文件；本环境中依赖安装的 operatio
 
 ```sh
 pnpm install --frozen-lockfile --ignore-scripts
+pnpm terminal:prepare
 pnpm check
 ```
 
@@ -74,3 +75,17 @@ children use `--expose-internals`. All three projects run under `pnpm typecheck`
 ## 本地 Web 工具链
 
 React/ReactDOM/对应类型 19.3.0、Vite 8.3.3、Fastify 5.12.5、@fastify/static 10.1.5、Playwright 1.63.0，见 ADR 0009。Web 配置 `tsconfig.web.json` 保持 strict 和声明检查，E2E 消费 Pi 后端沿用 `tsconfig.pi.json` 的既有声明例外。`pnpm test` 同时运行前端状态测试，CI 单独安装官方 Chromium 并执行 `pnpm test:e2e`，产物均为合成测试截图。依赖安装脚本仍禁用。
+
+## Managed terminal native setup
+
+After the script-disabled install, run `pnpm terminal:prepare` for terminal PTYs.
+The explicit helper only prepares Microsoft `node-pty` 1.1.0 (MIT), pinned in the
+server manifest/lockfile. Linux builds its native addon with pinned development
+`node-gyp` 11.4.2, Python 3, make and a C++ compiler; Node headers are downloaded
+by node-gyp into `node_modules/.cache/node-gyp`. Mac uses the upstream bundled
+arm64/x64 addon and sets its packaged spawn-helper executable bit (upstream #919).
+No dependency lifecycle scripts are enabled and no toolchain is installed by Mira.
+An unavailable native module produces an explicit PTY setup error; ordinary pipe
+execution and the existing synchronous Pi bash tool do not require a native addon.
+CI executes actual pipe/PTY/lifecycle tests on Linux and macOS. Windows is outside
+this first terminal implementation.

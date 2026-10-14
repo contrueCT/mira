@@ -68,6 +68,7 @@ Dreaming 在本地 Web 配置 Memory 时默认启用：有新的显式用户/扩
 git clone https://github.com/contrueCT/mira.git
 cd mira
 pnpm install --frozen-lockfile --ignore-scripts
+pnpm terminal:prepare
 
 # 已按指南创建数据库并设置数据库认证后，正常启动（不是模拟模式）
 MIRA_DATABASE_URL=postgres://mira@127.0.0.1:5432/mira pnpm start

@@ -19,6 +19,7 @@
     "@mira/extension-host": "workspace:*",
     "fastify": "5.12.5",
     "@fastify/static": "10.1.5",
-    "@mira/external-sdk": "workspace:*"
+    "@mira/external-sdk": "workspace:*",
+    "node-pty": "1.1.0"
   }
 }

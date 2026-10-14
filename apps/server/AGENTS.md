@@ -42,3 +42,4 @@
 - ADR 0027：configuration.defaultThinkingLevel 只保存用户默认偏好；transport.thinkingLevel 是 Pi 能力适配后的 runtime 注入值。主/child/Dreaming 同路；压缩独立最低档，不在 streamFn 隐式填会话默认，Anthropic 思考与答案共同受原输出 cap 限制。
 
 - ADR 0033：web-auth.ts 管理独立网页密码 hash 与短期 cookie；External SDK 继续实际 loopback 地址+Host 限制，不跟随 Web 暴露。
+- ADR 0032：`terminals.ts` service级registry、`terminal-process.mts`随主进程IPC生命周期监督；工具闭包按stream绑定owner，不给模型owner参数。普通bash不变，关闭服务须清理终端；取消等待不等于杀进程，异常不重放。

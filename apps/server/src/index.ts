@@ -1,3 +1,5 @@
+import { TerminalManager, createTerminalTools } from './terminals.ts';
+export { TerminalManager, createTerminalTools, terminalLimits } from './terminals.ts';
 import { extensionScheduling } from './scheduling.ts';
 import { ExtensionHost, type LocalExtensionEntry, type RegisteredContextProvider } from '@mira/extension-host';
 import { extensionManagementTools, extensionReceiver, extensionTools } from './extensions.ts';
@@ -59,6 +61,7 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
   const writer = await persistence.acquire(options.miraId);
   let modelCalls = 0;
   let extensions: ExtensionHost | undefined;
+  let terminals: TerminalManager | undefined;
   const stream: StreamFn = (model, context, streamOptions) => {
     modelCalls++;
     if (options.streamFn) return options.streamFn(model, context, streamOptions);
@@ -75,7 +78,11 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
     const roots = options.memory ? await setupMemoryWorkspace({ memoryRoot: options.memory.memoryRoot, sourceDirectory: options.sourceDirectory }) : undefined;
     const loadSkills = createSkillLoader({ sourceDirectory: options.sourceDirectory, ...(options.miraHome === undefined ? {} : { miraHome: options.miraHome }) });
     for (const { event, wake } of options.events) await writer.receive(event, wake);
-    const baseTools = [...createWorkspaceTools(workingDirectory), ...createHistoryTools(persistence.history(writer.miraId))];
+    const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content });
+    terminals = new TerminalManager({ cwd: workingDirectory, writeOverflowInput });
+    const terminalManager = terminals;
+    writer.signal.addEventListener('abort', () => { void terminalManager.close(); }, { once: true });
+    const baseTools = [...createWorkspaceTools(workingDirectory), ...createTerminalTools(terminals, writer.miraId), ...createHistoryTools(persistence.history(writer.miraId))];
     if (options.extensions) {
       extensions = new ExtensionHost({ ...options.extensions, schedules: extensionScheduling(writer), reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage'], receive: extensionReceiver(writer) });
       await extensions.start();
@@ -83,7 +90,6 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
     }
     const host = extensions;
     const managementTools = host ? extensionManagementTools(host, () => writer.listScheduledDeliveries()) : [];
-    const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content });
     const loop = new WakeLoop({
       writer,
       writeOverflowInput,
@@ -110,7 +116,7 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
     });
     const completedRuns = await loop.drain();
     return { completedRuns, modelCalls, miraId: writer.miraId, version: (await writer.load()).version };
-  } finally { try { await extensions?.close(); } finally { await writer.close(); } }
+  } finally { try { await terminals?.close(); } finally { try { await extensions?.close(); } finally { await writer.close(); } } }
 }
 
 

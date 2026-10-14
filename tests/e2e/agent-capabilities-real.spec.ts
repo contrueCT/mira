@@ -460,3 +460,48 @@ test('real browser observes request retry through PG and the credential-bound SD
     expect((await db.admin.query('SELECT envelope FROM context_records ORDER BY version')).rows).toEqual(records);
   } finally { firstResponse.resolve(); finalResponse.resolve(); await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test('terminal process spans browser messages and restart invalidates its handle without replay or terminal UI', async ({ page }, testInfo) => {
+  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-terminal-browser-');
+  let service: LocalWebService | undefined, app: ReturnType<typeof createLocalHttp> | undefined;
+  let calls = 0; let sessionId = ''; let offset = 0; const effect = path.join(root, 'effect');
+  const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'terminal-browser', sourceDirectory,
+    workingDirectory: root, miraHome: root, spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'),
+    synthetic: true, dreaming: { enabled: false }, autoCompaction: { enabled: false } };
+  const start = async () => {
+    service = await LocalWebService.open({ ...options, syntheticStream: async (_model, context) => {
+      calls++;
+      if (calls === 1) return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'browser-terminal-start', name: 'exec_command',
+        arguments: { command: `printf once >> ${JSON.stringify(effect)}; printf READY; read line; printf "REPLY:%s" "$line"; read finish`, yield_ms: 1000 } }] });
+      if (calls === 3 || calls === 5) return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: `browser-terminal-${calls}`, name: 'write_stdin',
+        arguments: { session_id: sessionId, offset, ...(calls === 3 ? { chars: 'hello\n' } : {}), yield_ms: 1000 } }] });
+      const last = context.messages.findLast(message => message.role === 'toolResult'); expect(last?.role).toBe('toolResult');
+      if (last?.role !== 'toolResult') throw Error('Missing terminal evidence');
+      const result = JSON.parse(last.content.filter(block => block.type === 'text').map(block => block.text).join('\n'));
+      sessionId = result.session_id; offset = result.next_offset;
+      if (calls === 2) { expect(result.status).toBe('running'); expect(result.output).toBe('READY'); return streamOf(assistant('终端仍在运行，等待下一条输入。')); }
+      if (calls === 4) { expect(result.output).toBe('REPLY:hello'); return streamOf(assistant('同一终端收到了 hello。')); }
+      expect(calls).toBe(6); expect(result.status).toBe('unavailable'); return streamOf(assistant('服务重启后旧终端已不可用，没有重放命令。'));
+    } });
+    app = createLocalHttp({ backend: service, port, assetsDirectory: path.join(sourceDirectory, 'apps/web/dist') });
+    await app.listen({ port, host: '127.0.0.1' });
+  };
+  const send = async (text: string) => { await page.getByLabel('给 Mira 发消息', { exact: true }).fill(text); await page.getByRole('button', { name: '发送消息', exact: true }).click(); };
+  try {
+    await start(); await page.goto(origin); await send('启动等待输入的终端。');
+    await expect(page.getByText('终端仍在运行，等待下一条输入。', { exact: true })).toBeVisible();
+    await send('给刚才的终端发送 hello。'); await expect(page.getByText('同一终端收到了 hello。', { exact: true })).toBeVisible();
+    expect(await readFile(effect, 'utf8')).toBe('once'); await expectConversationOnly(page);
+    await expect(page.locator('.mira-app')).not.toContainText('session_id');
+    await app!.close(); app = undefined; await service!.close(); service = undefined;
+    await start(); await page.reload(); expect(calls).toBe(4);
+    await send('检查旧终端，不要重新运行命令。');
+    await expect(page.getByText('服务重启后旧终端已不可用，没有重放命令。', { exact: true })).toBeVisible();
+    expect(await readFile(effect, 'utf8')).toBe('once');
+    expect((await db.admin.query('SELECT count(*)::int AS n FROM tool_executions')).rows[0].n).toBe(3);
+    await expectConversationOnly(page);
+    await page.screenshot({ path: testInfo.outputPath('terminal-conversation-desktop.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: testInfo.outputPath('terminal-conversation-mobile.png'), fullPage: true });
+  } finally { await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
