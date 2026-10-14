@@ -1,6 +1,7 @@
 import { formatContextProviders, type ContextProviderSample } from './context-providers.ts';
 export type { ContextProviderSample } from './context-providers.ts';
 import { isDeepStrictEqual } from 'node:util';
+import { randomUUID } from 'node:crypto';
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type AgentToolCall, type StreamFn } from '@earendil-works/pi-agent-core';
 import { getCurrentSystemMessage, getSystemMessageText, isContextOverflow, type Api, type Model, type ToolResultMessage } from '@earendil-works/pi-ai';
 import { buildSessionProjection, convertToLlm, formatSkillsForPrompt, type SessionEntry, type Skill } from '@earendil-works/pi-coding-agent';
@@ -26,6 +27,8 @@ export type { AutoCompactionOptions } from './budget.ts';
 export interface PiRuntimeActivity {
   kind: 'model' | 'tool'; phase: 'started' | 'finished'; occurredAt: string;
   name: string; callId: string | null;
+  /** Internal planned checkpoint identity, only for context-compaction activity. */
+  checkpointId?: string;
   status: 'completed' | 'failed' | 'interrupted' | 'succeeded' | 'unknown' | null;
 }
 export interface PiRuntimeOptions {
@@ -832,18 +835,17 @@ export class PiDurableRuntime implements CognitionRuntime {
     const priorAttachmentIndex = checkpointAttachmentIndex(priorCheckpoint);
     if ((attachmentSources.size || priorAttachmentIndex) && !this.options.writeOverflowInput) throw new Error('Attachment compaction requires the existing ordinary-file spool writer');
     let summaryStarted = false;
-    let checkpointId: string | undefined;
+    const checkpointId = randomUUID();
     let published = false;
     try {
       const checkpoint = await compactSnapshot(this.options.writer.miraId, before.projectionEntries, this.options.model,
         async (model, context, streamOptions) => {
           await this.verified();
+          await this.options.onActivity?.({ kind: 'model', phase: 'started', name: 'context-compaction', callId: null, checkpointId, status: null, occurredAt: new Date().toISOString() });
           summaryStarted = true;
-          await this.options.onActivity?.({ kind: 'model', phase: 'started', name: 'context-compaction', callId: null, status: null, occurredAt: new Date().toISOString() });
           await this.verified();
           return this.options.streamFn(model, context, streamOptions);
-        }, { keepRecentTokens: budget.keepRecentTokens, reserveTokens: budget.reserveTokens, ...options, signal: this.controller.signal }, before.recovery.operations, { ...(this.options.compactionScope ? { scope: this.options.compactionScope } : {}), personaContext, memorySnapshot: memory });
-      checkpointId = checkpoint.id;
+        }, { keepRecentTokens: budget.keepRecentTokens, reserveTokens: budget.reserveTokens, ...options, signal: this.controller.signal }, before.recovery.operations, { ...(this.options.compactionScope ? { scope: this.options.compactionScope } : {}), personaContext, memorySnapshot: memory }, checkpointId);
       if (attachmentSources.size || priorAttachmentIndex) {
         const sources = [...attachmentSources].map(([historyId, entry]) => {
           const overflowInput = entry.type === 'message' ? messageOverflowInput(entry.message) : undefined;
@@ -876,11 +878,16 @@ export class PiDurableRuntime implements CognitionRuntime {
       published = true;
       return await this.recoverInternal();
     } finally {
-      if (summaryStarted && this.options.onActivity && !this.options.writer.signal.aborted) {
-        // An append may commit before cancellation or a lost response. Query the
-        // durable checkpoint before labelling a completed summary interrupted.
-        const committed = published || (checkpointId !== undefined && (await this.options.writer.load()).records.some(record => record.id === checkpointId));
-        await this.options.onActivity({ kind: 'model', phase: 'finished', name: 'context-compaction', callId: null,
+      if (summaryStarted && this.options.onActivity) {
+        // A lost COMMIT response permanently stops the child writer. Still send
+        // the exact planned identity: the parent observer can independently
+        // confirm it, including after cancellation has closed the turn.
+        let committed = published;
+        if (!committed && !this.options.writer.signal.aborted) {
+          try { committed = (await this.options.writer.load()).records.some(record => record.id === checkpointId); }
+          catch (error) { if (!this.options.writer.signal.aborted) throw error; }
+        }
+        await this.options.onActivity({ kind: 'model', phase: 'finished', name: 'context-compaction', callId: null, checkpointId,
           status: committed ? 'completed' : this.controller.signal.aborted ? 'interrupted' : 'failed', occurredAt: new Date().toISOString() });
       }
     }

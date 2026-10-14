@@ -9,7 +9,7 @@ const runId = '11111111-1111-4111-8111-111111111111';
 const id = '22222222-2222-4222-8222-222222222222';
 const at = '2026-10-14T00:00:00.000Z';
 const activity = { sequence: 1, occurredAt: at, source: 'worker' as const, kind: 'progress' as const, phase: 'reported' as const,
-  name: null, toolHistoryId: 'PRIVATE_HISTORY_ID', status: null, text: 'Read two files' };
+  name: null, toolHistoryId: 'PRIVATE_HISTORY_ID', checkpointId: 'PRIVATE_CHECKPOINT_ID', status: null, text: 'Read two files' };
 const child: SubagentRecord = { id, streamId: 'PRIVATE_STREAM', spawnCallId: 'PRIVATE_SPAWN', createdAt: at,
   spec: { task: 'PRIVATE_ASSIGNMENT', title: 'Inspect files', fork: { mode: 'none', parentVersion: 0, parentHead: null, text: '', bytes: 0 }, model: { provider: 'test', id: 'test', api: 'test', configurationHash: '0'.repeat(64) } },
   turnCount: 1, turns: [{ id, childId: id, callId: 'PRIVATE_CALL_ID', sequence: 1, instruction: 'PRIVATE_INSTRUCTION', status: 'completed', createdAt: at, startedAt: at, finishedAt: at,

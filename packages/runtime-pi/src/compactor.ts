@@ -42,7 +42,7 @@ function compactionResources(handler: (event: SessionBeforeCompactEvent) => Prom
  * network are used. Only the supplied stream can produce a summary. */
 export async function compactSnapshot(
   miraId: string, entries: SessionEntry[], model: Model<Api>, streamFn: StreamFn,
-  options: CompactionOptions = {}, recoveryOperations: RecoveryOperation[] = [], references: CompactionReferences = { personaContext: null, memorySnapshot: null },
+  options: CompactionOptions = {}, recoveryOperations: RecoveryOperation[] = [], references: CompactionReferences = { personaContext: null, memorySnapshot: null }, checkpointId: string = randomUUID(),
 ): Promise<CompactionEntry> {
   options.signal?.throwIfAborted();
   for (const value of [options.reserveTokens ?? 512, options.keepRecentTokens ?? 1024]) if (!Number.isSafeInteger(value) || value < 1) throw new Error('Invalid compaction token setting');
@@ -113,9 +113,9 @@ export async function compactSnapshot(
     if (!candidate || candidate.type !== 'compaction' || manager.getEntries().length !== entries.length + 1) throw new Error('SDK did not produce one checkpoint');
     if (JSON.stringify(candidate).includes(isolatedProvider)) throw new Error('Compaction checkpoint contains disposable provider identity');
     // Pi allocates short session-local IDs. Only this newly created candidate
-    // receives a History UUID; all parent/first-kept references still address
+    // receives the planned History UUID; all parent/first-kept references still address
     // the untouched durable entries supplied above. The manager is disposable.
-    return { ...structuredClone(candidate), id: randomUUID() };
+    return { ...structuredClone(candidate), id: checkpointId };
   } finally {
     options.signal?.removeEventListener('abort', abort);
     session.dispose();

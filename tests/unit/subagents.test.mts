@@ -611,6 +611,8 @@ test('long child followups compact their own transcript with task-only instructi
     await summarizing.promise;
     assert.equal(f.parent.children[0]!.turns.at(-1)!.activity.current?.name, 'context-compaction');
     assert.equal(f.parent.children[0]!.turns.at(-1)!.activity.current?.phase, 'started');
+    assert.ok(f.parent.children[0]!.turns.at(-1)!.activity.current?.checkpointId);
+    assert.doesNotMatch(JSON.stringify(await f.manager.status(childId)), /checkpointId|toolHistoryId/);
     const currentCount = f.parent.children[0]!.turns.length;
     await f.manager.send('compact-queued', childId, 'QUEUED_DURING_SUMMARY: inspect the new evidence only', t);
     assert.equal(f.parent.children[0]!.turns.at(-1)!.status, 'queued');
@@ -618,6 +620,7 @@ test('long child followups compact their own transcript with task-only instructi
     await until(() => f.parent.children[0]!.turns.every(turn => turn.status === 'completed'));
     assert.equal(f.parent.children[0]!.turns.length, currentCount + 1);
     assert.ok(f.parent.children[0]!.turns.flatMap(turn => turn.activity.events).some(event => event.name === 'context-compaction' && event.phase === 'finished' && event.status === 'completed'));
+    assert.doesNotMatch(JSON.stringify(await f.manager.status(childId)), /checkpointId|toolHistoryId/);
     assert.match(seen.at(-1)!, /QUEUED_DURING_SUMMARY/);
     assert.match(seen.at(-1)!, /TASK_SUMMARY/);
     const childWriter = [...f.writers.values()][0]!;

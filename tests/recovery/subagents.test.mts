@@ -9,6 +9,7 @@ import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { PiDurableRuntime, encodeEntry, messageEntry, jsonValue } from '@mira/runtime-pi';
 import { SubagentManager, createSubagentTools } from '../../apps/server/src/subagents.ts';
 import { LocalWebService } from '@mira/server';
+import { writeWakeInput } from '@mira/workspace';
 import { createTestDatabase } from '../integration/database.mts';
 import { assistant, streamOf, model, input, deferred, seed, effectTool, result } from './fixtures.mts';
 
@@ -264,7 +265,8 @@ test('PostgreSQL pre-input child interruption retains original assignment and fr
 });
 
 test('child auto-compaction checkpoints survive PostgreSQL restart without main Memory or Dreaming state', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); let manager: SubagentManager | undefined;
+  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-subagent-compaction-'); let manager: SubagentManager | undefined;
+  const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: root, sourceDirectory: process.cwd(), runId, content });
   try {
     let writer = await db.acquire('compact-parent'); await writer.initializeDreaming();
     const beforeDreaming = (await db.admin.query("SELECT checkpoint_version, consumed_receipt_order, last_triggered_at FROM dreaming_progress WHERE mira_id='compact-parent'")).rows;
@@ -281,11 +283,11 @@ test('child auto-compaction checkpoints survive PostgreSQL restart without main 
       return streamOf(assistant(`step-${calls}: ${'bounded research evidence '.repeat(60)}`));
     }) as StreamFn };
     const makeManager = () => new SubagentManager({ writer, acquire: id => db.acquire(id), tools: () => [],
-      writeOverflowInput: async () => { throw Error('Unexpected overflow'); }, onCompletion: () => {}, onFailure: error => failures.push(error) });
+      writeOverflowInput, onCompletion: () => {}, onFailure: error => failures.push(error) });
     manager = makeManager(); await manager.initialize();
     const parentCall = async (callId: string, name: string, args: Record<string, string>) => {
       let requested = false;
-      const runtime = new PiDurableRuntime({ writer, model: { ...model, contextWindow: 1_000_000 }, autoCompaction: { enabled: false },
+      const runtime = new PiDurableRuntime({ writer, writeOverflowInput, model: { ...model, contextWindow: 1_000_000 }, autoCompaction: { enabled: false },
         tools: createSubagentTools(manager!, transport), streamFn: () => {
           if (requested) return streamOf(assistant('Delegation recorded'));
           requested = true;
@@ -320,5 +322,5 @@ test('child auto-compaction checkpoints survive PostgreSQL restart without main 
     const after = (await db.admin.query('SELECT envelope FROM context_records WHERE mira_id=$1 ORDER BY version', [child.streamId])).rows;
     assert.deepEqual(after.slice(0, records.length), records);
     assert.equal((await writer.load()).records.filter(record => record.kind === 'checkpoint').length, 0); assert.deepEqual(failures, []);
-  } finally { await manager?.close(); await db.close(); }
+  } finally { await manager?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });

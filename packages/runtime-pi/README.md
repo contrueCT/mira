@@ -476,3 +476,9 @@ never enter main-stream Dreaming counts. See [ADR 0030](../../docs/adr/0030-task
 Compaction emits the same awaited content-free model activity with the fixed
 `context-compaction` name, starting at actual summary dispatch and finishing
 after authoritative checkpoint confirmation, including cancellation/append ambiguity.
+It allocates the candidate History UUID before dispatch and includes that internal
+`checkpointId` only on summary observations. Even a permanently stopped child writer
+emits a final observation so the parent can independently confirm the exact checkpoint;
+startup and bounded reads can also resolve a missing callback from the registered
+identity. Public child DTOs omit this link; the turn's cancellation/interruption is
+independent from whether its summary checkpoint committed.
