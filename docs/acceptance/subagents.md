@@ -31,7 +31,7 @@ These are runtime mechanics tests, not a live model quality claim or a PostgreSQ
 - Real LocalWebService parent remains available while child runs; idle parent wakes
   once, main Memory content remains unchanged, Timeline does not publish child output,
   existing run details show child state, terminal restart does not replay
-- Parent ownership loss during a child effect, interrupted restart, explicit followup
+- Parent ownership loss and SIGKILL during a child effect, interrupted restart, explicit followup
   observes unknown evidence without repeating the effect
 
 Local PostgreSQL was not executed in this environment because the task's local

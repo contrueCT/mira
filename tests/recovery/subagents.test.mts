@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
@@ -107,4 +108,36 @@ test('parent ownership loss interrupts real child effects; restart preserves unk
     await until(async () => (await writer.getSubagent(childId))?.turns[1]?.status === 'completed');
     assert.equal(observedUnknown, true); assert.equal(effectCount, 1);
   } finally { await manager?.close(); await db.close(); }
+});
+
+test('SIGKILL during a real child effect releases writer ownership; restart does not replay or erase unknown evidence', { timeout: 30_000 }, async () => {
+  const { spawn } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-subagent-kill-'); const marker = path.join(root, 'effect.txt');
+  let manager: SubagentManager | undefined;
+  const worker = spawn(process.execPath, [fileURLToPath(new URL('./subagent-process-worker.mts', import.meta.url)), db.schema, marker], {
+    stdio: ['ignore', 'ignore', 'pipe', 'ipc'], env: { PATH: process.env['PATH'], HOME: root, MIRA_TEST_DATABASE_URL: db.connectionString, NODE_OPTIONS: process.env['NODE_OPTIONS'] },
+  });
+  try {
+    await Promise.race([once(worker, 'message'), once(worker, 'exit').then(([code]) => { throw Error(`Child fixture exited prematurely (${code})`); })]);
+    assert.equal(await readFile(marker, 'utf8'), 'effect dispatched once');
+    const exit = once(worker, 'exit'); worker.kill('SIGKILL'); await exit;
+    const writer = await db.acquire('killed-parent');
+    let requests = 0;
+    manager = new SubagentManager({ writer, acquire: id => db.acquire(id), tools: () => [], writeOverflowInput: async () => { throw Error('unused'); }, onCompletion: () => {}, onFailure: () => {} });
+    await manager.initialize(); const child = (await writer.listSubagents())[0]!;
+    assert.equal(child.turns[0]!.status, 'interrupted');
+    const executions = await db.admin.query('SELECT intent,outcome FROM tool_executions WHERE mira_id=$1', [child.streamId]);
+    assert.equal(executions.rows.length, 1); assert.equal(executions.rows[0].intent.callId, 'killed-effect'); assert.equal(executions.rows[0].outcome, null);
+    const transport = { model, streamFn: ((_m, context) => {
+      requests++; if (childContext(context.messages)) { assert.match(JSON.stringify(context.messages), /outcome-unknown/); return streamOf(assistant('Unknown effect retained without replay')); }
+      if (context.messages.at(-1)?.role === 'toolResult') return streamOf(assistant('explicit followup sent'));
+      return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'after-kill-send', name: 'subagent_send', arguments: { id: child.id, message: 'Inspect unknown effect; do not repeat it' } }] });
+    }) as StreamFn };
+    assert.equal(requests, 0, 'initialize must not call a model');
+    await new PiDurableRuntime({ writer, ...transport, tools: createSubagentTools(manager, transport) }).run(input('inspect interrupted delegation'));
+    await until(async () => (await writer.getSubagent(child.id))?.turns[1]?.status === 'completed');
+    assert.equal((await db.admin.query('SELECT count(*) FROM tool_executions WHERE mira_id=$1', [child.streamId])).rows[0].count, '1');
+    assert.equal(await readFile(marker, 'utf8'), 'effect dispatched once');
+  } finally { if (worker.exitCode === null && worker.signalCode === null) worker.kill('SIGKILL'); await manager?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
