@@ -9,7 +9,7 @@ import { createHistoryTools } from '@mira/runtime-pi';
 import { FixtureHistoryReader, fixtureMiraId, fixtureHistoryIds } from '../../scripts/tool-usability-fixtures.mts';
 import type { HistoryTextPage } from '@mira/life';
 import { TOOL_OUTPUT_TEXT_BYTES } from '../../packages/runtime-pi/src/tool-output.ts';
-import { assistant, effectTool, input, model, runtime, scripted, seed, streamOf, toolCalls, MemoryWriter } from '../recovery/fixtures.mts';
+import { assistant, effectTool, input, model, runtime, scripted, seed, streamOf, toolCalls, MemoryWriter, overrideWriter } from '../recovery/fixtures.mts';
 import { fullOutput, largeToolText, outputPath, outputSpool } from '../recovery/tool-output-fixtures.mts';
 
 const textBytes = (message: ToolResultMessage) => message.content.reduce((n, block) => n + (block.type === 'text' ? Buffer.byteLength(block.text) : 0), 0);
@@ -49,6 +49,53 @@ test('actual extension result.text is bounded before the next model request; ori
     assert.equal(await readFile(savedPath, 'utf8'), originalFile);
     assert.deepEqual(fresh.messages, recovered.messages); assert.deepEqual(writer.state, before);
     assert.equal(effects, 1, 'rebuilding disposable evidence never repeats the extension');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+for (const length of [4_047, 4_050]) test(`bounded spool keys preserve readable evidence and restart for a ${length}-character Mira ID`, async () => {
+  const root = await mkdtemp('/tmp/mira-tool-output-long-id-');
+  try {
+    const writer = new MemoryWriter(), miraId = 'm'.repeat(length);
+    writer.state.miraId = miraId;
+    const boundWriter = overrideWriter(writer, { miraId });
+    const spool = outputSpool(path.join(root, 'spool')), keys = new Set<string>();
+    let effects = 0, requests = 0, savedPath = '';
+    const tools = [...createWorkspaceTools(root), effectTool(async () => { effects++; return { content: [{ type: 'text' as const, text: largeToolText }], details: {} }; })];
+    const options = { model: largeModel, tools, writeOverflowInput: async (key: string, content: string) => {
+      assert.ok(key.length <= 4_096); keys.add(key); return spool(key, content);
+    } };
+    const state = await runtime(boundWriter, async (_model, context) => {
+      requests++;
+      if (requests === 1) return streamOf(toolCalls('long-id-result'));
+      const output = context.messages.find(message => message.role === 'toolResult' && message.toolCallId === 'long-id-result');
+      assert.ok(output?.role === 'toolResult'); assert.ok(textBytes(output) <= TOOL_OUTPUT_TEXT_BYTES);
+      savedPath = outputPath(output);
+      assert.deepEqual(await fullOutput(output), writer.state.executions[0]?.outcome?.payload);
+      if (requests === 2) return streamOf({ ...toolCalls('read-long-id'), content: [{ type: 'toolCall', id: 'read-long-id', name: 'read', arguments: { path: savedPath, offset: 1, limit: 2 } }] });
+      const page = context.messages.find(message => message.role === 'toolResult' && message.toolCallId === 'read-long-id');
+      assert.ok(page?.role === 'toolResult'); assert.match(JSON.stringify(page.content), /mira-tool-result-json-chunks-v1/);
+      return streamOf(assistant('Original page read.'));
+    }, options).run(input());
+    assert.equal(requests, 3); assert.equal(effects, 1); assert.equal(keys.size, 1);
+    const entry = writer.state.records.find(record => (record.payload as { message?: { toolCallId?: string } }).message?.toolCallId === 'long-id-result');
+    assert.ok(entry);
+    const expectedKey = length === 4_047 ? `tool-output:${miraId}:${entry.id}`
+      : `tool-output-sha256:${createHash('sha256').update(JSON.stringify([miraId, entry.id])).digest('hex')}`;
+    assert.deepEqual([...keys], [expectedKey]);
+    const before = structuredClone(writer.state), originalFile = await readFile(savedPath, 'utf8');
+    await rm(savedPath);
+    const restored = await runtime(boundWriter, undefined, options).recover();
+    assert.equal(await readFile(savedPath, 'utf8'), originalFile);
+    assert.deepEqual(restored.messages, state.messages); assert.deepEqual(writer.state, before); assert.equal(effects, 1);
+    if (length === 4_050) {
+      const otherId = 'n' + miraId.slice(1), otherWriter = new MemoryWriter();
+      otherWriter.state = structuredClone(before); otherWriter.state.miraId = otherId;
+      const other = await runtime(overrideWriter(otherWriter, { miraId: otherId }), undefined, options).recover();
+      const output = other.messages.find(message => message.role === 'toolResult' && message.toolCallId === 'long-id-result');
+      assert.ok(output?.role === 'toolResult');
+      assert.notEqual(outputPath(output), savedPath, 'distinct Mira namespaces cannot alias the same History UUID');
+      assert.equal(await readFile(outputPath(output), 'utf8'), originalFile); assert.equal(keys.size, 2); assert.equal(effects, 1);
+    }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

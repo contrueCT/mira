@@ -26,6 +26,10 @@ which previously made larger records unreachable through `history_read`.
   media still follows its separate existing hydration budget.
 - Use the existing `writeOverflowInput` / `writeWakeInput` immutable ordinary-file
   spool. The stable key includes Mira and the original tool-result History UUID.
+  Keys within the spool's 4,096-character limit retain their existing spelling and
+  file paths. Longer keys, which could not previously be published, use a distinct
+  `tool-output-sha256:` namespace and the SHA-256 of the JSON-encoded Mira/History
+  pair. This bounds arbitrary valid Mira IDs without changing existing references.
   PostgreSQL remains the authority. No table, migration, persistent SessionManager,
   new log, background worker, generic state engine or custom file-reading tool is
   introduced. Bash's own full-output pointer stays intact in the preserved result.

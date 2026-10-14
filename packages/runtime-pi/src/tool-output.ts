@@ -62,7 +62,12 @@ export class ToolOutputProjector {
       if (active.has(entry.id) || !this.#restored.has(entry.id)) {
         if (!this.#write) throw new Error('Oversized tool output requires the existing ordinary-file spool writer');
         const file = evidenceFile(JSON.stringify(message));
-        const artifact = await this.#write(`tool-output:${this.#miraId}:${entry.id}`, file);
+        // Preserve existing reference paths. Only keys the spool could never
+        // accept use the separate bounded namespace, with unambiguous components.
+        const originalKey = `tool-output:${this.#miraId}:${entry.id}`;
+        const key = originalKey.length <= 4_096 ? originalKey
+          : `tool-output-sha256:${createHash('sha256').update(JSON.stringify([this.#miraId, entry.id])).digest('hex')}`;
+        const artifact = await this.#write(key, file);
         validateWakeInputArtifact(artifact);
         if (artifact.bytes !== Buffer.byteLength(file)) throw new Error('Tool output file byte count differs from its immutable content');
         this.#signal.throwIfAborted();

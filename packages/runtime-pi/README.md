@@ -502,7 +502,10 @@ immutable ordinary-file spool; join decoded `text` values after the header to
 reconstruct the exact original. This also makes giant single-line results readable
 with normal `read` line pagination. The notice supplies the path, file size,
 original History UUID and initial `offset=1, limit=3` guidance. No special reader,
-new database table or replacement state store is added.
+new database table or replacement state store is added. Stable spool keys preserve
+existing paths; only keys above the writer's 4,096-character limit use a distinct
+SHA-256 namespace over the JSON-encoded Mira ID and History UUID pair, so arbitrary
+valid Mira IDs remain recoverable.
 
 Recovery validates/repairs the full durable evidence before deriving the bounded
 projection. A fresh runtime restores even compacted-out result files; active
