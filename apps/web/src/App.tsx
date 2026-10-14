@@ -5,6 +5,7 @@ import { AttachmentList, AttachmentPreview } from './Attachments.tsx';
 import { useAttachments } from './useAttachments.ts';
 import { attachmentSize } from './attachments.ts';
 import { api, errorText, isAbort } from './api.ts';
+import { createStatusPolling } from './status-polling.ts';
 import { ArrowUp, ChevronDown, SettingsIcon } from './icons.tsx';
 import { SettingsDialog } from './SettingsDialog.tsx';
 import { createMemoryRequest, readMemoryRequest, recoverMemoryRequest, writeMemoryRequest } from './management.ts';
@@ -74,6 +75,7 @@ export function App() {
   const pollAbortRef = useRef<AbortController | null>(null);
   const postAbortRef = useRef<AbortController | null>(null);
   const inFlightRef = useRef<Promise<void> | null>(null);
+  const pollingRef = useRef<ReturnType<typeof createStatusPolling> | null>(null);
 
   const updatePending = useCallback((change: (current: PendingMessage[]) => PendingMessage[], mustPersist = false) => {
     if (recovered.error) return false; // Never overwrite a queue we could not recover.
@@ -116,7 +118,10 @@ export function App() {
       ]);
       if (!activeRef.current || signal?.aborted) return;
       const statusResult = results[0]; const timelineResult = results[1];
-      if (statusResult.status === 'fulfilled') { statusRef.current = statusResult.value; setStatus(statusResult.value); }
+      if (statusResult.status === 'fulfilled') {
+        statusRef.current = statusResult.value; setStatus(statusResult.value);
+        pollingRef.current?.statusChanged();
+      }
       if (timelineResult.status === 'fulfilled') acceptPage(timelineResult.value);
       else setLoading(false);
       const failed = results.find(result => result.status === 'rejected');
@@ -131,23 +136,15 @@ export function App() {
     activeRef.current = true;
     const controller = new AbortController();
     pollAbortRef.current = controller;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let stopped = false;
-    let generation = 0;
-    const poll = async () => {
-      const currentGeneration = ++generation;
-      clearTimeout(timer);
-      if (stopped || document.hidden) return;
-      await refresh();
-      if (!stopped && !document.hidden && currentGeneration === generation) timer = setTimeout(() => { void poll(); }, statusRef.current?.state === 'working' ? 1200 : 5000);
-    };
-    const onVisibility = () => { generation += 1; clearTimeout(timer); if (!document.hidden) void poll(); };
-    void poll();
-    document.addEventListener('visibilitychange', onVisibility);
+    const polling = createStatusPolling(refresh, () => statusRef.current?.state === 'working', () => document.hidden);
+    pollingRef.current = polling;
+    void polling.poll();
+    document.addEventListener('visibilitychange', polling.visibilityChanged);
     return () => {
-      stopped = true; activeRef.current = false; controller.abort(); postAbortRef.current?.abort(); clearTimeout(timer);
+      polling.stop(); pollingRef.current = null;
+      activeRef.current = false; controller.abort(); postAbortRef.current?.abort();
       inFlightRef.current = null;
-      document.removeEventListener('visibilitychange', onVisibility);
+      document.removeEventListener('visibilitychange', polling.visibilityChanged);
     };
   }, [refresh]);
 

@@ -267,6 +267,8 @@ test('reasoning saved in the real browser reaches credential-bound SDK payloads 
     await page.getByRole('button', { name: '模型设置', exact: true }).click();
     await expect(page.getByLabel('默认推理强度', { exact: true })).toHaveValue('high');
     await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByLabel('默认推理强度', { exact: true }).scrollIntoViewIfNeeded();
+    await expect(page.getByLabel('默认推理强度', { exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath('reasoning-real-settings-mobile.png'), fullPage: true });
     await page.getByRole('button', { name: '关闭设置', exact: true }).click();
     await saveLevel('low'); await send('继续验证低推理档位。');
@@ -336,6 +338,9 @@ test('real browser observes request retry through PG and the credential-bound SD
   const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-retry-browser-');
   let service: LocalWebService | undefined; let app: ReturnType<typeof createLocalHttp> | undefined;
   let calls = 0; const effect = path.join(root, 'effect');
+  const firstResponse = deferred(), finalResponse = deferred();
+  const statusRequests: number[] = [];
+  page.on('request', request => { if (new URL(request.url()).pathname === '/api/status') statusRequests.push(Date.now()); });
   const settingsFile = path.join(root, 'models.json');
   const store = new WebSettingsStore(settingsFile, sourceDirectory);
   const initial = await store.get();
@@ -343,10 +348,14 @@ test('real browser observes request retry through PG and the credential-bound SD
     settingsFile, spoolDirectory: path.join(root, 'spool'), autoCompaction: { enabled: false }, dreaming: { enabled: false },
     modelFetch: (async () => {
       calls++;
-      if (calls === 1) return retryResponse('', 'browser-once-call', 'bash', { command: `printf once >> ${JSON.stringify(effect)}` });
-      // Initial idle polling can already have a five-second timer armed. Use the
-      // transport's real maximum wait so this transient state spans a browser poll.
-      if (calls === 2) { const response = retryFailure(429, 'PRIVATE_RETRY_FAILURE'); response.headers.set('retry-after', '10'); return response; }
+      if (calls === 1) {
+        // Let the receipt refresh observe working before this real SDK request completes.
+        await firstResponse.promise;
+        return retryResponse('', 'browser-once-call', 'bash', { command: `printf once >> ${JSON.stringify(effect)}` });
+      }
+      if (calls === 2) { const response = retryFailure(429, 'PRIVATE_RETRY_FAILURE'); response.headers.set('retry-after', '3'); return response; }
+      // Keep the actual requesting phase observable for stable narrow-screen capture.
+      await finalResponse.promise;
       return retryResponse('模型请求已恢复，只执行了一次工具。');
     }) as typeof globalThis.fetch };
   const start = async () => {
@@ -357,17 +366,43 @@ test('real browser observes request retry through PG and the credential-bound SD
   try {
     await store.save({ revision: initial.revision, selection: retrySelection, configuration: { builtinCredentials: {},
       customConnections: retryConfiguration.customConnections.map(({ apiKeyEnv: _env, ...connection }) => ({ ...connection, apiKey: syntheticRetryKey })) } });
-    await start(); await page.goto(origin);
+    await start();
+    // Only the browser clock is controlled. HTTP, PostgreSQL, SDK and retry backoff
+    // use their real paths/timers; status responses are never intercepted or mocked.
+    await page.clock.install({ time: new Date('2026-10-14T12:00:00Z') });
+    await page.clock.pauseAt(new Date('2026-10-14T12:00:01Z'));
+    await page.goto(origin); await expect(page.locator('.identity-detail')).toContainText('在这里');
+    const idleReads = statusRequests.length;
+    const clockStart = await page.evaluate(() => Date.now());
     await page.getByLabel('给 Mira 发消息', { exact: true }).fill('执行一次合成工具，然后回复。');
     await page.getByRole('button', { name: '发送消息', exact: true }).click();
+    await expect(page.locator('.working-indicator')).toHaveText(/Mira 正在处理/);
+    expect(statusRequests).toHaveLength(idleReads + 1);
+    const workingReads = statusRequests.length;
+    firstResponse.resolve();
     await expect.poll(async () => (await service!.status()).modelRetry?.phase).toBe('waiting');
+    // The manual working refresh must rearm the 5s idle timer at 1.2s. No reload,
+    // explicit refresh or maximum Retry-After can conceal a stale idle timer here.
+    await page.clock.runFor(1199); expect(statusRequests).toHaveLength(workingReads);
+    await page.clock.runFor(1);
     await expect(page.getByRole('status').filter({ hasText: '等待重试（第 2/3 次）' })).toBeVisible();
+    expect(statusRequests).toHaveLength(workingReads + 1);
+    expect(await page.evaluate(() => Date.now()) - clockStart).toBe(1200);
     expect((await service!.status()).state).toBe('working'); expect((await service!.status()).error).toBeNull();
-    await page.screenshot({ path: testInfo.outputPath('model-retry-real-desktop.png'), fullPage: true });
+    await page.screenshot({ path: testInfo.outputPath('model-retry-real-desktop.png'), fullPage: true, animations: 'disabled' });
+    await expect.poll(() => calls).toBe(3);
+    await page.clock.runFor(1200);
+    await expect(page.getByRole('status').filter({ hasText: '正在重试模型请求（第 2/3 次）' })).toBeVisible();
+    expect((await service!.status()).modelRetry?.phase).toBe('requesting');
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.screenshot({ path: testInfo.outputPath('model-retry-real-narrow.png'), fullPage: true });
+    await page.screenshot({ path: testInfo.outputPath('model-retry-real-narrow.png'), fullPage: true, animations: 'disabled' });
+    await testInfo.attach('retry-status-poll-observations', { contentType: 'application/json', body: JSON.stringify({ statusRequests, firstActivePollMs: 1200, oldIdlePollMs: 5000 }) });
+    finalResponse.resolve();
+    await expect.poll(async () => (await service!.status()).state).toBe('idle');
+    await page.clock.runFor(1200);
     await expect(page.getByText('模型请求已恢复，只执行了一次工具。', { exact: true })).toBeVisible();
     await expect(page.locator('.working-indicator')).toHaveCount(0);
+    await page.clock.resume();
     expect(calls).toBe(3); expect(await readFile(effect, 'utf8')).toBe('once');
     expect((await db.admin.query('SELECT count(*)::int AS n FROM tool_executions')).rows[0].n).toBe(1);
     const records = (await db.admin.query('SELECT envelope FROM context_records ORDER BY version')).rows;
@@ -381,5 +416,5 @@ test('real browser observes request retry through PG and the credential-bound SD
     await expect(page.locator('.working-indicator')).toHaveCount(0);
     expect(calls).toBe(3); expect(await readFile(effect, 'utf8')).toBe('once');
     expect((await db.admin.query('SELECT envelope FROM context_records ORDER BY version')).rows).toEqual(records);
-  } finally { await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+  } finally { firstResponse.resolve(); finalResponse.resolve(); await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
