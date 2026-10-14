@@ -73,6 +73,8 @@ test('real web service keeps parent available, child completion wakes an idle pa
     release.resolve(); await until(() => parentCalls === 4); await until(async () => (await service!.status()).state === 'idle');
     assert.equal(await readFile(path.join(root, 'Memory', 'MEMORY.md'), 'utf8'), memoryBefore);
     const timeline = await service.timeline(); assert.ok(!JSON.stringify(timeline).includes('CHILD_PRIVATE_RAW_FINDING'), 'child output is only relayed when main model chooses to');
+    assert.ok(timeline.items.every(item => !Object.hasOwn(item, 'child') && (item.text || item.attachments?.length)), 'no child-only rows or empty timestamps in chat');
+    assert.ok(timeline.items.some(item => item.text === 'Parent response 4'), 'ordinary parent replies remain visible');
     const runs = await service.runs(); const details = await Promise.all(runs.items.map(run => service!.run(run.id)));
     assert.ok(details.every(d => d!.executions.every(e => !Object.hasOwn(e, 'supplemental') && !e.name?.includes('(latest activity)'))));
     const childPages = await Promise.all(runs.items.map(run => service!.children(run.id)));

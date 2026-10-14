@@ -105,7 +105,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   #configurationWrite = false;
   #settingsGeneration = 0;
   #kickRequested = false;
-  readonly #cache = new Map<string, { item: Timeline['items'][number] | null; childCallId?: string }>();
+  readonly #cache = new Map<string, { item: Timeline['items'][number] | null }>();
   private constructor(options: WebServiceOptions, writer: DreamingWriter & SchedulingWriter & LiveInputWriter & SubagentWriter, history: RunHistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, attachments: AttachmentStore, subagents: SubagentManager, subagentReader: SubagentReader, host?: ExtensionHost) {
     this.#subagentReader = subagentReader; this.#subagents = subagents; this.#attachments = attachments; this.#options = options; this.#writer = writer; this.#history = history; this.#settings = settings;
     this.#settingsValue = settingsValue; this.#loop = loop; this.#host = host;
@@ -273,17 +273,14 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   async timeline(before?: string): Promise<Timeline> {
     const page = await this.#history.page({ kinds: ['event', 'context', 'tool'], limit: 50, ...(before ? { before } : {}) });
     const items: Timeline['items'] = [];
-    const calls = new Map<string, string>();
     for (const ref of page.hits) {
       const key = ref.id;
       let cached = this.#cache.get(key);
       if (!cached) {
         try {
           const entry = await this.#history.read({ id: ref.id, maxBytes: 1_048_576 });
-          const childCallId = entry?.kind === 'tool' && ['subagent_spawn', 'subagent_send'].includes(entry.intent.toolName) ? entry.intent.callId : undefined;
-          cached = { item: entry ? visible(entry) : null, ...(childCallId ? { childCallId } : {}) };
-          // A pending tool can acquire both an attachment publication or a child
-          // association later. Its identity and visible value share one cache.
+          cached = { item: entry ? visible(entry) : null };
+          // A pending tool can acquire an attachment publication later.
           if (entry?.kind !== 'tool' || entry.outcome !== null) this.#cache.set(key, cached);
         } catch (error) {
           if (!(error instanceof HistoryError) || error.code !== 'too_large') throw error;
@@ -293,22 +290,6 @@ export class LocalWebService implements WebBackend, ManagementBackend {
         if (this.#cache.size > 1000) this.#cache.delete(this.#cache.keys().next().value!);
       }
       if (cached.item) items.push(cached.item);
-      if (cached.childCallId) calls.set(key, cached.childCallId);
-    }
-    if (calls.size) {
-      // Child identity is public only after its durable parent-call linkage exists.
-      // A metadata outage must not discard ordinary conversation history.
-      try {
-        const children = await this.#subagentReader.readSubagentCalls([...calls.values()]);
-        const byCall = new Map(children.map(child => [child.callId, child]));
-        for (const ref of page.hits) {
-          const call = calls.get(ref.id); const child = call ? byCall.get(call) : null;
-          if (child?.runId) items.push({ id: ref.id, role: 'assistant', text: '', occurredAt: ref.occurredAt,
-            child: { id: child.childId, runId: child.runId } });
-        }
-        const order = new Map(page.hits.map((ref, index) => [ref.id, index]));
-        items.sort((a,b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
-      } catch { /* Read-only child UI retries independently; main history remains available. */ }
     }
     return { items, nextCursor: page.nextCursor };
   }

@@ -64,8 +64,8 @@ function ChildDialog({ runId, id, onClose }: { runId: string; id: string; onClos
 /** Each loaded child is observed by its own stable identity, independently from
  * parent history cursors. Offscreen/hidden cards pause; terminal cards check slowly
  * because a later followup can reuse the same child identity. */
-export function ChildCard({ id, runId, initial, active = true }: { id: string; runId: string; initial?: ChildSummaryView; active?: boolean }) {
-  const [summary, setSummary] = useState<ChildSummaryView | null>(initial ?? null);
+function ChildCard({ id, runId, initial, active }: { id: string; runId: string; initial: ChildSummaryView; active: boolean }) {
+  const [summary, setSummary] = useState<ChildSummaryView>(initial);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const button = useRef<HTMLButtonElement>(null);

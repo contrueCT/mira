@@ -1,6 +1,37 @@
 # Subagent verification
 
-## Current extension: ADR 0026 (2026-10-14)
+## Current presentation: ADR 0031 (2026-10-14)
+
+Main chat no longer contains child cards, child entry points or child-only empty
+Timeline rows. Activity and read-only details remain in Settings → Run records.
+The backend child tools, durable association, independent management reads and
+completion Wake semantics remain unchanged.
+
+Offline coverage includes real service Timeline projection with synthetic history:
+ordinary user/assistant text, user attachments, later explicit attachment publication,
+history cursors and zero child metadata reads. HTTP tests reject unexpected child
+metadata in both Timeline read methods. The existing PG service regression also
+checks ordinary parent replies and the absence of child-only rows.
+
+The real capabilities browser suite now navigates through the existing settings
+and exact parent run for child activity, progress, completion, compaction and restart.
+It captures `main-chat-no-child-cards-running-desktop.png` / `mobile.png`,
+`settings-child-running-desktop.png`, `settings-child-progress-mobile.png`, plus
+completed conversation and child detail screenshots. The fixture suite covers
+identity/error/followup, Escape/focus, Back/Forward and narrow layout through settings.
+These tests require exact-head CI; prior screenshots do not establish this UI.
+
+Local `pnpm check` passed 912 foundation/offline tests and 46 web-state tests,
+all type/boundary checks and the production build. Final Pi/E2E typechecks passed;
+Playwright discovery found the 40 fixture and 5 real capabilities cases. An initial
+standalone typecheck used a new test filename outside the existing Pi-consumer
+configuration and failed on upstream declarations; moving that test to the
+already-configured `web-service.test.mts` path fixed the classification without
+changing compiler exceptions. Independent review follows final stack integration.
+PostgreSQL/Chromium remain blocked in this environment; no socket restriction is
+bypassed, no mock image substitutes for browser evidence, and no live model is used.
+
+## Previous extension: ADR 0026 (2026-10-14)
 
 The historical verification notes below describe the original four-worker feature
 and its former mixed parent-page child projections. ADR 0026 supersedes that

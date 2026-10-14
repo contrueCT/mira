@@ -2,6 +2,8 @@
 
 Status: User-approved scope; implementation under verification, 2026-10-14.
 
+> Main-chat card presentation is superseded by [ADR 0031](0031-child-details-in-settings.md). Child activity and details now live only in Settings → Run records; the runtime and observation contracts below remain unchanged.
+
 ## Decision
 
 Mira keeps one life, one main conversation and one Memory owner. Delegated workers
