@@ -16,6 +16,7 @@ export interface SubagentManagerOptions {
   onFailure: (error: unknown) => void;
   maxConcurrent?: number;
 }
+const childCancellation = Symbol('child-cancelled');
 const terminal = (turn: SubagentTurn) => !['queued', 'running'].includes(turn.status);
 const modelIdentity = (model: Model<Api>) => ({ provider: model.provider, id: model.id, api: model.api, configurationHash: createHash('sha256').update(JSON.stringify(model)).digest('hex') });
 function sameModel(child: SubagentRecord, transport: SubagentTransport): boolean { return JSON.stringify(child.spec.model) === JSON.stringify(modelIdentity(transport.model)); }
@@ -69,6 +70,11 @@ export class SubagentManager {
   async send(callId: string, id: string, instruction: string, transport: SubagentTransport) {
     if (this.#closed) throw new SubagentError('invalid', 'Child dispatcher is closed');
     const child = await this.#child(id);
+    const duplicate = child.turns.find(turn => turn.callId === callId);
+    if (duplicate) {
+      if (duplicate.instruction !== instruction) throw new SubagentError('conflict', 'Followup call was already used with different content');
+      return brief(child);
+    }
     if (!sameModel(child, transport)) throw new SubagentError('model_changed', 'The parent model selection changed. Use a fresh child or restore the original selection before following up.');
     if (!this.#active.has(id) && this.#active.size >= (this.#options.maxConcurrent ?? 4)) throw new SubagentError('capacity', 'Child slots are still occupied, including cancelling work');
     const updated = await this.#options.writer.sendSubagent(callId, id, instruction, this.#options.maxConcurrent ?? 4);
@@ -140,7 +146,7 @@ export class SubagentManager {
         this.#notify(); this.#options.onCompletion();
       }
     } catch (error) {
-      if (running && !this.#options.writer.signal.aborted && !this.#cancelled.has(id)) {
+      if (running && !this.#options.writer.signal.aborted && abort.reason !== childCancellation) {
         await this.#options.writer.finishSubagentTurn(running.id, signal.aborted || this.#closed ? 'interrupted' : 'failed', {
           text: 'Child execution stopped. Its transcript and tool evidence are preserved; effects without confirmed outcomes remain unknown. Explicit followup can inspect and continue.',
           truncated: false, fullResultPath: null, finalRecordId: null });
@@ -148,7 +154,7 @@ export class SubagentManager {
       }
       // Failed provider/tool work is a persisted child result, not a parent failure.
       if (this.#options.writer.signal.aborted) throw error;
-      if (!running && !this.#cancelled.has(id)) {
+      if (!running && abort.reason !== childCancellation) {
         const child = await this.#child(id);
         for (const pending of child.turns.filter(turn => turn.status === 'queued')) await this.#options.writer.finishSubagentTurn(pending.id, 'interrupted', {
           text: 'Child initialization did not complete; no automatic retry was attempted. Inspect status and explicitly follow up.', truncated: false, fullResultPath: null, finalRecordId: null });
@@ -160,7 +166,7 @@ export class SubagentManager {
     await this.#child(id);
     this.#cancelled.add(id);
     const active = this.#active.get(id);
-    active?.controller.abort(new Error('Child cancelled'));
+    active?.controller.abort(childCancellation);
     // Runtime stops effects through its writer/abort checks; do not erase or roll back history.
     await this.#options.writer.cancelSubagent(id);
     this.#notify(); this.#options.onCompletion();

@@ -232,3 +232,19 @@ test('followup cannot bypass the concurrency cap while cancelled effects are sti
     assert.equal(f.parent.children[0]!.turns.length, 1);
   } finally { release.resolve(); await f.manager.close(); }
 });
+
+
+test('followup arriving before cancelled tool cleanup cannot overwrite the cancelled turn or lose the followup', async () => {
+  const release = deferred(); const entered = deferred(); let calls = 0;
+  const f = fixture(new Parent(), () => [effectTool(async () => { entered.resolve(); await release.promise; return result; })]);
+  const t = transport(() => { calls++; return streamOf(calls === 1 ? { ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'slow-cancel-effect', name: 'effect', arguments: {} }] } : assistant('followup completed')); });
+  try {
+    const child = await f.manager.spawn('slow-cancel-spawn', 'First task', 'none', t); await entered.promise;
+    await f.manager.cancel(child.id);
+    const cancelled = structuredClone(f.parent.children[0]!.turns[0]);
+    await f.manager.send('after-slow-cancel', child.id, 'Continue after checking the unknown effect', t);
+    release.resolve();
+    await until(() => f.parent.children[0]!.turns[1]?.status === 'completed');
+    assert.deepEqual(f.parent.children[0]!.turns[0], cancelled); assert.deepEqual(f.errors, []); assert.equal(calls, 2);
+  } finally { release.resolve(); await f.manager.close(); }
+});
