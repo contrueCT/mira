@@ -9,7 +9,7 @@ import {
 import { estimateRequestTokens } from './budget.ts';
 import { validateMessage } from './records.ts';
 import { type RecoveryOperation } from './observations.ts';
-import { compactionInput, MIRA_COMPACTION_MODES, MIRA_COMPACTION_PROMPT, type CompactionReferences } from './compaction-prompt.ts';
+import { compactionInput, MIRA_COMPACTION_MODES, MIRA_COMPACTION_PROMPT, TASK_COMPACTION_PROMPT, type CompactionReferences } from './compaction-prompt.ts';
 
 export interface CompactionOptions {
   signal?: AbortSignal;
@@ -68,7 +68,7 @@ export async function compactSnapshot(
       event.signal.throwIfAborted();
       const maxTokens = Math.min(options.reserveTokens ?? 512, model.maxTokens);
       const input = compactionInput(event, references, maxTokens, recoveryOperations);
-      const systemPrompt = MIRA_COMPACTION_PROMPT + '\n' + MIRA_COMPACTION_MODES[input.mode] +
+      const systemPrompt = (references.scope === 'task' ? TASK_COMPACTION_PROMPT : MIRA_COMPACTION_PROMPT) + '\n' + MIRA_COMPACTION_MODES[input.mode] +
         (options.instructions ? `\n\nAdditional focus: ${options.instructions}` : '');
       const context = normalizeContext({ systemPrompt, messages: [{ role: 'user', content: JSON.stringify(input), timestamp: Date.now() }] });
       if (estimateRequestTokens(context.messages) + maxTokens > model.contextWindow) throw new Error('Compaction summary request exceeds model context budget');

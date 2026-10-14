@@ -167,7 +167,7 @@ export class SubagentManager {
         const turnId = running.id;
         const observe = (event: SubagentActivityInput) => this.#options.writer.recordSubagentActivity(turnId, event);
         const runtime = new PiDurableRuntime({ writer, ...transport, tools: [...tools, progressTool(observe)],
-          onActivity: event => observe({ ...event, name: boundedText(event.name, 512), callId: event.callId, source: 'runtime', text: null }), ...(this.#options.loadSkills ? { loadSkills: this.#options.loadSkills } : {}), autoCompaction: { enabled: false } });
+          onActivity: event => observe({ ...event, name: boundedText(event.name, 512), callId: event.callId, source: 'runtime', text: null }), ...(this.#options.loadSkills ? { loadSkills: this.#options.loadSkills } : {}), compactionScope: 'task', writeOverflowInput: this.#options.writeOverflowInput });
         const state = await runtime.recover();
         if (!state.snapshot.records.length) await runtime.appendMessage({ role: 'system', content: childSystem(this.#options, child), timestamp: Date.now() });
         const firstAssignment = !state.entries.some(entry => entry.type === 'message' && entry.message.role === 'user');

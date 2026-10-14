@@ -465,3 +465,10 @@ Observer write failures stop the runtime before further model/tool work. Child
 assembly persists these observations under the parent writer and supplies the
 separate `report_progress` tool for explicit public, bounded worker updates.
 No timer, token-stream capture, or automatic parent Wake is added.
+
+Task workers enable the normal automatic compaction budget with
+`compactionScope: 'task'`. This selects the hash-checked task continuation prompt
+in the same SDK hook and rejects main `miraPrompt`/Memory configuration. Summary
+failure or cancellation preserves history and requires an explicit followup;
+queued followups stay outside the frozen summary candidate. Child checkpoints
+never enter main-stream Dreaming counts. See [ADR 0030](../../docs/adr/0030-task-scoped-compaction.md).

@@ -138,3 +138,8 @@ Children refresh the same file-skill metadata at natural requests through their
 own transcript, without main persona/Memory bootstrap or checkpoint ownership.
 
 ADR 0026 provides `/api/runs/:id/subagents` and `/api/runs/:id/subagents/:childId` (optional `?view=summary`). Parent-call version ownership is checked independently of parent history pages. No task/context bodies, tool arguments, hidden reasoning, arbitrary spool paths or unpublished files are returned.
+
+Task-scoped children use automatic context compaction on their own durable
+transcript, with worker-specific summary instructions and no main Memory loader.
+Followups during compaction remain queued; failed/interrupted work requires
+explicit continuation. See [ADR 0030](../../docs/adr/0030-task-scoped-compaction.md).

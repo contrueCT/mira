@@ -63,3 +63,5 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 - [0025 Task-scoped subagents](0025-task-scoped-subagents.md): Accepted scope, 2026-10-14; asynchronous bounded Pi workers with isolated PostgreSQL transcripts, durable parent result Wake, explicit followup/cancellation and fresh/frozen projected context. No second Mira Life or main-chat entry point.
 
 - [0026: Observable delegated work and global skills](0026-subagent-observation-and-global-skills.md) — approved scope, implementation under verification.
+
+- [0030 Task-scoped child compaction](0030-task-scoped-compaction.md): Approved scope, 2026-10-14; existing durable compaction on independent worker transcripts, task-only summary instructions, no main Memory or Dreaming count changes.

@@ -50,6 +50,7 @@ Shared rules: [root AGENTS.md](../../AGENTS.md). Read `README.md` before changes
 - `history_read` takes only the global UUID and optional byte budget, obtains kind from persistence, and accepts Memory `History-Id` directly
 - `history-tools.ts` returns Mira-bound original history; generic persistence never parses Pi
 - Attachment refs are validated durable user metadata; hydration is request-local only. Recovery compares ordered refs; compaction retains immutable file identities and never claims omitted media was seen. Native video uses transient metadata for the explicitly supported transport (ADR 0021), never fake image blocks.
+- Task workers use `compactionScope: task` with a separate hash-checked task summary prompt through the same SDK hook; reject main `miraPrompt`/Memory configuration. Parent Dreaming counts remain stream-local; never use main persona summary instructions for child continuity.
 - All streams are injected; no credentials or live provider fallback. Runtime
   compaction never modifies Memory
 

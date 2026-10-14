@@ -16,7 +16,7 @@ export { currentMemory, currentPrompt, memoryConfigured, refreshMiraMemory, proj
 export type { MiraPromptSnapshot, MiraPromptOptions, MiraPromptValues } from './system-prompt.ts';
 import { decodeRecords, encodeEntry, jsonValue, messageEntry, messageOverflowInput, checkpointAttachmentIndex, normalizeToolResult, validateMessage, RuntimeJsonError } from './records.ts';
 export { decodeRecords, encodeEntry, jsonValue, messageEntry, PI_RUNTIME_VERSION } from './records.ts';
-export { MIRA_COMPACTION_PROMPT, MIRA_COMPACTION_PROMPT_SHA256, MIRA_COMPACTION_MODES } from './compaction-prompt.ts';
+export { MIRA_COMPACTION_PROMPT, MIRA_COMPACTION_PROMPT_SHA256, MIRA_COMPACTION_MODES, TASK_COMPACTION_PROMPT, TASK_COMPACTION_PROMPT_SHA256 } from './compaction-prompt.ts';
 export type { CompactionOptions } from './compactor.ts';
 export type { RecoveryOperation, ToolDiagnostic } from './observations.ts';
 
@@ -32,6 +32,8 @@ export interface PiRuntimeOptions {
   /** Awaited, no request payloads or provider errors. A write failure stops execution. */
   onActivity?: (event: PiRuntimeActivity) => Promise<void>;
   autoCompaction?: AutoCompactionOptions;
+  /** Worker-specific summary instructions; never bootstrap or refresh main Memory. */
+  compactionScope?: 'mira' | 'task';
   writer: DurableWriter;
   model: Model<Api>;
   /** Required injection. This adapter never discovers credentials or chooses a live stream. */
@@ -97,6 +99,8 @@ export class PiDurableRuntime implements CognitionRuntime {
   constructor(options: PiRuntimeOptions) {
     if (typeof options.streamFn !== 'function') throw new Error('Injected streamFn is required');
     if (options.loadContextProviders && !options.miraPrompt) throw new Error('Context providers require the Mira prompt');
+    if (options.compactionScope !== undefined && !['mira', 'task'].includes(options.compactionScope)) throw new Error('Invalid compaction scope');
+    if (options.compactionScope === 'task' && options.miraPrompt) throw new Error('Task compaction cannot use the main Mira prompt or Memory loader');
     validateTools(options.tools ?? []);
     contextBudget(options.model, options.autoCompaction);
     this.options = options;
@@ -831,7 +835,7 @@ export class PiDurableRuntime implements CognitionRuntime {
       async (model, context, streamOptions) => {
         await this.verified();
         return this.options.streamFn(model, context, streamOptions);
-      }, { keepRecentTokens: budget.keepRecentTokens, reserveTokens: budget.reserveTokens, ...options, signal: this.controller.signal }, before.recovery.operations, { personaContext, memorySnapshot: memory });
+      }, { keepRecentTokens: budget.keepRecentTokens, reserveTokens: budget.reserveTokens, ...options, signal: this.controller.signal }, before.recovery.operations, { ...(this.options.compactionScope ? { scope: this.options.compactionScope } : {}), personaContext, memorySnapshot: memory });
     if (attachmentSources.size || priorAttachmentIndex) {
       const sources = [...attachmentSources].map(([historyId, entry]) => {
         const overflowInput = entry.type === 'message' ? messageOverflowInput(entry.message) : undefined;

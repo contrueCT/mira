@@ -576,3 +576,97 @@ test('close marks unstarted followups interrupted after the real in-flight child
     assert.equal(f.parent.events.length, 2);
   } finally { release.resolve(); await f.manager.close(); }
 });
+
+// Real child dispatcher and Pi compaction hook; summaries are deterministic
+// synthetic responses, not evidence of live-provider summarization quality.
+test('long child followups compact their own transcript with task-only instructions and retain queued input', async () => {
+  const f = fixture(); const summarizing = deferred(); const release = deferred(); let summaries = 0; let calls = 0;
+  let childId = ''; const seen: string[] = [];
+  const t = transport(async (_m, context) => {
+    const system = getSystemMessageText(getCurrentSystemMessage(context.messages)!);
+    if (system.includes('Summarize this task-scoped worker')) {
+      summaries++;
+      assert.doesNotMatch(system, /你是 Mira|Memory 由系统另行注入/);
+      const data = JSON.parse(String(context.messages.find(m => m.role === 'user')?.content));
+      assert.equal(data.memory_snapshot, null);
+      assert.match(data.persona_context, /task-scoped worker/);
+      assert.ok(data.source_messages.length > 0);
+      assert.ok(data.source_messages.every((m: { history_id: string }) => /^[a-f0-9-]{36}$/.test(m.history_id)));
+      if (summaries === 1) { summarizing.resolve(); await release.promise; }
+      return streamOf(assistant('TASK_SUMMARY: continue the assigned research; no publication permission.'));
+    }
+    calls++; seen.push(JSON.stringify(context.messages));
+    assert.match(system, /task-scoped worker/);
+    return streamOf(assistant(`result-${calls}: ${'bounded research evidence '.repeat(60)}`));
+  });
+  try {
+    childId = (await f.manager.spawn('compact-spawn', 'Research only, do not publish', 'none', t)).id;
+    await until(() => f.parent.children[0]!.turns[0]!.status === 'completed');
+    const parentBefore = structuredClone(f.parent.state);
+    for (let i = 1; i <= 24 && summaries === 0; i++) {
+      await f.manager.send(`compact-${i}`, childId, `Continue investigation ${i}`, t);
+      await until(() => summaries > 0 || f.parent.children[0]!.turns.at(-1)!.status === 'completed');
+    }
+    assert.equal(summaries, 1);
+    await summarizing.promise;
+    const currentCount = f.parent.children[0]!.turns.length;
+    await f.manager.send('compact-queued', childId, 'QUEUED_DURING_SUMMARY: inspect the new evidence only', t);
+    assert.equal(f.parent.children[0]!.turns.at(-1)!.status, 'queued');
+    release.resolve();
+    await until(() => f.parent.children[0]!.turns.every(turn => turn.status === 'completed'));
+    assert.equal(f.parent.children[0]!.turns.length, currentCount + 1);
+    assert.match(seen.at(-1)!, /QUEUED_DURING_SUMMARY/);
+    assert.match(seen.at(-1)!, /TASK_SUMMARY/);
+    const childWriter = [...f.writers.values()][0]!;
+    assert.ok(childWriter.state.records.some(record => record.kind === 'checkpoint'));
+    assert.ok(!JSON.stringify(childWriter.state.records).includes('miraMemory'));
+    assert.deepEqual(f.parent.state, parentBefore, 'child checkpoints do not enter main transcript');
+    assert.deepEqual(f.errors, []);
+  } finally { release.resolve(); await f.manager.close(); }
+});
+
+test('task compaction rejects main Memory configuration before any loader runs', () => {
+  let reads = 0;
+  assert.throws(() => new PiDurableRuntime({ writer: new MemoryWriter(), model, streamFn: () => streamOf(assistant()),
+    compactionScope: 'task', miraPrompt: { environmentContext: '', authorizationContext: '', loadMemory: async () => { reads++; return 'private'; } } }), /cannot use the main Mira prompt/);
+  assert.equal(reads, 0);
+});
+
+for (const failure of ['error', 'cancel'] as const) test(`child summary ${failure} preserves history and explicit followup can continue without automatic replay`, async () => {
+  const f = fixture(); const entered = deferred(); const release = deferred(); let summaries = 0; let successfulSummary = false; let calls = 0;
+  const t = transport(async (_m, context) => {
+    const system = getSystemMessageText(getCurrentSystemMessage(context.messages)!);
+    if (system.includes('Summarize this task-scoped worker')) {
+      summaries++; entered.resolve();
+      if (!successfulSummary) {
+        if (failure === 'cancel') await release.promise;
+        return streamOf({ ...assistant(), stopReason: 'error', errorMessage: 'synthetic summary fault' });
+      }
+      return streamOf(assistant('RECOVERED_TASK_SUMMARY: work is read-only; continue from confirmed evidence.'));
+    }
+    calls++; return streamOf(assistant(`result-${calls}: ${'bounded research evidence '.repeat(60)}`));
+  });
+  try {
+    const childId = (await f.manager.spawn(`summary-${failure}`, 'Research only', 'none', t)).id;
+    await until(() => f.parent.children[0]!.turns[0]!.status === 'completed');
+    for (let i = 1; i <= 24 && summaries === 0; i++) {
+      await f.manager.send(`summary-${failure}-${i}`, childId, `Continue ${i}`, t);
+      await until(() => summaries > 0 || f.parent.children[0]!.turns.at(-1)!.status === 'completed');
+    }
+    assert.equal(summaries, 1); await entered.promise;
+    if (failure === 'cancel') { await f.manager.cancel(childId); release.resolve(); }
+    await until(() => [...f.writers.values()][0]!.signal.aborted);
+    assert.equal(f.parent.children[0]!.turns.at(-1)!.status, failure === 'cancel' ? 'cancelled' : 'failed');
+    const saved = structuredClone([...f.writers.values()][0]!.state.records);
+    assert.equal(saved.filter(record => record.kind === 'checkpoint').length, 0);
+    const oldCalls = calls; await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(calls, oldCalls); assert.equal(summaries, 1);
+    successfulSummary = true;
+    await f.manager.send(`resume-${failure}`, childId, 'Inspect preserved results and continue', t);
+    await until(() => f.parent.children[0]!.turns.at(-1)!.status === 'completed');
+    const after = [...f.writers.values()][0]!.state.records;
+    assert.deepEqual(after.slice(0, saved.length), saved);
+    assert.equal(after.filter(record => record.kind === 'checkpoint').length, 1);
+    assert.equal(summaries, 2); assert.equal(calls, oldCalls + 1);
+    assert.deepEqual(f.errors, []);
+  } finally { release.resolve(); await f.manager.close(); }
+});
