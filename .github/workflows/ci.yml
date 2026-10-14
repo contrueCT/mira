@@ -15,7 +15,8 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Main baseline measured 14m43s; retain all gates and allow terminal coverage.
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:18.6

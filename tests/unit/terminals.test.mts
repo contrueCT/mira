@@ -368,3 +368,40 @@ test('cancelled or expired reads snapshot persisted output without waiting for a
     assert.equal(later.output, 'result');
   } finally { await manager.close(); }
 }));
+
+test('ended processes retain capacity and handles until their accepted logs finish draining', async () => fixture(async (_manager, base) => {
+  const originalConcurrent = terminalLimits.concurrent, originalRetained = terminalLimits.retained;
+  for (const mode of ['capacity', 'retention'] as const) {
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+    (terminalLimits as { concurrent: number }).concurrent = mode === 'capacity' ? 2 : 16;
+    (terminalLimits as { retained: number }).retained = mode === 'retention' ? 2 : 128;
+    const manager = new TerminalManager({ cwd: base, writeOverflowInput: async (runId, content) => {
+      if (runId.startsWith('terminal:') && content === 'slow') await gate;
+      return writeWakeInput({ rootDirectory: path.join(base, `drain-${mode}`), sourceDirectory, runId, content });
+    } });
+    try {
+      const slow = await manager.exec(owner, { command: 'printf slow', yield_ms: 0 });
+      await manager.exec(owner, { command: mode === 'capacity' ? 'printf slow' : 'printf fast', yield_ms: 0 });
+      const deadline = Date.now() + 5000;
+      while (manager.list(owner).some(session => session.status === 'running')) { assert.ok(Date.now() < deadline); await delay(10); }
+      assert.equal(manager.list(owner).find(session => session.session_id === slow.session_id)?.output_pending, true);
+      const pending = await manager.write(owner, { session_id: slow.session_id, offset: 0, yield_ms: 0 });
+      assert.equal(pending.output, ''); assert.equal(pending.output_pending, true); assert.equal(pending.has_more, true);
+      if (mode === 'capacity') await assert.rejects(manager.exec(owner, { command: 'printf extra', yield_ms: 0 }), /capacity/);
+      else {
+        await manager.exec(owner, { command: 'printf next', yield_ms: 0 });
+        assert.ok(manager.list(owner).some(session => session.session_id === slow.session_id), 'draining handle must not be evicted');
+      }
+      release();
+      const final = await manager.write(owner, { session_id: slow.session_id, offset: 0, yield_ms: 5000 });
+      assert.equal(final.output, 'slow'); assert.equal(final.status, 'exited');
+      const empty = await manager.write(owner, { session_id: slow.session_id, offset: final.next_offset, yield_ms: 5000 });
+      assert.equal(empty.output, ''); assert.equal(empty.has_more, false); assert.equal(empty.output_pending, false);
+      assert.equal(manager.list(owner).find(session => session.session_id === slow.session_id)?.output_pending, false);
+    } finally {
+      release(); await manager.close();
+      (terminalLimits as { concurrent: number }).concurrent = originalConcurrent;
+      (terminalLimits as { retained: number }).retained = originalRetained;
+    }
+  }
+}));

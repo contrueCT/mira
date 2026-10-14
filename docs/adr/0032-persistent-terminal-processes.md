@@ -34,7 +34,11 @@ Later output needs a later poll and index. Ended handles retain unread output.
 `has_more` also remains true while accepted output awaits durable storage;
 `output_pending` distinguishes that backlog. A bounded/cancelled poll snapshots
 already-persisted chunks without waiting for the whole backlog, even after the
-process exits. The index never claims to include bytes not yet stored.
+process exits. A terminal result is fully drained only when it is no longer
+running and `has_more` is false; an exit code alone is not that claim. Owner
+listing also exposes `output_pending`. The index never claims to include bytes
+not yet stored. Draining sessions keep both their slot and handle until accepted
+output settles, so shutdown still owns every outstanding log write.
 
 Calls are serialized per handle; separate handles run independently. Input is
 acknowledged by the supervisor before a result can claim it was accepted; this is
@@ -44,8 +48,8 @@ internal unobservable write queue. Remaining input bytes are reported. A request
 not acknowledged in one second, or whose wait is cancelled, becomes an unknown
 ordinary tool effect. Wait defaults to 1 second, accepts 0..10 seconds, and returns
 early when output arrives. Model output is at most 8 KiB per page, in addition to
-the common runtime result projection. At most 16 live/closing processes and 128
-retained handles exist; only ended handles can be evicted. Old logs remain files.
+the common runtime result projection. At most 16 live/closing/output-draining sessions and 128
+retained handles exist; only fully drained ended handles can be evicted. Old logs remain files.
 Each session retains at most 64 MiB of output. Crossing the limit stops it and
 explicitly reports that excess output was not retained. Pipe reads are paused until ordinary immutable spool chunks are persisted. PTY
 reads keep draining to avoid node-pty’s 200 ms post-exit socket teardown losing

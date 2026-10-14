@@ -50,7 +50,7 @@ export class TerminalManager {
   }
   list(owner: string) {
     return [...this.#sessions.values()].filter(session => session.owner === owner).map(session => ({ session_id: session.id, launch_call_id: session.callId,
-      status: session.status, bytes: session.bytes, exit_code: session.code, input_bytes_remaining: 1024 * 1024 - session.inputBytes }));
+      status: session.status, output_pending: session.pendingLogs > 0, bytes: session.bytes, exit_code: session.code, input_bytes_remaining: 1024 * 1024 - session.inputBytes }));
   }
   #lookup(owner: string, id: string): Session | undefined { const session = this.#sessions.get(id); return session?.owner === owner ? session : undefined; }
   #unavailable(id: string, offset: number): TerminalResult {
@@ -70,10 +70,10 @@ export class TerminalManager {
     if (!args.command || args.command.length > 32_768 || args.command.includes('\0')) throw new TerminalError('Invalid terminal command');
     if (this.#closed) throw new TerminalError('Terminal manager is closed');
     signal?.throwIfAborted();
-    if ([...this.#sessions.values()].filter(session => session.status === 'running' || session.closing).length >= terminalLimits.concurrent) throw new TerminalError('Terminal capacity reached; close an existing session first');
+    if ([...this.#sessions.values()].filter(session => session.status === 'running' || session.closing || session.pendingLogs > 0).length >= terminalLimits.concurrent) throw new TerminalError('Terminal capacity reached; close running sessions or wait for accepted logs to drain');
     // Never evict a live process. Old ended sessions remain readable until the bounded handle cache fills.
     if (this.#sessions.size >= terminalLimits.retained) {
-      const ended = [...this.#sessions.values()].find(session => session.status !== 'running' && !session.closing);
+      const ended = [...this.#sessions.values()].find(session => session.status !== 'running' && !session.closing && session.pendingLogs === 0);
       if (ended) this.#sessions.delete(ended.id); else throw new TerminalError('Terminal capacity reached');
     }
     const host = fork(new URL('./terminal-process.mts', import.meta.url), [], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], execArgv: [] });
