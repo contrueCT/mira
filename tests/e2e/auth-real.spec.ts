@@ -28,7 +28,6 @@ test('optional password gates real private HTTP and attachments with remote Host
   const browser = await playwright.chromium.launch({ headless: true, args: ['--host-resolver-rules=MAP mira-auth.test 127.0.0.1', '--no-proxy-server'],
     ...(process.env['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'] ? { executablePath: process.env['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'] } : {}) });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-  await context.tracing.start({ screenshots: true, snapshots: true });
   const page = await context.newPage();
   const otherContext = await browser.newContext(); const other = await otherContext.newPage();
   const root = await mkdtemp(path.join(os.tmpdir(), 'mira-auth-real-'));
@@ -134,7 +133,6 @@ test('optional password gates real private HTTP and attachments with remote Host
     await page.screenshot({ path: testInfo.outputPath('first-failure.png'), fullPage: true }).catch(() => undefined);
     throw error;
   } finally {
-    await context.tracing.stop({ path: testInfo.outputPath('auth-trace.zip') }).catch(() => undefined);
     await browser.close(); await app?.close(); await service?.close(); await db?.close(); await rm(root, { recursive: true, force: true });
   }
 });
