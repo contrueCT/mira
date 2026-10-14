@@ -98,3 +98,40 @@ The Web service owns a private source-external `attachments/` directory beside `
 - Model-facing references include immutable local paths for ordinary file tools. Runtime hydrates supported media through a hash-verified resolver, preserving durable reference metadata rather than base64 in event/context history. Capability and model request payload limits can produce an explicit file-reference fallback.
 
 `tests/unit/attachments.test.mts` tests storage, bounds, path/symlink rejection, inert MIME and protected HTTP. `tests/recovery/attachments.test.mts` uses isolated PostgreSQL to check immutable envelopes, explicit publication and restart. Synthetic provider checks do not establish live model connectivity.
+
+## One-shot delayed delivery
+
+Web exposes persistent extension scheduling and rescans active installations at
+startup/UTC deadlines independently of Dreaming or active model work.
+`extension_inspect` includes records from removed installations for reconciliation.
+The finite demo CLI only scans at startup. Reminder rules live in
+`examples/extensions/reminders.ts`; it is not installed automatically. See
+[ADR 0022](../../docs/adr/0022-durable-single-shot-delivery.md).
+### Running user messages
+
+Ordinary Web sends now use durable live input: while Mira is generating, the
+current model request yields; while a tool is executing, the message waits for
+that one tool to settle. Remaining old-batch tools do not start first. Receipt
+means persisted, not model-read. No new stop/pause control is exposed. External
+Event/Wake ingress continues to queue normally. See [ADR 0024](../../docs/adr/0024-live-user-input.md).
+## Delegated workers
+
+LocalWebService exposes `subagent_spawn`, `subagent_status`, `subagent_send`,
+`subagent_wait`, and `subagent_cancel` to the main model. Workers use the same Pi
+runtime and inherited injected transport, separate PostgreSQL transcripts, ordinary
+workspace tools and their own read-only history. Four active workers maximum;
+no child-to-child spawning, main Memory lifecycle, direct chat or attachment
+publication. Completion enters the normal main Event/Wake queue. Followup retains
+prior results and recovery observations. Existing run details display lifecycle
+state; the main UI gains no entry point. See ADR 0025 for context and cancellation
+limits and the distinction from a sandbox or persistent job platform.
+
+### Combined scheduling, live input and children
+
+Only committed Web live-input notifications release an active child wait. Each
+wait also checks pending input for its already-claimed parent run, including input
+committed between the tool intent and execute call. This never cancels the child.
+Child completion and scheduled deadlines remain ordinary queued Event/Wakes;
+background completion does not clear an errored main run or implicitly retry it.
+Children refresh the same file-skill metadata at natural requests through their
+own transcript, without main persona/Memory bootstrap or checkpoint ownership.

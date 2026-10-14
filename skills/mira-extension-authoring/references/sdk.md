@@ -207,3 +207,14 @@ this callback; actions belong in normal model-selected tools. Honor cancellation
 and register cleanup, because in-flight sampling leases the same resources as a
 tool and an uncooperative callback can delay unloading. See the SDK README and
 ADR 0019 for exact serialized byte/count limits and recovery semantics.
+
+## Persistent one-shot schedules
+
+Use `context.schedules` for deadlines that must survive restart, not `interval` or
+in-memory timeouts. Create with stable `key`, canonical UTC millisecond `dueAt`,
+fixed Event, optional Wake and UTC expiresAt. Scope is the installation. Use
+get/list after unknown outcomes. Replace/cancel require the observed version;
+inspect conflict/settled and returned status. Enqueued means queue publication,
+not a user message, and cannot be retracted. Calendar/time-zone/DST and missed-time
+policy stay in extensions. Adapt repository examples/extensions/reminders.ts.
+There is no core cron API. Do not resample occurredAt on retries.

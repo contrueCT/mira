@@ -4,8 +4,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type AgentToolCall, type StreamFn } from '@earendil-works/pi-agent-core';
 import { getCurrentSystemMessage, getSystemMessageText, isContextOverflow, type Api, type Model, type ToolResultMessage } from '@earendil-works/pi-ai';
 import { buildSessionProjection, convertToLlm, formatSkillsForPrompt, type SessionEntry, type Skill } from '@earendil-works/pi-coding-agent';
-import type { DurableWriter, RecoverySnapshot, ToolExecution, WakeWriter } from '@mira/life';
-import { DurableOperationError } from '@mira/life';
+import type { DurableWriter, RecoverySnapshot, ToolExecution, WakeWriter, LiveInputWriter } from '@mira/life';
+import { DurableOperationError, prepareWakeTurn } from '@mira/life';
 import { validateAttachmentReferences, validateWakeInputArtifact, type WriteOverflowInput, type CognitionRuntime, type CognitionTurn } from '@mira/cognition';
 import { hydrateAttachments, messageAttachments, type ResolveAttachment } from './attachments.ts';
 import { observationEntry, sanitizeEntries, validateObservation, withRecoveryAdvisory, type RecoveryOperation, type ToolDiagnostic } from './observations.ts';
@@ -42,7 +42,8 @@ export interface PiRuntimeOptions {
    * or failed preparation. Cleanup never schedules an extra model request. */
   finishTools?: () => Promise<void>;
   miraPrompt?: MiraPromptOptions;
-  /** Refresh metadata before each natural model request. Requires miraPrompt;
+  /** Refresh metadata before each natural model request. Without miraPrompt, a
+   * worker gets a standalone skills section, never the main persona or Memory;
    * bodies remain ordinary files read on demand, never bootstrap Memory. */
   loadSkills?: (signal: AbortSignal) => Promise<Skill[]>;
   /** Sample once per natural model request. The host pins activation identity;
@@ -53,6 +54,10 @@ export interface RecoveredContext {
   snapshot: RecoverySnapshot; entries: SessionEntry[]; messages: AgentMessage[];
   projectionEntries: SessionEntry[];
   recovery: { status: 'complete' | 'observed-incomplete'; operations: RecoveryOperation[] };
+}
+class LiveInputPendingError extends Error {
+  override name = 'LiveInputPendingError';
+  constructor() { super('New user input is ready at the next safe boundary'); }
 }
 class ContextOverflowError extends Error {
   override name = 'ContextOverflowError';
@@ -83,7 +88,6 @@ export class PiDurableRuntime implements CognitionRuntime {
 
   constructor(options: PiRuntimeOptions) {
     if (typeof options.streamFn !== 'function') throw new Error('Injected streamFn is required');
-    if (options.loadSkills && !options.miraPrompt) throw new Error('Skill loading requires the Mira prompt');
     if (options.loadContextProviders && !options.miraPrompt) throw new Error('Context providers require the Mira prompt');
     validateTools(options.tools ?? []);
     contextBudget(options.model, options.autoCompaction);
@@ -292,6 +296,45 @@ export class PiDurableRuntime implements CognitionRuntime {
     return writer;
   }
 
+  private liveWriter(): LiveInputWriter | undefined {
+    const writer = this.options.writer as LiveInputWriter;
+    return typeof writer.loadLiveInputs === 'function' && typeof writer.onLiveInput === 'function'
+      && typeof writer.appendLiveInput === 'function' && typeof writer.tryBeginWakeTool === 'function'
+      && typeof writer.tryAppendWakeFinal === 'function' ? writer : undefined;
+  }
+
+  private async consumeLiveInputs(turn: CognitionTurn, finalized = false): Promise<void> {
+    const writer = this.liveWriter();
+    if (!writer) return;
+    let current = await this.recoverInternal();
+    for (const supplemental of await writer.loadLiveInputs(turn.id)) {
+      const { request, inputRecordId } = supplemental;
+      const saved = inputRecordId ? current.entries.find(candidate => candidate.id === inputRecordId) : undefined;
+      const artifact = saved?.type === 'message' ? messageOverflowInput(saved.message) : undefined;
+      // A finalized Wake only validates durable evidence. Its spool is no
+      // longer needed for cognition and must not be recreated during completion.
+      const writeOverflow = finalized ? async (_id: string, content: string) => {
+        if (!artifact || artifact.bytes !== new TextEncoder().encode(content).byteLength)
+          throw new RecoveryBlockedError('Finalized live input overflow evidence differs from its source');
+        return artifact;
+      } : this.options.writeOverflowInput ?? (async () => { throw new Error('Live input overflow requires an ordinary file writer'); });
+      const input = await prepareWakeTurn({ id: request.eventId, claimedAt: request.event.occurredAt,
+        status: 'running', requests: [request], inputRecordId, finalRecordId: null },
+        writeOverflow, 65_536);
+      const message: AgentMessage = Object.assign({ role: 'user' as const, content: input.input, timestamp: Date.parse(input.occurredAt) },
+        input.attachments?.length ? { miraAttachments: structuredClone(input.attachments), miraAttachmentsInInput: true } : {},
+        input.overflowInput ? { miraOverflowInput: structuredClone(input.overflowInput) } : {});
+      if (inputRecordId) {
+        if (saved?.type !== 'message' || !isDeepStrictEqual(saved.message, message)) throw new RecoveryBlockedError('Live input differs from its persisted message');
+      } else {
+        if (finalized) throw new RecoveryBlockedError('Finalized Wake has an unread live input');
+        const entry = messageEntry(message, current.entries.at(-1)?.id ?? null);
+        await this.publish(() => writer.appendLiveInput(turn.id, request.wake.id, current.snapshot.version, encodeEntry(entry), this.controller.signal));
+        current = await this.recoverInternal();
+      }
+    }
+  }
+
   continueTurn(turn: CognitionTurn, signal?: AbortSignal): Promise<void> {
     return this.exclusive(async () => {
       const writer = this.wakeWriter();
@@ -307,6 +350,7 @@ export class PiDurableRuntime implements CognitionRuntime {
       if (turn.overflowInput !== undefined) validateWakeInputArtifact(turn.overflowInput);
       if (linkedInput?.type === 'message' && linkedInput.message.role === 'user' && turn.input !== '' && (linkedInput.message.content !== turn.input || !isDeepStrictEqual(messageAttachments(linkedInput.message), turn.attachments ?? []) || !isDeepStrictEqual(messageOverflowInput(linkedInput.message), turn.overflowInput) || linkedInput.message.timestamp !== Date.parse(turn.occurredAt))) throw new RecoveryBlockedError('Wake input differs from its durable input; restore the original input configuration');
       if (run.finalRecordId) {
+        await this.consumeLiveInputs(turn, true);
         const final = current.entries.find(entry => entry.id === run.finalRecordId);
         if (!linkedInput || final?.type !== 'message' || final.message.role !== 'assistant' || final.message.stopReason !== 'stop' || final.message.content.some(block => block.type === 'toolCall') || current.entries.indexOf(final) <= current.entries.indexOf(linkedInput)) throw new RecoveryBlockedError('Wake final link is not a successful terminal assistant message');
         return;
@@ -321,8 +365,6 @@ export class PiDurableRuntime implements CognitionRuntime {
         current = await this.recoverInternal();
       }
       await this.runInternal(undefined, turn);
-      const completed = await writer.loadWakeRun(turn.id);
-      if (!completed.finalRecordId) throw new Error('Wake did not produce a successful terminal assistant reply');
     }, signal);
   }
 
@@ -333,11 +375,34 @@ export class PiDurableRuntime implements CognitionRuntime {
   private async runInternal(input?: AgentMessage, turn?: CognitionTurn): Promise<RecoveredContext> {
     let overflowRecovered = false;
     while (true) {
-      try { return await this.runAttempt(input, turn); }
+      try {
+        if (turn) await this.consumeLiveInputs(turn);
+        const result = await this.runAttempt(input, turn);
+        if (!turn) return result;
+        const completed = await this.wakeWriter().loadWakeRun(turn.id);
+        if (completed.finalRecordId) return result;
+        // Pi may terminate after a known tool result without a final. Read
+        // pending input after recovery/link awaits, preserving this run's single
+        // overflow-recovery allowance when the newest receipt continues it.
+        const live = this.liveWriter();
+        if (live && (await live.loadLiveInputs(turn.id)).some(item => item.inputRecordId === null)) {
+          input = undefined;
+          continue;
+        }
+        throw new Error('Wake did not produce a successful terminal assistant reply');
+      }
       catch (error) {
         if (error instanceof ContextOverflowError && !overflowRecovered && contextBudget(this.options.model, this.options.autoCompaction).enabled) {
           overflowRecovered = true;
           await this.compactInternal({}, true);
+          input = undefined;
+          continue;
+        }
+        if (error instanceof LiveInputPendingError) {
+          await this.verified();
+          // Close only unstarted siblings using the ordinary durable recovery
+          // observation. Completed effects retain their exact known outcomes.
+          await this.recoverInternal();
           input = undefined;
           continue;
         }
@@ -363,9 +428,20 @@ export class PiDurableRuntime implements CognitionRuntime {
       }
       const outcomes = new Map<string, ToolResultMessage>();
       let awaitingModelCompletion = false;
-      let interruption: ToolInterruptionError | ContextOverflowError | undefined;
+      let requestActive = false;
+      const live = turn ? this.liveWriter() : undefined;
+      let interruption: ToolInterruptionError | ContextOverflowError | LiveInputPendingError | undefined;
       const attemptGate = (): void => { this.gate(); if (interruption) throw interruption; };
       const fail = (error: unknown): Error => interruption && !this.stopped ? interruption : this.stop(error);
+      const yieldToInput = (): never => {
+        interruption = new LiveInputPendingError();
+        agent.abort();
+        throw interruption;
+      };
+      const checkLiveInput = async (): Promise<void> => {
+        if (live && (await live.loadLiveInputs(turn!.id)).some(item => item.inputRecordId === null)) yieldToInput();
+        attemptGate();
+      };
       const continuedMessages = (state: RecoveredContext): AgentMessage[] => {
         const messages = structuredClone(state.messages);
         if (turn && messages.at(-1)?.role === 'assistant') messages.push({ role: 'user',
@@ -451,10 +527,13 @@ export class PiDurableRuntime implements CognitionRuntime {
           try {
             attemptGate();
             await this.verified();
+            await checkLiveInput();
             awaitingModelCompletion = true;
             const budget = contextBudget(model, this.options.autoCompaction);
             const hydrated = await hydrateAttachments(context.messages, model, this.options.resolveAttachment, this.controller.signal);
             await this.verified();
+            await checkLiveInput();
+            requestActive = true;
             const stream = await this.options.streamFn(model, { ...context, messages: hydrated }, { ...options, maxTokens: Math.min(options?.maxTokens ?? budget.reserveTokens, budget.reserveTokens) });
             return stream;
           } catch (error) { throw fail(error); }
@@ -507,6 +586,23 @@ export class PiDurableRuntime implements CognitionRuntime {
                 parentId = entry.id;
               }
             }
+            // Task workers share the public file-skill catalog, not Mira's
+            // persona/Memory bootstrap. Publish metadata through the same fenced
+            // transcript before every natural request, with bodies read on demand.
+            if (!config && this.options.loadSkills) {
+              const state = await this.recoverInternal();
+              if (state.snapshot.version !== version) throw new Error('Context changed during skill preparation');
+              const skills = formatSkillsForPrompt(await this.options.loadSkills(this.controller.signal));
+              await this.verified();
+              attemptGate();
+              if (getCurrentSystemMessage(state.messages)?.sections?.['mira.skills.v1'] !== skills) {
+                const entry = messageEntry({ role: 'system', content: '', sections: { 'mira.skills.v1': skills }, timestamp: Date.now() }, parentId);
+                const record = encodeEntry(entry);
+                version = await this.publish(() => this.options.writer.append(version, record, this.controller.signal));
+                attemptGate();
+                parentId = entry.id;
+              }
+            }
             let messages = await refreshMessages();
             const budget = contextBudget(this.options.model, this.options.autoCompaction);
             const estimate = estimateRequestTokens(messages, context.tools ?? [], this.options.model);
@@ -519,6 +615,7 @@ export class PiDurableRuntime implements CognitionRuntime {
               messages = continuedMessages(compacted);
             }
             if (estimateRequestTokens(messages, context.tools ?? [], this.options.model) > budget.inputTokens) throw new Error('Context exceeds input budget after compaction');
+            await checkLiveInput();
             return { context: { messages, tools: context.tools ?? [] } };
           } catch (error) { throw fail(error); }
         },
@@ -532,7 +629,9 @@ export class PiDurableRuntime implements CognitionRuntime {
             if (!issuedCall || !isDeepStrictEqual(jsonValue(context.toolCall), jsonValue(issuedCall.call))) throw new Error('Tool call differs from durably recorded assistant request');
             const args = jsonValue(context.args);
             const intent = { callId: id, assistantRecordId: issuedCall.recordId, toolName: context.toolCall.name, requestedArguments: jsonValue(context.toolCall.arguments), arguments: args, occurredAt: new Date().toISOString() };
-            await this.publish(() => this.options.writer.beginTool(version, intent));
+            if (live) {
+              if (!await this.publish(() => live.tryBeginWakeTool(turn!.id, version, intent))) yieldToInput();
+            } else await this.publish(() => this.options.writer.beginTool(version, intent));
             attemptGate();
             executions.set(id, { intent, outcome: null });
           } catch (error) { throw fail(error); }
@@ -567,12 +666,29 @@ export class PiDurableRuntime implements CognitionRuntime {
       // after construction so Pi's normal loop emits its declaration/change
       // events, and our awaited subscriber durably saves them before projection.
       this.agent = agent;
+      const unsubscribeInput = live?.onLiveInput(runId => {
+        // Service close/writer loss uses the lifetime controller. User steering
+        // only stops an in-flight model request, never the current tool/summary.
+        if (runId === turn!.id && requestActive && !interruption && !this.stopped) {
+          interruption = new LiveInputPendingError();
+          agent.abort();
+        }
+      });
       const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
         try {
           attemptGate();
-          if (event.type === 'tool_execution_end' && !outcomes.has(event.toolCallId)) throw new Error(`Tool did not produce a durable outcome: ${event.toolCallId}`);
+          // Pi validates names/schemas before beforeToolCall; even malformed
+          // old siblings must yield to pending user input at the public start event.
+          if (event.type === 'tool_execution_start') await checkLiveInput();
+          if (event.type === 'tool_execution_end' && !outcomes.has(event.toolCallId)) {
+            // Invalid names/schemas bypass the intent hook. A receipt arriving
+            // after their start snapshot must still precede this stale error.
+            await checkLiveInput();
+            throw new Error(`Tool did not produce a durable outcome: ${event.toolCallId}`);
+          }
           if (event.type !== 'message_end') return;
           const message = event.message;
+          if (message.role === 'assistant') requestActive = false;
           if (awaitingModelCompletion && message.role === 'assistant' && isContextOverflow(message, this.options.model.contextWindow) && !message.content.some(block => block.type === 'toolCall')) {
             interruption = new ContextOverflowError();
             this.agent?.abort();
@@ -604,9 +720,12 @@ export class PiDurableRuntime implements CognitionRuntime {
           }
           const terminal = turn && message.role === 'assistant' && message.stopReason === 'stop' && !message.content.some(block => block.type === 'toolCall');
           const record = encodeEntry(entry);
-          version = await this.publish(() => terminal
-            ? this.wakeWriter().appendWakeFinal(turn!.id, version, record, this.controller.signal)
+          const next = await this.publish(() => terminal
+            ? live ? live.tryAppendWakeFinal(turn!.id, version, record, this.controller.signal)
+              : this.wakeWriter().appendWakeFinal(turn!.id, version, record, this.controller.signal)
             : this.options.writer.append(version, record));
+          if (next === null) yieldToInput();
+          version = next ?? yieldToInput();
           attemptGate();
           parentId = entry.id;
           if (message.role === 'assistant') {
@@ -626,7 +745,7 @@ export class PiDurableRuntime implements CognitionRuntime {
         if (agent.state.errorMessage) throw new Error(agent.state.errorMessage);
         return await this.recoverInternal();
       } finally {
-        unsubscribe(); this.agent = undefined;
+        unsubscribeInput?.(); unsubscribe(); this.agent = undefined;
         await this.options.finishTools?.();
       }
   }
@@ -742,3 +861,4 @@ function validateProjection(messages: AgentMessage[]): void {
 }
 
 export { createHistoryTools } from './history-tools.ts';
+export { freezeSubagentContext } from './subagent-context.ts';

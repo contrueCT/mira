@@ -344,10 +344,16 @@ test('wake slice down/up preserves earlier receipts and context for a fresh clai
     await first.receive(event('legacy'), wake('legacy'));
     await first.append(0, record(uuid('legacy-record')));
     await first.close();
-    // Roll back the newer search and Memory migrations before the Wake slice.
+    // First remove actual newer feature migrations, retaining the exact base sequence below.
+    while (!(await db.admin.query('SELECT name FROM mira_migrations ORDER BY id DESC LIMIT 1')).rows[0].name.startsWith('1760000000004_')) {
+      await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
+    }
+    // Roll back Dreaming, search and Memory, then the Wake slice itself.
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
+    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
+    assert.equal((await db.admin.query("SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema=$1 AND table_name='wake_runs'", [db.schema])).rows[0].n, 0, 'Wake slice itself is actually rolled back');
     assert.equal((await db.admin.query('SELECT count(*)::integer AS n FROM wake_requests')).rows[0].n, 1);
     assert.equal((await db.admin.query('SELECT count(*)::integer AS n FROM context_records')).rows[0].n, 1);
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'up' });

@@ -225,11 +225,11 @@ test('committed skill prompt survives an uncertain append response without dupli
   assert.equal(calls, 1); assert.equal(memoryLoads, 1); assert.deepEqual(revisions(), committed);
 });
 
-for (const fault of ['cas', 'owner-loss', 'loader'] as const) test(`skill preparation ${fault} failure fences model requests`, async t => {
+for (const worker of [false, true]) for (const fault of ['cas', 'owner-loss', 'loader'] as const) test(`${worker ? 'worker' : 'Mira'} skill preparation ${fault} failure fences model requests`, async t => {
   const { sourceDirectory, miraHome } = await fixture(t); await skill(miraHome, 'fenced', 'FENCED_METADATA');
   const writer = new MemoryWriter(); const loader = createSkillLoader({ sourceDirectory, miraHome }); let calls = 0;
-  if (fault === 'cas') writer.beforeAppend = async record => { if (JSON.stringify(record.payload).includes(MIRA_PROMPT_SECTION)) writer.state.version++; };
-  await assert.rejects(new PiDurableRuntime({ writer, model, miraPrompt: prompt, loadSkills: async abort => {
+  if (fault === 'cas') writer.beforeAppend = async record => { if (JSON.stringify(record.payload).includes(worker ? 'mira.skills.v1' : MIRA_PROMPT_SECTION)) writer.state.version++; };
+  await assert.rejects(new PiDurableRuntime({ writer, model, ...(worker ? {} : { miraPrompt: prompt }), loadSkills: async abort => {
     const skills = await loader(abort);
     if (fault === 'owner-loss') writer.controller.abort(Error('Skill refresh ownership loss'));
     if (fault === 'loader') throw Error('Skill loader failed');
@@ -238,9 +238,33 @@ for (const fault of ['cas', 'owner-loss', 'loader'] as const) test(`skill prepar
   assert.equal(calls, 0);
 });
 
-test('skill loader cancellation and missing Mira prompt are explicit', async t => {
+test('skill loader cancellation is explicit', async t => {
   const { sourceDirectory, miraHome } = await fixture(t);
   const loader = createSkillLoader({ sourceDirectory, miraHome }); const abort = new AbortController(); abort.abort(Error('Cancelled skill refresh'));
   await assert.rejects(loader(abort.signal), /Cancelled skill refresh/);
-  assert.throws(() => new PiDurableRuntime({ writer: new MemoryWriter(), model, streamFn: () => streamOf(assistant()), loadSkills: loader }), /requires the Mira prompt/);
+});
+
+
+test('standalone worker skills refresh at natural requests without loading Mira persona or Memory', async t => {
+  const { sourceDirectory, miraHome } = await fixture(t);
+  await skill(sourceDirectory, 'worker-skill', 'WORKER_METADATA_FIRST');
+  const writer = new MemoryWriter(); let calls = 0; let loads = 0;
+  const loader = createSkillLoader({ sourceDirectory, miraHome });
+  const runtime = new PiDurableRuntime({ writer, model, autoCompaction: { enabled: false },
+    loadSkills: async signal => { loads++; return loader(signal); }, tools: [effectTool(async () => {
+      await skill(sourceDirectory, 'worker-skill', 'WORKER_METADATA_CHANGED'); return result;
+    })], streamFn: (_model, context) => {
+      calls++; const system = getCurrentSystemPrompt(context.messages);
+      assert.match(system, /TASK_SCOPED_CONTRACT/);
+      assert.doesNotMatch(system, /# Mira System Prompt|miraMemory|BODY_ONLY_SENTINEL/);
+      if (calls === 1) { assert.match(system, /WORKER_METADATA_FIRST/); return streamOf(toolCalls('worker-change')); }
+      assert.match(system, /WORKER_METADATA_CHANGED/); assert.doesNotMatch(system, /WORKER_METADATA_FIRST/);
+      return streamOf(assistant('worker done'));
+    } });
+  await runtime.appendMessage({ role: 'system', content: 'TASK_SCOPED_CONTRACT', timestamp: Date.now() });
+  await runtime.run(input('Only inspect assigned files'));
+  assert.equal(calls, 2); assert.equal(loads, 2);
+  assert.ok(!JSON.stringify(writer.state.records).includes('miraMemory'));
+  const restored = new PiDurableRuntime({ writer, model, loadSkills: async () => { throw Error('must not load during recovery'); }, streamFn: () => { throw Error('must not call during recovery'); } });
+  assert.match(getCurrentSystemPrompt((await restored.recover()).messages), /TASK_SCOPED_CONTRACT/);
 });

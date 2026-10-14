@@ -104,3 +104,14 @@ History 使用 `history_records` 薄表维护四类原始记录的全局 UUID，
 ## 聊天附件
 
 [ADR 0021](adr/0021-chat-attachments.md) 定义双向不可变本地快照、消息原子绑定、显式 send_attachment 发布和 provider 中立持久引用。请求边界加载图片；视频初始只给普通文件引用，模型显式 read 后才可由内置 Google Gemini 经 Pi payload hook 原生理解，PDF/Word由模型普通工具按需解析。浏览器仍走受保护 fetch/Blob，压缩与恢复保留引用，不增加第二套 runtime。
+
+## 持久单次延迟投递
+
+[ADR 0022](adr/0022-durable-single-shot-delivery.md) 将持久 UTC 投递与提醒业务分开。
+Life 只拥有 stable key / dueAt / opaque Event / optional Wake / expiresAt 契约；
+Persistence 复用 fenced writer 原子保存入队与终态，Web timer 仅为补扫提示。
+Extension SDK 绑定持久安装身份，扩展负责时区、DST、提醒内容与错过策略。
+取消只阻止尚未入队的投递，已入队结果明确不可撤回；不加入 cron 或后台任务引擎。
+## 运行中用户插话
+
+[ADR 0024](adr/0024-live-user-input.md) 增加可选 LiveInputWriter：普通 Web 用户输入先持久保存、按顺序追加到活动 Wake，原始输入冻结。生成中的模型请求让出；当前单工具完成后新输入先入模型，旧批次未启动工具如实收束为 not-started。final 与新输入在同一 fenced 事务仲裁。没有暂停按钮、关键词判定或未知操作重放。

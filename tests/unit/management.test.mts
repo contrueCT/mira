@@ -93,3 +93,16 @@ test('durable projections retain known, unknown and no-change distinctions witho
   assert.deepEqual(memoryReceipt({ preparedAt: now, receipt: { commit: null } }), { state: 'unchanged', commit: null });
   assert.deepEqual(memoryReceipt({ preparedAt: now, receipt: { commit: 'c'.repeat(40) } }), { state: 'changed', commit: 'c'.repeat(40) });
 });
+
+
+test('run HTTP retains child projection and refresh metadata while excluding raw child payloads', async t => {
+  const app = createLocalHttp({ backend: backend({ run: async () => ({ ...run, refreshCursor: 'scoped-frozen-page', childDetailsUnavailable: true, executions: [{ ...run.executions[0]!, supplemental: true }] }) }), port });
+  t.after(() => app.close());
+  const response = await app.inject({ url: `/api/runs/${id}`, headers: readHeaders });
+  assert.equal(response.statusCode, 200);
+  const detail = response.json();
+  assert.equal(detail.executions[0].supplemental, true);
+  assert.equal(detail.refreshCursor, 'scoped-frozen-page');
+  assert.equal(detail.childDetailsUnavailable, true);
+  assert.doesNotMatch(response.body, new RegExp(secret));
+});

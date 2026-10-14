@@ -538,21 +538,33 @@ test('mocked attachments show compact odd-left image grid and protected preview 
 });
 
 test('mocked attachment-only uncertain send retains the ordered envelope across refresh and explicit retry', async ({ page }) => {
-  const uploaded: Array<{ id: string; name: string; mimeType: string; size: number; sha256: string }> = [];
-  const posts: unknown[] = [];
+  const selectedNames = ['one.pdf', 'two.pdf'];
+  const files = selectedNames.map((name, index) => ({ id: `10000000-0000-4000-8000-00000000000${index + 1}`, name, mimeType: 'application/pdf', size: 3, sha256: 'b'.repeat(64) }));
+  const respondedNames: string[] = []; const posts: unknown[] = [];
+  let releaseFirst!: () => void;
+  const firstReleased = new Promise<void>(resolve => { releaseFirst = resolve; });
   await page.route('**/api/timeline', route => route.fulfill({ json: { items: [], nextCursor: null } }));
-  await page.route('**/api/attachments?*', route => {
+  await page.route('**/api/attachments?*', async route => {
     expect(route.request().headers()['x-mira-client']).toBe('web');
-    const file = { id: `10000000-0000-4000-8000-00000000000${uploaded.length + 1}`, name: new URL(route.request().url()).searchParams.get('name')!, mimeType: 'application/pdf', size: route.request().postDataBuffer()!.length, sha256: 'b'.repeat(64) };
-    uploaded.push(file); return route.fulfill({ json: file });
+    const name = new URL(route.request().url()).searchParams.get('name');
+    const file = files.find(item => item.name === name); expect(file).toBeDefined();
+    if (name === selectedNames[0]) await firstReleased;
+    respondedNames.push(file!.name); await route.fulfill({ json: file });
   });
   await page.route('**/api/messages', route => { posts.push(route.request().postDataJSON()); return route.abort('failed'); });
   await page.goto('/');
-  await page.getByLabel('选择附件', { exact: true }).setInputFiles([{ name: 'one.pdf', mimeType: 'application/pdf', buffer: Buffer.from('one') }, { name: 'two.pdf', mimeType: 'application/pdf', buffer: Buffer.from('two') }]);
+  await page.getByLabel('选择附件', { exact: true }).setInputFiles([{ name: selectedNames[0]!, mimeType: 'application/pdf', buffer: Buffer.from('one') }, { name: selectedNames[1]!, mimeType: 'application/pdf', buffer: Buffer.from('two') }]);
+  try {
+    // Finish the second upload first: network arrival/completion order must not
+    // become the attachment order selected by the user.
+    await expect(page.getByRole('button', { name: '查看附件 two.pdf', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeDisabled();
+  } finally { releaseFirst(); }
   await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeEnabled();
+  expect(respondedNames).toEqual(['two.pdf', 'one.pdf']);
   await page.getByRole('button', { name: '发送消息', exact: true }).click();
   await expect(page.getByRole('button', { name: '核对并重试' })).toBeVisible();
-  expect(posts).toHaveLength(1); expect(posts[0]).toMatchObject({ text: '', attachmentIds: uploaded.map(file => file.id) });
+  expect(posts).toHaveLength(1); expect(posts[0]).toMatchObject({ text: '', attachmentIds: files.map(file => file.id) });
   await page.reload(); await expect(page.getByRole('button', { name: '核对并重试' })).toBeVisible(); expect(posts).toHaveLength(1);
   await page.getByRole('button', { name: '核对并重试' }).click(); await expect.poll(() => posts.length).toBe(2); expect(posts[1]).toEqual(posts[0]);
   expect(await page.evaluate(() => localStorage.length)).toBe(0);

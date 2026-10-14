@@ -85,7 +85,7 @@ The integration command requires an explicit local `mira_test` database and Post
 
 checkpoint 与 receipt 由只追加表保护；相同输入可重试，替换恢复输入、重新关联不同 commit 或更改无变化结论均拒绝。存在待处理 checkpoint 时，`completeWakeRun` 与 SQL 触发器都禁止完成；`load`/Wake 恢复核对 final 关联和完成状态。所有方法沿用专用连接、实际锁与 epoch 检查。快照 lineage 只说明该 Wake 结束时观察到工作空间版本，不能据此声称全部变更由 agent 创作。
 
-`migrate({direction:'down'})` 一次仅回滚一个迁移。当前四个迁移依次为原始上下文、Wake 队列、Memory lineage、History 索引；四次 down 才回到初始空库。History 索引回滚不删除原始记录，其它迁移回滚可能丢失数据，只能用于显式隔离测试，不能自动清理用户库。
+`migrate({direction:'down'})` 一次仅回滚一个迁移。当前八个迁移依次为原始上下文、Wake 队列、Memory lineage、History 索引、Dreaming progress、单次日程、用户补充输入、子代理；八次 down 才回到初始空库。History 索引回滚不删除原始记录，其它迁移回滚可能丢失数据，只能用于显式隔离测试，不能自动清理用户库。
 
 ## Read-only History
 
@@ -118,3 +118,77 @@ const older = latest.nextCursor
 `tests/unit/history.test.mts` covers request/cursor validation, SQL parameterization, read-only cleanup, metadata-only paging, payload preservation and explicit size failures with an offline driver double. `tests/integration/history.test.mts` requires the real isolated PostgreSQL service and covers scope, lexical/Chinese behavior, exact originals, bounds, large writes, stable chronological paging across timestamp offsets/ties and appended checkpoints, and read-without-ownership. Offline doubles do not establish actual PostgreSQL behavior.
 
 `history(miraId)` also implements `RunHistoryReader`. `findEventRun(externalEventId)` uses an exact parameterized event-key join in that fixed Mira, returning only `{eventId,runId}`. `pageRuns` reads fixed run metadata and exact membership counts, never original Wake envelopes. `readRun({id,before?,limit?})` reads the same fixed header, checkpoint/receipt metadata and context/tool references in a single read-only SQL snapshot. Neither result grows with trigger membership count. `readRunRequests` separately pages descriptions by durable receipt order (default 50/max 100); its independent scoped cursor fetches older members. Each description has a 2,048-byte display ceiling; larger originals return an explicit unavailable event reference, not partial text. The full original remains unchanged in History. It excludes records at/before `claimed_version` and after the persisted final record's version; later Wake records cannot contaminate a completed run. Records use version/kind/UUID ordering, default 50/max 100 per page, a 262,144-byte metadata cap and a bounded cursor tied to both Mira and Wake. Fetch originals separately with `read`; this adapter still never interprets Pi or returns a second runtime log. No migration or new table is added. `tests/integration/management-history.test.mts` verifies exact correlation, scope, stable pagination, no-change versus pending/changed receipts, and nonmutation on the real isolated PostgreSQL service, including 1,500- and 6,501-member coalesced batches completed through the actual fenced writer.
+
+
+## Durable one-shot scheduling
+
+`acquire` returns `DreamingWriter & SchedulingWriter` on the same dedicated connection,
+advisory lock and epoch. Scheduling adds one `scheduled_deliveries` table. It has no
+second worker, lease, job queue, runtime history, or calendar/recurrence engine.
+
+- `(miraId, owner, key)` identifies a stable occurrence. Owner is fixed by trusted
+  assembly, not supplied by an extension. `createScheduledDelivery` returns `updated`
+  at version 1, `duplicate` only for an identical complete current input, and
+  `conflict` for changed input. Retrying a create does not reset a settled occurrence.
+- `replaceScheduledDelivery` replaces the opaque input under the same key only while
+  pending at the expected version. `cancelScheduledDelivery` has the same CAS rule.
+  A successful replacement, cancellation, expiry or enqueue advances its version.
+  Versions must be positive safe integers; exhausted versions are rejected without
+  wrapping. Missing rows return `missing`, stale pending versions `conflict`, and
+  any terminal row `settled` for replace/cancel, including stale requests.
+- `dueAt` and optional `expiresAt` must be canonical UTC ISO timestamps with four-digit
+  years 0001–9999 and millisecond precision. Calendar overflows, offsets and missing
+  milliseconds are rejected. Expiry must be at or after due time and is exclusive:
+  at `expiresAt`, an occurrence is expired rather than enqueued. Callers resolve
+  time zones, DST and recurrence before calling this primitive.
+- `dispatchScheduledDeliveries(activeOwners)` reads the database clock in its fenced
+  transaction and considers only pending rows of those owners that are due. A stopped
+  extension's occurrence remains pending until its owner becomes eligible again;
+  if its expiry has passed then, it becomes `expired` without emitting. Repeated
+  owner IDs are harmless. `nextDueAt` describes only remaining eligible pending rows.
+- Ordinary `receive` and the `enqueued` marker are committed together. Event-only
+  delivery adds no Wake. Concurrent cancellation/dispatch is ordered by the existing
+  writer; a successful cancel before publication prevents it, whereas `settled` with
+  `enqueued` means the original Event/Wake is already durable and cannot be retracted.
+  Enqueue is not a claim that cognition or a remote effect has completed.
+- `getScheduledDelivery` and `listScheduledDeliveries(owner?)` return independent JSON
+  copies, including terminal rows across restart. Omitted owner is trusted Mira-scoped
+  management inspection; extension-facing services always fix their owner.
+- The adapter preserves exact opaque Event/Wake inputs. Trusted assembly must namespace
+  their IDs by scheduling owner and stable key, disjoint from every other ingress.
+  A version suffix is unnecessary because replaced pending versions never publish and
+  terminal keys cannot be reopened. Reusing another ingress identity can produce an
+  honest content conflict and roll back the whole dispatch transaction.
+- Process loss before COMMIT leaves the pending row and no event. Loss after COMMIT,
+  including a missing acknowledgement, leaves the terminal marker and ordinary queue
+  as the recovery authority. An uncertain writer stops; acquire a new writer and read
+  the row instead of assuming rollback or replaying an external action.
+
+`tests/integration/scheduling.test.mts` requires the real isolated PostgreSQL 18.6
+service and covers exact-input retries, owner/Mira isolation, cloned inputs/outputs,
+CAS and old-version suppression, cancellation ordering, event-only delivery, expiry,
+inactive owners, repeated dispatch, restart, namespace conflicts, lost COMMIT replies,
+actual ownership loss, SIGKILL before/after COMMIT, and migration down/up. The child
+fixture pauses at the actual driver COMMIT boundary; the parent kills its OS process.
+These tests must run in the real integration gate and never silently skip. A standalone
+SQL-engine check or offline fake does not establish driver/process recovery.
+### Live input
+
+The writer also implements `LiveInputWriter`. `receiveLiveInput` atomically binds
+new user receipts to an active nonfinal Wake; `wake_live_inputs` keeps supplemental
+membership separate from frozen original input. Ordered `appendLiveInput` stores
+its consumption link in the same CAS transaction as the message. Atomic tool and
+final gates yield to unread input. Duplicate receipts never notify or rebind.
+See [ADR 0024](../../docs/adr/0024-live-user-input.md).
+## Task-scoped subagents
+
+The acquired writer also implements `SubagentWriter`. `subagents(miraId)` provides
+an independent read-only reader for metadata/history after owner loss. Lists use
+SQL-bounded metadata pages; child reads include recent eight turns and bounded
+pending work; call dedupe and run associations use indexed scoped lookups. Registry and turn state use
+the existing parent writer's fenced transaction queue; transcript writers remain
+separate. Stable parent call IDs deduplicate spawn/followup. Terminal turn state and
+its parent Event/Wake commit together. Startup `interruptSubagents()` marks queued
+or running work interrupted without replay. Terminal results remain immutable.
+Migration `1760000000007_subagents.sql` has explicit up/down; down is destructive
+and must not be run on user data automatically. See ADR 0025.

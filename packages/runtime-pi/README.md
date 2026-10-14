@@ -431,3 +431,25 @@ Publication remains fenced after the file write; write, cancellation, ownership,
 byte-count or CAS failures cannot publish the checkpoint. Completed derived files
 are retained, with no automatic cleanup or additional storage service. Missing files
 produce ordinary read errors; file contents remain source material, not authority.
+
+### Live user steering
+
+With a `LiveInputWriter`, durable Wake execution yields an in-flight model request
+when committed user input arrives. The current single tool is allowed to finish;
+its old batch's remaining calls are recorded as not-started and never replayed.
+The next model request receives ordered persisted input, including attachments.
+Compaction uses its frozen candidate; inputs arriving during summary are consumed
+after checkpoint publication and before the natural request. There is no pause
+button or intent classifier. See [ADR 0024](../../docs/adr/0024-live-user-input.md).
+
+Task-scoped runtimes may use `loadSkills` without `miraPrompt`. The same public
+formatter publishes a standalone `mira.skills.v1` system section at each natural
+request through the child's fenced transcript. This does not load main Memory,
+render Mira's persona, or read skill bodies; ordinary read/bash remain explicit.
+## Task-scoped workers
+
+`freezeSubagentContext` produces a bounded, role-labelled textual snapshot of the
+current Pi projection (existing summaries retained, hidden reasoning/provider
+metadata excluded). It rejects oversized snapshots instead of silently truncating.
+Worker assembly reuses `PiDurableRuntime.run` with an independent PostgreSQL writer;
+no parent tool call is inserted into the child's protocol. See ADR 0025.

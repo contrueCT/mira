@@ -3,11 +3,11 @@ import { api, errorText, isAbort } from './api.ts';
 import { memoryReceiptText } from './MemoryPanel.tsx';
 import type { RunDetail, RunExecution, RunRequestsPage, RunSummary, RunsView } from './types.ts';
 import { useVisiblePoll } from './useVisiblePoll.ts';
-import { acceptRunRecords, emptyRunRecords, nextRunRecords } from './run-records.ts';
+import { acceptRunRecords, emptyRunRecords, nextRunRecords, nextChildRefresh, acceptChildRefresh } from './run-records.ts';
 import { acceptRunRequests, beginRunRequests, cancelRunRequests, emptyRunRequests, finishRunRequests, matchesRunRequests, seedRunRequests } from './run-requests.ts';
 
 function dateTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? '时间未记录' : new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(date); }
-const kindLabel: Record<RunExecution['kind'], string> = { model: '模型', tool: '工具', compaction: '压缩', recovery: '恢复', unavailable: '记录不可用' };
+const kindLabel: Record<RunExecution['kind'], string> = { model: '模型', tool: '工具', subagent: '子代理', compaction: '压缩', recovery: '恢复', unavailable: '记录不可用' };
 function mergeById<T extends { id: string }>(before: T[], incoming: T[]): T[] { const result = new Map(before.map(item => [item.id, item])); for (const item of incoming) result.set(item.id, item); return [...result.values()]; }
 
 function RunRecord({ id, active, onBack }: { id: string; active: boolean; onBack: () => void }) {
@@ -36,6 +36,14 @@ function RunRecord({ id, active, onBack }: { id: string; active: boolean; onBack
       if (signal.aborted) return;
       if (next.id !== id) throw new Error('读取到其他 Wake 的记录，当前详情尚未确认');
       recordsRef.current = acceptRunRecords(recordsRef.current, next);
+      const refresh = nextChildRefresh(recordsRef.current);
+      if (refresh) {
+        const page = await api<RunDetail>(`/api/runs/${encodeURIComponent(id)}?before=${encodeURIComponent(refresh)}`, { signal });
+        if (signal.aborted) return;
+        if (page.id !== id) throw new Error('无法核对此 Wake 的子代理记录');
+        recordsRef.current = acceptChildRefresh(recordsRef.current, page, refresh);
+        next.error ??= page.error;
+      }
       requestsRef.current = seedRunRequests(requestsRef.current, next.id, next.requests, next.nextRequestsCursor); setRequests(requestsRef.current);
       setDetail({ ...next, executions: recordsRef.current.executions, nextCursor: nextRunRecords(recordsRef.current)?.cursor ?? null }); setError(null);
     } catch (cause) { if (!signal.aborted && !isAbort(cause)) setError(errorText(cause)); }

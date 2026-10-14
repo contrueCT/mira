@@ -206,3 +206,12 @@ lifecycle queue, after awaiting known Loader tasks, a mismatch throws
 `ExtensionRevisionConflictError` before saving/applying. This guards a stale UI
 mutation, including repeated reload. The existing two-argument model-tool API is
 unchanged; a revision is a consistency token, not authorization.
+
+## Scheduled deliveries
+
+The optional `schedules(owner, extensionId)` callback binds SDK access to a stable
+installation. Generated entries reuse their first revision; manual entries save
+installationId through the existing configuration writer. Without a configuration
+file, the caller must supply it. `withScheduledOwners` serializes dispatch with
+explicit lifecycle changes and includes only enabled active installations.
+Disable/remove retain pending records. See [ADR 0022](../../docs/adr/0022-durable-single-shot-delivery.md).

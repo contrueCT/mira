@@ -4,6 +4,7 @@ import { defineExtension, type ExtensionContext, type ExtensionDefinition, type 
 
 const unavailable = (): never => { throw Error('Unexpected resource use'); };
 const context: ExtensionContext = {
+    schedules: { create: unavailable, get: unavailable, list: unavailable, replace: unavailable, cancel: unavailable },
   id: 'configuration-boundary-test', registerTool: unavailable, registerContextProvider: unavailable, emitEvent: unavailable,
   requestWake: unavailable, provideService: unavailable, service: unavailable,
   onCleanup: unavailable, onEvent: unavailable, publish: unavailable, interval: unavailable,

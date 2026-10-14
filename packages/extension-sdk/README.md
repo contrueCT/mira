@@ -73,3 +73,13 @@ fail activation and unwind resources. Sampling does not create an Event or Wake,
 load Memory again, or run during recovery/compaction. Cancellation stops preparation
 while actual callback resources remain leased until it settles. See
 [ADR 0019](../../docs/adr/0019-extension-context-providers.md).
+
+## Persistent one-shot delivery
+
+`context.schedules.create({ key, dueAt, event, wake?, expiresAt? })` saves one UTC
+delivery. `get(key)` and `list()` expose durable status. `replace(version, input)`
+and `cancel(key, version)` use CAS; inspect the returned delivery. `settled` with
+status `enqueued` cannot be retracted. Duplicate create requires identical complete
+data, including occurredAt. The host binds ownership to a persistent installation.
+Calendar/recurrence/missed-reminder policy belong to extensions. See
+[ADR 0022](../../docs/adr/0022-durable-single-shot-delivery.md).

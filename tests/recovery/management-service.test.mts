@@ -56,8 +56,11 @@ test('management current Memory reads do not refresh frozen context; exact reque
     const failed = await service.messageStatus('memory-failed'); assert.equal(failed.state, 'failed'); assert.equal(failed.assistant, null); assert.ok(failed.error);
     assert.equal((await service.messageStatus(first.id)).state, 'completed', 'a later run failure cannot relabel an earlier request');
     assert.equal((await service.messageStatus('missing')).state, 'unknown');
-    await service.submit({ ...first, id: 'memory-queued', text: 'A request queued behind the failing run' }); await settled(service);
-    assert.equal((await service.messageStatus('memory-queued')).state, 'submitted', 'an unclaimed request is not assigned the active run failure');
+    await service.submit({ ...first, id: 'memory-queued', text: 'New input for the unfinished failed run' }); await settled(service);
+    const supplemental = await service.messageStatus('memory-queued');
+    assert.equal(supplemental.state, 'failed', 'new input joins the unfinished run and its fresh failed attempt');
+    assert.equal(supplemental.runId, failed.runId);
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_live_inputs WHERE input_record_id IS NOT NULL')).rows[0].n, 1);
     const app = createLocalHttp({ backend: service, port: 4317 });
     try {
       const response = await app.inject({ url: `/api/runs/${status.runId}`, headers: { host: '127.0.0.1:4317', 'x-mira-client': 'web' } });

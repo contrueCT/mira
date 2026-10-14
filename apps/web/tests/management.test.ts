@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMemoryRequest, MEMORY_REQUEST_KEY, MEMORY_REQUEST_PREFIX, memoryBlocks, parseConfig, readMemoryRequest, recoverMemoryRequest, writeMemoryRequest } from '../src/management.ts';
-import { acceptRunRecords, emptyRunRecords, nextRunRecords } from '../src/run-records.ts';
+import { acceptRunRecords, emptyRunRecords, nextRunRecords, nextChildRefresh, acceptChildRefresh } from '../src/run-records.ts';
 import type { RunExecution } from '../src/types.ts';
 
 const execution = (id: string, status = 'unknown'): RunExecution => ({ id, kind: 'tool', name: 'read', occurredAt: '2026-10-13T00:00:00Z', status, error: null });
@@ -143,4 +143,67 @@ test('an oversized durable result in an older gap page replaces unknown after le
   state = acceptRunRecords(state, { executions: [execution('old-tool')], nextCursor: null });
   assert.deepEqual(state.executions.find(item => item.id === 'old-tool'), unavailable);
   assert.deepEqual(state.executions.map(item => item.id), ['old-tool', ...newer.map(item => item.id)]);
+});
+
+
+test('child turn status advances through older and gap pages without stale response regression', () => {
+  const child = (status: string): RunExecution => ({ ...execution('child-turn', status), kind: 'subagent', name: 'child-id' });
+  for (const terminal of ['completed', 'cancelled', 'interrupted', 'failed']) for (const gapPage of [false, true]) {
+    let state = acceptRunRecords(emptyRunRecords(), { executions: [child('queued')], nextCursor: gapPage ? null : 'older' });
+    if (gapPage) state = acceptRunRecords(state, { executions: [execution('newer', 'succeeded')], nextCursor: 'gap' });
+    const request = nextRunRecords(state)!;
+    state = acceptRunRecords(state, { executions: [child('running')], nextCursor: null }, request);
+    assert.equal(state.executions.find(item => item.id === 'child-turn')?.status, 'running');
+    state = acceptRunRecords(state, { executions: [child('queued')], nextCursor: null });
+    assert.equal(state.executions.find(item => item.id === 'child-turn')?.status, 'running');
+    state = acceptRunRecords(state, { executions: [child(terminal)], nextCursor: null }, request);
+    assert.equal(state.executions.find(item => item.id === 'child-turn')?.status, terminal);
+    for (const stale of ['queued', 'running', 'failed']) {
+      state = acceptRunRecords(state, { executions: [child(stale)], nextCursor: null }, request);
+      state = acceptRunRecords(state, { executions: [child(stale)], nextCursor: null });
+      assert.equal(state.executions.find(item => item.id === 'child-turn')?.status, terminal);
+    }
+  }
+});
+
+
+test('repeated supplemental child activity never bridges disjoint parent cursor windows', () => {
+  const childActivity: RunExecution = { ...execution('shared-child-effect', 'succeeded'), supplemental: true };
+  const childTurn: RunExecution = { ...execution('shared-child-turn', 'running'), kind: 'subagent', supplemental: true };
+  let state = acceptRunRecords(emptyRunRecords(), { executions: [execution('spawn-parent'), childTurn, childActivity], nextCursor: null });
+  state = acceptRunRecords(state, { executions: [execution('newer-send-parent'), childTurn, childActivity], nextCursor: 'before-newer-send' });
+  let gap = nextRunRecords(state)!;
+  assert.equal(gap.cursor, 'before-newer-send');
+  assert.deepEqual(state.pagination.gaps[0]!.boundaryIds, ['spawn-parent']);
+  state = acceptRunRecords(state, { executions: [execution('middle-parent'), childTurn, childActivity], nextCursor: 'before-middle' }, gap);
+  gap = nextRunRecords(state)!;
+  assert.equal(gap.cursor, 'before-middle', 'shared child activity must not falsely close the parent gap');
+  state = acceptRunRecords(state, { executions: [execution('spawn-parent'), childTurn, childActivity], nextCursor: null }, gap);
+  assert.equal(nextRunRecords(state), null);
+  assert.deepEqual(state.executions.filter(item => !item.supplemental).map(item => item.id), ['spawn-parent', 'middle-parent', 'newer-send-parent']);
+});
+
+
+test('loaded child older than latest fifty records refreshes after history is exhausted without changing parent cursors', () => {
+  const child = (status: string): RunExecution => ({ ...execution('old-child', status), kind: 'subagent', supplemental: true });
+  let state = acceptRunRecords(emptyRunRecords(), { executions: [execution('spawn'), child('running')], nextCursor: null, refreshCursor: 'frozen-spawn-page' });
+  const latest = { executions: Array.from({ length: 50 }, (_, i) => execution(`new-${i}`)), nextCursor: 'before-new', refreshCursor: 'frozen-latest' };
+  state = acceptRunRecords(state, latest);
+  state = acceptRunRecords(state, { executions: [execution('spawn'), child('running')], nextCursor: null, refreshCursor: 'frozen-spawn-page' }, nextRunRecords(state)!);
+  assert.equal(nextRunRecords(state), null);
+  state = acceptRunRecords(state, latest);
+  const pagination = state.pagination;
+  assert.equal(nextChildRefresh(state), 'frozen-spawn-page');
+  state = acceptChildRefresh(state, { executions: [execution('spawn'), child('completed')], nextCursor: 'irrelevant-to-parent', refreshCursor: 'frozen-spawn-page' }, 'frozen-spawn-page');
+  assert.equal(state.executions.find(item => item.id === 'old-child')?.status, 'completed');
+  assert.deepEqual(state.pagination, pagination);
+  assert.equal(nextChildRefresh(state), null);
+});
+
+test('transient child page failure retains bounded retry then clears without creating durable unavailable evidence', () => {
+  let state = acceptRunRecords(emptyRunRecords(), { executions: [execution('spawn')], nextCursor: null, refreshCursor: 'child-page', childDetailsUnavailable: true });
+  assert.equal(nextChildRefresh(state), 'child-page');
+  state = acceptChildRefresh(state, { executions: [execution('spawn')], nextCursor: null, refreshCursor: 'child-page' }, 'child-page');
+  assert.equal(nextChildRefresh(state), null);
+  assert.equal(state.executions.some(item => item.kind === 'unavailable'), false);
 });

@@ -94,3 +94,9 @@ scale. After COMMIT dispatch a cancellation/connection loss may leave an ambiguo
 client response; authoritative recovery is required. These tests do not prove
 exactly-once remote effects or prevent an already-running tool that ignores its
 AbortSignal from finishing.
+
+Live input recovery: `live-input.test.mts` starts independent worker processes and
+kills execution after committed receipt, input consumption, known outcome, or an
+unknown effect. It checks frozen original input, ordered supplemental links,
+context CAS, final arbitration, newest-input-first recovery and non-repeated
+side effects using a real isolated PostgreSQL database.

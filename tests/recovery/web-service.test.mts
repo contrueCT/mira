@@ -409,6 +409,7 @@ for (const recovery of ['restart', 'new-message'] as const) test(`live model HTT
         code: 'invalid_request_error', type: 'invalid_request_error',
         debug: { authorization: 'synthetic-unselected-header-secret', stack: 'synthetic-provider-stack-secret' },
       } }, { status: 400, headers: { 'x-request-id': 'synthetic-error-request-id' } });
+      if (recovery === 'new-message') assert.match(String(init?.body), /Continue with the saved request/);
       entered(); await gate;
       return new Response([
         { id: `synthetic-${call}`, choices: [{ index: 0, delta: { role: 'assistant', content: `Recovered response ${call}` }, finish_reason: null }] },
@@ -465,18 +466,19 @@ for (const recovery of ['restart', 'new-message'] as const) test(`live model HTT
     assert.equal(working.json().state, 'working'); assert.equal(working.json().error, null, 'new work clears the previous request diagnostic');
     release(); await settled(service);
     const recovered = await app.inject({ url: '/api/status', headers: readHeaders }); assert.equal(recovered.json().state, 'idle'); assert.equal(recovered.json().error, null);
-    assert.equal(requests, recovery === 'restart' ? 2 : 3);
+    assert.equal(requests, 2, 'new user input resumes the same unfinished Wake before another final');
     const completed = (await db.admin.query('SELECT run_id, input_record_id, final_record_id, completed FROM wake_runs WHERE run_id = $1', [originalRun.run_id])).rows[0];
     assert.equal(completed.run_id, originalRun.run_id); assert.equal(completed.input_record_id, originalRun.input_record_id);
     assert.ok(completed.final_record_id); assert.equal(completed.completed, true);
     assert.deepEqual((await db.admin.query('SELECT envelope FROM context_records WHERE record_id = $1', [originalRun.input_record_id])).rows, originalInput);
     assert.deepEqual((await db.admin.query("SELECT record_id, envelope->'payload'->'message' AS message FROM context_records WHERE envelope->'payload'->'message'->>'stopReason' = 'error'")).rows, errorRecords.rows);
-    const expectedTurns = recovery === 'restart' ? 1 : 2;
-    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_runs WHERE completed')).rows[0].n, expectedTurns);
-    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM life_events')).rows[0].n, expectedTurns);
+    const expectedEvents = recovery === 'restart' ? 1 : 2;
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_runs WHERE completed')).rows[0].n, 1);
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_live_inputs WHERE input_record_id IS NOT NULL')).rows[0].n, expectedEvents - 1);
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM life_events')).rows[0].n, expectedEvents);
     const timeline = await app.inject({ url: '/api/timeline', headers: readHeaders });
-    assert.equal(timeline.json().items.filter((item: { role: string }) => item.role === 'user').length, expectedTurns);
-    assert.equal(timeline.json().items.filter((item: { role: string }) => item.role === 'assistant').length, expectedTurns);
+    assert.equal(timeline.json().items.filter((item: { role: string }) => item.role === 'user').length, expectedEvents);
+    assert.equal(timeline.json().items.filter((item: { role: string }) => item.role === 'assistant').length, 1);
     assert.match(timeline.body, /Recovered response 2/); assert.doesNotMatch(timeline.body, forbidden);
     for (const table of ['context_records', 'life_events', 'wake_requests', 'wake_runs', 'wake_run_requests', 'tool_executions', 'wake_memory_checkpoints', 'wake_memory_receipts']) {
       assert.doesNotMatch(JSON.stringify((await db.admin.query(`SELECT row_to_json(t) AS record FROM ${table} t`)).rows), forbidden, table);

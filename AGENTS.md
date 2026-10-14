@@ -26,6 +26,9 @@
 - [ADR 0019](docs/adr/0019-extension-context-providers.md)：扩展 ContextProvider 与工具捕获同一代，在自然模型请求采样有来源/预算的观察，复用现有 system 持久快照；失败/取消/旧代不复用旧数据，不额外 Wake 或改变 Memory 加载。
 - [ADR 0020](docs/adr/0020-settings-management.md)：既有设置窗口内增加 Memory 总览/自然语言请求、扩展管理及按 Wake 的只读历史；主聊天不加入口，接收与完成分开，不回填配置或原始诊断，不新增日志。
 - [ADR 0021](docs/adr/0021-chat-attachments.md)：聊天共用不可变附件存储与引用，正文/有序附件原子绑定既有 Event/Wake；send_attachment 仅显式已知发布投影。图片原生输入，视频统一普通文件，只有模型显式 read 后内置 Google Gemini 的 MP4/WebM 才通过公开 payload hook 原生理解；PDF/Word只给工具引用，历史不存媒体 base64。
+- [ADR 0024](docs/adr/0024-live-user-input.md)：普通 Web 插话先持久保存为冻结原始 Wake 之外的有序补充输入；生成请求让出，当前单工具完成后先读新输入，旧 siblings 保持 not-started；final 与输入原子仲裁，无暂停按钮/关键词判定。
+- [ADR 0023](docs/adr/0023-on-demand-public-skills.md)：公开 OpenAI pdf/doc/transcribe、agent-browser 与 Tavily CLI 指导；只随源码分发技能/必要脚本及许可，依赖由模型普通工具按需准备，应用不自动解析附件、不捆绑浏览器或模型。
+- [ADR 0025](docs/adr/0025-task-scoped-subagents.md)：task-scoped child 复用 Pi/PG 独立 transcript，主 Mira 唯一 WakeLoop/Memory；4 并发、无嵌套、完成与父 Event/Wake 原子提交；重启 interrupted 不重放，fork=all 是显式有界角色投影而非原协议克隆。
 - 实际允许依赖和出口以 `scripts/boundaries.json` 与各包 `package.json` 为准；新增时最小开放
 
 ## 按需指引
@@ -78,3 +81,4 @@ pnpm check
 - 后续代码经草稿 PR 提交；未经用户确认不合并、不绕过保护、不部署
 - 行为、配置、命令、依赖、公开接口变化与对应文档/本指引在同一 PR 更新
 - 不输出或提交用户秘密；不自动引入付费调用、账户、凭据或权限扩张
+- [ADR 0022](docs/adr/0022-durable-single-shot-delivery.md)：持久单次UTC投递与版本CAS；Event/Wake和入队状态同一fenced事务，扩展负责提醒/时区/DST/过期政策。owner使用持久安装身份，disable/remove保留pending暂停；不改Dreaming、不加通用job引擎。

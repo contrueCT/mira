@@ -39,13 +39,17 @@ export interface ExtensionMutationView {
 export interface RunSummaryView { id: string; occurredAt: string; status: 'running' | 'completed'; requestCount: number }
 export interface RunsView { items: RunSummaryView[]; nextCursor: string | null }
 export interface RunExecutionView {
+  /** Child projections do not belong to the parent run cursor frontier. */
+  supplemental?: true;
   id: string; occurredAt: string;
-  kind: 'model' | 'tool' | 'compaction' | 'recovery' | 'unavailable';
+  kind: 'model' | 'tool' | 'subagent' | 'compaction' | 'recovery' | 'unavailable';
   name: string | null; status: string;
   /** Whitelisted fixed diagnostic only, never raw errors or payload fragments. */
   error: string | null;
 }
 export interface RunDetailView extends RunSummaryView {
+  childDetailsUnavailable?: true;
+  refreshCursor?: string;
   requests: Array<{ eventId: string; source: string; type: string; reason: string | null }>;
   nextRequestsCursor: string | null;
   assistant: AssistantReplyView | null; memory: MemoryReceiptView;

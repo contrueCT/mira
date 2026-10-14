@@ -19,6 +19,7 @@
 - cwd 只是默认位置，无应用目录限制或产品隔离环境；主模型通过自然语言 Prompt/对话决定调用或澄清，不注入 authorize 或合成批准证据
 - 完整 Mira Prompt 必须到达实际请求，包括无 Memory 和当前上下文恢复；`loadMemory` 在初始化及压缩刷新时读取当前 Memory；普通请求/重启沿用最新持久快照，不得变成每 Wake 重读/重注入或文件变更通知；自动压缩沿用 runtime 默认预算，见 ADR 0016
 - `skills.ts` 仅加载源码 `skills/` 与 `${MIRA_HOME}/skills`（默认 `~/.mira/skills`），使用 Pi 显式路径及 `includeDefaults:false`；内置同名优先并报告诊断，缺失用户目录为空，不扩大到 `.pi` / `.agents` 扫描
+- ADR 0024：普通 Web submit 使用 receiveLiveInput，先持久补充输入再让出模型请求；当前单工具不取消，HTTP receipt 不代表模型已读。外部 ingress 继续普通 receive，不加停止/暂停按钮。
 - 启动恢复、停机和错误处理不能生成第二个活跃认知写者
 - 持久化故障只通过现有 status/HTTP 显示固定临时 notice，明确无诊断落库承诺；仅接受可信实例标签，普通错误仍受保护，不添加工具 chip/trace 或成本字段
 - Web CLI 默认通过 `web-extensions.ts` 初始化/读取 `${MIRA_HOME}/extensions.json` 与 artifact store，管理工具默认可用；已有文件不覆盖，显式 `MIRA_EXTENSIONS` 错误不回退。初始化不安装或激活新代码，程序化/演示入口仍使用显式扩展选项
@@ -34,3 +35,6 @@
 ## External SDK 接入
 
 见 ADR 0017。`external-http.ts` 和 `http.ts` 在既有 127.0.0.1 listener 上提供三条 `/api/external/*` 路由，Web 同源规则不变。外部请求拒绝浏览器来源，逐次校验 sender/token；`external-access.ts`/`external-access-cli.mts` 管理源码、Memory、artifacts 外的私有配置，默认关闭、CLI 无 token 输出、下次认证生效。`external-ingress.ts` 绑定 external 来源并使用同一 writer；事件与 Wake 保持完整不可变信封。sendNotification 仅保存并投影带来源/时间的 notice，不发模型请求。Secrets 不进入 Event/Context/日志；普通 Shell 与同 OS 账户边界不变。
+
+- `scheduling.ts` 是独立单次UTC投递组装与timer，使用同一fenced writer和Event/Wake队列；不停/重试失败认知、不改Dreaming。日期/时区/提醒策略仅在扩展，见ADR 0022。
+- 组合边界：child wait 查询当前已claim run 的持久 pending input 并监听已提交提示，补 intent→execute 空窗；child completion 与调度都只入普通队列，后台结果不清除失败主轮。child skills 仅独立元数据及普通 read，不能注入主persona/Memory。

@@ -43,7 +43,10 @@
     "tests/unit/video-read-tool.test.mts",
     "tests/unit/runtime-attachments.test.mts",
     "tests/unit/overflow-attachment-recovery.test.mts",
-    "tests/unit/attachments.test.mts"
+    "tests/unit/attachments.test.mts",
+    "tests/unit/live-input.test.mts",
+    "tests/unit/bundled-skills.test.mts",
+    "tests/unit/subagents.test.mts"
   ],
   "exclude": [
     "node_modules",

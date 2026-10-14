@@ -5,7 +5,7 @@ import type { WakeRun, WakeWriter } from './index.ts';
 export interface WakeLoopOptions {
   writer: WakeWriter;
   /** Fresh adapter per turn: failed in-memory state is never recovery authority. */
-  createRuntime: () => CognitionRuntime;
+  createRuntime: (run: WakeRun) => CognitionRuntime;
   writeOverflowInput: WriteOverflowInput;
   /** UTF-8 bytes for inline batch input; larger batches remain one turn and are
    * materialized in full. This is not a total provider context/token budget. */
@@ -76,8 +76,9 @@ export async function prepareWakeTurn(run: WakeRun, writeOverflowInput: WriteOve
     ...(attachments.length ? { attachments } : {}), ...(overflowInput ? { overflowInput } : {}) };
 }
 
-/** Drain only explicit wake requests, never event-only history. Arrivals during
- * cognition are claimed in the next batch; an active turn is never preempted. */
+/** Drain only explicit wake requests, never event-only history. Ordinary arrivals
+ * are claimed in the next batch. A LiveInputWriter/runtime may append user input
+ * inside the active Wake; the loop still owns one continuous run at a time. */
 export class WakeLoop {
   private readonly options: WakeLoopOptions;
   constructor(options: WakeLoopOptions) {
@@ -102,7 +103,7 @@ export class WakeLoop {
         signal?.throwIfAborted();
         // Even an already-saved final is validated by the runtime before the
         // database marks completion. Generic storage cannot interpret Pi JSON.
-        await this.options.createRuntime().continueTurn(turn, signal);
+        await this.options.createRuntime(run).continueTurn(turn, signal);
         if (this.options.beforeComplete) {
           signal?.throwIfAborted();
           await writer.verifyActive();

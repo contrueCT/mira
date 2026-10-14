@@ -1,0 +1,9 @@
+# Public upstream provenance
+
+Source: https://github.com/vercel-labs/agent-browser/tree/1165952d74ceed98fdc2dd97190ad41f44dd0e24/skills/agent-browser
+
+Tag: `v0.39.1`; commit: `1165952d74ceed98fdc2dd97190ad41f44dd0e24`. Apache-2.0, complete upstream license in `LICENSE`.
+
+Mira changes (2026-10-14): remove foreign tool-allowlist/hidden metadata; replace global CLI plus automatic Chrome installation with pinned user-owned on-demand CLI setup with lifecycle scripts disabled and the official Node launcher (the pinned postinstall can rewrite a global symlink); add lightweight reading, task sessions, current refs, uncertain outcome handling and the existing runtime guidance. Core workflows remain served by the installed official CLI, not copied or reimplemented. README/package metadata were inspected but are not vendored.
+
+Installation adaptation is based on the pinned official [postinstall hook](https://github.com/vercel-labs/agent-browser/blob/1165952d74ceed98fdc2dd97190ad41f44dd0e24/scripts/postinstall.js) and [Node launcher](https://github.com/vercel-labs/agent-browser/blob/1165952d74ceed98fdc2dd97190ad41f44dd0e24/bin/agent-browser.js). These are referenced, not copied; actual native CLI/browser startup remains unverified in this integration.

@@ -220,7 +220,7 @@ test('management run headers omit unbounded membership while preserving exact to
   const query = mock.queries.find(item => item.parameters)!;
   assert.match(query.sql, /SELECT count\(\*\) FROM wake_run_requests members/);
   assert.doesNotMatch(query.sql, /externalEventId|wakeReceiptId|receiptOrder|json_agg\(json_build_object\('wakeReceiptId'/);
-  assert.deepEqual(query.parameters, ['mira-a', id, 1, null, null, null, 262_144]);
+  assert.deepEqual(query.parameters, ['mira-a', id, 1, null, null, null, 262_144, false]);
   assert.equal(mock.queries[0]!.sql, 'BEGIN READ ONLY');
 });
 
@@ -250,4 +250,21 @@ test('trigger-member pages have independent scoped cursors and bounded descripti
   await assert.rejects(history.readRunRequests({ id: contextId, before: first.nextCursor }), HistoryError);
   await assert.rejects(store().history('mira-b').readRunRequests({ id, before: first.nextCursor }), HistoryError);
   await assert.rejects(history.readRun({ id, before: first.nextCursor }), HistoryError);
+});
+
+
+test('run refresh cursors retain an exact inclusive tuple while ordinary pagination remains strict', async t => {
+  const run = { kind: 'wake', id, miraId: 'mira-a', occurredAt: now, claimedVersion: 0, inputRecordId: null, finalRecordId: null, status: 'running', requestCount: 1 };
+  const mock = mockDatabase(t, { run, memory: null, records: [{ id: secondId, kind: 'tool', occurredAt: now, version: 28 }], hasMore: true });
+  const history = store().history('mira-a');
+  const first = await history.readRun({ id }); assert(first?.refreshCursor); assert(first.nextCursor);
+  const inclusive = JSON.parse(Buffer.from(first.refreshCursor, 'base64url').toString('utf8')) as unknown[];
+  const strict = JSON.parse(Buffer.from(first.nextCursor, 'base64url').toString('utf8')) as unknown[];
+  assert.deepEqual(inclusive.slice(1), [28, 'tool', secondId, true]);
+  assert.deepEqual(strict, inclusive.slice(0, 4));
+  await history.readRun({ id, before: first.refreshCursor });
+  await history.readRun({ id, before: first.nextCursor });
+  const queries = mock.queries.filter(query => query.parameters);
+  assert.deepEqual(queries[1]!.parameters, ['mira-a', id, 50, 28, 'tool', secondId, 262_144, true]);
+  assert.deepEqual(queries[2]!.parameters, ['mira-a', id, 50, 28, 'tool', secondId, 262_144, false]);
 });
