@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-当前增量包含 PostgreSQL 持久上下文、合并唤醒、单认知循环、Pi 执行/压缩、普通 Memory、Memory-only Git 快照、通用文件/Shell、只读历史查询、Cordis 手工/生成扩展生命周期与同轮工具更新，以及假 provider CLI 演示、Pi 内置模型目录、显式自定义连接与模型列表发现。新增 Fastify 本地 HTTP 与 React/Vite 单 Timeline、模型设置和一条命令启动；尚未做真实模型联通验收。未实现的 Memory/Extensions 管理页仍仅代表职责边界。
+当前增量包含 PostgreSQL 持久上下文、合并唤醒、单认知循环、Pi 执行/压缩、普通 Memory、Memory-only Git 快照、通用文件/Shell、只读历史查询、Cordis 手工/生成扩展生命周期与同轮工具更新，以及假 provider CLI 演示、Pi 内置模型目录、显式自定义连接与模型列表发现。新增 Fastify 本地 HTTP 与 React/Vite 单 Timeline、模型设置和一条命令启动；尚未做真实模型联通验收。设置窗口已包含 Memory 总览与自然语言管理、扩展生命周期管理及按 Wake 的只读历史，详见 [设置管理](docs/adr/0020-settings-management.md)。
 
 - [最新设计 v0.5](docs/design/architecture-v0.5.md)
 - [System Prompt 设计 v0.1](docs/design/system-prompt-design-v0.1.md)与[实际模板 v0.2](packages/runtime-pi/prompts/mira-system-v0.2.md)
@@ -35,6 +35,8 @@
 Dreaming 在本地 Web 配置 Memory 时默认启用：有新的显式用户/扩展/外部 Wake，连续空闲 30 分钟，且自上次触发已有 3 次成功上下文压缩或超过 24 小时，才运行一次普通整理 Wake。首次启用建立基线；无新经历、仅记录事件和外部通知不会空跑。模型使用普通工具安静修订 Memory，Git 与失败恢复沿用现有链路；不强制压缩或刷新 system Memory。详见 [ADR 0018](docs/adr/0018-dreaming-memory-housekeeping.md)。
 
 基础设施优先保证连续性、真实历史、执行完整性和故障恢复。主模型根据用户对话、上下文和自然语言 Prompt 决定工具调用或澄清，没有独立 authorize 回调或授权引擎；不建立数值情绪系统、不把每次 Wake 变成新会话。
+
+内置 [公开文档、转写、浏览器和联网技能](docs/adr/0023-on-demand-public-skills.md)沿用普通 read/bash；仅提供说明与必要脚本，依赖按需准备，不预装浏览器、OCR 或音频模型。安装与云端调用边界见[按需运行工具](docs/development/runtime-tools.md)。
 
 ## 目录
 

@@ -1,0 +1,81 @@
+{
+  "files": [
+    {
+      "path": "skills/pdf/LICENSE.txt",
+      "source": "https://github.com/openai/skills/blob/77963424cd7687fd52e5fcfdd3f08d826ab9b1ab/skills/.curated/pdf/LICENSE.txt",
+      "commit": "77963424cd7687fd52e5fcfdd3f08d826ab9b1ab",
+      "upstreamSha256": "4dd13869245e356246a5b770723247bbb80a8f07a181d1d3d873a1734297cdb9",
+      "modified": false
+    },
+    {
+      "path": "skills/pdf/SKILL.md",
+      "source": "https://github.com/openai/skills/blob/77963424cd7687fd52e5fcfdd3f08d826ab9b1ab/skills/.curated/pdf/SKILL.md",
+      "commit": "77963424cd7687fd52e5fcfdd3f08d826ab9b1ab",
+      "upstreamSha256": "d108cf2b36355ab37eb5962933f4d09785ec002f3105c506129320209306b9d2",
+      "modified": true
+    },
+    {
+      "path": "skills/doc/LICENSE.txt",
+      "source": "https://github.com/openai/skills/blob/45d05d75363abf13f99d09e899d61e07b8010685/skills/.curated/doc/LICENSE.txt",
+      "commit": "45d05d75363abf13f99d09e899d61e07b8010685",
+      "upstreamSha256": "4dd13869245e356246a5b770723247bbb80a8f07a181d1d3d873a1734297cdb9",
+      "modified": false
+    },
+    {
+      "path": "skills/doc/SKILL.md",
+      "source": "https://github.com/openai/skills/blob/45d05d75363abf13f99d09e899d61e07b8010685/skills/.curated/doc/SKILL.md",
+      "commit": "45d05d75363abf13f99d09e899d61e07b8010685",
+      "upstreamSha256": "0a635585817d1ac96e8e512114d08258b70f9e54ce0052078a258291ac13a8ed",
+      "modified": true
+    },
+    {
+      "path": "skills/doc/scripts/render_docx.py",
+      "source": "https://github.com/openai/skills/blob/45d05d75363abf13f99d09e899d61e07b8010685/skills/.curated/doc/scripts/render_docx.py",
+      "commit": "45d05d75363abf13f99d09e899d61e07b8010685",
+      "upstreamSha256": "52b3c3158913ebcad2ada7b8193970b70453239e255054aa2d60c1683af08751",
+      "modified": false
+    },
+    {
+      "path": "skills/transcribe/LICENSE.txt",
+      "source": "https://github.com/openai/skills/blob/0ed635aad23fb73b98f75e0f99f407ffcaeba4ea/skills/.curated/transcribe/LICENSE.txt",
+      "commit": "0ed635aad23fb73b98f75e0f99f407ffcaeba4ea",
+      "upstreamSha256": "4dd13869245e356246a5b770723247bbb80a8f07a181d1d3d873a1734297cdb9",
+      "modified": false
+    },
+    {
+      "path": "skills/transcribe/SKILL.md",
+      "source": "https://github.com/openai/skills/blob/0ed635aad23fb73b98f75e0f99f407ffcaeba4ea/skills/.curated/transcribe/SKILL.md",
+      "commit": "0ed635aad23fb73b98f75e0f99f407ffcaeba4ea",
+      "upstreamSha256": "f530021da9f377362ee4214e0bc689cbb5404640d2eb88ee272d51d61f530a09",
+      "modified": true
+    },
+    {
+      "path": "skills/transcribe/references/api.md",
+      "source": "https://github.com/openai/skills/blob/0ed635aad23fb73b98f75e0f99f407ffcaeba4ea/skills/.curated/transcribe/references/api.md",
+      "commit": "0ed635aad23fb73b98f75e0f99f407ffcaeba4ea",
+      "upstreamSha256": "a2bf7e59d69aa127b176255c5c01afbafda4e3029b12b4413e75074233ffb36d",
+      "modified": false
+    },
+    {
+      "path": "skills/transcribe/scripts/transcribe_diarize.py",
+      "source": "https://github.com/openai/skills/blob/0ed635aad23fb73b98f75e0f99f407ffcaeba4ea/skills/.curated/transcribe/scripts/transcribe_diarize.py",
+      "commit": "0ed635aad23fb73b98f75e0f99f407ffcaeba4ea",
+      "upstreamSha256": "d623b1fed1491b7ca4b7b5b393089165e3581a83d90d5a57868241f1b2a5d951",
+      "modified": false
+    },
+    {
+      "path": "skills/agent-browser/SKILL.md",
+      "source": "https://github.com/vercel-labs/agent-browser/blob/1165952d74ceed98fdc2dd97190ad41f44dd0e24/skills/agent-browser/SKILL.md",
+      "commit": "1165952d74ceed98fdc2dd97190ad41f44dd0e24",
+      "upstreamSha256": "3a7520e64de2dfaa516b6721c001e84e06e3c06a187b82af029ae721540ebfac",
+      "modified": true
+    },
+    {
+      "path": "skills/agent-browser/LICENSE",
+      "source": "https://github.com/vercel-labs/agent-browser/blob/1165952d74ceed98fdc2dd97190ad41f44dd0e24/LICENSE",
+      "commit": "1165952d74ceed98fdc2dd97190ad41f44dd0e24",
+      "upstreamSha256": "014bb31e83d5c2e76aea1cc6e82217346ab41362f32cb355ad0f5c10aa0aeaff",
+      "modified": false
+    }
+  ]
+}

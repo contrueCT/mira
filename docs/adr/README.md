@@ -56,3 +56,5 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 - [0020 设置管理界面](0020-settings-management.md)：Accepted，2026-10-13；现有设置内展示真实 Memory 总览、普通自然语言请求、扩展生命周期与按 Wake 的安全历史投影，主聊天布局不变。
 
 - [0021 聊天附件](0021-chat-attachments.md)：用户批准双向文件/图片/视频、左侧加号/拖拽/粘贴及原生视频；统一不可变引用，Google Gemini 原生视频映射，PDF/Word由模型工具解析。
+
+- [0023 公开技能与按需工具](0023-on-demand-public-skills.md)：Accepted，2026-10-14；复用公开 OpenAI 文档/转写和 agent-browser 技能，Tavily 直接 CLI，按需用户态依赖，保持普通 read/bash 与主模型判断。
