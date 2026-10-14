@@ -118,7 +118,7 @@ test('responses omit internal fields and sanitize backend errors, status diagnos
   const secret = 'synthetic-provider-secret-stack-path';
   const app = createLocalHttp({ backend: backend({
     status: async () => ({ state: 'error', mode: 'live', model: 'example-model', error: secret, apiKey: secret }),
-    timeline: async before => { assert.equal(before, 'cursor_1'); return { items: [{ id: '1', role: 'assistant', text: 'Visible answer', occurredAt: message.occurredAt, raw: secret }], nextCursor: null, tools: [{ id: 'tool-1', name: 'read', status: 'unknown', arguments: secret }], raw: secret }; },
+    timeline: async before => { assert.equal(before, 'cursor_1'); return { items: [{ id: '1', role: 'assistant', text: 'Visible answer', occurredAt: message.occurredAt, raw: secret, child: { id: 'unused-child', runId: 'unused-run' } }], nextCursor: null, tools: [{ id: 'tool-1', name: 'read', status: 'unknown', arguments: secret }], raw: secret }; },
     submit: async () => { throw Error(secret); },
     saveSettings: async () => { throw new WebSettingsError('settings_conflict'); },
     discover: async () => ({ endpoint: `${connection.baseUrl}/models`, models: [{ id: 'safe-model', raw: secret }], headers: { authorization: secret } }),

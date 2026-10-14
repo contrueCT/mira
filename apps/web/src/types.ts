@@ -1,7 +1,6 @@
 /** Read DTOs contain no runtime trace, raw tool data or stored credentials. */
 export interface Attachment { id: string; name: string; mimeType: string; size: number; sha256: string }
 export interface TimelineItem {
-  child?: { id: string; runId: string };
   attachments?: Attachment[];
   /** Original request identity for pending-message acknowledgement only. */
   externalEventId?: string;

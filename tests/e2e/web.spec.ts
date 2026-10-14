@@ -612,16 +612,20 @@ test('mocked historical thumbnails load only near viewport and release bytes whe
   await expect(tile.locator('img')).toHaveAttribute('src', /^blob:/u); expect(reads).toBe(2);
 });
 
-test('child cards observe their own identities, show unknown honestly, recover a refresh failure and notice followups', async ({ page }, testInfo) => {
+test('child activity stays in settings, observes each identity and recovers refreshes without adding chat controls', async ({ page }, testInfo) => {
   const runId = '10000000-0000-4000-8000-000000000010';
   const childA = '10000000-0000-4000-8000-000000000011', childB = '10000000-0000-4000-8000-000000000012';
   const at = '2026-10-14T07:00:00.000Z';
   let stateA = 'running', failA = false, wrongOwner = false, queriesA = 0;
-  const unexpected: string[] = []; page.on('request', request => { if (new URL(request.url()).pathname === `/api/runs/${runId}`) unexpected.push(request.url()); });
+  const childReads: string[] = []; page.on('request', request => { if (new URL(request.url()).pathname.includes('/subagents')) childReads.push(request.url()); });
   await page.route('**/api/timeline', route => route.fulfill({ json: { items: [
-    { id: '10000000-0000-4000-8000-000000000013', role: 'assistant', text: '', occurredAt: at, child: { id: childA, runId } },
-    { id: '10000000-0000-4000-8000-000000000014', role: 'assistant', text: '', occurredAt: at, child: { id: childB, runId } },
+    // An unexpected child field cannot add a main-chat entry point.
+    { id: '10000000-0000-4000-8000-000000000013', role: 'assistant', text: '我正在核对资料。', occurredAt: at, child: { id: childA, runId } },
   ], nextCursor: null } }));
+  await page.route('**/api/runs', route => route.fulfill({ json: { items: [{ id: runId, occurredAt: at, status: 'completed', requestCount: 0 }], nextCursor: null } }));
+  await page.route(`**/api/runs/${runId}`, route => route.fulfill({ json: { id: runId, occurredAt: at, status: 'completed', requestCount: 0,
+    requests: [], nextRequestsCursor: null, assistant: null, memory: { state: 'unavailable', commit: null }, executions: [], nextCursor: null, compactionErrors: 'not-recorded', error: null } }));
+  await page.route(`**/api/runs/${runId}/subagents`, route => route.fulfill({ json: { items: [childA, childB].map(id => ({ id, runId, title: id === childA ? '核对资料' : '检查构建', createdAt: at, status: id === childA ? stateA : 'completed', current: null, updatedAt: at })), nextCursor: null } }));
   await page.route('**/api/runs/*/subagents/*', async route => {
     const url = new URL(route.request().url()); const id = url.pathname.split('/').at(-1)!;
     if (id === childA) queriesA++;
@@ -634,6 +638,13 @@ test('child cards observe their own identities, show unknown honestly, recover a
         droppedActivities: 0, result: state === 'completed' ? { text: id === childA ? '资料核对完成' : '构建检查完成', truncated: false } : null }] } });
   });
   await page.goto('/');
+  await expect(page.getByText('我正在核对资料。', { exact: true })).toBeVisible();
+  await expect(page.locator('.mira-app .child-card')).toHaveCount(0);
+  await expect(page.locator('.mira-app button')).toHaveCount(3);
+  expect(childReads).toEqual([]);
+  await page.getByRole('button', { name: '模型设置', exact: true }).click();
+  await page.getByRole('tab', { name: '运行记录', exact: true }).click();
+  await page.locator('.run-list-button').click();
   const first = page.getByRole('button', { name: '查看子任务 核对资料', exact: true });
   await expect(first).toContainText('执行中');
   await expect(page.getByRole('button', { name: '查看子任务 检查构建', exact: true })).toContainText('已完成');
@@ -659,7 +670,16 @@ test('child cards observe their own identities, show unknown honestly, recover a
   await expect(second.getByText('构建检查完成', { exact: true })).toBeVisible();
   await expect(second).not.toContainText('资料核对完成');
   await second.getByRole('button', { name: '关闭', exact: true }).click();
-  expect(queriesA).toBeGreaterThan(1); expect(unexpected).toEqual([]);
+  expect(queriesA).toBeGreaterThan(1);
+  await page.goBack();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('.mira-app .child-card')).toHaveCount(0);
+  await expect(page.getByLabel('给 Mira 发消息', { exact: true })).toBeEditable();
+  await page.goForward();
+  await expect(page.getByRole('dialog', { name: '设置', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('.mira-app button')).toHaveCount(3);
 });
 
 test('run child pagination discovers a newly followed-up older child after all previous pages were exhausted', async ({ page }) => {

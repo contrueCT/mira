@@ -2,7 +2,7 @@ import { retryConfiguration, retrySelection, retryResponse, retryFailure, synthe
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { getCurrentSystemPrompt, getCurrentTools, type TranscriptContext } from '@earendil-works/pi-ai';
 import { createLocalHttp, LocalWebService, WebSettingsStore } from '@mira/server';
 import { readExtensionConfiguration } from '@mira/extension-host';
@@ -14,7 +14,25 @@ const sourceDirectory = fileURLToPath(new URL('../../', import.meta.url));
 const port = 3216, origin = `http://127.0.0.1:${port}`;
 const exists = (file: string) => access(file).then(() => true, () => false);
 
-test('due reminder and child completion queue behind user steering at one real tool boundary and never repeat after restart', async ({ page }, testInfo) => {
+async function expectConversationOnly(page: Page) {
+  await expect(page.locator('.mira-app .child-card')).toHaveCount(0);
+  await expect(page.locator('.mira-app').getByRole('button', { name: /^查看子任务/u })).toHaveCount(0);
+  // Every rendered row must retain ordinary text or an explicit attachment.
+  await expect(page.locator('.message-row:not(:has(.message-bubble)):not(:has(.attachment-grid))')).toHaveCount(0);
+}
+async function openRunChildren(page: Page, runId: string) {
+  await page.getByRole('button', { name: '模型设置', exact: true }).click();
+  await page.getByRole('tab', { name: '运行记录', exact: true }).click();
+  await page.locator('.run-list-button').filter({ hasText: runId }).click();
+  await expect(page.getByRole('article', { name: '运行详情', exact: true })).toBeVisible();
+}
+async function closeSettings(page: Page) {
+  await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: '设置', exact: true })).toHaveCount(0);
+  await expectConversationOnly(page);
+}
+
+test('chat stays conversation-only while settings show child activity; due reminder and child completion queue behind user steering at one real tool boundary and never repeat after restart', async ({ page }, testInfo) => {
   const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-capabilities-browser-');
   const previousHome = process.env['HOME'];
   const userHome = path.join(root, 'user-home');
@@ -92,20 +110,31 @@ test('due reminder and child completion queue behind user steering at one real t
     await page.goto(origin); await send('委派独立任务，安排测试提醒，然后执行测试工具。');
     await expect.poll(() => exists(started)).toBe(true);
     await expect.poll(() => exists(childToolStarted)).toBe(true);
+    const parentRunId = (await service!.runs()).items[0]!.id;
+    await expect(page.getByRole('status').filter({ hasText: 'Mira 正在处理' })).toBeVisible();
+    await expectConversationOnly(page);
+    await page.screenshot({ path: testInfo.outputPath('main-chat-no-child-cards-running-desktop.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath('main-chat-no-child-cards-running-mobile.png'), fullPage: true });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await openRunChildren(page, parentRunId);
+    await expect(page.locator('.run-children .child-card')).toContainText('检查共享技能');
     await page.getByRole('button', { name: '查看子任务 检查共享技能', exact: true }).click();
     const childDialog = page.getByRole('dialog', { name: '检查共享技能', exact: true });
     await expect(childDialog).toBeVisible();
     await expect(childDialog.locator('.child-current')).toContainText('工具 bash · 已开始');
     await expect(childDialog).not.toContainText('MAIN_MEMORY_SENTINEL');
     await expect(childDialog).not.toContainText('printf started');
-    await page.screenshot({ path: testInfo.outputPath('child-running-desktop.png'), fullPage: true });
+    await page.screenshot({ path: testInfo.outputPath('settings-child-running-desktop.png'), fullPage: true });
     await writeFile(childToolRelease, 'continue');
     await expect.poll(() => childCalls).toBe(2);
     await expect(childDialog.getByText('已读取两个技能，正在整理结果。', { exact: true })).toBeVisible();
     await expect(childDialog.locator('.child-current')).toContainText('生成回复 · 已开始');
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.screenshot({ path: testInfo.outputPath('child-progress-mobile.png'), fullPage: true });
+    await page.screenshot({ path: testInfo.outputPath('settings-child-progress-mobile.png'), fullPage: true });
     await childDialog.getByRole('button', { name: '关闭', exact: true }).click();
+    await closeSettings(page);
     await page.setViewportSize({ width: 1280, height: 900 });
     await expect.poll(async () => (await db.admin.query("SELECT status FROM scheduled_deliveries WHERE schedule_key='joined-deadline'")).rows[0]?.status).toBe('enqueued');
     childRelease.resolve();
@@ -128,6 +157,8 @@ test('due reminder and child completion queue behind user steering at one real t
     expect((await db.admin.query("SELECT count(*)::int AS n FROM life_events WHERE event->>'type'='reminder.due'")).rows[0].n).toBe(1);
     expect((await db.admin.query("SELECT count(*)::int AS n FROM wake_memory_checkpoints WHERE mira_id LIKE 'subagent:%'")).rows[0].n).toBe(0);
     expect((await db.admin.query("SELECT count(*)::int AS n FROM tool_executions WHERE call_id='joined-stale'")).rows[0].n).toBe(0);
+    await openRunChildren(page, parentRunId);
+    await expect(page.locator('.run-children .child-card')).toContainText('检查共享技能');
     await page.getByRole('button', { name: '查看子任务 检查共享技能', exact: true }).click();
     await expect(childDialog.getByText('CHILD_JOINED_FINDING', { exact: true })).toBeVisible();
     await expect(childDialog.locator('.child-current')).toHaveCount(0);
@@ -135,6 +166,7 @@ test('due reminder and child completion queue behind user steering at one real t
     await page.keyboard.press('Escape');
     await expect(childDialog).not.toBeVisible();
     await expect(page.getByRole('button', { name: '查看子任务 检查共享技能', exact: true })).toBeFocused();
+    await closeSettings(page);
     await page.screenshot({ path: testInfo.outputPath('joined-capabilities-desktop.png'), fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({ path: testInfo.outputPath('joined-capabilities-mobile.png'), fullPage: true });
@@ -147,6 +179,8 @@ test('due reminder and child completion queue behind user steering at one real t
     expect((await db.admin.query("SELECT count(*)::int AS n FROM life_events WHERE event->>'type'='subagent.result'")).rows[0].n).toBe(1);
     expect((await db.admin.query("SELECT count(*)::int AS n FROM life_events WHERE event->>'type'='reminder.due'")).rows[0].n).toBe(1);
     expect((await db.admin.query('SELECT count(*)::int AS n FROM wake_runs')).rows[0].n).toBe(2);
+    await openRunChildren(page, parentRunId);
+    await expect(page.locator('.run-children .child-card')).toContainText('检查共享技能');
     await page.getByRole('button', { name: '查看子任务 检查共享技能', exact: true }).click();
     await expect(childDialog.getByText('CHILD_JOINED_FINDING', { exact: true })).toBeVisible();
     await expect(childDialog.locator('.child-current')).toHaveCount(0);
@@ -199,24 +233,32 @@ test('long child compacts through real tools and PostgreSQL, remains inspectable
     await page.getByLabel('给 Mira 发消息', { exact: true }).fill('让子任务检查指定证据。');
     await page.getByRole('button', { name: '发送消息', exact: true }).click();
     await expect.poll(() => summaries, { timeout: 60_000 }).toBe(1);
+    const parentRunId = (await service!.runs()).items[0]!.id;
+    await expectConversationOnly(page);
+    await openRunChildren(page, parentRunId);
     await page.getByRole('button', { name: '查看子任务 长任务压缩验证', exact: true }).click();
     const activeDialog = page.getByRole('dialog', { name: '长任务压缩验证', exact: true });
     await expect(activeDialog.locator('.child-current')).toContainText('整理任务上下文 · 已开始');
     await page.screenshot({ path: testInfo.outputPath('child-compacting-desktop.png'), fullPage: true });
     await activeDialog.getByRole('button', { name: '关闭', exact: true }).click();
+    await closeSettings(page);
     summaryRelease.resolve();
     await expect(page.getByText('子任务压缩后已完成。', { exact: true })).toBeVisible({ timeout: 60_000 });
     expect(summaries).toBe(1);
     const checkpoints = (await db.admin.query("SELECT mira_id FROM context_records WHERE envelope->>'kind'='checkpoint'")).rows;
     expect(checkpoints).toHaveLength(1); expect(checkpoints[0].mira_id).toMatch(/^subagent:/);
     expect((await db.admin.query("SELECT count(*)::int AS n FROM wake_memory_checkpoints WHERE mira_id LIKE 'subagent:%'")).rows[0].n).toBe(0);
+    await openRunChildren(page, parentRunId);
     await page.getByRole('button', { name: '查看子任务 长任务压缩验证', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: '长任务压缩验证', exact: true });
     await expect(dialog.getByText('CHILD_COMPACTED_FINDING', { exact: true })).toBeVisible();
     await expect(dialog).not.toContainText('MAIN_PRIVATE_MEMORY');
     await page.screenshot({ path: testInfo.outputPath('child-compacted-desktop.png'), fullPage: true });
+    await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+    await closeSettings(page);
     const oldCalls = childCalls; await app!.close(); app = undefined; await service!.close(); service = undefined;
     await start(); await page.reload();
+    await openRunChildren(page, parentRunId);
     await page.getByRole('button', { name: '查看子任务 长任务压缩验证', exact: true }).click();
     await expect(dialog.getByText('CHILD_COMPACTED_FINDING', { exact: true })).toBeVisible();
     expect(childCalls).toBe(oldCalls); expect(summaries).toBe(1);
