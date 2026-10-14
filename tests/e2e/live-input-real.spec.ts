@@ -6,6 +6,7 @@ import { createAssistantMessageEventStream, type TranscriptContext } from '@eare
 import { createLocalHttp, LocalWebService } from '@mira/server';
 import { createTestDatabase } from '../integration/database.mts';
 import { assistant, deferred, model, streamOf } from '../recovery/fixtures.mts';
+import { firstImage, secondImage, shortVideo } from './attachment-fixtures/media.mts';
 
 const sourceDirectory = fileURLToPath(new URL('../../', import.meta.url));
 const port = 3215; const origin = `http://127.0.0.1:${port}`;
@@ -21,7 +22,7 @@ test('ordinary send interrupts model streaming and waits for just the active rea
   page.on('request', request => { if (request.method() === 'POST' && request.url() === `${origin}/api/messages`) posts.push(request.postDataJSON()); });
   const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'live-input-real', sourceDirectory,
     workingDirectory: root, miraHome: root, spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'),
-    synthetic: true, syntheticModel: { ...model, contextWindow: 100_000 }, dreaming: { enabled: false }, autoCompaction: { enabled: false } };
+    synthetic: true, syntheticModel: { ...model, input: ['text', 'image'] as Array<'text' | 'image'>, contextWindow: 100_000 }, dreaming: { enabled: false }, autoCompaction: { enabled: false } };
   const start = async () => {
     service = await LocalWebService.open({ ...options, syntheticStream: (_model, context, streamOptions) => {
       contexts.push(structuredClone(context));
@@ -34,6 +35,11 @@ test('ordinary send interrupts model streaming and waits for just the active rea
       }
       if (contexts.length === 2) {
         expect(JSON.stringify(context.messages)).toContain('先执行第一个测试工具');
+        const images = context.messages.flatMap(message => message.role === 'user' && Array.isArray(message.content) ? message.content.filter(block => block.type === 'image') : []);
+        expect(images.map(image => image.data)).toEqual([firstImage.toString('base64'), secondImage.toString('base64')]);
+        expect(JSON.stringify(context.messages)).toContain('clip.mp4');
+        // The video remains an ordinary file reference until explicit read.
+        expect(images).toHaveLength(2);
         return streamOf({ ...assistant(), stopReason: 'toolUse', content: [
           { type: 'toolCall', id: 'active-command', name: 'bash', arguments: { command: `printf started > ${JSON.stringify(started)}; while [ ! -f ${JSON.stringify(release)} ]; do sleep 0.02; done; printf one-effect >> ${JSON.stringify(effect)}` } },
           { type: 'toolCall', id: 'old-sibling-command', name: 'bash', arguments: { command: `printf forbidden > ${JSON.stringify(forbidden)}` } },
@@ -55,6 +61,14 @@ test('ordinary send interrupts model streaming and waits for just the active rea
   try {
     await start(); await page.goto(origin); await send('开始测试'); await streaming.promise;
     await expect(page.getByRole('button', { name: /停止|暂停/ })).toHaveCount(0);
+    const chooser = page.waitForEvent('filechooser');
+    await page.getByRole('button', { name: '添加附件', exact: true }).click();
+    await (await chooser).setFiles([
+      { name: 'blue.png', mimeType: 'image/png', buffer: firstImage },
+      { name: 'gold.png', mimeType: 'image/png', buffer: secondImage },
+      { name: 'clip.mp4', mimeType: 'video/mp4', buffer: shortVideo },
+    ]);
+    await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeEnabled();
     await send('先执行第一个测试工具');
     await expect.poll(() => requestAborted).toBe(true);
     await expect.poll(() => exists(started)).toBe(true);

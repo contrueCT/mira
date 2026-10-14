@@ -4,11 +4,12 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
+import { getCurrentSystemMessage, getSystemMessageText } from '@earendil-works/pi-ai';
 import type { LiveWakeInput, RecoverySnapshot, WakeRun } from '@mira/life';
 import { prepareWakeTurn } from '@mira/life';
 import { PiDurableRuntime, encodeEntry, messageEntry } from '@mira/runtime-pi';
 import { createTestDatabase } from '../integration/database.mts';
-import { assistant, deferred, effectTool, model, result, streamOf, toolCalls } from './fixtures.mts';
+import { assistant, deferred, effectTool, model, result, streamOf, toolCalls, seed, input } from './fixtures.mts';
 import { userEvent, userWake, noOverflow } from './live-input-fixture.mts';
 
 const exec = promisify(execFile);
@@ -103,3 +104,33 @@ for (const [mode, code] of [['after-receipt', 80], ['after-consume', 81], ['afte
     } finally { await db.close(); await rm(directory, { recursive: true, force: true }); }
   });
 }
+
+test('real PostgreSQL new input during compaction commits after its frozen checkpoint and before cognition', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase(); const entered = deferred(), release = deferred();
+  try {
+    const writer = await db.acquire();
+    await seed(writer, [input('Older question '.repeat(4000)), assistant('Earlier answer '.repeat(4000)), input('Recent question'), assistant('Recent answer')]);
+    await writer.receiveLiveInput(userEvent('original'), userWake('original')); const run = await writer.claimWakeBatch(); assert.ok(run);
+    let summaries = 0, requests = 0;
+    const work = new PiDurableRuntime({ writer, model: { ...model, contextWindow: 65536 },
+      autoCompaction: { enabled: true, threshold: 0.3, reserveTokens: 512, keepRecentTokens: 1 },
+      streamFn: async (_model, context, options) => {
+        const system = getCurrentSystemMessage(context.messages);
+        if (system && getSystemMessageText(system).startsWith('你负责压缩 Mira 的 Working Context')) {
+          summaries++; entered.resolve(); await release.promise; assert.equal(options?.signal?.aborted, false);
+          return streamOf(assistant('Frozen old-history summary'));
+        }
+        requests++; assert.match(JSON.stringify(context.messages), /new-during-summary/);
+        return streamOf(assistant('Latest input after checkpoint'));
+      } }).continueTurn(await turnFor(run));
+    await entered.promise; await writer.receiveLiveInput(userEvent('new-during-summary'), userWake('new-during-summary'));
+    const unread = await writer.loadLiveInputs(run.id); assert.equal(unread[0]!.inputRecordId, null);
+    release.resolve(); await work; assert.equal(summaries, 1); assert.equal(requests, 1);
+    const state = await writer.load(); const live = await writer.loadLiveInputs(run.id);
+    const checkpoint = state.records.findIndex(record => record.kind === 'checkpoint');
+    assert.ok(checkpoint >= 0); assert.ok(state.records.findIndex(record => record.id === live[0]!.inputRecordId) > checkpoint);
+    await writer.close(); const restarted = await db.acquire();
+    await new PiDurableRuntime({ writer: restarted, model, streamFn: () => { throw Error('No new request after final'); } }).continueTurn({ ...await turnFor(run), input: '' });
+    assert.deepEqual(await restarted.load(), state);
+  } finally { release.resolve(); await db.close(); }
+});
