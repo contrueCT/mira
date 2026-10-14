@@ -28,6 +28,7 @@ test('optional password gates real private HTTP and attachments with remote Host
   const browser = await playwright.chromium.launch({ headless: true, args: ['--host-resolver-rules=MAP mira-auth.test 127.0.0.1', '--no-proxy-server'],
     ...(process.env['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'] ? { executablePath: process.env['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'] } : {}) });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  await context.tracing.start({ screenshots: true, snapshots: true });
   const page = await context.newPage();
   const otherContext = await browser.newContext(); const other = await otherContext.newPage();
   const root = await mkdtemp(path.join(os.tmpdir(), 'mira-auth-real-'));
@@ -55,8 +56,10 @@ test('optional password gates real private HTTP and attachments with remote Host
       if (response.status !== 201) throw Error(`Upload failed: ${response.status}`);
       return await response.json() as { id: string };
     });
-    await page.locator('form.composer textarea').fill('Password access synthetic test');
-    await page.getByRole('button', { name: '发送消息', exact: true }).click();
+    expect(await page.evaluate(async attachmentId => (await fetch('/api/messages', {
+      method: 'POST', headers: { 'x-mira-client': 'web', 'content-type': 'application/json' },
+      body: JSON.stringify({ id: crypto.randomUUID(), text: 'Password access synthetic test', occurredAt: new Date().toISOString(), attachmentIds: [attachmentId] }),
+    })).status, attachment.id)).toBe(201);
     await expect.poll(async () => (await service!.timeline()).items.length).toBeGreaterThan(1);
     await access(page); await page.getByRole('switch', { name: '使用访问密码' }).check();
     await page.getByLabel('设置访问密码', { exact: true }).fill(password);
@@ -75,12 +78,34 @@ test('optional password gates real private HTTP and attachments with remote Host
     await login(other, password); await expect(other.locator('form.composer')).toBeVisible();
     expect(await status(other, `/api/attachments/${attachment.id}`)).toBe(200);
     // Password change invalidates the second browser's previously valid session.
+    // Hold the real rotation response while the app's next old-cookie poll is
+    // rejected: private DOM must disappear, then the latest successful write
+    // must restore authenticated access rather than being lost on unmount.
+    await page.bringToFront();
+    let releaseRotation!: () => void;
+    const heldRotation = new Promise<void>(resolve => { releaseRotation = resolve; });
+    await page.route(`${origin}/api/auth/settings`, async route => {
+      if (route.request().method() !== 'PUT') { await route.continue(); return; }
+      const response = await route.fetch();
+      expect(response.status()).toBe(200);
+      // Inject one delayed old-cookie failure: route.fetch may already update
+      // Playwright's cookie jar before the browser receives the held response.
+      await page.route(`${origin}/api/status`, route => route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Please sign in to Mira' }) }), { times: 1 });
+      await heldRotation;
+      await route.fulfill({ response });
+    });
     await page.getByRole('button', { name: '更改访问密码', exact: true }).click();
     await page.getByLabel('当前访问密码', { exact: true }).fill(password);
     await page.getByLabel('新访问密码', { exact: true }).fill('synthetic-replacement-password');
     await page.getByLabel('再次输入新密码', { exact: true }).fill('synthetic-replacement-password');
     await page.getByRole('button', { name: '保存访问设置', exact: true }).click();
-    await expect(page.getByText('访问密码已保存，当前浏览器已登录，其他浏览器需重新登录。')).toBeVisible();
+    await expect(page.getByText('正在确认访问设置…', { exact: true })).toBeVisible();
+    await expect(page.locator('form.composer')).toHaveCount(0);
+    releaseRotation();
+    await expect(page.locator('form.composer')).toBeVisible();
+    await page.unroute(`${origin}/api/auth/settings`);
+    await access(page);
+    await expect(page.getByRole('switch', { name: '使用访问密码' })).toBeChecked();
     await other.reload(); await expect(other.getByLabel('访问密码', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: '退出登录', exact: true }).click();
     await expect(page.getByLabel('访问密码', { exact: true })).toBeVisible();
@@ -100,7 +125,11 @@ test('optional password gates real private HTTP and attachments with remote Host
     expect(await status(other, `/api/attachments/${attachment.id}`)).toBe(200);
     expect((await db.admin.query('SELECT current_database() AS name')).rows[0].name).toBe('mira_test');
     expect(errors).toEqual([]);
+  } catch (error) {
+    await page.screenshot({ path: testInfo.outputPath('first-failure.png'), fullPage: true }).catch(() => undefined);
+    throw error;
   } finally {
+    await context.tracing.stop({ path: testInfo.outputPath('auth-trace.zip') }).catch(() => undefined);
     await browser.close(); await app?.close(); await service?.close(); await db?.close(); await rm(root, { recursive: true, force: true });
   }
 });

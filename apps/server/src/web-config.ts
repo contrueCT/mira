@@ -20,7 +20,7 @@ export function subagentConcurrency(value: string | undefined): number {
 export function webPublicOrigin(value: string): string {
   let url: URL;
   try { url = new URL(value); } catch { throw new Error('MIRA_PUBLIC_ORIGIN must be an exact http(s) origin, for example http://192.168.1.20:3210'); }
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/' || value !== url.origin || ['0.0.0.0', '[::]'].includes(url.hostname)) throw new Error('MIRA_PUBLIC_ORIGIN must be an exact http(s) origin without path, credentials or wildcard bind address');
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/' || value !== url.origin || url.hostname.includes('*') || ['0.0.0.0', '[::]'].includes(url.hostname)) throw new Error('MIRA_PUBLIC_ORIGIN must be an exact http(s) origin without path, credentials or wildcard bind address');
   return url.origin;
 }
 export function webListenHost(value: string | undefined): '127.0.0.1' | '0.0.0.0' {

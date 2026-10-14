@@ -93,7 +93,7 @@ test('invalid existing defaults fail without repairing or replacing their bytes'
 });
 
 test('explicit configuration is authoritative and leaves an invalid default untouched', async () => fixture(async root => {
-  const home = path.join(root, 'home'); await mkdir(home);
+  const home = path.join(root, 'home'); await mkdir(home, { mode: 0o700 });
   const defaultFile = path.join(home, 'extensions.json'); await writeFile(defaultFile, 'not valid JSON');
   const explicitFile = path.join(root, 'selected.json');
   const document = { entries: [], hmr: false, artifactsDirectory: path.join(root, 'selected-artifacts'), note: 'explicit' };
