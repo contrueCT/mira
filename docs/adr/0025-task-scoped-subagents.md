@@ -86,7 +86,8 @@ action or impersonate the user.
 Terminal text is capped at 16 KiB in the completion Event. Larger output is saved
 through the existing ordinary input-spool writer with a full-file path and explicit
 truncation marker. Tool status exposes recent results. Existing run details show
-child identity and lifecycle state without raw task payload, hidden reasoning or
+child identity, lifecycle state and safe execution projections from the latest ten
+child history records (explicitly labelled latest activity), without raw task payload, hidden reasoning or
 system prompts. Normal Timeline never publishes a child's result automatically;
 only Mira decides what to relay.
 

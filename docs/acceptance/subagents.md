@@ -26,7 +26,8 @@ These are runtime mechanics tests, not a live model quality claim or a PostgreSQ
 `tests/recovery/subagents.test.mts` requires the existing explicit isolated
 `MIRA_TEST_DATABASE_URL` and is included in `pnpm check:all`:
 
-- Real parent intent, call-to-child mapping, terminal completion/Event/Wake transaction,
+- Real parent intent, call-to-child mapping, terminal completion/Event/Wake transaction
+  including forced rollback of both terminal metadata and receipt,
   duplicate spawn/completion, separate transcript and followup after reopen
 - Real LocalWebService parent remains available while child runs; idle parent wakes
   once, main Memory content remains unchanged, Timeline does not publish child output,

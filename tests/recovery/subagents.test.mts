@@ -73,6 +73,7 @@ test('real web service keeps parent available, child completion wakes an idle pa
     const timeline = await service.timeline(); assert.ok(!JSON.stringify(timeline).includes('CHILD_PRIVATE_RAW_FINDING'), 'child output is only relayed when main model chooses to');
     const runs = await service.runs(); const details = await Promise.all(runs.items.map(run => service!.run(run.id)));
     assert.ok(details.some(d => d!.executions.some(e => e.kind === 'subagent' && e.status === 'completed')));
+    assert.ok(details.some(d => d!.executions.some(e => e.name?.includes('(latest activity)'))));
     assert.ok(!JSON.stringify(details).includes('CHILD_PRIVATE_RAW_FINDING'));
     await service.close(); service = await LocalWebService.open(options); await until(async () => (await service!.status()).state === 'idle'); assert.equal(parentCalls, 4); assert.equal(childCalls, 1);
   } finally { release.resolve(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }

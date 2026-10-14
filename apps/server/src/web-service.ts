@@ -82,6 +82,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   readonly #writer: DreamingWriter & SubagentWriter;
   readonly #subagents: SubagentManager;
   readonly #history: RunHistoryReader;
+  readonly #childHistory: (streamId: string) => RunHistoryReader;
   readonly #settings: WebSettingsStore;
   readonly #loop: WakeLoop;
   readonly #host: ExtensionHost | undefined;
@@ -96,8 +97,8 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   #settingsGeneration = 0;
   #kickRequested = false;
   readonly #cache = new Map<string, Timeline['items'][number] | null>();
-  private constructor(options: WebServiceOptions, writer: DreamingWriter & SubagentWriter, history: RunHistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, attachments: AttachmentStore, subagents: SubagentManager, host?: ExtensionHost) {
-    this.#subagents = subagents; this.#attachments = attachments; this.#options = options; this.#writer = writer; this.#history = history; this.#settings = settings;
+  private constructor(options: WebServiceOptions, writer: DreamingWriter & SubagentWriter, history: RunHistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, attachments: AttachmentStore, subagents: SubagentManager, childHistory: (streamId: string) => RunHistoryReader, host?: ExtensionHost) {
+    this.#childHistory = childHistory; this.#subagents = subagents; this.#attachments = attachments; this.#options = options; this.#writer = writer; this.#history = history; this.#settings = settings;
     this.#settingsValue = settingsValue; this.#loop = loop; this.#host = host;
     this.external = createExternalIngress(writer, () => this.#kick());
     const policy = dreamingPolicy(options.dreaming);
@@ -174,7 +175,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
         },
       });
       if (roots && options.dreaming?.enabled !== false) await writer.initializeDreaming();
-      service = new LocalWebService(options, writer, persistence.history(writer.miraId), settings, settingsValue, loop, attachments, children, host);
+      service = new LocalWebService(options, writer, persistence.history(writer.miraId), settings, settingsValue, loop, attachments, children, streamId => persistence.history(streamId), host);
       // Existing durable pending runs resume through the same recovery contracts.
       service.#kick();
       return service;
@@ -347,14 +348,33 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     if (!requestsPage) return null;
     const executions: RunDetailView['executions'] = [];
     const children = await this.#writer.listSubagents();
+    const shownChildren = new Set<string>();
     for (const ref of page.records) {
       try {
         const entry = await this.#history.read({ id: ref.id, maxBytes: 1_048_576 });
         const visible = entry ? runExecution(entry) : null; if (visible) executions.push(visible);
         if (entry?.kind === 'tool') for (const child of children) {
           const turn = child.turns.find(turn => turn.callId === entry.intent.callId);
-          if (turn) executions.push({ id: turn.id, occurredAt: turn.createdAt, kind: 'subagent', name: child.id,
-            status: turn.status, error: turn.status === 'interrupted' || turn.status === 'cancelled' ? 'Work stopped; preserved tool outcomes may be unknown. No automatic replay.' : null });
+          if (turn) {
+            executions.push({ id: turn.id, occurredAt: turn.createdAt, kind: 'subagent', name: child.id,
+              status: turn.status, error: turn.status === 'interrupted' || turn.status === 'cancelled' ? 'Work stopped; preserved tool outcomes may be unknown. No automatic replay.' : null });
+            // Only safe existing execution projections, and only from a child mapped
+            // to this parent's actual call. No child system/text/arguments are returned.
+            if (shownChildren.has(child.id)) continue;
+            shownChildren.add(child.id);
+            const history = this.#childHistory(child.streamId);
+            const recent = await history.page({ kinds: ['context', 'tool'], limit: 10 });
+            for (const childRef of recent.hits) {
+              try {
+                const detail = await history.read({ id: childRef.id, maxBytes: 1_048_576 });
+                const execution = detail ? runExecution(detail) : null;
+                if (execution) executions.push({ ...execution, name: `${child.id} (latest activity): ${execution.name ?? execution.kind}` });
+              } catch (error) {
+                if (!(error instanceof HistoryError) || error.code !== 'too_large') throw error;
+                executions.push({ id: childRef.id, occurredAt: childRef.occurredAt, kind: 'unavailable', name: child.id, status: 'unavailable', error: 'Child record exceeds the display budget; its original is preserved.' });
+              }
+            }
+          }
         }
       } catch (error) {
         if (!(error instanceof HistoryError) || error.code !== 'too_large') throw error;
