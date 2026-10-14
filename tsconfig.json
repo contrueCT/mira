@@ -87,3 +87,5 @@
     "tests/unit/tool-output-wire.test.mts",
     "tests/unit/web-auth.test.mts",
     "tests/unit/terminals.test.mts"
+  ]
+}

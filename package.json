@@ -27,3 +27,26 @@
     "test:capabilities:e2e": "node scripts/run-real-web-tests.mts agent-capabilities",
     "test:auth:e2e": "node scripts/run-real-web-tests.mts auth",
     "terminal:prepare": "node scripts/prepare-terminal.mts"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "typescript": "6.0.3",
+    "@mira/context": "workspace:*",
+    "@mira/life": "workspace:*",
+    "@mira/persistence": "workspace:*",
+    "@mira/runtime-pi": "workspace:*",
+    "pg": "8.23.1",
+    "@types/pg": "8.23.1",
+    "@earendil-works/pi-agent-core": "1.0.2",
+    "@earendil-works/pi-ai": "1.0.2",
+    "@earendil-works/pi-coding-agent": "1.0.2",
+    "@mira/cognition": "workspace:*",
+    "@mira/workspace": "workspace:*",
+    "@mira/server": "workspace:*",
+    "@mira/extension-sdk": "workspace:*",
+    "@mira/extension-host": "workspace:*",
+    "@playwright/test": "1.63.0",
+    "@mira/external-sdk": "workspace:*",
+    "node-gyp": "11.4.2"
+  }
+}
