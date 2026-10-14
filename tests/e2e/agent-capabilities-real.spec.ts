@@ -344,7 +344,9 @@ test('real browser observes request retry through PG and the credential-bound SD
     modelFetch: (async () => {
       calls++;
       if (calls === 1) return retryResponse('', 'browser-once-call', 'bash', { command: `printf once >> ${JSON.stringify(effect)}` });
-      if (calls === 2) { const response = retryFailure(429, 'PRIVATE_RETRY_FAILURE'); response.headers.set('retry-after', '3'); return response; }
+      // Initial idle polling can already have a five-second timer armed. Use the
+      // transport's real maximum wait so this transient state spans a browser poll.
+      if (calls === 2) { const response = retryFailure(429, 'PRIVATE_RETRY_FAILURE'); response.headers.set('retry-after', '10'); return response; }
       return retryResponse('模型请求已恢复，只执行了一次工具。');
     }) as typeof globalThis.fetch };
   const start = async () => {
@@ -358,6 +360,7 @@ test('real browser observes request retry through PG and the credential-bound SD
     await start(); await page.goto(origin);
     await page.getByLabel('给 Mira 发消息', { exact: true }).fill('执行一次合成工具，然后回复。');
     await page.getByRole('button', { name: '发送消息', exact: true }).click();
+    await expect.poll(async () => (await service!.status()).modelRetry?.phase).toBe('waiting');
     await expect(page.getByRole('status').filter({ hasText: '等待重试（第 2/3 次）' })).toBeVisible();
     expect((await service!.status()).state).toBe('working'); expect((await service!.status()).error).toBeNull();
     await page.screenshot({ path: testInfo.outputPath('model-retry-real-desktop.png'), fullPage: true });
