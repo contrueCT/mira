@@ -1,3 +1,4 @@
+import { resolveThinkingLevel, type ThinkingLevel } from '@mira/runtime-pi';
 import { createModels, createProvider, createAssistantMessageEventStream, type Api, type Model, type Provider, type ProviderStreams, type SimpleStreamOptions, type AssistantMessageEventStream, type AssistantMessage, type AssistantMessageEvent } from '@earendil-works/pi-ai';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
@@ -20,6 +21,7 @@ export interface ModelTransportOptions {
   fetch?: typeof globalThis.fetch;
 }
 export interface ModelTransport {
+  thinkingLevel: ThinkingLevel;
   model: Model<Api>;
   /** Complete-message events only; upstream SSE deltas are consumed internally. */
   streamFn: StreamFn;
@@ -173,6 +175,7 @@ export function createModelTransport(configuration: ModelConfiguration, selectio
   checkSdkEnvironment(canonicalModel);
   return {
     model: structuredClone(canonicalModel),
+    thinkingLevel: resolveThinkingLevel(canonicalModel, config.defaultThinkingLevel),
     description: { source: selection.kind, provider: canonicalModel.provider, model: canonicalModel.id, protocol: protocolDescription(canonicalModel.api), pricing: selection.kind === 'custom' ? 'unknown' : 'catalog-estimate' },
     streamFn: (requested, context, streamOptions) => {
       if (requested.id !== canonicalModel.id || requested.provider !== canonicalModel.provider || requested.api !== canonicalModel.api) throw Error('Injected transport is bound to a different model');
@@ -221,6 +224,17 @@ export function createModelTransport(configuration: ModelConfiguration, selectio
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw Error('Invalid model request payload');
         const body = payload as Record<string, unknown>;
         nativeVideo.apply(body);
+        // Pi's budget-based Anthropic adapter adds thinking to maxTokens. Mira's
+        // existing cap covers the entire output, including thinking, not just text.
+        if (canonicalModel.api === 'anthropic-messages' && body['thinking'] && typeof body['thinking'] === 'object') {
+          const thinking = body['thinking'] as Record<string, unknown>;
+          if (thinking['type'] === 'enabled' && typeof body['max_tokens'] === 'number' && typeof thinking['budget_tokens'] === 'number') {
+            const total = Math.min(body['max_tokens'], cap);
+            if (total < 2048) throw Error('Budget-based Anthropic reasoning requires at least 2048 output tokens including 1024 answer tokens');
+            body['max_tokens'] = total;
+            thinking['budget_tokens'] = Math.min(thinking['budget_tokens'], total - 1024);
+          }
+        }
         let limits: unknown[];
         switch (canonicalModel.api) {
           case 'openai-completions': limits = [body['max_tokens'], body['max_completion_tokens']].filter(value => value !== undefined); break;

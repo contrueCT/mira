@@ -38,3 +38,5 @@
 
 - `scheduling.ts` 是独立单次UTC投递组装与timer，使用同一fenced writer和Event/Wake队列；不停/重试失败认知、不改Dreaming。日期/时区/提醒策略仅在扩展，见ADR 0022。
 - 组合边界：child wait 查询当前已claim run 的持久 pending input 并监听已提交提示，补 intent→execute 空窗；child completion 与调度都只入普通队列，后台结果不清除失败主轮。child skills 仅独立元数据及普通 read，不能注入主persona/Memory。
+
+- ADR 0027：configuration.defaultThinkingLevel 只保存用户默认偏好；transport.thinkingLevel 是 Pi 能力适配后的 runtime 注入值。主/child/Dreaming 同路；压缩独立最低档，不在 streamFn 隐式填会话默认，Anthropic 思考与答案共同受原输出 cap 限制。

@@ -21,6 +21,10 @@ export { MIRA_COMPACTION_PROMPT, MIRA_COMPACTION_PROMPT_SHA256, MIRA_COMPACTION_
 export type { CompactionOptions } from './compactor.ts';
 export type { RecoveryOperation, ToolDiagnostic } from './observations.ts';
 
+import { resolveThinkingLevel, type ThinkingLevel } from './reasoning.ts';
+export { thinkingLevels, defaultThinkingLevel, parseThinkingLevel, resolveThinkingLevel, supportedThinkingLevels, compactionThinkingLevel } from './reasoning.ts';
+export type { ThinkingLevel } from './reasoning.ts';
+
 import { contextBudget, estimateRequestTokens, type AutoCompactionOptions } from './budget.ts';
 export type { AutoCompactionOptions } from './budget.ts';
 /** Content-free observations at actual dispatch and durable completion boundaries. */
@@ -39,6 +43,8 @@ export interface PiRuntimeOptions {
   compactionScope?: 'mira' | 'task';
   writer: DurableWriter;
   model: Model<Api>;
+  /** Conversation default, adapted through the pinned Pi model capabilities. */
+  thinkingLevel?: ThinkingLevel;
   /** Required injection. This adapter never discovers credentials or chooses a live stream. */
   streamFn: StreamFn;
   tools?: AgentTool[];
@@ -106,7 +112,7 @@ export class PiDurableRuntime implements CognitionRuntime {
     if (options.compactionScope === 'task' && options.miraPrompt) throw new Error('Task compaction cannot use the main Mira prompt or Memory loader');
     validateTools(options.tools ?? []);
     contextBudget(options.model, options.autoCompaction);
-    this.options = options;
+    this.options = { ...options, thinkingLevel: resolveThinkingLevel(options.model, options.thinkingLevel) };
     if (options.writer.signal.aborted) this.stop(options.writer.signal.reason ?? new Error('Writer lost'));
   }
 
@@ -547,7 +553,7 @@ export class PiDurableRuntime implements CognitionRuntime {
       };
       const agent = new Agent({
         toolExecution: 'sequential', convertToLlm,
-        initialState: { model: this.options.model, tools: [], messages: continuedMessages(current) },
+        initialState: { model: this.options.model, thinkingLevel: this.options.thinkingLevel!, tools: [], messages: continuedMessages(current) },
         streamFn: async (model, context, options) => {
           try {
             attemptGate();

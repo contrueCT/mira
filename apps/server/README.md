@@ -143,3 +143,6 @@ Task-scoped children use automatic context compaction on their own durable
 transcript, with worker-specific summary instructions and no main Memory loader.
 Followups during compaction remain queued; failed/interrupted work requires
 explicit continuation. See [ADR 0030](../../docs/adr/0030-task-scoped-compaction.md).
+## Reasoning configuration
+
+`configuration.defaultThinkingLevel` is an optional preference, defaulting to `medium`. `createModelTransport` returns a capability-adapted `thinkingLevel`; pass it together with model and streamFn to the runtime. Web main, child and Dreaming composition does this automatically. Settings use the existing private file and revision CAS. Summary requests use the lowest supported level independently. Budget-based Anthropic output includes thinking and answer inside the existing total cap; a cap below 2048 fails before dispatch. See [ADR 0027](../../docs/adr/0027-configured-reasoning-levels.md).

@@ -25,6 +25,7 @@ interface StoredData {
   version: 1;
   nonce: string;
   configuration: {
+    defaultThinkingLevel?: WebModelConfiguration['defaultThinkingLevel'];
     builtinCredentials: Record<string, StoredCredential>;
     customConnections: Array<Omit<WebCustomConnectionWrite, 'hasApiKey' | 'apiKey'> & { apiKey: string | null }>;
   };
@@ -106,6 +107,7 @@ function rejectSecretMetadata(value: unknown, keys: string[]): void {
 }
 function project(data: StoredData, currentRevision: string): WebSettings {
   const configuration: WebModelConfiguration = {
+    ...(data.configuration.defaultThinkingLevel === undefined ? {} : { defaultThinkingLevel: data.configuration.defaultThinkingLevel }),
     builtinCredentials: Object.fromEntries(Object.entries(data.configuration.builtinCredentials).map(([provider, entry]) => [provider, { hasApiKey: entry.apiKey !== null && entry.binding === builtinBinding(provider) }])),
     customConnections: data.configuration.customConnections.map(connection => ({ ...webConnectionMetadata(connection), hasApiKey: connection.apiKey !== null })),
   };
@@ -117,7 +119,7 @@ function emptyStored(): StoredData { return { version: 1, nonce: randomUUID(), c
 function parseStored(value: unknown): StoredData {
   const root = object(value); exact(root, ['version', 'nonce', 'configuration', 'selection']);
   if (root['version'] !== 1 || typeof root['nonce'] !== 'string' || !/^[a-f0-9-]{36}$/u.test(root['nonce'])) invalid();
-  const config = object(root['configuration']); exact(config, ['builtinCredentials', 'customConnections']);
+  const config = object(root['configuration']); exact(config, ['builtinCredentials', 'customConnections', ...(Object.hasOwn(config, 'defaultThinkingLevel') ? ['defaultThinkingLevel'] : [])]);
   const credentials = object(config['builtinCredentials']);
   const input: WebModelConfigurationWrite['builtinCredentials'] = Object.create(null) as WebModelConfigurationWrite['builtinCredentials'];
   const bindings = new Map<string, string>();
@@ -131,12 +133,12 @@ function parseStored(value: unknown): StoredData {
     const connection = object(value);
     if (!Object.hasOwn(connection, 'apiKey') || Object.hasOwn(connection, 'hasApiKey')) invalid();
   }
-  const parsed = parseWebSettingsWrite({ revision: missingRevision, configuration: { builtinCredentials: input, customConnections: config['customConnections'] }, selection: root['selection'] });
+  const parsed = parseWebSettingsWrite({ revision: missingRevision, configuration: { builtinCredentials: input, customConnections: config['customConnections'], ...(Object.hasOwn(config, 'defaultThinkingLevel') ? { defaultThinkingLevel: config['defaultThinkingLevel'] } : {}) }, selection: root['selection'] });
   const builtinCredentials = Object.fromEntries(Object.entries(parsed.configuration.builtinCredentials).map(([provider, entry]) => {
     if (entry.apiKey && !builtinApiKeySupport(createBuiltinCatalog().getProvider(provider)!).supported) invalid();
     return [provider, { apiKey: entry.apiKey ?? null, binding: bindings.get(provider)! }];
   }));
-  const data: StoredData = { version: 1, nonce: root['nonce'] as string, configuration: { builtinCredentials,
+  const data: StoredData = { version: 1, nonce: root['nonce'] as string, configuration: { ...(parsed.configuration.defaultThinkingLevel === undefined ? {} : { defaultThinkingLevel: parsed.configuration.defaultThinkingLevel }), builtinCredentials,
     customConnections: parsed.configuration.customConnections.map(connection => ({ ...webConnectionMetadata(connection), apiKey: connection.apiKey ?? null })) }, selection: parsed.selection };
   project(data, missingRevision);
   return data;
@@ -152,7 +154,7 @@ function mergeStored(previous: StoredData, input: WebSettingsWrite): StoredData 
     const old = previous.configuration.customConnections.find(connection => sameConnection(connection, update));
     return { ...webConnectionMetadata(update), apiKey: update.apiKey === undefined ? old?.apiKey ?? null : update.apiKey };
   });
-  const data: StoredData = { version: 1, nonce: randomUUID(), configuration: { builtinCredentials, customConnections }, selection: input.selection };
+  const data: StoredData = { version: 1, nonce: randomUUID(), configuration: { ...(input.configuration.defaultThinkingLevel === undefined ? {} : { defaultThinkingLevel: input.configuration.defaultThinkingLevel }), builtinCredentials, customConnections }, selection: input.selection };
   rejectSecretMetadata(project(data, missingRevision), allKeys(previous));
   return data;
 }

@@ -482,3 +482,7 @@ emits a final observation so the parent can independently confirm the exact chec
 startup and bounded reads can also resolve a missing callback from the registered
 identity. Public child DTOs omit this link; the turn's cancellation/interruption is
 independent from whether its summary checkpoint committed.
+
+## Configured reasoning
+
+`PiRuntimeOptions.thinkingLevel` defaults to `medium` and is adapted through Pi 1.0.2 public model capabilities before being explicitly installed in `Agent.initialState`. Non-reasoning models use `off`. Summary hooks independently select the lowest supported level, normally `off`, rather than inheriting conversation effort. This applies to the same runtime used by main, child and Dreaming; there is no model-selected escalation or extra request. See [ADR 0027](../../docs/adr/0027-configured-reasoning-levels.md).

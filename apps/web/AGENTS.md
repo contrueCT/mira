@@ -26,3 +26,5 @@
 仓库根运行 `pnpm check`；构建为 `pnpm --filter @mira/web build`。依赖或 exports 改动需同步检查 `scripts/boundaries.json`，只开放确有用途的外部依赖。实际浏览器交互和截图验证与模拟/真实模型测试分别记录。
 
 - 附件字节不存浏览器持久存储。媒体必须用带 X-Mira-Client 的受保护 fetch 转有界 Blob；图片仅安全栅格格式、视频有下载兜底，SVG/HTML/PDF/Word 不嵌入、不自动解析；对象 URL 随卸载/关闭清理
+
+- 模型标签中的默认推理强度只显示所选模型的支持档位，保留能力适配前偏好；取消/关闭不保存，冲突不覆盖，不新增主界面入口（ADR 0027）。

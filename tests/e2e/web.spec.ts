@@ -123,6 +123,7 @@ function settingsFixture(): Settings {
 function publicSettings(write: SettingsWrite): Settings {
   const status = (entry: ApiKeyWrite) => ({ hasApiKey: typeof entry.apiKey === 'string' || (entry.apiKey !== null && entry.hasApiKey) });
   return { selection: write.selection, revision: '3'.repeat(64), configuration: {
+    ...(write.configuration.defaultThinkingLevel === undefined ? {} : { defaultThinkingLevel: write.configuration.defaultThinkingLevel }),
     builtinCredentials: Object.fromEntries(Object.entries(write.configuration.builtinCredentials).map(([id, entry]) => [id, status(entry)])),
     customConnections: write.configuration.customConnections.map(entry => { const { apiKey: _key, ...connection } = entry; return { ...connection, ...status(entry) }; }),
   } };
@@ -688,4 +689,43 @@ test('run child pagination discovers a newly followed-up older child after all p
   await expect(page.locator('.run-children .child-card')).toHaveCount(56, { timeout: 10_000 });
   await expect(page.locator('.run-children .child-card').first()).toContainText('继续早先任务');
   await expect(page.getByRole('button', { name: '更多子任务', exact: true })).toHaveCount(0);
+});
+
+test('reasoning stays inside settings, adapts model capabilities and survives cancel, save, history and narrow display', async ({ page }, testInfo) => {
+  const initial = settingsFixture(); initial.configuration.defaultThinkingLevel = 'xhigh';
+  const { writes } = await mockSettings(page, initial);
+  await page.route('**/api/models/catalog', route => route.fulfill({ json: {
+    source: 'reasoning-fixture', generatedAt: null, providers: [{ id: 'openai', name: 'OpenAI', apiKeySupport: { supported: true, explanation: 'fixture' }, models: [
+      { id: 'fixture-builtin', name: 'Reasoner', provider: 'openai', protocol: { id: 'openai-responses', name: 'OpenAI Responses' }, catalogBaseUrl: 'https://api.openai.com/v1', contextWindow: 100000, maxTokens: 4096, reasoning: true, thinkingLevels: ['off', 'low', 'medium', 'high'], input: ['text'] },
+      { id: 'plain', name: 'Plain model', provider: 'openai', protocol: { id: 'openai-responses', name: 'OpenAI Responses' }, catalogBaseUrl: 'https://api.openai.com/v1', contextWindow: 100000, maxTokens: 4096, reasoning: false, thinkingLevels: ['off'], input: ['text'] },
+    ] }],
+  } }));
+  await openSettings(page);
+  const level = page.getByLabel('默认推理强度', { exact: true });
+  await expect(level).toHaveValue('high'); await expect(level.locator('option')).toHaveCount(4);
+  await expect(page.getByText(/默认偏好“很高”仍保留/)).toBeVisible();
+  await level.selectOption('low'); await page.getByRole('button', { name: '取消', exact: true }).click();
+  await page.getByRole('button', { name: '模型设置', exact: true }).click(); await expect(level).toHaveValue('high'); expect(writes).toHaveLength(0);
+  await page.getByRole('combobox', { name: '模型', exact: true }).selectOption('plain'); await expect(level).toHaveValue('off'); await expect(level).toBeDisabled();
+  await page.getByRole('combobox', { name: '模型', exact: true }).selectOption('fixture-builtin'); await expect(level).toHaveValue('high');
+  await level.selectOption('medium'); await page.getByRole('button', { name: '保存设置', exact: true }).dblclick();
+  await expect(page.getByText(/配置已保存/)).toBeVisible(); expect(writes).toHaveLength(1); expect(writes[0]!.configuration.defaultThinkingLevel).toBe('medium');
+  await page.goBack(); await expect(page.getByRole('dialog')).toHaveCount(0); await expect(page.getByLabel('默认推理强度')).toHaveCount(0);
+  await page.goForward(); await expect(level).toHaveValue('medium');
+  await page.setViewportSize({ width: 390, height: 844 }); await level.scrollIntoViewIfNeeded();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('mira-reasoning-narrow.png'), fullPage: true });
+  await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
+test('reasoning settings retain an unsaved edit on revision conflict and discard it on reload', async ({ page }) => {
+  const initial = settingsFixture(); initial.configuration.customConnections[0]!.models[0]!.reasoning = true;
+  initial.selection = { kind: 'custom', connection: 'existing-local', model: 'original-model' }; initial.configuration.defaultThinkingLevel = 'low';
+  await mockSettings(page, initial);
+  await page.route('**/api/settings', route => route.request().method() === 'PUT' ? route.fulfill({ status: 409, json: { error: 'Settings changed; reload before saving' } }) : route.fulfill({ json: initial }));
+  await openSettings(page); const level = page.getByLabel('默认推理强度', { exact: true });
+  await expect(level).toHaveValue('low'); await level.selectOption('high'); await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  await expect(page.getByRole('alert')).toBeVisible(); await expect(level).toHaveValue('high');
+  await expect(page.getByRole('button', { name: '保存设置', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: '重新读取并放弃当前编辑', exact: true }).click(); await expect(level).toHaveValue('low');
 });

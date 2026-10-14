@@ -85,3 +85,5 @@ MIRA_DATABASE_URL=postgres://mira@127.0.0.1:5432/mira pnpm start
 测试源码里的合成对话是回归测试夹具，不是应用初始数据。截图、运行数据、数据库、Memory、密钥、构建产物和浏览器测试输出不提交到源码仓库。真实模型效果与付费调用尚未验收。
 
 模型目录与协议配置详见 [模型配置与发现](docs/development/models.md)。
+
+模型设置现可选择默认推理强度，缺省为中档，按 Pi 模型能力适配；主 Mira、子任务与 Dreaming 使用同一偏好，压缩摘要独立使用最低支持档。更高档可能增加耗时和费用，实际推理预算仍受总输出上限限制，详见 [ADR 0027](docs/adr/0027-configured-reasoning-levels.md)。

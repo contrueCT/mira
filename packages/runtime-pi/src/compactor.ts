@@ -6,6 +6,7 @@ import {
   ModelRuntime, SessionManager, SettingsManager, createSyntheticSourceInfo,
   type CompactionEntry, type ResourceLoader, type SessionEntry, type Extension, type SessionBeforeCompactEvent, type SessionBeforeCompactResult,
 } from '@earendil-works/pi-coding-agent';
+import { compactionThinkingLevel } from './reasoning.ts';
 import { estimateRequestTokens } from './budget.ts';
 import { validateMessage } from './records.ts';
 import { type RecoveryOperation } from './observations.ts';
@@ -73,7 +74,8 @@ export async function compactSnapshot(
       const context = normalizeContext({ systemPrompt, messages: [{ role: 'user', content: JSON.stringify(input), timestamp: Date.now() }] });
       if (estimateRequestTokens(context.messages) + maxTokens > model.contextWindow) throw new Error('Compaction summary request exceeds model context budget');
       // The caller sees the original model, no SDK auth lookup/provider routing.
-      const stream = await streamFn(model, context, { signal: event.signal, maxTokens, cacheRetention: 'none' });
+      const thinkingLevel = compactionThinkingLevel(model);
+      const stream = await streamFn(model, context, { ...(thinkingLevel === 'off' ? {} : { reasoning: thinkingLevel }), signal: event.signal, maxTokens, cacheRetention: 'none' });
       const response = await stream.result();
       options.signal?.throwIfAborted();
       event.signal.throwIfAborted();

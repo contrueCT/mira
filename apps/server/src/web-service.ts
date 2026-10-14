@@ -170,7 +170,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
           service!.#modelFailure = null;
           const current = service!.#settingsValue;
           if (!options.synthetic && !hasSelectedWebApiKey(current)) throw Error('Choose a model with a saved API key first');
-          const transport = options.synthetic ? { model: options.syntheticModel ?? demoModel, streamFn: options.syntheticStream ?? syntheticStream } : settings.transport(current, { onFailure: failure => { service!.#modelFailure = failure; } });
+          const transport = options.synthetic ? { ...(current.configuration.defaultThinkingLevel === undefined ? {} : { thinkingLevel: current.configuration.defaultThinkingLevel }), model: options.syntheticModel ?? demoModel, streamFn: options.syntheticStream ?? syntheticStream } : settings.transport(current, { onFailure: failure => { service!.#modelFailure = failure; } });
           const childTransport = options.synthetic ? transport : settings.transport(current);
           const childTools = createSubagentTools(children, childTransport, { hasPendingUserInput: async () => (await writer.loadLiveInputs(run.id)).some(input => input.inputRecordId === null) });
           let contextProviders: RegisteredContextProvider[] = [];
