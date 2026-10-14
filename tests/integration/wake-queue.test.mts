@@ -344,9 +344,11 @@ test('wake slice down/up preserves earlier receipts and context for a fresh clai
     await first.receive(event('legacy'), wake('legacy'));
     await first.append(0, record(uuid('legacy-record')));
     await first.close();
-    // Roll back Scheduling, Dreaming, search and Memory before the Wake slice.
-    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
-    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
+    // First remove actual newer feature migrations, retaining the exact base sequence below.
+    while (!(await db.admin.query('SELECT name FROM mira_migrations ORDER BY id DESC LIMIT 1')).rows[0].name.startsWith('1760000000004_')) {
+      await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
+    }
+    // Roll back the newer search and Memory migrations before the Wake slice.
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });

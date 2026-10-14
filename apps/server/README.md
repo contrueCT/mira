@@ -114,3 +114,14 @@ current model request yields; while a tool is executing, the message waits for
 that one tool to settle. Remaining old-batch tools do not start first. Receipt
 means persisted, not model-read. No new stop/pause control is exposed. External
 Event/Wake ingress continues to queue normally. See [ADR 0024](../../docs/adr/0024-live-user-input.md).
+## Delegated workers
+
+LocalWebService exposes `subagent_spawn`, `subagent_status`, `subagent_send`,
+`subagent_wait`, and `subagent_cancel` to the main model. Workers use the same Pi
+runtime and inherited injected transport, separate PostgreSQL transcripts, ordinary
+workspace tools and their own read-only history. Four active workers maximum;
+no child-to-child spawning, main Memory lifecycle, direct chat or attachment
+publication. Completion enters the normal main Event/Wake queue. Followup retains
+prior results and recovery observations. Existing run details display lifecycle
+state; the main UI gains no entry point. See ADR 0025 for context and cancellation
+limits and the distinction from a sandbox or persistent job platform.

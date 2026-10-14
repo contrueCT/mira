@@ -446,3 +446,10 @@ Task-scoped runtimes may use `loadSkills` without `miraPrompt`. The same public
 formatter publishes a standalone `mira.skills.v1` system section at each natural
 request through the child's fenced transcript. This does not load main Memory,
 render Mira's persona, or read skill bodies; ordinary read/bash remain explicit.
+## Task-scoped workers
+
+`freezeSubagentContext` produces a bounded, role-labelled textual snapshot of the
+current Pi projection (existing summaries retained, hidden reasoning/provider
+metadata excluded). It rejects oversized snapshots instead of silently truncating.
+Worker assembly reuses `PiDurableRuntime.run` with an independent PostgreSQL writer;
+no parent tool call is inserted into the child's protocol. See ADR 0025.

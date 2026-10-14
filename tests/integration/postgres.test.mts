@@ -25,19 +25,22 @@ test('migration up/down/up uses node-pg-migrate and preserves no stale tables', 
   const db = await createTestDatabase();
   try {
     const before = await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema = $1", [db.schema]);
-    assert.equal(before.rows[0].n, 14);
+    assert.equal(before.rows[0].n, 16);
+    assert.deepEqual((await db.admin.query("SELECT table_name FROM information_schema.tables WHERE table_schema=$1 AND table_name IN ('subagents','subagent_turns') ORDER BY table_name", [db.schema])).rows.map(row => row.table_name), ['subagent_turns', 'subagents']);
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
-    assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'wake_live_inputs'", [db.schema])).rows[0].n, 0, 'first down removes supplemental input links');
+    assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema=$1 AND table_name IN ('subagents','subagent_turns')", [db.schema])).rows[0].n, 0, 'first down removes child registry and turns');
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
-    assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'scheduled_deliveries'", [db.schema])).rows[0].n, 0, 'second down removes scheduled deliveries');
+    assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'wake_live_inputs'", [db.schema])).rows[0].n, 0, 'second down removes supplemental input links');
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
-    assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'dreaming_progress'", [db.schema])).rows[0].n, 0, 'third down removes technical Dreaming progress');
+    assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'scheduled_deliveries'", [db.schema])).rows[0].n, 0, 'third down removes scheduled deliveries');
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
-    assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM pg_indexes WHERE schemaname = $1 AND indexname LIKE '%_history_fts'", [db.schema])).rows[0].n, 0, 'fourth down removes only history indexes');
+    assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'dreaming_progress'", [db.schema])).rows[0].n, 0, 'fourth down removes technical Dreaming progress');
+    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
+    assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM pg_indexes WHERE schemaname = $1 AND indexname LIKE '%_history_fts'", [db.schema])).rows[0].n, 0, 'fifth down removes only history indexes');
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     const previous = await db.admin.query("SELECT table_name FROM information_schema.tables WHERE table_schema = $1 ORDER BY table_name", [db.schema]);
-    assert.deepEqual(previous.rows.map(row => row.table_name), ['context_records', 'history_records', 'life_events', 'mira_migrations', 'mira_owners', 'tool_executions', 'wake_requests'], 'sixth down retains the base tables including global identity');
+    assert.deepEqual(previous.rows.map(row => row.table_name), ['context_records', 'history_records', 'life_events', 'mira_migrations', 'mira_owners', 'tool_executions', 'wake_requests'], 'seventh down retains the base tables including global identity');
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     const after = await db.admin.query("SELECT table_name FROM information_schema.tables WHERE table_schema = $1", [db.schema]);
     assert.deepEqual(after.rows.map((row) => row.table_name), ['mira_migrations']);

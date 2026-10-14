@@ -861,3 +861,4 @@ function validateProjection(messages: AgentMessage[]): void {
 }
 
 export { createHistoryTools } from './history-tools.ts';
+export { freezeSubagentContext } from './subagent-context.ts';

@@ -271,6 +271,7 @@ export class PostgresHistoryReader implements RunHistoryReader {
     // Cursor contains only a scoped version/kind/UUID boundary, never payload.
     const scope = createHash('sha256').update(JSON.stringify([this.miraId, request.id, 'run-records'])).digest('hex');
     let boundary: [number, string, string] | null = null;
+    let inclusive = false;
     if (request.before !== undefined) {
       string(request.before, 'run cursor', 1024);
       try {
@@ -278,7 +279,8 @@ export class PostgresHistoryReader implements RunHistoryReader {
         const bytes = Buffer.from(request.before, 'base64url');
         if (bytes.toString('base64url') !== request.before) throw Error();
         const value: unknown = JSON.parse(bytes.toString('utf8'));
-        if (!Array.isArray(value) || value.length !== 4 || value[0] !== scope) throw Error();
+        if (!Array.isArray(value) || (value.length !== 4 && value.length !== 5) || value[0] !== scope || (value.length === 5 && value[4] !== true)) throw Error();
+        inclusive = value.length === 5;
         integer(value[1], 1, Number.MAX_SAFE_INTEGER, 'cursor version'); historyId(value[3]);
         if (value[2] !== 'context' && value[2] !== 'tool') throw Error();
         boundary = [value[1], value[2], value[3]];
@@ -301,7 +303,8 @@ export class PostgresHistoryReader implements RunHistoryReader {
         FROM tool_executions t JOIN run r ON r.mira_id = t.mira_id
         WHERE t.context_version > r.claimed_version AND (r.final_version IS NULL OR t.context_version <= r.final_version)),
       limited AS MATERIALIZED (SELECT * FROM matching WHERE $4::bigint IS NULL OR
-        (version, kind COLLATE "C", id) < ($4::bigint, $5::text COLLATE "C", $6::uuid)
+        ((version, kind COLLATE "C", id) < ($4::bigint, $5::text COLLATE "C", $6::uuid) OR
+          ($8::boolean AND (version, kind COLLATE "C", id) = ($4::bigint, $5::text COLLATE "C", $6::uuid)))
         ORDER BY version DESC, kind COLLATE "C" DESC, id DESC LIMIT $3 + 1),
       numbered AS (SELECT *, row_number() OVER (ORDER BY version DESC, kind COLLATE "C" DESC, id DESC) AS n FROM limited)
       SELECT json_build_object('run', json_build_object(${runHeaderBody}),
@@ -314,12 +317,16 @@ export class PostgresHistoryReader implements RunHistoryReader {
       FROM run s LEFT JOIN wake_memory_checkpoints c ON c.mira_id = s.mira_id AND c.run_id = s.run_id
       LEFT JOIN wake_memory_receipts receipt ON receipt.mira_id = s.mira_id AND receipt.run_id = s.run_id`;
     const result = response<Result>(await this.#query(bound(sql, '$7'),
-      [this.miraId, request.id, limit, boundary?.[0] ?? null, boundary?.[1] ?? null, boundary?.[2] ?? null, MAX_PAGE_BYTES]));
+      [this.miraId, request.id, limit, boundary?.[0] ?? null, boundary?.[1] ?? null, boundary?.[2] ?? null, MAX_PAGE_BYTES, inclusive]));
     if (!result) return null;
     validateRunHeader(result.run, this.miraId);
     for (const record of result.records) { historyId(record.id); integer(record.version, 1, Number.MAX_SAFE_INTEGER, 'version'); }
     const oldest = result.records[0];
-    return { run: result.run, memory: result.memory,
+    const newest = result.records.at(-1);
+    // Freeze the exact observed tuple inclusively. A fabricated next-version
+    // boundary could admit a later result or sibling intent and shift the page.
+    const refreshCursor = request.before ?? (newest ? Buffer.from(JSON.stringify([scope, newest.version, newest.kind, newest.id, true])).toString('base64url') : undefined);
+    return { ...(refreshCursor ? { refreshCursor } : {}), run: result.run, memory: result.memory,
       records: result.records.map(({ id, kind, occurredAt }) => ({ id, kind, occurredAt })),
       nextCursor: result.hasMore && oldest ? Buffer.from(JSON.stringify([scope, oldest.version, oldest.kind, oldest.id])).toString('base64url') : null };
   }

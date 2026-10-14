@@ -77,6 +77,7 @@
     "tests/unit/video-read-tool.test.mts",
     "tests/unit/scheduling-host.test.mts",
     "tests/unit/live-input.test.mts",
-    "tests/unit/bundled-skills.test.mts"
+    "tests/unit/bundled-skills.test.mts",
+    "tests/unit/subagents.test.mts"
   ]
 }

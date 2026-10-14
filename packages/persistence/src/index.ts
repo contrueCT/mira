@@ -1,3 +1,5 @@
+import { PostgresSubagents, PostgresSubagentReader } from './subagents.ts';
+import { SubagentError, type SubagentWriter, type SubagentReader } from '@mira/life';
 import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
@@ -144,7 +146,9 @@ export class PostgresPersistence {
   /** Scoped read-only access does not acquire or displace the durable writer. */
   history(miraId: string): RunHistoryReader { return new PostgresHistoryReader(this.#options, miraId); }
 
-  async acquire(miraId: string): Promise<DreamingWriter & SchedulingWriter & LiveInputWriter> {
+  subagents(miraId: string): SubagentReader { text(miraId, 'Mira ID'); return new PostgresSubagentReader(this.#options, miraId); }
+
+  async acquire(miraId: string): Promise<DreamingWriter & SchedulingWriter & LiveInputWriter & SubagentWriter> {
     text(miraId, 'Mira ID');
     const client = new Client({
       connectionString: this.#options.connectionString,
@@ -203,17 +207,19 @@ const heldExpression = `EXISTS (
 )`;
 const lockQuery = `SELECT ${heldExpression} AS held`;
 
-class PostgresWriter implements DreamingWriter, SchedulingWriter, LiveInputWriter {
+class PostgresWriter implements DreamingWriter, SchedulingWriter, LiveInputWriter, SubagentWriter {
   readonly miraId: string;
   readonly epoch: string;
   readonly signal: AbortSignal;
   readonly #client: Client;
+  readonly #subagents: PostgresSubagents;
   readonly #key: number;
   readonly #abort = new AbortController();
   #queue: Promise<unknown> = Promise.resolve();
   #ended: Promise<void> | undefined;
 
   constructor(client: Client, miraId: string, epoch: string, key: number) {
+    this.#subagents = new PostgresSubagents(client, miraId, work => this.#transaction(work), (event, wake) => this.#receive(event, wake));
     this.#client = client; this.miraId = miraId; this.epoch = epoch; this.#key = key; this.signal = this.#abort.signal;
     client.on('error', (error: Error) => this.#stop(error));
     client.on('end', () => this.#stop(new PersistenceError('ownership', 'PostgreSQL ownership connection ended')));
@@ -260,12 +266,22 @@ class PostgresWriter implements DreamingWriter, SchedulingWriter, LiveInputWrite
       } catch (error) {
         try { await this.#client.query('ROLLBACK'); } catch (rollbackError) { this.#stop(rollbackError); }
         const callerAbort = signal?.aborted && error === signal.reason;
-        if (!callerAbort && (!(error instanceof PersistenceError) || error.code === 'corrupt')) this.#stop(error);
+        if (!callerAbort && (!(error instanceof PersistenceError) && !(error instanceof SubagentError) || error instanceof PersistenceError && error.code === 'corrupt')) this.#stop(error);
         if (this.signal.aborted) void this.#end();
         throw callerAbort || error instanceof PersistenceError || !this.signal.aborted ? error : persistenceFailure(error);
       }
     });
   }
+  createSubagent: SubagentWriter['createSubagent'] = (...args) => this.#subagents.create(...args);
+  listSubagents: SubagentWriter['listSubagents'] = before => this.#subagents.list(before);
+  findSubagentCall: SubagentWriter['findSubagentCall'] = callId => this.#subagents.findCall(callId);
+  readSubagentCalls: SubagentWriter['readSubagentCalls'] = callIds => this.#subagents.readCalls(callIds);
+  getSubagent: SubagentWriter['getSubagent'] = id => this.#subagents.get(id);
+  sendSubagent: SubagentWriter['sendSubagent'] = (...args) => this.#subagents.send(...args);
+  claimSubagentTurn: SubagentWriter['claimSubagentTurn'] = id => this.#subagents.claim(id);
+  finishSubagentTurn: SubagentWriter['finishSubagentTurn'] = (...args) => this.#subagents.finish(...args);
+  cancelSubagent: SubagentWriter['cancelSubagent'] = id => this.#subagents.cancel(id);
+  interruptSubagents: SubagentWriter['interruptSubagents'] = () => this.#subagents.interrupt();
   #checkVersion(owner: OwnerRow, expected: number): void {
     version(expected);
     if (owner.context_version !== String(expected)) fail('version', 'Stale context version');

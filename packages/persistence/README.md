@@ -180,3 +180,15 @@ membership separate from frozen original input. Ordered `appendLiveInput` stores
 its consumption link in the same CAS transaction as the message. Atomic tool and
 final gates yield to unread input. Duplicate receipts never notify or rebind.
 See [ADR 0024](../../docs/adr/0024-live-user-input.md).
+## Task-scoped subagents
+
+The acquired writer also implements `SubagentWriter`. `subagents(miraId)` provides
+an independent read-only reader for metadata/history after owner loss. Lists use
+SQL-bounded metadata pages; child reads include recent eight turns and bounded
+pending work; call dedupe and run associations use indexed scoped lookups. Registry and turn state use
+the existing parent writer's fenced transaction queue; transcript writers remain
+separate. Stable parent call IDs deduplicate spawn/followup. Terminal turn state and
+its parent Event/Wake commit together. Startup `interruptSubagents()` marks queued
+or running work interrupted without replay. Terminal results remain immutable.
+Migration `1760000000007_subagents.sql` has explicit up/down; down is destructive
+and must not be run on user data automatically. See ADR 0025.
