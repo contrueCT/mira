@@ -1,12 +1,13 @@
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { expect, test } from '@playwright/test';
 import { getCurrentSystemPrompt, getCurrentTools, type TranscriptContext } from '@earendil-works/pi-ai';
 import { createLocalHttp, LocalWebService, WebSettingsStore } from '@mira/server';
 import { readExtensionConfiguration } from '@mira/extension-host';
 import { createTestDatabase } from '../integration/database.mts';
 import { assistant, deferred, model, streamOf } from '../recovery/fixtures.mts';
+import { fullOutput, largeToolText, outputPath } from '../recovery/tool-output-fixtures.mts';
 
 const sourceDirectory = fileURLToPath(new URL('../../', import.meta.url));
 const port = 3216, origin = `http://127.0.0.1:${port}`;
