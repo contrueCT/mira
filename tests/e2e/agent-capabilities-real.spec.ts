@@ -84,6 +84,8 @@ test('due reminder and child completion queue behind user steering at one real t
     expect(await readFile(effect, 'utf8')).toBe('once'); expect(await exists(forbidden)).toBe(false);
     expect(await readFile(memory, 'utf8')).toBe(initialMemory);
     expect((await db.admin.query("SELECT count(*)::int AS n FROM wake_runs WHERE completed")).rows[0].n).toBe(2);
+    expect((await db.admin.query('SELECT count(*)::int AS n FROM wake_run_requests GROUP BY run_id ORDER BY n')).rows.map(row => row.n)).toEqual([2, 2]);
+    expect((await db.admin.query('SELECT count(*)::int AS n FROM wake_live_inputs WHERE input_record_id IS NOT NULL')).rows[0].n).toBe(1);
     expect((await db.admin.query("SELECT count(*)::int AS n FROM life_events WHERE event->>'type'='subagent.result'")).rows[0].n).toBe(1);
     expect((await db.admin.query("SELECT count(*)::int AS n FROM life_events WHERE event->>'type'='reminder.due'")).rows[0].n).toBe(1);
     expect((await db.admin.query("SELECT count(*)::int AS n FROM wake_memory_checkpoints WHERE mira_id LIKE 'subagent:%'")).rows[0].n).toBe(0);
