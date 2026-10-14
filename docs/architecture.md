@@ -112,3 +112,6 @@ Life 只拥有 stable key / dueAt / opaque Event / optional Wake / expiresAt 契
 Persistence 复用 fenced writer 原子保存入队与终态，Web timer 仅为补扫提示。
 Extension SDK 绑定持久安装身份，扩展负责时区、DST、提醒内容与错过策略。
 取消只阻止尚未入队的投递，已入队结果明确不可撤回；不加入 cron 或后台任务引擎。
+## 运行中用户插话
+
+[ADR 0024](adr/0024-live-user-input.md) 增加可选 LiveInputWriter：普通 Web 用户输入先持久保存、按顺序追加到活动 Wake，原始输入冻结。生成中的模型请求让出；当前单工具完成后新输入先入模型，旧批次未启动工具如实收束为 not-started。final 与新输入在同一 fenced 事务仲裁。没有暂停按钮、关键词判定或未知操作重放。

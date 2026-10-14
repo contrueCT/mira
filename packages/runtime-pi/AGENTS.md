@@ -20,6 +20,7 @@ Shared rules: [root AGENTS.md](../../AGENTS.md). Read `README.md` before changes
 - Validate schema/parameters, persist immutable intent, then effect; retain original
   and validated arguments, assistantRecordId and persisted context version as provenance.
   authorizationContext is factual prompt context, never synthetic approval
+- ADR 0024 live input interrupts only model requests; the in-flight single tool settles, then pending input wins before old siblings. Preserve original Wake input, supplemental CAS links, final arbitration and unknown recovery.
 - Effects are sequential. Hook throws alone do not stop Pi. Keep explicit stopped
   latch, outer error, wrapped model/effect gates and awaited subscribers
 - A thrown effect is unknown; never synthesize definitive failure or blindly replay.

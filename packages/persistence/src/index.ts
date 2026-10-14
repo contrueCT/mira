@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 import { PostgresHistoryReader } from './history.ts';
-import type { RunHistoryReader } from '@mira/life';
+import type { LiveInputWriter, LiveWakeInput, RunHistoryReader } from '@mira/life';
 import { DurableOperationError, type DurableFailureCategory } from '@mira/life';
 import { assertJson, assertRecord } from '@mira/context';
 import type { RuntimeRecord } from '@mira/context';
@@ -144,7 +144,7 @@ export class PostgresPersistence {
   /** Scoped read-only access does not acquire or displace the durable writer. */
   history(miraId: string): RunHistoryReader { return new PostgresHistoryReader(this.#options, miraId); }
 
-  async acquire(miraId: string): Promise<DreamingWriter & SchedulingWriter> {
+  async acquire(miraId: string): Promise<DreamingWriter & SchedulingWriter & LiveInputWriter> {
     text(miraId, 'Mira ID');
     const client = new Client({
       connectionString: this.#options.connectionString,
@@ -203,7 +203,7 @@ const heldExpression = `EXISTS (
 )`;
 const lockQuery = `SELECT ${heldExpression} AS held`;
 
-class PostgresWriter implements DreamingWriter, SchedulingWriter {
+class PostgresWriter implements DreamingWriter, SchedulingWriter, LiveInputWriter {
   readonly miraId: string;
   readonly epoch: string;
   readonly signal: AbortSignal;
@@ -294,7 +294,9 @@ class PostgresWriter implements DreamingWriter, SchedulingWriter {
       `SELECT e.history_id, w.event_id, e.event, e.requested_wake, w.wake_id, w.wake FROM wake_run_requests AS r
        JOIN wake_requests AS w ON w.mira_id = r.mira_id AND w.wake_id = r.wake_id
        JOIN life_events AS e ON e.mira_id = w.mira_id AND e.event_id = w.event_id
-       WHERE r.mira_id = $1 AND r.run_id = $2 ORDER BY w.receipt_order`, [this.miraId, row.run_id]);
+       WHERE r.mira_id = $1 AND r.run_id = $2 AND NOT EXISTS
+         (SELECT 1 FROM wake_live_inputs AS i WHERE i.mira_id = r.mira_id AND i.wake_id = r.wake_id)
+       ORDER BY w.receipt_order`, [this.miraId, row.run_id]);
     if (!requests.rows.length) fail('corrupt', 'Wake run has no claimed requests');
     for (const request of requests.rows) {
       try { historyId(request.history_id); validateEvent(request.event); validateWake(request.wake); } catch { fail('corrupt', 'Invalid persisted wake request'); }
@@ -401,12 +403,15 @@ class PostgresWriter implements DreamingWriter, SchedulingWriter {
     return next;
   }
   appendWakeInput(runId: string, expectedVersion: number, input: RuntimeRecord, signal?: AbortSignal): Promise<number> {
-    return this.#appendWakeRecord('input_record_id', runId, expectedVersion, input, signal);
+    return this.#appendWakeRecord('input_record_id', runId, expectedVersion, input, signal) as Promise<number>;
   }
   appendWakeFinal(runId: string, expectedVersion: number, input: RuntimeRecord, signal?: AbortSignal): Promise<number> {
-    return this.#appendWakeRecord('final_record_id', runId, expectedVersion, input, signal);
+    return this.#appendWakeRecord('final_record_id', runId, expectedVersion, input, signal) as Promise<number>;
   }
-  #appendWakeRecord(field: 'input_record_id' | 'final_record_id', runId: string, expectedVersion: number, input: RuntimeRecord, signal?: AbortSignal): Promise<number> {
+  tryAppendWakeFinal(runId: string, expectedVersion: number, input: RuntimeRecord, signal?: AbortSignal): Promise<number | null> {
+    return this.#appendWakeRecord('final_record_id', runId, expectedVersion, input, signal, true);
+  }
+  #appendWakeRecord(field: 'input_record_id' | 'final_record_id', runId: string, expectedVersion: number, input: RuntimeRecord, signal?: AbortSignal, yieldToInput = false): Promise<number | null> {
     historyId(runId, 'run ID'); version(expectedVersion);
     if (expectedVersion === Number.MAX_SAFE_INTEGER) fail('invalid', 'Context version exhausted');
     const record = copy(input); assertRecord(record);
@@ -424,6 +429,11 @@ class PostgresWriter implements DreamingWriter, SchedulingWriter {
       }
       if (run.completed || (await this.#activeWakeRun())?.run_id !== runId) fail('invalid', 'Wake run is not active');
       if (field === 'final_record_id' && run.input_record_id === null) fail('invalid', 'Wake input must be persisted before its final reply');
+      if (field === 'final_record_id' && await this.#hasLiveInput(runId)) {
+        this.#checkVersion(owner, expectedVersion);
+        if (yieldToInput) return null;
+        fail('invalid', 'Pending live inputs must be consumed before finalizing');
+      }
       const next = await this.#appendRecord(owner, expectedVersion, record, signal);
       const changed = await this.#client.query(`UPDATE wake_runs SET ${field} = $1 WHERE mira_id = $2 AND run_id = $3 AND ${field} IS NULL AND NOT completed`,
         [record.id, this.miraId, runId]);
@@ -500,6 +510,92 @@ class PostgresWriter implements DreamingWriter, SchedulingWriter {
       }
       await this.#client.query('INSERT INTO wake_memory_receipts(mira_id, run_id, commit_id) VALUES ($1, $2, $3)', [this.miraId, receipt.runId, receipt.commit]);
     });
+  }
+  readonly #liveInputListeners = new Set<(runId: string) => void>();
+  onLiveInput(listener: (runId: string) => void): () => void {
+    this.#liveInputListeners.add(listener);
+    return () => { this.#liveInputListeners.delete(listener); };
+  }
+  async #hasLiveInput(runId: string): Promise<boolean> {
+    return !!(await this.#client.query('SELECT 1 FROM wake_live_inputs WHERE mira_id = $1 AND run_id = $2 AND input_record_id IS NULL LIMIT 1', [this.miraId, runId])).rowCount;
+  }
+  async receiveLiveInput(input: LifeEvent, requestedWake: WakeReceipt): Promise<'inserted' | 'duplicate'> {
+    const event = copy(input); const wake = copy(requestedWake);
+    validateEvent(event); validateWake(wake);
+    if (event.source !== 'user') fail('invalid', 'Live input must be a user event');
+    const result = await this.#transaction(async () => {
+      const receipt = await this.#receive(event, wake);
+      if (receipt === 'duplicate') return { receipt, runId: null };
+      const active = await this.#activeWakeRun();
+      if (!active || active.final_record_id) return { receipt, runId: null };
+      await this.#client.query('INSERT INTO wake_run_requests(mira_id, wake_id, run_id) VALUES ($1, $2, $3)', [this.miraId, wake.id, active.run_id]);
+      await this.#client.query('INSERT INTO wake_live_inputs(mira_id, wake_id, run_id) VALUES ($1, $2, $3)', [this.miraId, wake.id, active.run_id]);
+      return { receipt, runId: active.run_id };
+    });
+    // Only committed input may interrupt a request. No duplicate notification.
+    if (result.runId) for (const listener of this.#liveInputListeners) {
+      // A notification consumer cannot turn committed acceptance into a failed
+      // receipt or suppress the durable gates used by another consumer.
+      try { listener(result.runId); } catch { /* Notifications are hints only. */ }
+    }
+    return result.receipt;
+  }
+  loadLiveInputs(runId: string): Promise<LiveWakeInput[]> {
+    historyId(runId);
+    return this.#transaction(async owner => {
+      const run = await this.#wakeRun(runId);
+      await this.#readWakeRun(run, owner);
+      const bounds = (await this.#client.query<{ record_id: string; version: string }>(
+        'SELECT record_id, version FROM context_records WHERE mira_id = $1 AND record_id = ANY($2::uuid[])',
+        [this.miraId, [run.input_record_id, run.final_record_id].filter(id => id !== null)])).rows;
+      const initialVersion = bounds.find(row => row.record_id === run.input_record_id)?.version;
+      const finalVersion = bounds.find(row => row.record_id === run.final_record_id)?.version;
+      const rows = await this.#client.query<WakeRequestRow & { input_record_id: string | null; record_version: string | null; envelope: RuntimeRecord | null }>(
+        `SELECT e.history_id, w.event_id, e.event, e.requested_wake, w.wake_id, w.wake, i.input_record_id,
+                c.version AS record_version, c.envelope
+         FROM wake_live_inputs AS i
+         JOIN wake_run_requests AS r ON r.mira_id = i.mira_id AND r.wake_id = i.wake_id AND r.run_id = i.run_id
+         JOIN wake_requests AS w ON w.mira_id = i.mira_id AND w.wake_id = i.wake_id
+         JOIN life_events AS e ON e.mira_id = w.mira_id AND e.event_id = w.event_id
+         LEFT JOIN context_records AS c ON c.mira_id = i.mira_id AND c.record_id = i.input_record_id
+         WHERE i.mira_id = $1 AND i.run_id = $2 ORDER BY w.receipt_order`, [this.miraId, runId]);
+      let pending = false;
+      let previousVersion = BigInt(initialVersion ?? 0);
+      return rows.rows.map(row => {
+        validateEvent(row.event); validateWake(row.wake); historyId(row.history_id);
+        if (row.event.id !== row.event_id || row.wake.id !== row.wake_id || !isDeepStrictEqual(row.requested_wake, row.wake)) fail('corrupt', 'Live input receipt mismatch');
+        if (row.input_record_id) {
+          if (!initialVersion || pending || !row.envelope || row.envelope.kind !== 'message' || row.envelope.id !== row.input_record_id || !row.record_version || BigInt(row.record_version) <= previousVersion || BigInt(row.record_version) > BigInt(owner.context_version) || (finalVersion && BigInt(row.record_version) >= BigInt(finalVersion))) fail('corrupt', 'Live input evidence is out of order');
+          previousVersion = BigInt(row.record_version);
+        } else {
+          if (run.final_record_id) fail('corrupt', 'Finalized Wake has pending live input');
+          pending = true;
+        }
+        return { request: { eventId: row.history_id, event: row.event, wake: row.wake }, inputRecordId: row.input_record_id };
+      });
+    });
+  }
+  appendLiveInput(runId: string, wakeId: string, expectedVersion: number, input: RuntimeRecord, signal?: AbortSignal): Promise<number> {
+    historyId(runId); text(wakeId, 'wake ID'); version(expectedVersion);
+    const record = copy(input); assertRecord(record);
+    if (record.kind !== 'message') fail('invalid', 'Live input must be a message');
+    return this.#transaction(async owner => {
+      const run = await this.#wakeRun(runId);
+      if (run.completed || run.final_record_id || !run.input_record_id || (await this.#activeWakeRun())?.run_id !== runId) fail('invalid', 'Live input requires an active initialized Wake');
+      const row = (await this.#client.query<{ input_record_id: string | null }>('SELECT input_record_id FROM wake_live_inputs WHERE mira_id = $1 AND run_id = $2 AND wake_id = $3', [this.miraId, runId, wakeId])).rows[0];
+      if (!row) fail('invalid', 'Live input is not associated with this Wake');
+      if (row.input_record_id) {
+        const saved = (await this.#client.query<{ envelope: RuntimeRecord; version: string }>('SELECT envelope, version FROM context_records WHERE mira_id = $1 AND record_id = $2', [this.miraId, row.input_record_id])).rows[0];
+        if (!saved || row.input_record_id !== record.id || !isDeepStrictEqual(saved.envelope, record)) fail('duplicate', 'Live input already has different evidence');
+        if (saved.version !== String(expectedVersion + 1)) fail('version', 'Live input retry has a different expected version');
+        return Number(saved.version);
+      }
+      const first = (await this.#client.query<{ wake_id: string }>(`SELECT i.wake_id FROM wake_live_inputs AS i JOIN wake_requests AS w ON w.mira_id = i.mira_id AND w.wake_id = i.wake_id WHERE i.mira_id = $1 AND i.run_id = $2 AND i.input_record_id IS NULL ORDER BY w.receipt_order LIMIT 1`, [this.miraId, runId])).rows[0];
+      if (first?.wake_id !== wakeId) fail('invalid', 'Live inputs must be consumed in receipt order');
+      const next = await this.#appendRecord(owner, expectedVersion, record, signal);
+      await this.#client.query('UPDATE wake_live_inputs SET input_record_id = $1 WHERE mira_id = $2 AND run_id = $3 AND wake_id = $4 AND input_record_id IS NULL', [record.id, this.miraId, runId, wakeId]);
+      return next;
+    }, signal);
   }
   receive(input: LifeEvent, optionalWake?: WakeReceipt): Promise<'inserted' | 'duplicate'> {
     const event = copy(input); const wake = optionalWake === undefined ? null : copy(optionalWake);
@@ -701,7 +797,19 @@ class PostgresWriter implements DreamingWriter, SchedulingWriter {
 
   beginTool(expectedVersion: number, input: ToolIntent): Promise<void> {
     const intent = copy(input); validateIntent(intent);
-    return this.#transaction(async (owner) => {
+    return this.#transaction(owner => this.#beginTool(owner, expectedVersion, intent));
+  }
+  tryBeginWakeTool(runId: string, expectedVersion: number, input: ToolIntent): Promise<boolean> {
+    historyId(runId); const intent = copy(input); validateIntent(intent);
+    return this.#transaction(async owner => {
+      this.#checkVersion(owner, expectedVersion);
+      if ((await this.#activeWakeRun())?.run_id !== runId) fail('invalid', 'Wake run is not active');
+      if (await this.#hasLiveInput(runId)) return false;
+      await this.#beginTool(owner, expectedVersion, intent);
+      return true;
+    });
+  }
+  async #beginTool(owner: OwnerRow, expectedVersion: number, intent: ToolIntent): Promise<void> {
       this.#checkVersion(owner, expectedVersion);
       if ((await this.#activeWakeRun())?.final_record_id) fail('invalid', 'Finalized wake run cannot start another tool');
       const duplicate = await this.#client.query('SELECT 1 FROM tool_executions WHERE mira_id = $1 AND call_id = $2', [this.miraId, intent.callId]);
@@ -714,7 +822,6 @@ class PostgresWriter implements DreamingWriter, SchedulingWriter {
       await this.#reserveHistoryId(id, 'tool');
       await this.#client.query('INSERT INTO tool_executions(mira_id, call_id, assistant_record_id, context_version, intent, history_id) VALUES ($1, $2, $3, $4, $5::json, $6)',
         [this.miraId, intent.callId, intent.assistantRecordId, expectedVersion, JSON.stringify(intent), id]);
-    });
   }
   finishTool(input: ToolOutcome): Promise<void> {
     const outcome = copy(input); validateOutcome(outcome);

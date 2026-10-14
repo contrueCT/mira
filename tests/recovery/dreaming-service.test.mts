@@ -223,7 +223,7 @@ test('real PostgreSQL failed Dreaming preserves its ordinary file effect and res
   } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('real PostgreSQL user arrivals during Dreaming wait for the active run and coalesce into the next continuous Wake', { timeout: 30_000 }, async () => {
+test('real PostgreSQL user arrivals during Dreaming resume its active Wake with ordered supplemental input', { timeout: 30_000 }, async () => {
   const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-dreaming-arrivals-');
   let service: LocalWebService | undefined; let requests = 0; const entered = deferred(); const release = deferred();
   try {
@@ -235,8 +235,9 @@ test('real PostgreSQL user arrivals during Dreaming wait for the active run and 
         entered.resolve(); await release.promise; return streamOf(assistant(''));
       }
       if (requests === 3) {
-        const latest = JSON.stringify(context.messages.filter(message => message.role === 'user').at(-1));
-        assert.match(latest, /2 wake requests/); assert.match(latest, /ARRIVAL_DURING_DREAMING_A/); assert.match(latest, /ARRIVAL_DURING_DREAMING_B/);
+        const latest = context.messages.filter(message => message.role === 'user').slice(-2);
+        assert.match(JSON.stringify(latest[0]), /ARRIVAL_DURING_DREAMING_A/);
+        assert.match(JSON.stringify(latest[1]), /ARRIVAL_DURING_DREAMING_B/);
         assert.match(JSON.stringify(context.messages), /memory\.dreaming/);
       }
       return streamOf(assistant(requests === 3 ? 'Handled the newer requests.' : ''));
@@ -248,8 +249,9 @@ test('real PostgreSQL user arrivals during Dreaming wait for the active run and 
     await pause(50); assert.equal(requests, 2); assert.equal((await service.status()).state, 'working');
     release.resolve(); await settled(service); assert.equal(requests, 3);
     const membership = (await db.admin.query('SELECT run_id, count(*)::int AS n FROM wake_run_requests GROUP BY run_id')).rows;
-    assert.deepEqual(membership.map(row => row.n).sort(), [1, 1, 2]);
-    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_runs WHERE completed')).rows[0].n, 3);
+    assert.deepEqual(membership.map(row => row.n).sort(), [1, 3]);
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_runs WHERE completed')).rows[0].n, 2);
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_live_inputs WHERE input_record_id IS NOT NULL')).rows[0].n, 2);
     assert.equal((await dreamingEvents(db)).length, 1);
   } finally { release.resolve(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });

@@ -29,3 +29,11 @@ History references use one global canonical UUID across events, context, tools a
 `SchedulingWriter` is an optional UTC single-shot delivery contract on the same
 fenced writer, without time-zone/reminder/cron/external-effect semantics. See
 [ADR 0022](../../docs/adr/0022-durable-single-shot-delivery.md).
+### Live user input
+
+`LiveInputWriter` optionally attaches new user receipts to the active nonfinal
+Wake without changing its original `requests` or input. Ordered supplemental
+inputs are consumed under the same fenced writer; notifications only prompt a
+model-request yield. Tool-start and final publication atomically arbitrate
+against pending input. Ordinary `receive` remains next-batch scheduling. See
+[ADR 0024](../../docs/adr/0024-live-user-input.md).

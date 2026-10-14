@@ -431,3 +431,13 @@ Publication remains fenced after the file write; write, cancellation, ownership,
 byte-count or CAS failures cannot publish the checkpoint. Completed derived files
 are retained, with no automatic cleanup or additional storage service. Missing files
 produce ordinary read errors; file contents remain source material, not authority.
+
+### Live user steering
+
+With a `LiveInputWriter`, durable Wake execution yields an in-flight model request
+when committed user input arrives. The current single tool is allowed to finish;
+its old batch's remaining calls are recorded as not-started and never replayed.
+The next model request receives ordered persisted input, including attachments.
+Compaction uses its frozen candidate; inputs arriving during summary are consumed
+after checkpoint publication and before the natural request. There is no pause
+button or intent classifier. See [ADR 0024](../../docs/adr/0024-live-user-input.md).

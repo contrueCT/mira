@@ -295,7 +295,7 @@ test('extension settings apply real lifecycle/configuration and staged update/ro
   } finally { await app?.close(); await service?.close(); await db?.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('a real merged Wake paginates trigger requests separately from execution records through the settings UI', async ({ page }) => {
+test('a real Wake paginates original and supplemental requests separately from execution records through the settings UI', async ({ page }) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mira-management-members-'));
   const hold = deferred();
   let db: Awaited<ReturnType<typeof createTestDatabase>> | undefined;
@@ -321,7 +321,7 @@ test('a real merged Wake paginates trigger requests separately from execution re
     await composer.fill('先保持这轮处理中，后面会继续发送信息。'); await send.click();
     await expect.poll(() => modelRequests).toBe(1);
     // Every source request originates in the real composer. The first model is
-    // held so production Wake coalescing, rather than fixture rows, forms batch 2.
+    // held so production receipt binding, rather than fixture rows, adds live inputs.
     for (let i = 0; i < 55; i++) {
       await composer.fill(`真实合并请求 ${i + 1}`);
       await send.click();
@@ -330,7 +330,7 @@ test('a real merged Wake paginates trigger requests separately from execution re
     hold.resolve();
     await expect.poll(async () => (await service!.status()).state).toBe('idle');
     expect(modelRequests).toBe(2);
-    const memberRun = (await db.admin.query<{ run_id: string; n: number }>('SELECT run_id, count(*)::int AS n FROM wake_run_requests GROUP BY run_id HAVING count(*) = 55')).rows;
+    const memberRun = (await db.admin.query<{ run_id: string; n: number }>('SELECT run_id, count(*)::int AS n FROM wake_run_requests GROUP BY run_id HAVING count(*) = 56')).rows;
     expect(memberRun).toHaveLength(1);
     await page.getByRole('button', { name: '模型设置', exact: true }).click();
     await page.getByRole('tab', { name: '运行记录', exact: true }).click();
@@ -338,11 +338,11 @@ test('a real merged Wake paginates trigger requests separately from execution re
     const triggers = page.getByRole('heading', { name: '触发来源', exact: true }).locator('..');
     await expect(triggers.locator('li')).toHaveCount(50);
     await page.getByRole('button', { name: '更多触发请求', exact: true }).dblclick();
-    await expect(triggers.locator('li')).toHaveCount(55);
+    await expect(triggers.locator('li')).toHaveCount(56);
     await expect(page.getByRole('button', { name: '更多触发请求', exact: true })).toHaveCount(0);
     expect(memberPageReads).toBe(1);
     const renderedIds = await triggers.locator('.technical-id').allTextContents();
-    expect(new Set(renderedIds).size).toBe(55);
+    expect(new Set(renderedIds).size).toBe(56);
     const members = (await db.admin.query<{ history_id: string }>(`SELECT e.history_id FROM wake_run_requests q JOIN wake_requests w ON w.mira_id=q.mira_id AND w.wake_id=q.wake_id JOIN life_events e ON e.mira_id=w.mira_id AND e.event_id=w.event_id WHERE q.run_id=$1`, [memberRun[0]!.run_id])).rows;
     expect([...renderedIds].sort()).toEqual(members.map(member => member.history_id).sort());
     expect((await db.admin.query('SELECT count(*)::int AS n FROM life_events')).rows[0].n).toBe(56);

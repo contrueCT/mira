@@ -7,7 +7,7 @@ import { realpath, stat } from 'node:fs/promises';
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Api } from '@earendil-works/pi-ai';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { ExtensionHost, ExtensionRevisionConflictError, type LocalExtensionEntry, type RegisteredContextProvider, type ExtensionChange } from '@mira/extension-host';
-import { HistoryError, WakeLoop, type HistoryEntry, type RunHistoryReader, type DreamingWriter, type SchedulingWriter } from '@mira/life';
+import { HistoryError, WakeLoop, type HistoryEntry, type RunHistoryReader, type DreamingWriter, type SchedulingWriter, type LiveInputWriter } from '@mira/life';
 import { migrate, PostgresPersistence, PersistenceError } from '@mira/persistence';
 import { PiDurableRuntime, type AutoCompactionOptions, createHistoryTools, decodeRecords } from '@mira/runtime-pi';
 import { writeWakeInput, setupMemoryWorkspace, loadMemoryBootstrap, MemoryReadLimitError } from '@mira/workspace';
@@ -78,7 +78,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   readonly external: ExternalIngress;
   readonly #options: WebServiceOptions;
   readonly #attachments: AttachmentStore;
-  readonly #writer: DreamingWriter;
+  readonly #writer: DreamingWriter & LiveInputWriter;
   readonly #history: RunHistoryReader;
   readonly #settings: WebSettingsStore;
   readonly #loop: WakeLoop;
@@ -95,7 +95,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   #settingsGeneration = 0;
   #kickRequested = false;
   readonly #cache = new Map<string, Timeline['items'][number] | null>();
-  private constructor(options: WebServiceOptions, writer: DreamingWriter & SchedulingWriter, history: RunHistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, attachments: AttachmentStore, host?: ExtensionHost) {
+  private constructor(options: WebServiceOptions, writer: DreamingWriter & SchedulingWriter & LiveInputWriter, history: RunHistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, attachments: AttachmentStore, host?: ExtensionHost) {
     this.#attachments = attachments; this.#options = options; this.#writer = writer; this.#history = history; this.#settings = settings;
     this.#settingsValue = settingsValue; this.#loop = loop; this.#host = host;
     this.external = createExternalIngress(writer, () => this.#kick());
@@ -236,7 +236,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     const attachments = await this.#attachments.resolve(input.attachmentIds ?? []);
     if (!input.text.trim() && !attachments.length) throw new WebHttpError('invalid_input');
     let receipt: 'inserted' | 'duplicate';
-    try { receipt = await this.#writer.receive({ id: input.id, type: 'web.message', source: 'user', occurredAt: input.occurredAt, payload: { text: input.text, ...(attachments.length ? { attachments: attachments.map(item => ({ ...item })) } : {}) } }, { id: `web:${input.id}`, reason: 'User message from the local web interface' });
+    try { receipt = await this.#writer.receiveLiveInput({ id: input.id, type: 'web.message', source: 'user', occurredAt: input.occurredAt, payload: { text: input.text, ...(attachments.length ? { attachments: attachments.map(item => ({ ...item })) } : {}) } }, { id: `web:${input.id}`, reason: 'User message from the local web interface' });
     } catch (error) {
       if (error instanceof PersistenceError && error.code === 'duplicate') throw new WebHttpError('conflict');
       throw error;

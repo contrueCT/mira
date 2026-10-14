@@ -172,3 +172,11 @@ actual ownership loss, SIGKILL before/after COMMIT, and migration down/up. The c
 fixture pauses at the actual driver COMMIT boundary; the parent kills its OS process.
 These tests must run in the real integration gate and never silently skip. A standalone
 SQL-engine check or offline fake does not establish driver/process recovery.
+### Live input
+
+The writer also implements `LiveInputWriter`. `receiveLiveInput` atomically binds
+new user receipts to an active nonfinal Wake; `wake_live_inputs` keeps supplemental
+membership separate from frozen original input. Ordered `appendLiveInput` stores
+its consumption link in the same CAS transaction as the message. Atomic tool and
+final gates yield to unread input. Duplicate receipts never notify or rebind.
+See [ADR 0024](../../docs/adr/0024-live-user-input.md).

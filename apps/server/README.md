@@ -107,3 +107,10 @@ startup/UTC deadlines independently of Dreaming or active model work.
 The finite demo CLI only scans at startup. Reminder rules live in
 `examples/extensions/reminders.ts`; it is not installed automatically. See
 [ADR 0022](../../docs/adr/0022-durable-single-shot-delivery.md).
+### Running user messages
+
+Ordinary Web sends now use durable live input: while Mira is generating, the
+current model request yields; while a tool is executing, the message waits for
+that one tool to settle. Remaining old-batch tools do not start first. Receipt
+means persisted, not model-read. No new stop/pause control is exposed. External
+Event/Wake ingress continues to queue normally. See [ADR 0024](../../docs/adr/0024-live-user-input.md).
