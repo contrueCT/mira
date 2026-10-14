@@ -61,6 +61,24 @@ export interface HistoryReadRequest extends HistoryReference {
    * Oversized records fail explicitly instead of silently losing evidence. */
   maxBytes?: number;
 }
+export interface HistoryTextRequest extends HistoryReference {
+  /** Zero-based Unicode code-point offset, not UTF-16 or byte offset. */
+  offset: number;
+  /** Text-page UTF-8 budget, default 4096, range 4..65536. */
+  maxBytes?: number;
+  /** First-page SHA-256; required after offset=0 to reject changed originals. */
+  revision?: string;
+}
+export interface HistoryTextPage extends HistoryMetadata {
+  /** Original scope/timestamp remain in text; the page envelope is bounded. */
+  format: 'json-text';
+  text: string;
+  offset: number;
+  nextOffset: number | null;
+  totalChars: number;
+  totalBytes: number;
+  revision: string;
+}
 interface HistoryBase extends HistoryMetadata { miraId: string; occurredAt: string }
 export interface HistoryEvent extends HistoryBase {
   kind: 'event';
@@ -100,6 +118,9 @@ export interface HistoryReader {
   page(request?: HistoryPageRequest): Promise<HistoryPageResult>;
   /** Null means this global ID was not found in this Mira. The result supplies its kind. */
   read(request: HistoryReadRequest): Promise<HistoryEntry | null>;
+  /** Lossless bounded pages of the serialized original, including >1 MiB
+   * records. Concatenate text in order; a changed revision must restart at 0. */
+  readText(request: HistoryTextRequest): Promise<HistoryTextPage | null>;
 }
 export class HistoryError extends Error {
   readonly code: 'invalid' | 'corrupt' | 'too_large';

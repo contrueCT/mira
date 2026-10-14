@@ -744,7 +744,7 @@ test('history tools expose exact reader scope and honest errors without turning 
   const { HistoryError } = await import('@mira/life');
   const seen: unknown[] = [];
   const tools = createHistoryTools({ miraId: 'fixed-mira',
-    page: async () => ({ hits: [], nextCursor: null }),
+    page: async () => ({ hits: [], nextCursor: null }), readText: async () => null,
     search: async request => { seen.push(request); return { query: request.query, mode: request.mode ?? 'full_text', fullTextPrefixChars: 65536, hits: [], hasMore: false }; },
     read: async request => { seen.push(request); throw new HistoryError('too_large', 'Original needs a larger budget', 70000); },
   });

@@ -47,7 +47,8 @@ Shared rules: [root AGENTS.md](../../AGENTS.md). Read `README.md` before changes
 - Dynamic hosts guard pinned activation identity at execution: stale removed/replaced calls return a known not-executed result, never redirect by name or throw an ambiguous effect failure
 - Renderer substitutions are allowlisted, escaped and single-pass; tool guidance uses the same declared registry, never a stale separate snapshot
 - New compaction candidates receive full History UUIDs; never rewrite existing parent/first-kept references or provider call IDs
-- `history_read` takes only the global UUID and optional byte budget, obtains kind from persistence, and accepts Memory `History-Id` directly
+- `history_read` takes the global UUID, optional byte budget, and optional code-point offset/revision for complete JSON-text paging above 1 MiB; kind comes from persistence, Memory `History-Id` works directly
+- ADR 0028: persist complete normalized outcomes/transcripts before projecting tool text to 16 KiB with an existing ordinary-file spool reference. Recovery/compaction use the same projection; missing files reconstruct, conflicts fail, non-text metadata survives, known effects never replay
 - `history-tools.ts` returns Mira-bound original history; generic persistence never parses Pi
 - Attachment refs are validated durable user metadata; hydration is request-local only. Recovery compares ordered refs; compaction retains immutable file identities and never claims omitted media was seen. Native video uses transient metadata for the explicitly supported transport (ADR 0021), never fake image blocks.
 - Task workers use `compactionScope: task` with a separate hash-checked task summary prompt through the same SDK hook; reject main `miraPrompt`/Memory configuration. Parent Dreaming counts remain stream-local; never use main persona summary instructions for child continuity.

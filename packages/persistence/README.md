@@ -226,3 +226,24 @@ restart also handles a missing completion callback. Public DTOs omit these links
 no new migration, replay path or independent state engine is introduced.
 Both subagent migrations have explicit up/down; down is destructive and must not
 be run on user data automatically. See ADR 0025 and ADR 0026.
+
+### Complete large originals through text pages
+
+`HistoryReader.readText({id,offset,maxBytes?,revision?})` provides read-only bounded
+pages of the same serialized original when a complete `read` exceeds its 1 MiB
+ceiling. Begin at `offset: 0`, then copy `nextOffset` and the first-page SHA-256
+`revision` until `nextOffset` is null. Concatenate `text` values and parse the full
+JSON. Offsets count Unicode code points. The text byte budget defaults to 4096,
+range 4..65536; metadata has a separate bounded response allowance. SQL selects at
+most `floor(maxBytes/4)` characters to guarantee valid UTF-8 within the byte budget.
+Only that page is transferred, without decoding opaque runtime data or creating
+another store. Every query remains fixed-Mira, parameterized and read-only with the
+existing timeout and identity checks. A tool outcome or Wake association may be
+completed between pages; revision mismatch explicitly requires a restart. See
+[ADR 0028](../../docs/adr/0028-tool-output-budget.md).
+
+History text-page envelopes intentionally omit original `miraId` and `occurredAt`;
+these values remain exactly preserved inside the paged JSON. Only fixed-size
+id/kind/revision and numeric lengths/offsets accompany bounded text, so a long
+writer-valid timestamp cannot make all pages exceed the response budget. Fixed
+Mira scope is enforced by the query, never a model-supplied parameter.

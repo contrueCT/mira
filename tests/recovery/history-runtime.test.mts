@@ -10,6 +10,8 @@ import { decodeRecords, MIRA_SYSTEM_TEMPLATE } from '@mira/runtime-pi';
 import { runDemo } from '@mira/server';
 import { createTestDatabase } from '../integration/database.mts';
 import { assistant, streamOf, toolCalls } from './fixtures.mts';
+import { fullOutput } from './tool-output-fixtures.mts';
+import { TOOL_OUTPUT_TEXT_BYTES } from '../../packages/runtime-pi/src/tool-output.ts';
 
 const occurredAt = '2026-10-05T08:00:00.000Z';
 const event = (id: string, text: string): LifeEvent => ({ id, type: 'synthetic.history', source: 'user', occurredAt, payload: { text, untouched: [null, 42, true] } });
@@ -65,7 +67,11 @@ async function assertProviderEvidence(db: Database, miraId: string, context: Tra
     assert.deepEqual(result.message, execution.outcome.payload, 'transcript contains the exact durable outcome');
     assert.equal(Number(rows[resultIndex]!.version), Number(execution.context_version) + 1, 'the result immediately follows its intent context version');
     assert.ok(Number(rows[entries.indexOf(source)]!.version) <= Number(execution.context_version), 'assistant request precedes intent');
-    assert.deepEqual(context.messages.find(message => message.role === 'toolResult' && message.toolCallId === intent.callId), execution.outcome.payload, 'real database results reach the next provider request unchanged');
+    const delivered = context.messages.find(message => message.role === 'toolResult' && message.toolCallId === intent.callId);
+    assert.ok(delivered?.role === 'toolResult');
+    const full = execution.outcome.payload as unknown as typeof delivered;
+    const large = full.content.reduce((bytes, block) => bytes + (block.type === 'text' ? Buffer.byteLength(block.text) : 0), 0) > TOOL_OUTPUT_TEXT_BYTES;
+    assert.deepEqual(large ? await fullOutput(delivered) : delivered, execution.outcome.payload, 'the next request gets exact evidence or a readable complete original');
   }
 }
 
@@ -225,8 +231,8 @@ test('real PostgreSQL server: model explicitly selects Chinese/literal substring
   } finally { await db.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('real PostgreSQL server: oversized history read reaches the model truthfully and a larger-budget new call returns the complete original', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp(path.join(tmpdir(), 'mira-history-large-'));
+test('real PostgreSQL server: oversized history read reaches the model truthfully and a larger-budget new call preserves the complete original behind a bounded reference', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-history-large-');
   const miraId = 'large-reader';
   const original = event('large-original', `${'完整原文 '.repeat(7000)}untruncated-tail-marker`);
   try {
@@ -250,8 +256,11 @@ test('real PostgreSQL server: oversized history read reaches the model truthfull
           return streamOf(calls(call('read-larger-budget', 'history_read', { id: originalHistoryId, maxBytes: requiredBytes })));
         }
         assert.equal(requests, 3);
-        assert.deepEqual(value(context, 'read-larger-budget'), { kind: 'event', id: originalHistoryId, miraId, occurredAt, event: original, requestedWake: null });
-        return streamOf(assistant('The first read exceeded its budget; the second returned the complete original through untruncated-tail-marker'));
+        const delivered = context.messages.find(message => message.role === 'toolResult' && message.toolCallId === 'read-larger-budget'); assert.ok(delivered?.role === 'toolResult');
+        assert.ok(!JSON.stringify(delivered.content).includes('untruncated-tail-marker'));
+        const full = await fullOutput(delivered), text = full.content[0]; assert.ok(text?.type === 'text');
+        assert.deepEqual(JSON.parse(text.text), { kind: 'event', id: originalHistoryId, miraId, occurredAt, event: original, requestedWake: null });
+        return streamOf(assistant('The first read exceeded its budget; the second supplied a preview and a readable complete original.'));
       },
     });
     assert.equal(completed.modelCalls, 3); assert.equal(completed.completedRuns, 1);

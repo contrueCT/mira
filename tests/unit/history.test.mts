@@ -268,3 +268,39 @@ test('run refresh cursors retain an exact inclusive tuple while ordinary paginat
   assert.deepEqual(queries[1]!.parameters, ['mira-a', id, 50, 28, 'tool', secondId, 262_144, true]);
   assert.deepEqual(queries[2]!.parameters, ['mira-a', id, 50, 28, 'tool', secondId, 262_144, false]);
 });
+
+const revision = 'a'.repeat(64);
+const pageEntry = { kind: 'event' as const, id, format: 'json-text' as const,
+  text: '😀中\\"', offset: 0, nextOffset: 4, totalChars: 2_000_000, totalBytes: 3_000_000, revision };
+
+test('History text pages keep database transfer bounded and preserve Unicode with explicit continuation identity', async t => {
+  const mock = mockDatabase(t, pageEntry);
+  assert.deepEqual(await store().history('mira-a').readText({ id, offset: 0, maxBytes: 32 }), pageEntry);
+  const query = mock.queries.find(item => item.parameters)!;
+  assert.match(query.sql, /substring\(text FROM \$3::integer \+ 1 FOR \$4::integer\)/);
+  assert.match(query.sql, /sha256\(convert_to\(text, 'UTF8'\)\)/);
+  assert.deepEqual(query.parameters, ['mira-a', id, 0, 8, 6 * 32 + 2048]);
+  const envelope = query.sql.slice(query.sql.lastIndexOf("SELECT json_build_object('kind', body"));
+  assert.ok(!envelope.includes('miraId') && !envelope.includes('occurredAt'), 'unbounded original metadata belongs only in paged text');
+  assert.equal((query.sql.match(/WHERE h.mira_id = \$1 AND h.id = \$2::uuid/g) ?? []).length, 4);
+  assert.equal(mock.queries[0]?.sql, 'BEGIN READ ONLY');
+  assert.equal(mock.queries.at(-1)?.sql, 'COMMIT');
+});
+
+test('History text requests reject unbounded reads and unbound continuations before any connection', async t => {
+  const mock = mockDatabase(t, null); const reader = store().history('mira-a');
+  for (const request of [{ id, offset: -1 }, { id, offset: 1 }, { id, offset: 1, revision: 'bad' }, { id, offset: 0, maxBytes: 3 }, { id, offset: 0, maxBytes: 65_537 }, { id, offset: 0, extra: true }, { id, offset: 2_147_483_647 }]) {
+    await assert.rejects(reader.readText(request as Parameters<typeof reader.readText>[0]), HistoryError);
+  }
+  assert.equal(mock.connected(), 0);
+});
+
+for (const field of [{ miraId: 'foreign' }, { nextOffset: 3 }, { totalChars: 2 }, { text: 'too long'.repeat(1000) }]) test(`corrupt History text page rejects ${Object.keys(field)[0]}`, async t => {
+  mockDatabase(t, { ...pageEntry, ...field });
+  await assert.rejects(store().history('mira-a').readText({ id, offset: 0 }), (error: unknown) => error instanceof HistoryError && error.code === 'corrupt');
+});
+
+test('a different History revision fails explicitly instead of joining two versions', async t => {
+  mockDatabase(t, { ...pageEntry, offset: 4, nextOffset: 8 });
+  await assert.rejects(store().history('mira-a').readText({ id, offset: 4, revision: 'b'.repeat(64) }), /changed.*restart/);
+});

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { Client } from 'pg';
 import { assertJson, assertRecord } from '@mira/context';
 import { HistoryError } from '@mira/life';
-import type { HistoryEntry, HistoryKind, HistoryPageHit, HistoryPageRequest, HistoryPageResult, RunHistoryReader, HistoryEventRun, HistoryRunPage, HistoryRunPageRequest, HistoryRunHeader, HistoryRunRequestsPage, HistoryReadRequest, HistorySearchRequest, HistorySearchResult } from '@mira/life';
+import type { HistoryEntry, HistoryKind, HistoryPageHit, HistoryPageRequest, HistoryPageResult, RunHistoryReader, HistoryEventRun, HistoryRunPage, HistoryRunPageRequest, HistoryRunHeader, HistoryRunRequestsPage, HistoryReadRequest, HistoryTextRequest, HistoryTextPage, HistorySearchRequest, HistorySearchResult } from '@mira/life';
 import type { PostgresOptions } from './index.ts';
 
 const FULL_TEXT_PREFIX_CHARS = 65_536;
@@ -44,6 +44,17 @@ const sources: Record<HistoryKind, Source> = {
     integrity: 'true',
   },
 };
+function originalSql(): string {
+  return kinds.map(sourceKind => {
+    const source = sources[sourceKind];
+    return `SELECT json_build_object('kind', h.kind, 'id', h.id, 'miraId', h.mira_id,
+      'occurredAt', ${source.timestamp}, ${source.body}) AS body,
+      (s.${source.id} IS NOT NULL AND (${source.integrity})) AS valid
+      FROM history_records AS h LEFT JOIN ${source.table} AS s ON
+        s.${source.id} = h.id AND s.mira_id = h.mira_id
+      WHERE h.mira_id = $1 AND h.id = $2::uuid AND h.kind = '${sourceKind}'`;
+  }).join('\nUNION ALL\n');
+}
 /** Fixed management metadata, independent of coalesced membership size. */
 const runHeaderBody = `'kind', 'wake', 'id', s.run_id, 'miraId', s.mira_id, 'occurredAt', s.claimed_at,
   'claimedVersion', s.claimed_version, 'inputRecordId', s.input_record_id, 'finalRecordId', s.final_record_id,
@@ -419,18 +430,41 @@ export class PostgresHistoryReader implements RunHistoryReader {
     const maxBytes = request.maxBytes ?? 65_536; integer(maxBytes, 1, 1_048_576, 'read budget');
     // The registry owns kind selection. A single read-only statement sees the
     // identity and its original detail in one database snapshot.
-    const detail = kinds.map(sourceKind => {
-      const source = sources[sourceKind];
-      return `SELECT json_build_object('kind', h.kind, 'id', h.id, 'miraId', h.mira_id,
-        'occurredAt', ${source.timestamp}, ${source.body}) AS body,
-        (s.${source.id} IS NOT NULL AND (${source.integrity})) AS valid
-        FROM history_records AS h LEFT JOIN ${source.table} AS s ON
-          s.${source.id} = h.id AND s.mira_id = h.mira_id
-        WHERE h.mira_id = $1 AND h.id = $2::uuid AND h.kind = '${sourceKind}'`;
-    }).join('\nUNION ALL\n');
-    const sql = detail;
-    const entry = response<HistoryEntry>(await this.#query(bound(sql, '$3'), [this.miraId, request.id, maxBytes]));
+    const entry = response<HistoryEntry>(await this.#query(bound(originalSql(), '$3'), [this.miraId, request.id, maxBytes]));
     if (entry) validateEntry(entry, this.miraId, request);
     return entry;
+  }
+  async readText(request: HistoryTextRequest): Promise<HistoryTextPage | null> {
+    object(request); historyId(request.id);
+    if (Object.keys(request).some(key => !['id', 'offset', 'maxBytes', 'revision'].includes(key))) invalid('History text read accepts only id, offset, maxBytes and revision');
+    integer(request.offset, 0, 2_147_483_646, 'text offset');
+    const maxBytes = request.maxBytes ?? 4096; integer(maxBytes, 4, 65_536, 'text budget');
+    if ((request.offset > 0 || request.revision !== undefined) && (typeof request.revision !== 'string' || !/^[a-f0-9]{64}$/.test(request.revision))) invalid('History text continuation requires its first-page revision');
+    // PostgreSQL substring counts code points. maxBytes / 4 guarantees a UTF-8
+    // bound without splitting one. Only the page crosses the connection.
+    const sql = `WITH original AS MATERIALIZED (${originalSql()}), serialized AS MATERIALIZED (
+      SELECT body, valid, body::text AS text FROM original
+    ), page AS MATERIALIZED (
+      SELECT *, substring(text FROM $3::integer + 1 FOR $4::integer) AS part,
+        char_length(text) AS chars, octet_length(text) AS bytes,
+        encode(sha256(convert_to(text, 'UTF8')), 'hex') AS revision FROM serialized
+    ) SELECT json_build_object('kind', body->>'kind', 'id', body->>'id', 'format', 'json-text', 'text', part, 'offset', $3::integer,
+      'nextOffset', CASE WHEN $3::integer + char_length(part) < chars THEN $3::integer + char_length(part) ELSE NULL END,
+      'totalChars', chars, 'totalBytes', bytes, 'revision', revision) AS body, valid FROM page`;
+    const page = response<HistoryTextPage>(await this.#query(bound(sql, '$5'), [this.miraId, request.id, request.offset, Math.floor(maxBytes / 4), 6 * maxBytes + 2048]));
+    if (!page) return null;
+    try {
+      kind(page.kind); historyId(page.id);
+      if (Object.keys(page).sort().join(',') !== 'format,id,kind,nextOffset,offset,revision,text,totalBytes,totalChars' || page.id !== request.id
+        || page.format !== 'json-text' || page.offset !== request.offset || typeof page.text !== 'string' || !page.text.isWellFormed()
+        || Buffer.byteLength(page.text) > maxBytes || !/^[a-f0-9]{64}$/.test(page.revision)) throw Error();
+      integer(page.totalChars, 0, 2_147_483_646, 'total text length'); integer(page.totalBytes, page.totalChars, Number.MAX_SAFE_INTEGER, 'total text bytes');
+      const end = page.offset + [...page.text].length;
+      if (page.offset <= page.totalChars && (end > page.totalChars || (end < page.totalChars && !page.text.length))) throw Error();
+      if (page.nextOffset !== (end < page.totalChars ? end : null)) throw Error();
+    } catch { throw new HistoryError('corrupt', 'Invalid bounded History text page'); }
+    if (request.offset > page.totalChars) invalid('History text offset is beyond the end of the original');
+    if (request.revision !== undefined && page.revision !== request.revision) invalid('History original changed; restart history_read with offset=0');
+    return page;
   }
 }

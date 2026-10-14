@@ -32,6 +32,8 @@
 - [ADR 0030](docs/adr/0030-task-scoped-compaction.md)：child 复用持久自动压缩，独立 task 摘要指令与 transcript；不加载主 Memory，不计入主压缩/Dreaming，运行中 followup 留在原队列。
 - [ADR 0026](docs/adr/0026-subagent-observation-and-global-skills.md)：子代理显式公开标题/进度、真实模型/工具活动、有界独立 child/run 只读详情；主聊天仅在有 child 时显示紧凑卡片，不显示思考或原始参数；默认并发 8、启动可配 1..32，全局技能第三优先级。
 - [ADR 0027](docs/adr/0027-configured-reasoning-levels.md)：模型设置的默认推理偏好为 medium，Pi 能力适配后显式传入 main/child/Dreaming；压缩独立最低支持档，总输出 cap 不扩大，不提供模型自行升档工具。
+
+- [ADR 0028](docs/adr/0028-tool-output-budget.md)：工具完整结果先持久化，模型投影统一16KiB文字预算与普通文件完整引用；恢复/压缩同边界、未知结果不重放，History原文超过1MiB可按revision绑定的文本页读取。
 - 实际允许依赖和出口以 `scripts/boundaries.json` 与各包 `package.json` 为准；新增时最小开放
 
 ## 按需指引

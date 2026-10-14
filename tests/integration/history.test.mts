@@ -257,3 +257,44 @@ test('two Mira writer sessions racing one global UUID commit exactly one context
     assert.equal((await writers[loser]!.load()).version, 1);
   } finally { await db.close(); }
 });
+
+test('lossless History text paging reads over 1 MiB, preserves Unicode and scope, and detects a changing original', async () => {
+  const db = await createTestDatabase();
+  try {
+    const writer = await db.acquire('paged-reader');
+    const original = { ...event('large-paged-original', '单行😀\\"'.repeat(130_000) + 'END_OF_COMPLETE_ORIGINAL'), occurredAt: ' '.repeat(400_000) + '2026-10-14' };
+    assert.ok(Number.isFinite(Date.parse(original.occurredAt)), 'writer-valid timestamps need not have bounded text length');
+    await writer.receive(original);
+    const id = await eventId(db, original.id, writer.miraId), reader = db.store.history(writer.miraId);
+    await assert.rejects(reader.read({ id, maxBytes: 1_048_576 }), (error: unknown) => error instanceof HistoryError && error.code === 'too_large');
+    for (const maxBytes of [4, 4096, 65_536]) {
+      const page = await reader.readText({ id, offset: 0, maxBytes }); assert.ok(page);
+      assert.ok(!Object.hasOwn(page, 'miraId') && !Object.hasOwn(page, 'occurredAt'));
+      assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 6 * maxBytes + 2048);
+    }
+    let offset = 0, revision: string | undefined, text = '', pageCount = 0;
+    while (true) {
+      const page = await reader.readText({ id, offset, maxBytes: 65_536, ...(revision ? { revision } : {}) }); assert.ok(page);
+      assert.ok(Buffer.byteLength(page.text) <= 65_536); assert.ok(page.text.isWellFormed());
+      assert.equal(page.offset, offset); revision ??= page.revision; assert.equal(page.revision, revision);
+      text += page.text; pageCount++;
+      if (page.nextOffset === null) { assert.equal([...text].length, page.totalChars); assert.equal(Buffer.byteLength(text), page.totalBytes); break; }
+      assert.ok(page.nextOffset > offset); offset = page.nextOffset;
+    }
+    assert.ok(pageCount > 1);
+    assert.deepEqual(JSON.parse(text), { kind: 'event', id, miraId: writer.miraId, occurredAt: original.occurredAt, event: original, requestedWake: null });
+    assert.equal(await db.store.history('foreign-mira').readText({ id, offset: 0 }), null);
+    await assert.rejects(reader.readText({ id, offset: 10, revision: '0'.repeat(64) }), /changed.*restart/);
+    await assert.rejects(reader.readText({ id, offset: [...text].length + 1, revision }), /beyond the end/);
+    assert.equal((await writer.load()).records.length, 0, 'paging never creates a runtime or another log');
+    await writer.close();
+    assert.equal((await db.store.history('paged-reader').readText({ id, offset: 0 }))?.revision, revision, 'restart retains the exact source identity');
+
+    const active = await db.acquire('mutable-reader');
+    await active.receive(event('changing-wake', 'wake'), { id: 'wake', reason: 'test current state' });
+    const run = await active.claimWakeBatch(); assert.ok(run);
+    const mutable = db.store.history(active.miraId), first = await mutable.readText({ id: run.id, offset: 0 }); assert.ok(first);
+    await active.appendWakeInput(run.id, 0, record('paged-input', null, 'input'));
+    await assert.rejects(mutable.readText({ id: run.id, offset: 4, revision: first.revision }), /changed.*restart/);
+  } finally { await db.close(); }
+});

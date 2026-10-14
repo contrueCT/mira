@@ -42,3 +42,9 @@ against pending input. Ordinary `receive` remains next-batch scheduling. See
 run-local ordinary tools can inspect durable supplemental input without guessing
 a global active run. This does not change the original request batch or claim
 new work.
+
+`HistoryReader.readText` adds bounded serialized-original pages for records larger
+than the complete-read budget. Its code-point offset and first-page SHA-256 revision
+prevent silently concatenating changed tool/Wake originals; each page retains the
+fixed Mira and History identity. It adds no state, history copy or Runtime parsing.
+The same `history_read` tool exposes this through optional offset/revision fields.

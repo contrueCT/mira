@@ -486,3 +486,54 @@ independent from whether its summary checkpoint committed.
 ## Configured reasoning
 
 `PiRuntimeOptions.thinkingLevel` defaults to `medium` and is adapted through Pi 1.0.2 public model capabilities before being explicitly installed in `Agent.initialState`. Non-reasoning models use `off`. Summary hooks independently select the lowest supported level, normally `off`, rather than inheriting conversation effort. This applies to the same runtime used by main, child and Dreaming; there is no model-selected escalation or extra request. See [ADR 0027](../../docs/adr/0027-configured-reasoning-levels.md).
+
+## Unified tool-result text budget
+
+All tool paths use a 16,384 UTF-8 byte budget per result's combined model-facing
+text, including SDK newline joins and its explicit partial-preview/reference notice. Full normalized
+outcomes and exact transcript JSON are still persisted first, including all defined
+opaque fields, images, attachment metadata, `structuredContent` and `terminate`.
+`normalizeToolResult` remains a shape validator, not a truncator. The existing
+Pi bash truncation/full-file behavior is unchanged.
+
+Oversized active results require `writeOverflowInput`. The complete canonical
+result JSON is encoded as small ordered JSONL string chunks in an existing
+immutable ordinary-file spool; join decoded `text` values after the header to
+reconstruct the exact original. This also makes giant single-line results readable
+with normal `read` line pagination. The notice supplies the path, file size,
+original History UUID and initial `offset=1, limit=3` guidance. No special reader,
+new database table or replacement state store is added. Stable spool keys preserve
+existing paths; only keys above the writer's 4,096-character limit use a distinct
+SHA-256 namespace over the JSON-encoded Mira ID and History UUID pair, so arbitrary
+valid Mira IDs remain recoverable.
+
+Only adjacent plain `type`/`text` blocks in oversized previews are coalesced, before
+hydration assigns media slots. Opaque-field blocks and non-text blocks retain their
+fields and relative order; the canonical original block list is preserved exactly.
+If unmergeable separator/reference overhead cannot fit, dispatch fails explicitly.
+Hydrated annotations and every remaining join separator also count toward the cap;
+native-video indices are never changed at that final boundary.
+
+Recovery validates/repairs the full durable evidence before deriving the bounded
+projection. A fresh runtime restores even compacted-out result files; active
+references are verified on every projection, while archived files are checked once
+per instance to avoid repeated lifetime file I/O. Missing files are reconstructed,
+conflicts fail without overwrite, and spool failure never fabricates an unknown effect or replays a known one.
+Compaction and candidate budget checks use the same projection; originals stay
+unchanged in History. Non-text content keeps the existing media rules. Aggregate
+request budgets still apply separately. See [ADR 0028](../../docs/adr/0028-tool-output-budget.md).
+
+`history_read({id,offset:0})` opts into bounded JSON-text pages, including originals
+above 1 MiB. Copy `nextOffset` and the first-page `revision`; concatenate page text
+in order. Offsets count Unicode code points. Paged `maxBytes` defaults to 4096,
+range 4..65536; omission of `offset` keeps the original complete-read behavior.
+A source revision change requires restarting at zero, never joining stale pages.
+
+The 16 KiB tool text cap also applies after request-local media hydration. Its
+omission notices and media-reference slots remain intact; only original preview
+text is shortened, without moving native-video indices or persisting hydrated
+base64. Canonical near-limit media results reserve possible annotation space when
+deciding whether they need evidence files, so those files remain reconstructible
+after compaction/model changes. Annotations that cannot fit fail before dispatch.
+History text-page envelopes omit unbounded original Mira/timestamp strings; their
+exact values remain inside the lossless paged JSON text.
