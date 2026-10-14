@@ -5,13 +5,13 @@
 ## 入口与状态
 
 - `README.md` 描述真实命令和行为；`package.json` 是依赖事实来源
-- `src/main.tsx` 与 `src/App.tsx` 提供单条 Timeline；`src/SettingsDialog.tsx` 在既有设置入口内提供模型、Memory、扩展与运行记录；对应 panel 独立保持浏览器 DTO
+- `src/main.tsx` 与 `src/App.tsx` 提供单条 Timeline；`src/SettingsDialog.tsx` 在既有设置入口内提供模型、Memory、扩展、运行记录与访问；对应 panel 独立保持浏览器 DTO
 - React + Vite + 原生 CSS 已获批准；不增加路由、状态管理、UI 组件库或 Markdown 依赖
 - 生产静态文件由本地 server 同源服务，默认端口 3210；开发代理见 `vite.config.ts`
 
 ## 本地约束
 
-- 不增加 New Chat、会话列表、账户/授权 UI 或每次 Wake 创建新人物的概念
+- 不增加 New Chat、会话列表、账户/动作授权 UI 或每次 Wake 创建新人物的概念；可选网页共用密码只位于入口及既有设置→访问
 - 普通 Timeline 仅展示对话文本、双向消息附件和必要通知，不显示子任务卡片或新入口（ADR 0031）。子任务的真实活动、显式公开进度与只读详情保留在既有设置→运行记录内，按 child/run 独立读取。主 Mira 的工具活动仍不展示。禁止渲染 system/thinking、原始工具参数或结果；后端工具执行、持久记录和协议配对仍完整保留
 - 浏览器可在密码式输入框接收用户输入的 API Key，仅发送本地后端；读取接口不回填 Key，仅给 hasApiKey 状态。禁止写入浏览器持久存储、URL、日志或消息历史，关闭/取消清除未保存输入
 - Timeline `id` 使用全局 History UUID；用户条目的 `externalEventId` 单独关联待确认请求，不从 History ID 推导外部去重键
@@ -28,3 +28,5 @@
 - 附件字节不存浏览器持久存储。媒体必须用带 X-Mira-Client 的受保护 fetch 转有界 Blob；图片仅安全栅格格式、视频有下载兜底，SVG/HTML/PDF/Word 不嵌入、不自动解析；对象 URL 随卸载/关闭清理
 
 - 模型标签中的默认推理强度只显示所选模型的支持档位，保留能力适配前偏好；取消/关闭不保存，冲突不覆盖，不新增主界面入口（ADR 0027）。
+
+- `AuthGate` 在挂载聊天前确认访问状态；普通 API 和附件统一经 `clientFetch`，401 立即撤下私有界面。密码不进入浏览器存储/URL/日志，修改/关闭需当前密码；冲突或未知结果先重读，不自动重发。旧登录响应不得覆盖新登录，HttpOnly Cookie 只由同源后端管理

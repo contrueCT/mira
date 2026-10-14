@@ -354,3 +354,25 @@ button:disabled { opacity: .48; }
 .child-result h4 { margin: 0 0 8px; }
 .run-children .child-card { width: 100%; }
 @media (max-width: 560px) { .child-dialog { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); } .child-dialog-header, .child-dialog-body { padding: 16px; } .child-card { min-width: 0; width: 100%; } .child-card-top { gap: 12px; } }
+
+/* Access protection lives at bootstrap and inside the existing settings modal. */
+.access-gate { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 32px 20px; background: #fbfbfd; }
+.access-card { width: min(100%, 420px); padding: 34px; border: 1px solid #ededf3; border-radius: 24px; background: #fff; box-shadow: 0 10px 60px #575c7410; }
+.access-card > .mira-ring { display: block; width: 48px; height: 48px; border-width: 14px; margin: 0 auto; }
+.access-card h1 { text-align: center; font-size: 25px; font-weight: 500; margin: 16px 0 23px; }
+.access-description { color: #707a8a; font-size: 13px; line-height: 1.8; margin: 0 0 20px; text-align: center; }
+.access-card input { width: 100%; min-width: 0; border: 1px solid #e3e5eb; border-radius: 10px; padding: 12px; color: #50586a; background: #fff; font-size: 16px; }
+.access-login-button { display: block; width: 100%; margin-top: 18px; font-size: 14px; padding: 12px; }
+.access-warning { color: #86775f; font-size: 12px; line-height: 1.9; margin: 16px 0; overflow-wrap: anywhere; }
+.access-card .access-warning { margin-bottom: 0; font-size: 11px; }
+.access-error { color: #a36a4f; font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.access-toggle { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 17px; border-radius: 12px; background: #f7f9fc; }
+.access-toggle > span { display: flex; flex-direction: column; gap: 7px; }
+.access-toggle strong { color: #59677c; font-size: 13px; font-weight: 500; }
+.access-toggle span span { font-size: 11px; color: #8993a3; }
+.settings-dialog .access-toggle input { width: 20px; height: 20px; padding: 0; flex-shrink: 0; accent-color: var(--blue-dark); }
+.access-cancel-change { margin-top: 12px; }
+.access-session { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 18px; }
+.access-session h4 { margin: 0; font-size: 13px; font-weight: 500; color: #66758a; }
+.access-session .secondary-button { margin-top: 8px; }
+@media (max-width: 600px) { .access-card { padding: 26px 22px; } .settings-tabs button { font-size: 11px; } }

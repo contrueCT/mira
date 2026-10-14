@@ -1,4 +1,4 @@
-import { ApiError } from './api.ts';
+import { ApiError, clientFetch } from './api.ts';
 import type { Attachment } from './types.ts';
 
 export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
@@ -19,8 +19,7 @@ export function validateSelection(current: readonly { size: number }[], incoming
   return null;
 }
 async function attachmentResponse(path: string, options: RequestInit): Promise<Response> {
-  const headers = new Headers(options.headers); headers.set('X-Mira-Client', 'web');
-  const response = await fetch(path, { ...options, headers, credentials: 'same-origin', cache: 'no-store' });
+  const response = await clientFetch(path, options);
   if (!response.ok) {
     let message = `附件请求未完成（${response.status}）`;
     try { const body = await response.json() as { error?: string }; if (typeof body.error === 'string') message = body.error; } catch { /* use bounded public fallback */ }
