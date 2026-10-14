@@ -193,10 +193,16 @@ its parent Event/Wake commit together. Startup or settled-shutdown
 replay. Terminal results remain immutable.
 The optional explicit `spec.title` is a public label, never extracted from the
 private task. `readSubagentsForRun` and `getSubagentForRun` resolve scoped parent
-call/version membership independently from parent history pages. Call views include
+call/version membership independently from parent history pages. Run pages use the
+first immutable turn association order within that run, so following up an old
+child makes a newly associated child visible at the head even after pagination
+was exhausted or the wall clock moved backwards. Later followups do not reorder
+an already associated child; the global list retains its original creation order.
+Call views include
 that run ID, without copying the task or context.
 
-Migration `1760000000008_subagent-activity.sql` adds `started_at` and a bounded
+Migration `1760000000008_subagent-activity.sql` adds a unique append-only
+`association_order` identity on turns, `started_at`, and a bounded
 public observation snapshot to the existing turn rows. It retains at most forty
 runtime dispatch/completion or explicit worker-progress events (128 KiB maximum),
 with source and timestamps. Tool observations resolve the full original provider

@@ -196,3 +196,19 @@ resolved from the untouched protocol ID within the child stream. New regressions
 exercise both windows. Shutdown also waits for capacity admission and actual
 actors before interrupting any remaining queued turns; accepted but not-started
 work cannot remain falsely queued after an orderly close.
+
+CI run [38533105175](https://github.com/contrueCT/mira/actions/runs/38533105175)
+at `56bfc64` passed 816 offline and 42 web-state tests, then ran 209 real-PG
+checks: 207 passed and two failed. Both failures were old down-migration tests
+that still expected the child registry to disappear on the first down, before
+accounting for new migration 0008. The PostgreSQL feature/recovery cases ran;
+Chromium steps were skipped after this failure and are not claimed as passed.
+The down/up tests now explicitly verify the activity/association-column slice
+before removing child/scheduling slices. This failed run is retained as evidence.
+
+Further independent review found that a newly followed-up older child could be
+missed after exhausting run-child pages. Run membership now uses an immutable,
+fenced first-association sequence on existing turns, independent of child age and
+wall-clock time. Browser page merging inserts into the correct cursor window,
+including more than fifty new members and multiple disconnected windows. PG and
+UI regressions exercise these cases; exact-head CI is required again.

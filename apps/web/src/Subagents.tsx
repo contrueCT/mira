@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { mergeChildPage } from './child-records.ts';
 import { api, errorText, isAbort } from './api.ts';
 import type { ChildActivityView, ChildDetailView, ChildSummaryView, ChildrenView } from './types.ts';
 import { latestPagination, olderPagination, nextHistoryRequest } from './timeline.ts';
@@ -108,8 +109,7 @@ export function RunChildren({ runId, active }: { runId: string; active: boolean 
       if (signal.aborted) return;
       if (page.items.some(item => item.runId !== runId)) throw new Error('无法核对子任务所属的运行');
       paging.current = latestPagination(paging.current, itemsRef.current, page, initialized.current); initialized.current = true;
-      const merged = new Map(itemsRef.current.map(item => [item.id, item])); for (const item of page.items) merged.set(item.id, item);
-      itemsRef.current = [...merged.values()]; setItems(itemsRef.current); setCursor(nextHistoryRequest(paging.current)?.cursor ?? null); setError(null);
+      itemsRef.current = mergeChildPage(itemsRef.current, page.items); setItems(itemsRef.current); setCursor(nextHistoryRequest(paging.current)?.cursor ?? null); setError(null);
     } catch (cause) { if (!signal.aborted && !isAbort(cause)) setError(errorText(cause)); }
   }, 5000, runId);
   const older = async () => {
@@ -119,8 +119,7 @@ export function RunChildren({ runId, active }: { runId: string; active: boolean 
       if (abort.signal.aborted) return;
       if (page.items.some(item => item.runId !== runId)) throw new Error('无法核对子任务所属的运行');
       paging.current = olderPagination(paging.current, request, page);
-      const merged = new Map(itemsRef.current.map(item => [item.id, item])); for (const item of page.items) merged.set(item.id, item);
-      itemsRef.current = [...merged.values()]; setItems(itemsRef.current); setCursor(nextHistoryRequest(paging.current)?.cursor ?? null); setError(null);
+      itemsRef.current = mergeChildPage(itemsRef.current, page.items, request.cursor); setItems(itemsRef.current); setCursor(nextHistoryRequest(paging.current)?.cursor ?? null); setError(null);
     } catch (cause) { if (!abort.signal.aborted && !isAbort(cause)) setError(errorText(cause)); }
     finally { if (!abort.signal.aborted) setReading(false); }
   };

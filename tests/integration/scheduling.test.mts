@@ -273,6 +273,10 @@ test('scheduling down/up removes only its own slice and preserves ordinary histo
   try {
     const writer = await db.acquire(); const value = input();
     await writer.createScheduledDelivery(owner, value); await writer.dispatchScheduledDeliveries([owner]); await writer.close();
+    // The activity/association migration only adds columns to the child slice.
+    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
+    assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.columns WHERE table_schema=$1 AND table_name='subagent_turns' AND column_name IN ('activity','started_at','association_order')", [db.schema])).rows[0].n, 0);
+    assert.deepEqual(await counts(db), { events: 1, wakes: 1 });
     // Later independent feature slices must be removed in migration order first.
     for (const table of ['subagent_turns', 'wake_live_inputs', 'scheduled_deliveries']) {
       await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });

@@ -44,23 +44,53 @@ async function readForRun(client: Client, miraId: string, id: string, runId: str
   const row = (await client.query<Row>(`SELECT s.* FROM subagents s WHERE s.parent_mira_id=$1 AND s.child_id=$2 AND ${runOwnership('$3')}`, [miraId,id,runId])).rows[0];
   return row ? readRecord(client,miraId,row) : null;
 }
+type SummaryRow = { child_id: string; created_at: string; model: SubagentSpec['model']; title: string | null; status: SubagentTurn['status'] };
+const summaryColumns = `s.child_id,s.created_at,s.spec->'model' AS model,s.spec->>'title' AS title,
+  CASE WHEN EXISTS(SELECT 1 FROM subagent_turns t WHERE t.child_id=s.child_id AND t.status='running') THEN 'running'
+  WHEN EXISTS(SELECT 1 FROM subagent_turns t WHERE t.child_id=s.child_id AND t.status='queued') THEN 'queued'
+  ELSE (SELECT status FROM subagent_turns t WHERE t.child_id=s.child_id ORDER BY sequence DESC LIMIT 1) END AS status`;
+function summaryPage(rows: SummaryRow[]): SubagentPage {
+  const selected = rows.slice(0,50);
+  return { children: selected.map(row => ({ id: row.child_id, ...(row.title ? { title: row.title } : {}), createdAt: row.created_at, status: row.status, model: row.model })), nextCursor: rows.length > 50 ? selected.at(-1)!.child_id : null };
+}
+/** First association to this run is append-ordered independently from child age,
+ * clocks and later followups. Both page and cursor use the same immutable key. */
+const runAssociations = `WITH associations AS MATERIALIZED (
+  SELECT member.child_id,min(member.association_order) AS first_order FROM subagent_turns member
+  JOIN tool_executions execution ON execution.mira_id=member.parent_mira_id AND execution.call_id=member.call_id
+  JOIN wake_runs run ON run.mira_id=member.parent_mira_id AND run.run_id=$2::uuid
+  LEFT JOIN context_records final ON final.mira_id=run.mira_id AND final.record_id=run.final_record_id
+  WHERE member.parent_mira_id=$1 AND execution.context_version > run.claimed_version
+    AND (run.final_record_id IS NULL OR execution.context_version <= final.version)
+  GROUP BY member.child_id)`;
+async function listRunChildren(client: Client, miraId: string, runId: string, before?: string): Promise<SubagentPage> {
+  if (!uuid(runId)) throw new SubagentError('invalid', 'A canonical run UUID is required');
+  let boundary: string | undefined;
+  if (before !== undefined) {
+    if (!uuid(before)) throw new SubagentError('invalid', 'A canonical child boundary is required');
+    boundary = (await client.query<{ first_order: string }>(`${runAssociations}
+      SELECT first_order::text FROM associations WHERE child_id=$3::uuid`, [miraId,runId,before])).rows[0]?.first_order;
+    if (boundary === undefined) throw new SubagentError('missing', 'List boundary child does not exist in this run');
+  }
+  const rows = await client.query<SummaryRow>(`${runAssociations}
+    SELECT ${summaryColumns} FROM associations association
+    JOIN subagents s ON s.child_id=association.child_id AND s.parent_mira_id=$1
+    ${boundary === undefined ? '' : 'WHERE association.first_order < $3::bigint'}
+    ORDER BY association.first_order DESC LIMIT 51`, [miraId,runId,...(boundary === undefined ? [] : [boundary])]);
+  return summaryPage(rows.rows);
+}
 async function listChildren(client: Client, miraId: string, before?: string, runId?: string): Promise<SubagentPage> {
-  if (runId !== undefined && !uuid(runId)) throw new SubagentError('invalid', 'A canonical run UUID is required');
+  if (runId !== undefined) return listRunChildren(client,miraId,runId,before);
   let boundary: { created_at: string; child_id: string } | undefined;
   if (before !== undefined) {
     if (!uuid(before)) throw new SubagentError('invalid', 'A canonical child boundary is required');
-    boundary = (await client.query<{ created_at: string; child_id: string }>(`SELECT s.created_at,s.child_id FROM subagents s WHERE s.parent_mira_id=$1 AND s.child_id=$2 ${runId ? `AND ${runOwnership('$3')}` : ''}`, [miraId,before,...(runId ? [runId] : [])])).rows[0];
+    boundary = (await client.query<{ created_at: string; child_id: string }>('SELECT created_at,child_id FROM subagents WHERE parent_mira_id=$1 AND child_id=$2', [miraId,before])).rows[0];
     if (!boundary) throw new SubagentError('missing', 'List boundary child does not exist');
   }
-  const rows = await client.query<{ child_id: string; created_at: string; model: SubagentSpec['model']; title: string | null; status: SubagentTurn['status'] }>(
-    `SELECT s.child_id,s.created_at,s.spec->'model' AS model,s.spec->>'title' AS title,
-      CASE WHEN EXISTS(SELECT 1 FROM subagent_turns t WHERE t.child_id=s.child_id AND t.status='running') THEN 'running'
-      WHEN EXISTS(SELECT 1 FROM subagent_turns t WHERE t.child_id=s.child_id AND t.status='queued') THEN 'queued'
-      ELSE (SELECT status FROM subagent_turns t WHERE t.child_id=s.child_id ORDER BY sequence DESC LIMIT 1) END AS status
-     FROM subagents s WHERE s.parent_mira_id=$1 ${boundary ? 'AND (s.created_at,s.child_id)<($2::text,$3::uuid)' : ''} ${runId ? `AND ${runOwnership(boundary ? '$4' : '$2')}` : ''}
-     ORDER BY s.created_at DESC,s.child_id DESC LIMIT 51`, [miraId,...(boundary ? [boundary.created_at,boundary.child_id] : []),...(runId ? [runId] : [])]);
-  const selected = rows.rows.slice(0,50);
-  return { children: selected.map(row => ({ id: row.child_id, ...(row.title ? { title: row.title } : {}), createdAt: row.created_at, status: row.status, model: row.model })), nextCursor: rows.rows.length > 50 ? selected.at(-1)!.child_id : null };
+  const rows = await client.query<SummaryRow>(`SELECT ${summaryColumns} FROM subagents s WHERE s.parent_mira_id=$1
+    ${boundary ? 'AND (s.created_at,s.child_id)<($2::text,$3::uuid)' : ''}
+    ORDER BY s.created_at DESC,s.child_id DESC LIMIT 51`, [miraId,...(boundary ? [boundary.created_at,boundary.child_id] : [])]);
+  return summaryPage(rows.rows);
 }
 async function readCalls(client: Client, miraId: string, callIds: string[]): Promise<SubagentCallView[]> {
   if (callIds.length > 50 || callIds.some(id => !validText(id))) throw new SubagentError('invalid', 'At most fifty valid parent call IDs are supported');

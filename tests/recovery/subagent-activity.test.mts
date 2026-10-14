@@ -161,3 +161,53 @@ test('restart activity reconciliation preserves a known durable tool outcome acr
     assert.equal(saved.activity.events.at(-1)!.status, 'completed', 'Known durable evidence must not be downgraded to unknown');
   } finally { await db.close(); }
 });
+
+test('run child pagination discovers newly associated old children despite exhausted pages and a backwards clock', { timeout: 30_000 }, async context => {
+  const db = await createTestDatabase();
+  context.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-14T00:00:00.000Z') });
+  try {
+    const writer = await db.acquire('association-order');
+    const register = async (callId: string, childId?: string) => {
+      const name = childId ? 'subagent_send' : 'subagent_spawn';
+      await seed(writer, [{ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: callId, name, arguments: {} }] }]);
+      const state = await writer.load();
+      await writer.beginTool(state.version, { callId, toolName: name, assistantRecordId: state.records.at(-1)!.id, arguments: {}, requestedArguments: {}, occurredAt: now() });
+      const child = childId ? await writer.sendSubagent(callId, childId, 'Inspect the next step', 8) : await writer.createSubagent(callId, spec(callId), 8);
+      await writer.finishSubagentTurn(child.turns.at(-1)!.id, 'completed', { text: 'Public result', truncated: false, fullResultPath: null, finalRecordId: null });
+      return child;
+    };
+    const old = await register('old-child');
+    context.mock.timers.setTime(Date.parse('2026-10-14T00:01:00.000Z'));
+    await writer.receive({ id: 'new-request', type: 'web.message', source: 'user', occurredAt: now(), payload: {} }, { id: 'new-request', reason: 'Delegate current work' });
+    const run = await writer.claimWakeBatch(); assert(run);
+    const state = await writer.load();
+    await writer.appendWakeInput(run.id, state.version, encodeEntry(messageEntry(input('Current work'), state.records.at(-1)!.id)));
+    const currentIds: string[] = [];
+    for (let index = 0; index < 55; index++) currentIds.push((await register(`current-child-${index}`)).id);
+    const reader = db.store.subagents(writer.miraId);
+    const first = await reader.readSubagentsForRun(run.id); assert.equal(first.children.length, 50); assert(first.nextCursor);
+    const last = await reader.readSubagentsForRun(run.id, first.nextCursor); assert.equal(last.children.length, 5); assert.equal(last.nextCursor, null);
+    assert.deepEqual([...first.children, ...last.children].map(child => child.id), [...currentIds].reverse(), 'equal wall-clock times still have a strict append order');
+    assert.equal(await reader.getSubagentForRun(old.id, run.id), null);
+    const globalBefore = await reader.listSubagents();
+    assert.ok(!globalBefore.children.some(child => child.id === old.id));
+
+    context.mock.timers.setTime(Date.parse('2026-10-13T23:00:00.000Z'));
+    await register('associate-old-child-now', old.id);
+    const refreshed = await reader.readSubagentsForRun(run.id);
+    assert.equal(refreshed.children[0]!.id, old.id, 'new run membership belongs at the head even for an old child and a backwards clock');
+    assert.equal(refreshed.children[0]!.createdAt, old.createdAt, 'display creation metadata is not rewritten');
+    assert.notEqual(refreshed.nextCursor, first.nextCursor);
+    assert.equal((await reader.getSubagentForRun(old.id, run.id))!.id, old.id);
+
+    context.mock.timers.setTime(Date.parse('2026-10-15T00:00:00.000Z'));
+    await register('follow-already-associated-child', currentIds[0]!);
+    assert.deepEqual(await reader.readSubagentsForRun(run.id), refreshed, 'later followups do not move an already associated child or its page boundary');
+    assert.deepEqual(await reader.listSubagents(), globalBefore, 'global child creation ordering is unchanged');
+    const remaining = await reader.readSubagentsForRun(run.id, refreshed.nextCursor!);
+    assert.equal(remaining.nextCursor, null);
+    assert.equal(new Set([...refreshed.children, ...remaining.children].map(child => child.id)).size, 56);
+    await writer.close();
+    assert.deepEqual(await reader.readSubagentsForRun(run.id), refreshed);
+  } finally { context.mock.timers.reset(); await db.close(); }
+});

@@ -660,3 +660,32 @@ test('child cards observe their own identities, show unknown honestly, recover a
   await second.getByRole('button', { name: '关闭', exact: true }).click();
   expect(queriesA).toBeGreaterThan(1); expect(unexpected).toEqual([]);
 });
+
+test('run child pagination discovers a newly followed-up older child after all previous pages were exhausted', async ({ page }) => {
+  const runId = '20000000-0000-4000-8000-000000000001', at = '2026-10-14T07:00:00.000Z';
+  const id = (n: number) => `30000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+  const item = (n: number) => ({ id: id(n), runId, title: n === 0 ? '继续早先任务' : `任务 ${n}`, createdAt: n === 0 ? '2026-10-01T00:00:00.000Z' : at, status: 'completed', current: null, updatedAt: at });
+  const existing = Array.from({ length: 55 }, (_, index) => item(index + 1)); let followedUp = false;
+  await page.route('**/api/runs', route => route.fulfill({ json: { items: [{ id: runId, occurredAt: at, status: 'completed', requestCount: 0 }], nextCursor: null } }));
+  await page.route(`**/api/runs/${runId}`, route => route.fulfill({ json: { id: runId, occurredAt: at, status: 'completed', requestCount: 0,
+    requests: [], nextRequestsCursor: null, assistant: null, memory: { state: 'unavailable', commit: null }, executions: [], nextCursor: null, compactionErrors: 'not-recorded', error: null } }));
+  await page.route(/\/api\/runs\/[^/]+\/subagents(?:[/?].*)?$/, route => {
+    const url = new URL(route.request().url()); const child = url.pathname.split('/subagents/')[1];
+    if (child) return route.fulfill({ json: item(Number(child.slice(-12))) });
+    // The API orders by first association in this run, independent of child's age.
+    const ordered = followedUp ? [item(0), ...existing] : existing;
+    const before = url.searchParams.get('before'); const start = before ? ordered.findIndex(entry => entry.id === before) + 1 : 0;
+    const selected = ordered.slice(start, start + 50);
+    return route.fulfill({ json: { items: selected, nextCursor: start + 50 < ordered.length ? selected.at(-1)!.id : null } });
+  });
+  await page.goto('/'); await page.getByRole('button', { name: '模型设置', exact: true }).click();
+  await page.getByRole('tab', { name: '运行记录', exact: true }).click(); await page.locator('.run-list-button').click();
+  await expect(page.locator('.run-children .child-card')).toHaveCount(50);
+  await page.getByRole('button', { name: '更多子任务', exact: true }).click();
+  await expect(page.locator('.run-children .child-card')).toHaveCount(55);
+  await expect(page.getByRole('button', { name: '更多子任务', exact: true })).toHaveCount(0);
+  followedUp = true;
+  await expect(page.locator('.run-children .child-card')).toHaveCount(56, { timeout: 10_000 });
+  await expect(page.locator('.run-children .child-card').first()).toContainText('继续早先任务');
+  await expect(page.getByRole('button', { name: '更多子任务', exact: true })).toHaveCount(0);
+});

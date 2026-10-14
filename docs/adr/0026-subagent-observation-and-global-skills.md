@@ -37,7 +37,10 @@ literals are redacted defensively, without claiming to classify all private text
 
 `/api/runs/:id/subagents` and `/api/runs/:id/subagents/:childId` use an independent
 read-only connection and verify parent-run ownership through the original tool's
-durable context version. Lists are bounded/paginated; detail includes the latest
+durable context version. Run lists use immutable first-association order on existing child turns, so
+following up an older child is discoverable even after earlier pages were exhausted.
+Cursor boundaries use the same run-scoped order, independent of wall-clock time.
+Lists are bounded/paginated; detail includes the latest
 eight turns (plus any still-running earlier turn) and bounded activity. Expanded detail refreshes by child and run ID,
 not parent-history cursors. Visible active cards poll independently; hidden pages
 and offscreen cards stop. Parent run history no longer mixes latest child history
