@@ -12,7 +12,7 @@ import { TOOL_OUTPUT_TEXT_BYTES } from '../../packages/runtime-pi/src/tool-outpu
 import { assistant, effectTool, input, model, runtime, scripted, seed, streamOf, toolCalls, MemoryWriter, overrideWriter } from '../recovery/fixtures.mts';
 import { fullOutput, largeToolText, outputPath, outputSpool } from '../recovery/tool-output-fixtures.mts';
 
-const textBytes = (message: ToolResultMessage) => message.content.reduce((n, block) => n + (block.type === 'text' ? Buffer.byteLength(block.text) : 0), 0);
+const textBytes = (message: ToolResultMessage) => Buffer.byteLength(message.content.filter(block => block.type === 'text').map(block => block.text).join('\n'));
 const largeModel = { ...model, contextWindow: 200_000 };
 
 test('actual extension result.text is bounded before the next model request; original file pages remain readable after recovery', async () => {
@@ -171,7 +171,7 @@ test('compaction sees bounded tool evidence and ordinary-file references while c
 
 test('exact-limit and multibyte boundaries count aggregate text bytes without modifying small results', async () => {
   const writer = new MemoryWriter();
-  const content = [{ type: 'text' as const, text: '😀'.repeat(2_000) }, { type: 'text' as const, text: 'x'.repeat(TOOL_OUTPUT_TEXT_BYTES - 8_000) }];
+  const content = [{ type: 'text' as const, text: '😀'.repeat(2_000) }, { type: 'text' as const, text: 'x'.repeat(TOOL_OUTPUT_TEXT_BYTES - 8_000 - 1) }];
   const state = await runtime(writer, scripted([toolCalls('exact-budget'), assistant()]), { model: largeModel,
     tools: [effectTool(async () => ({ content, details: { unchanged: true } }))],
     writeOverflowInput: async () => { throw Error('Exactly fitting evidence must not spool'); } }).run(input());
@@ -320,5 +320,26 @@ test('media annotations that cannot fit fail before provider dispatch without dr
     const state = await runtime(writer, undefined, options).recover(); assert.deepEqual(state.recovery.operations, []);
     const result = state.messages.find(message => message.role === 'toolResult'); assert.ok(result?.role === 'toolResult');
     assert.deepEqual(await fullOutput(result), writer.state.executions[0]?.outcome?.payload);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('unmergeable opaque text separators fail before dispatch without losing canonical blocks or replaying effects', async () => {
+  const root = await mkdtemp('/tmp/mira-tool-output-opaque-separators-');
+  try {
+    const writer = new MemoryWriter(), spool = outputSpool(path.join(root, 'spool'));
+    const content = Array.from({ length: 25_000 }, (_, index) => ({ type: 'text' as const, text: '', opaque: { index } }));
+    let effects = 0, requests = 0, target = '';
+    const options = { model: largeModel, tools: [effectTool(async () => { effects++; return { content, details: { complete: true } }; })],
+      writeOverflowInput: async (key: string, file: string) => { const artifact = await spool(key, file); target = artifact.path; return artifact; } };
+    await assert.rejects(runtime(writer, () => { requests++; return streamOf(toolCalls('opaque-blocks')); }, options).run(input()), /unmergeable text separators exceed/);
+    assert.equal(requests, 1); assert.equal(effects, 1);
+    const canonical = writer.state.executions[0]?.outcome?.payload as unknown as ToolResultMessage;
+    assert.deepEqual(canonical.content, content);
+    const lines = (await readFile(target, 'utf8')).trimEnd().split('\n').slice(1).map(line => JSON.parse(line).text);
+    assert.deepEqual(JSON.parse(lines.join('')), canonical);
+    const before = structuredClone(writer.state); await rm(target);
+    await assert.rejects(runtime(writer, undefined, options).recover(), /unmergeable text separators exceed/);
+    assert.deepEqual(writer.state, before); assert.equal(effects, 1);
+    assert.deepEqual(JSON.parse((await readFile(target, 'utf8')).trimEnd().split('\n').slice(1).map(line => JSON.parse(line).text).join('')), canonical);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

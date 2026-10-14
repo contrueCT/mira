@@ -19,11 +19,19 @@ which previously made larger records unreachable through `history_read`.
   transcript result. Save all defined normalized result fields, including opaque
   metadata, `structuredContent`, `terminate`, images and attachment references.
 - At the disposable active-projection boundary, cap each tool result's combined
-  UTF-8 text at 16,384 bytes, including an explicit incomplete-preview notice and
+  UTF-8 text at 16,384 bytes, including the pinned SDKs' newline separators, an explicit incomplete-preview notice and
   actionable complete-evidence reference. This covers built-ins, extensions,
   management, History and child tools using the same runtime. Short results with sufficient room for media annotations remain
   unchanged. Non-text blocks and metadata keep their original meaning; native
   media still follows its separate existing hydration budget.
+- Count the serialized `text` join, not only the sum of individual block text.
+  Oversized previews coalesce adjacent blocks containing only `type`/`text`, with
+  their newlines included, before hydration assigns media indices. Opaque-field
+  text blocks and non-text blocks retain their fields and relative order. The full
+  original block list remains in canonical History and the evidence file. If
+  unmergeable block separators plus the reference cannot fit, fail before model
+  dispatch instead of dropping metadata. Final hydration reserves all remaining
+  separator bytes and never reorders or merges native-video slots.
 - Use the existing `writeOverflowInput` / `writeWakeInput` immutable ordinary-file
   spool. The stable key includes Mira and the original tool-result History UUID.
   Keys within the spool's 4,096-character limit retain their existing spelling and
@@ -94,7 +102,11 @@ The model uses the same `history_read` tool with optional `offset` and `revision
 `tests/unit/tool-output.test.mts` exercises real Pi tool execution, extension text
 mapping, ordinary `read`, full JSON/Unicode/metadata preservation, restart and
 missing-file reconstruction, conflict/failure handling, outcome-before-append
-recovery and full SDK compaction. `tests/unit/history.test.mts` covers SQL bounds,
+recovery and full SDK compaction. `tests/unit/tool-output-wire.test.mts` captures
+actual Completions, Responses and Google SDK request bodies for single large
+blocks, 25,000 empty/short blocks, mixed opaque/image/native-video content and
+restart; canonical blocks and compacted-out files remain reconstructible.
+`tests/unit/history.test.mts` covers SQL bounds,
 scope, code-point offsets, request validation and revision failure.
 
 `tests/integration/history.test.mts` reconstructs a >1 MiB Unicode record through

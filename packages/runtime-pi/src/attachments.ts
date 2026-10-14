@@ -36,8 +36,9 @@ export function toolAttachmentTextAllowance(message: Message): number {
   if (message.role !== 'toolResult' || message.toolName !== 'read') return 0;
   const references = messageAttachments(message);
   if (!references.length) return 0;
-  return Math.max(Buffer.byteLength(VIDEO_UNSUPPORTED_TEXT), Buffer.byteLength(VIDEO_BUDGET_TEXT),
-    references.reduce((sum, reference) => sum + Buffer.byteLength(attachmentReferenceText(reference)) + Buffer.byteLength(PREPARED_MEDIA_BUDGET_TEXT), 0));
+  // Each appended text block also introduces a possible SDK join separator.
+  return Math.max(Buffer.byteLength(VIDEO_UNSUPPORTED_TEXT) + 1, Buffer.byteLength(VIDEO_BUDGET_TEXT) + 1,
+    references.reduce((sum, reference) => sum + Buffer.byteLength(attachmentReferenceText(reference)) + Buffer.byteLength(PREPARED_MEDIA_BUDGET_TEXT) + 2, 0));
 }
 const imageTypes = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 export function nativeAttachmentKind(reference: AttachmentReference, model: Model<Api>): 'image' | null {

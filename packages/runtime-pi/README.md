@@ -490,7 +490,7 @@ independent from whether its summary checkpoint committed.
 ## Unified tool-result text budget
 
 All tool paths use a 16,384 UTF-8 byte budget per result's combined model-facing
-text, including its explicit partial-preview/reference notice. Full normalized
+text, including SDK newline joins and its explicit partial-preview/reference notice. Full normalized
 outcomes and exact transcript JSON are still persisted first, including all defined
 opaque fields, images, attachment metadata, `structuredContent` and `terminate`.
 `normalizeToolResult` remains a shape validator, not a truncator. The existing
@@ -506,6 +506,13 @@ new database table or replacement state store is added. Stable spool keys preser
 existing paths; only keys above the writer's 4,096-character limit use a distinct
 SHA-256 namespace over the JSON-encoded Mira ID and History UUID pair, so arbitrary
 valid Mira IDs remain recoverable.
+
+Only adjacent plain `type`/`text` blocks in oversized previews are coalesced, before
+hydration assigns media slots. Opaque-field blocks and non-text blocks retain their
+fields and relative order; the canonical original block list is preserved exactly.
+If unmergeable separator/reference overhead cannot fit, dispatch fails explicitly.
+Hydrated annotations and every remaining join separator also count toward the cap;
+native-video indices are never changed at that final boundary.
 
 Recovery validates/repairs the full durable evidence before deriving the bounded
 projection. A fresh runtime restores even compacted-out result files; active
