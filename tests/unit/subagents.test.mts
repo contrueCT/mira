@@ -337,3 +337,46 @@ test('actual service child metadata and activity failures recover as current not
   assert.equal(recovered.childDetailsUnavailable, undefined); assert.equal(recovered.error, null);
   assert.ok(!recovered.executions.some(item => item.kind === 'unavailable'));
 });
+
+
+test('close waits for the final child registry read before releasing its tracked cleanup slot', async () => {
+  const entered = deferred(); const release = deferred();
+  class ClosingParent extends Parent {
+    override async getSubagent(id: string) {
+      const child = await super.getSubagent(id);
+      if (child?.turns.at(-1)?.status === 'completed') { entered.resolve(); await release.promise; }
+      return child;
+    }
+  }
+  const f = fixture(new ClosingParent()); let closed = false;
+  try {
+    await f.manager.spawn('cleanup-read-spawn', 'Finish quickly', 'none', transport(() => streamOf(assistant('done'))));
+    await entered.promise;
+    const closing = f.manager.close().then(() => { closed = true; });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(closed, false, 'close must retain ownership until the final registry read settles');
+    release.resolve(); await closing;
+    assert.equal(closed, true); assert.deepEqual(f.errors, []);
+  } finally { release.resolve(); await f.manager.close(); }
+});
+
+
+test('followup committed during the final registry read is not stranded behind cleanup', async () => {
+  const entered = deferred(); const release = deferred(); let blocked = false; let calls = 0;
+  class ClosingParent extends Parent {
+    override async getSubagent(id: string) {
+      const child = await super.getSubagent(id);
+      if (!blocked && child?.turns.at(-1)?.status === 'completed') { blocked = true; entered.resolve(); await release.promise; }
+      return child;
+    }
+  }
+  const f = fixture(new ClosingParent()); const t = transport(() => { calls++; return streamOf(assistant(`result ${calls}`)); });
+  try {
+    const child = await f.manager.spawn('cleanup-send-spawn', 'Finish quickly', 'none', t);
+    await entered.promise;
+    await f.manager.send('cleanup-send-followup', child.id, 'Continue while final read is pending', t);
+    release.resolve();
+    await until(() => f.parent.children[0]!.turns[1]!.status === 'completed');
+    assert.equal(calls, 2); assert.deepEqual(f.errors, []);
+  } finally { release.resolve(); await f.manager.close(); }
+});

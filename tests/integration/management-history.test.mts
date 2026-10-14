@@ -126,13 +126,32 @@ test('stable run refresh boundary rereads the original page after more than fift
     await writer.receive({ id: 'refresh-request', type: 'web.message', source: 'user', occurredAt: now, payload: {} }, { id: 'refresh-wake', reason: 'Synthetic refresh boundary' });
     const run = await writer.claimWakeBatch(); assert(run);
     let version = await writer.appendWakeInput(run.id, 0, record('refresh-input', null));
-    const first = await history.readRun({ id: run.id }); assert(first?.refreshCursor);
+    await writer.beginTool(version, { callId: 'refresh-spawn', assistantRecordId: uuid('refresh-input'), toolName: 'subagent_spawn', arguments: {}, requestedArguments: {}, occurredAt: now });
     let parent = 'refresh-input';
-    for (let i = 0; i < 55; i++) { const id = `refresh-new-${i}`; version = await writer.append(version, record(id, parent)); parent = id; }
+    for (let i = 0; i < 49; i++) { const id = `refresh-old-${i}`; version = await writer.append(version, record(id, parent)); parent = id; }
+    const first = await history.readRun({ id: run.id }); assert(first?.refreshCursor); assert.equal(first.records.length, 50);
+    const spawnReference = first.records[0]!; assert.equal(spawnReference.kind, 'tool');
+    const spawn = await history.read({ id: spawnReference.id }); assert(spawn?.kind === 'tool'); assert.equal(spawn.intent.callId, 'refresh-spawn');
+    // A sibling intent can arrive at the same context version after the page
+    // was read. Its kind sorts above context and must remain outside refresh.
+    await writer.beginTool(version, { callId: 'refresh-sibling', assistantRecordId: uuid(parent), toolName: 'read', arguments: {}, requestedArguments: {}, occurredAt: now });
+    const afterIntent = await history.readRun({ id: run.id, before: first.refreshCursor }); assert(afterIntent);
+    assert.deepEqual(afterIntent.records, first.records);
+    const toolPage = await history.readRun({ id: run.id }); assert(toolPage?.refreshCursor);
+    assert.equal(toolPage.records.at(-1)?.kind, 'tool');
+    // Force the next version's UUID below the old newest UUID. A cursor that
+    // uses newest.id at version+1 would accidentally admit this future row.
+    let suffix = 0; while (uuid(`refresh-next-${suffix}`) >= uuid(parent)) suffix++;
+    const firstNew = `refresh-next-${suffix}`; version = await writer.append(version, record(firstNew, parent)); parent = firstNew;
+    for (let i = 0; i < 54; i++) { const id = `refresh-new-${i}`; version = await writer.append(version, record(id, parent)); parent = id; }
     const latest = await history.readRun({ id: run.id }); assert(latest); assert.equal(latest.records.length, 50);
     assert.ok(!latest.records.some(item => item.id === uuid('refresh-input')));
     const refreshed = await history.readRun({ id: run.id, before: first.refreshCursor }); assert(refreshed);
     assert.deepEqual(refreshed.records, first.records); assert.equal(refreshed.refreshCursor, first.refreshCursor);
+    const refreshedToolPage = await history.readRun({ id: run.id, before: toolPage.refreshCursor }); assert(refreshedToolPage);
+    assert.deepEqual(refreshedToolPage.records, toolPage.records);
+    const malformed = JSON.parse(Buffer.from(first.refreshCursor, 'base64url').toString('utf8')) as unknown[]; malformed[4] = false;
+    await assert.rejects(history.readRun({ id: run.id, before: Buffer.from(JSON.stringify(malformed)).toString('base64url') }), HistoryError);
     await assert.rejects(db.store.history('other-parent').readRun({ id: run.id, before: first.refreshCursor }), HistoryError);
   } finally { await db.close(); }
 });

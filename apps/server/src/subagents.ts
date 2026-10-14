@@ -38,6 +38,7 @@ export class SubagentManager {
   readonly #active = new Map<string, { controller: AbortController; done: Promise<void> }>();
   readonly #cancelled = new Set<string>();
   readonly #transports = new Map<string, SubagentTransport>();
+  readonly #restartRequested = new Set<string>();
   readonly #changes = new Set<() => void>();
   #userInputVersion = 0;
   #closed = false;
@@ -99,17 +100,22 @@ export class SubagentManager {
   }
 
   #start(id: string): void {
-    if (this.#active.has(id) || this.#closed) return;
+    if (this.#closed) return;
+    if (this.#active.has(id)) { this.#restartRequested.add(id); return; }
     const controller = new AbortController();
     // Install the slot before entering async work (including fast synthetic streams).
     const done = Promise.resolve().then(() => this.#run(id, controller.signal)).catch(error => {
       if (!this.#closed && !this.#options.writer.signal.aborted) this.#options.onFailure(error);
     }).finally(async () => {
-      this.#active.delete(id); this.#notify();
-      if (!this.#closed && !this.#cancelled.has(id) && !this.#options.writer.signal.aborted) {
-        try { if ((await this.#child(id)).turns.some(turn => turn.status === 'queued')) this.#start(id); }
-        catch (error) { this.#options.onFailure(error); }
-      }
+      let pending = false;
+      try {
+        if (!this.#closed && !this.#cancelled.has(id) && !this.#options.writer.signal.aborted) pending = (await this.#child(id)).turns.some(turn => turn.status === 'queued');
+      } catch (error) { if (!this.#closed) this.#options.onFailure(error); }
+      finally { this.#active.delete(id); this.#notify(); }
+      // Keep the slot until all awaited cleanup has settled, so close() also
+      // waits for the final registry read before its owner writer is closed.
+      pending = this.#restartRequested.delete(id) || pending;
+      if (pending && !this.#closed && !this.#cancelled.has(id) && !this.#options.writer.signal.aborted) this.#start(id);
     });
     this.#active.set(id, { controller, done });
   }
@@ -136,6 +142,7 @@ export class SubagentManager {
         signal.throwIfAborted();
         running = await this.#options.writer.claimSubagentTurn(id);
         if (!running) break;
+        this.#restartRequested.delete(id);
         const transport = this.#transports.get(running.callId);
         this.#transports.delete(running.callId);
         if (!transport) throw new Error('Child dispatch is unavailable; explicitly follow up without replaying the old turn');
@@ -205,7 +212,7 @@ export class SubagentManager {
     this.#closed = true; this.#notify();
     for (const active of this.#active.values()) active.controller.abort(new Error('Child dispatcher closing'));
     await Promise.all([...this.#active.values()].map(active => active.done));
-    this.#transports.clear();
+    this.#transports.clear(); this.#restartRequested.clear();
   }
 }
 

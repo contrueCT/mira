@@ -131,3 +131,21 @@ A fresh rereview and exact-head CI are still required.
 
 `3677294` passed full CI run 38518115266 before these UI refresh fixes. Its green
 PostgreSQL/browser gates do not stand in for validation of the newer revision.
+
+The fifth fresh review reproduced a precise cursor-boundary P2 with actual
+sequential Pi tool calls: a fabricated next-version refresh bound can admit the
+next result, or a sibling intent at the current version, and shift a full page.
+Refresh cursors now preserve the exact observed tuple inclusively; ordinary
+four-field history cursors keep their strict semantics. The PostgreSQL regression
+starts with a full page whose oldest reference is a child spawn, then verifies
+both later-intent and later-result boundaries preserve the exact original page.
+Malformed inclusive markers and cross-Mira cursors remain rejected.
+
+CI run 38519409997 at `d8ba4ff` failed two PostgreSQL cases: the new refresh-boundary
+case confirmed the inclusive-boundary bug, and the pre-input recovery case exposed
+a cleanup race. The dispatcher released its tracked active slot before awaiting a
+last registry read, so close could miss that read and its owner could stop early.
+The revision keeps the slot through awaited cleanup and remembers followups that
+arrive while that cleanup is settling. Controlled offline regressions cover both
+close waiting for the last read and a followup arriving during that read. These
+failures are retained here; the corrected exact-head CI remains required.
