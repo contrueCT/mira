@@ -323,7 +323,7 @@ test('actual service child metadata and activity failures recover as current not
   const childHistory = () => ({ page: async () => { if (activityFails) throw Error('Synthetic child history unavailable'); return { hits: [], nextCursor: null }; } });
   // Invoke the real read-only service method with deterministic reader fixtures;
   // no service lifecycle, database, provider or filesystem fallback is substituted.
-  const service = Reflect.construct(LocalWebService, [{ dreaming: { enabled: false } }, {}, history, {}, {}, {}, {}, {}, reader, childHistory]) as typeof LocalWebService.prototype;
+  const service = Reflect.construct(LocalWebService, [{ dreaming: { enabled: false } }, { onLiveInput: () => () => {} }, history, {}, {}, {}, {}, {}, reader, childHistory]) as typeof LocalWebService.prototype;
   const failed = await service.run(runId); assert(failed);
   assert.equal(failed.childDetailsUnavailable, true); assert.ok(failed.error);
   assert.ok(!failed.executions.some(item => item.kind === 'unavailable'));
