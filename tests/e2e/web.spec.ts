@@ -723,7 +723,9 @@ test('reasoning settings retain an unsaved edit on revision conflict and discard
   initial.selection = { kind: 'custom', connection: 'existing-local', model: 'original-model' }; initial.configuration.defaultThinkingLevel = 'low';
   await mockSettings(page, initial);
   await page.route('**/api/settings', route => route.request().method() === 'PUT' ? route.fulfill({ status: 409, json: { error: 'Settings changed; reload before saving' } }) : route.fulfill({ json: initial }));
-  await openSettings(page); const level = page.getByLabel('默认推理强度', { exact: true });
+  // This fixture selects a custom connection, so the built-in provider selector is absent.
+  await page.goto('/'); await page.getByRole('button', { name: '模型设置', exact: true }).click();
+  const level = page.getByLabel('默认推理强度', { exact: true });
   await expect(level).toHaveValue('low'); await level.selectOption('high'); await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await expect(page.getByRole('alert')).toBeVisible(); await expect(level).toHaveValue('high');
   await expect(page.getByRole('button', { name: '保存设置', exact: true })).toBeDisabled();
@@ -739,7 +741,9 @@ test('reasoning edit stays retryable when active child work makes settings tempo
     writes++;
     return writes === 1 ? route.fulfill({ status: 409, json: { error: 'Mira is working; retry when it is idle' } }) : route.fulfill({ json: publicSettings(route.request().postDataJSON() as SettingsWrite) });
   });
-  await openSettings(page); const level = page.getByLabel('默认推理强度', { exact: true });
+  // This fixture selects a custom connection, so the built-in provider selector is absent.
+  await page.goto('/'); await page.getByRole('button', { name: '模型设置', exact: true }).click();
+  const level = page.getByLabel('默认推理强度', { exact: true });
   await level.selectOption('high'); await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await expect(page.getByText('Mira 或子任务仍在运行，暂时不能修改配置。编辑仍保留，等全部结束后可以再次保存。')).toBeVisible();
   await expect(level).toHaveValue('high'); await expect(page.getByRole('button', { name: '保存设置', exact: true })).toBeEnabled();
