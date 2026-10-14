@@ -31,6 +31,14 @@ fresh gpt-6.1-sol/max 独立文字模拟使用实际技能、运行说明和产�
 
 首轮审查的3项focused测试、typecheck、boundaries和diff检查通过；报告明确部分上游URL独立重读为cache miss，所有未改动文件仍以实际取回的上游字节做hash核对。修复后保留首次原件，单独续测 C：计划用现有 Python GET 已知 Node 官方页，读取真实内容后才核实支持状态，不假定已经成功。另一个 fresh gpt-6.1-sol/max 独立复审判定该行动计划纠正早停，确认两项 P2 已修、未发现新 P0–P2。该复审再次通过三项focused测试、类型、边界、链接/hash核对，重跑 Tavily 0.1.8 help/禁网合成cap、官方DOCX渲染并检查PNG；114MiB native CLI和live服务仍未执行。
 
+## 首轮 CI 的既有附件 fixture 竞态
+
+草稿 PR 首轮 head `5f0e2a9a10781858c606b86a78a3a69325e4f941` 的 [CI run 38515461477](https://github.com/contrueCT/mira/actions/runs/38515461477) 通过 `pnpm check:all`（含真实 PostgreSQL），浏览器 fixture 为 33/34 通过。失败断言把两个并发上传的请求到达顺序当成用户文件选择顺序；本次到达顺序相反，产品按选择顺序保留的信封反被误判。后续三个 joined browser gates 被跳过，未算通过。
+
+获准后只修 `tests/e2e/web.spec.ts`：文件名固定映射 ID，挂起第一个文件的响应，等第二个文件显示且发送仍禁用，再释放第一个；断言选择顺序、刷新和显式重试信封保持一致。没有改生产上传/界面代码，也没有单纯重跑碰绿。修复经另一个 fresh gpt-6.1-sol/max 独立复核，无发现；逆序响应仍能让真实的完成顺序排序错误失败，且刷新不重发、显式重试同信封的断言保留。
+
+本地类型检查通过。使用已有 `/usr/bin/chromium` 的本地 fixture 尝试因 sandbox Unix socket EPERM 未启动；正式提权执行器也在启动时因只读路径失败。没有下载浏览器、修改安全设置或绕过限制，因此不能把本地浏览器检查称为通过；新 head 的实际浏览器验证仍以 CI 为准。
+
 ## 尚未覆盖的验证
 
 模型模拟不执行包安装、网络、解析或上传，不能替代以上实际检查。本地未执行本轮 PostgreSQL/浏览器全链路，最终提交的完整门禁以草稿 PR 对应确切 head 的 CI checks 为准。未实际验证 live Tavily、agent-browser 交互、OpenAI 付费转写、OCR 或大模型下载。
