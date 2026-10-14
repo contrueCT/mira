@@ -441,3 +441,8 @@ The next model request receives ordered persisted input, including attachments.
 Compaction uses its frozen candidate; inputs arriving during summary are consumed
 after checkpoint publication and before the natural request. There is no pause
 button or intent classifier. See [ADR 0024](../../docs/adr/0024-live-user-input.md).
+
+Task-scoped runtimes may use `loadSkills` without `miraPrompt`. The same public
+formatter publishes a standalone `mira.skills.v1` system section at each natural
+request through the child's fenced transcript. This does not load main Memory,
+render Mira's persona, or read skill bodies; ordinary read/bash remain explicit.

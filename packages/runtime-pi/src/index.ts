@@ -42,7 +42,8 @@ export interface PiRuntimeOptions {
    * or failed preparation. Cleanup never schedules an extra model request. */
   finishTools?: () => Promise<void>;
   miraPrompt?: MiraPromptOptions;
-  /** Refresh metadata before each natural model request. Requires miraPrompt;
+  /** Refresh metadata before each natural model request. Without miraPrompt, a
+   * worker gets a standalone skills section, never the main persona or Memory;
    * bodies remain ordinary files read on demand, never bootstrap Memory. */
   loadSkills?: (signal: AbortSignal) => Promise<Skill[]>;
   /** Sample once per natural model request. The host pins activation identity;
@@ -87,7 +88,6 @@ export class PiDurableRuntime implements CognitionRuntime {
 
   constructor(options: PiRuntimeOptions) {
     if (typeof options.streamFn !== 'function') throw new Error('Injected streamFn is required');
-    if (options.loadSkills && !options.miraPrompt) throw new Error('Skill loading requires the Mira prompt');
     if (options.loadContextProviders && !options.miraPrompt) throw new Error('Context providers require the Mira prompt');
     validateTools(options.tools ?? []);
     contextBudget(options.model, options.autoCompaction);
@@ -580,6 +580,23 @@ export class PiDurableRuntime implements CognitionRuntime {
                 await this.verified();
                 const message = { role: 'system' as const, content: '', sections: { [MIRA_PROMPT_SECTION]: text }, miraPrompt: prompt, timestamp: Date.now() };
                 const entry = messageEntry(message, parentId);
+                const record = encodeEntry(entry);
+                version = await this.publish(() => this.options.writer.append(version, record, this.controller.signal));
+                attemptGate();
+                parentId = entry.id;
+              }
+            }
+            // Task workers share the public file-skill catalog, not Mira's
+            // persona/Memory bootstrap. Publish metadata through the same fenced
+            // transcript before every natural request, with bodies read on demand.
+            if (!config && this.options.loadSkills) {
+              const state = await this.recoverInternal();
+              if (state.snapshot.version !== version) throw new Error('Context changed during skill preparation');
+              const skills = formatSkillsForPrompt(await this.options.loadSkills(this.controller.signal));
+              await this.verified();
+              attemptGate();
+              if (getCurrentSystemMessage(state.messages)?.sections?.['mira.skills.v1'] !== skills) {
+                const entry = messageEntry({ role: 'system', content: '', sections: { 'mira.skills.v1': skills }, timestamp: Date.now() }, parentId);
                 const record = encodeEntry(entry);
                 version = await this.publish(() => this.options.writer.append(version, record, this.controller.signal));
                 attemptGate();

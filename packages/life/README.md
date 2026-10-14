@@ -37,3 +37,8 @@ inputs are consumed under the same fenced writer; notifications only prompt a
 model-request yield. Tool-start and final publication atomically arbitrate
 against pending input. Ordinary `receive` remains next-batch scheduling. See
 [ADR 0024](../../docs/adr/0024-live-user-input.md).
+
+`WakeLoop.createRuntime(run)` receives the already-claimed immutable run, so
+run-local ordinary tools can inspect durable supplemental input without guessing
+a global active run. This does not change the original request batch or claim
+new work.
