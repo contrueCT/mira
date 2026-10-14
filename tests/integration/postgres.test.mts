@@ -25,7 +25,15 @@ test('migration up/down/up uses node-pg-migrate and preserves no stale tables', 
   const db = await createTestDatabase();
   try {
     const before = await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema = $1", [db.schema]);
-    assert.equal(before.rows[0].n, 12);
+    assert.ok(before.rows[0].n >= 14);
+    assert.deepEqual((await db.admin.query("SELECT table_name FROM information_schema.tables WHERE table_schema=$1 AND table_name IN ('subagents','subagent_turns') ORDER BY table_name", [db.schema])).rows.map(row => row.table_name), ['subagent_turns', 'subagents']);
+    // Additional feature migrations can coexist. Roll each actual migration back
+    // to the fixed, explicitly checked base version; never skip their down code.
+    while (!(await db.admin.query('SELECT name FROM mira_migrations ORDER BY id DESC LIMIT 1')).rows[0].name.startsWith('1760000000004_')) {
+      await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
+    }
+    assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema=$1 AND table_name IN ('subagents','subagent_turns')", [db.schema])).rows[0].n, 0, 'child registry and turns removed by their down migration');
+    assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema=$1", [db.schema])).rows[0].n, 12, 'fixed base schema restored');
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'dreaming_progress'", [db.schema])).rows[0].n, 0, 'first down removes technical Dreaming progress');
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });

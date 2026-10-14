@@ -98,3 +98,15 @@ The Web service owns a private source-external `attachments/` directory beside `
 - Model-facing references include immutable local paths for ordinary file tools. Runtime hydrates supported media through a hash-verified resolver, preserving durable reference metadata rather than base64 in event/context history. Capability and model request payload limits can produce an explicit file-reference fallback.
 
 `tests/unit/attachments.test.mts` tests storage, bounds, path/symlink rejection, inert MIME and protected HTTP. `tests/recovery/attachments.test.mts` uses isolated PostgreSQL to check immutable envelopes, explicit publication and restart. Synthetic provider checks do not establish live model connectivity.
+
+## Delegated workers
+
+LocalWebService exposes `subagent_spawn`, `subagent_status`, `subagent_send`,
+`subagent_wait`, and `subagent_cancel` to the main model. Workers use the same Pi
+runtime and inherited injected transport, separate PostgreSQL transcripts, ordinary
+workspace tools and their own read-only history. Four active workers maximum;
+no child-to-child spawning, main Memory lifecycle, direct chat or attachment
+publication. Completion enters the normal main Event/Wake queue. Followup retains
+prior results and recovery observations. Existing run details display lifecycle
+state; the main UI gains no entry point. See ADR 0025 for context and cancellation
+limits and the distinction from a sandbox or persistent job platform.

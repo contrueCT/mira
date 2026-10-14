@@ -40,7 +40,7 @@ export interface RunSummaryView { id: string; occurredAt: string; status: 'runni
 export interface RunsView { items: RunSummaryView[]; nextCursor: string | null }
 export interface RunExecutionView {
   id: string; occurredAt: string;
-  kind: 'model' | 'tool' | 'compaction' | 'recovery' | 'unavailable';
+  kind: 'model' | 'tool' | 'subagent' | 'compaction' | 'recovery' | 'unavailable';
   name: string | null; status: string;
   /** Whitelisted fixed diagnostic only, never raw errors or payload fragments. */
   error: string | null;

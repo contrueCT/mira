@@ -431,3 +431,11 @@ Publication remains fenced after the file write; write, cancellation, ownership,
 byte-count or CAS failures cannot publish the checkpoint. Completed derived files
 are retained, with no automatic cleanup or additional storage service. Missing files
 produce ordinary read errors; file contents remain source material, not authority.
+
+## Task-scoped workers
+
+`freezeSubagentContext` produces a bounded, role-labelled textual snapshot of the
+current Pi projection (existing summaries retained, hidden reasoning/provider
+metadata excluded). It rejects oversized snapshots instead of silently truncating.
+Worker assembly reuses `PiDurableRuntime.run` with an independent PostgreSQL writer;
+no parent tool call is inserted into the child's protocol. See ADR 0025.

@@ -7,7 +7,7 @@ import { acceptRunRecords, emptyRunRecords, nextRunRecords } from './run-records
 import { acceptRunRequests, beginRunRequests, cancelRunRequests, emptyRunRequests, finishRunRequests, matchesRunRequests, seedRunRequests } from './run-requests.ts';
 
 function dateTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? '时间未记录' : new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(date); }
-const kindLabel: Record<RunExecution['kind'], string> = { model: '模型', tool: '工具', compaction: '压缩', recovery: '恢复', unavailable: '记录不可用' };
+const kindLabel: Record<RunExecution['kind'], string> = { model: '模型', tool: '工具', subagent: '子代理', compaction: '压缩', recovery: '恢复', unavailable: '记录不可用' };
 function mergeById<T extends { id: string }>(before: T[], incoming: T[]): T[] { const result = new Map(before.map(item => [item.id, item])); for (const item of incoming) result.set(item.id, item); return [...result.values()]; }
 
 function RunRecord({ id, active, onBack }: { id: string; active: boolean; onBack: () => void }) {

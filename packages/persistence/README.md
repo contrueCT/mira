@@ -118,3 +118,13 @@ const older = latest.nextCursor
 `tests/unit/history.test.mts` covers request/cursor validation, SQL parameterization, read-only cleanup, metadata-only paging, payload preservation and explicit size failures with an offline driver double. `tests/integration/history.test.mts` requires the real isolated PostgreSQL service and covers scope, lexical/Chinese behavior, exact originals, bounds, large writes, stable chronological paging across timestamp offsets/ties and appended checkpoints, and read-without-ownership. Offline doubles do not establish actual PostgreSQL behavior.
 
 `history(miraId)` also implements `RunHistoryReader`. `findEventRun(externalEventId)` uses an exact parameterized event-key join in that fixed Mira, returning only `{eventId,runId}`. `pageRuns` reads fixed run metadata and exact membership counts, never original Wake envelopes. `readRun({id,before?,limit?})` reads the same fixed header, checkpoint/receipt metadata and context/tool references in a single read-only SQL snapshot. Neither result grows with trigger membership count. `readRunRequests` separately pages descriptions by durable receipt order (default 50/max 100); its independent scoped cursor fetches older members. Each description has a 2,048-byte display ceiling; larger originals return an explicit unavailable event reference, not partial text. The full original remains unchanged in History. It excludes records at/before `claimed_version` and after the persisted final record's version; later Wake records cannot contaminate a completed run. Records use version/kind/UUID ordering, default 50/max 100 per page, a 262,144-byte metadata cap and a bounded cursor tied to both Mira and Wake. Fetch originals separately with `read`; this adapter still never interprets Pi or returns a second runtime log. No migration or new table is added. `tests/integration/management-history.test.mts` verifies exact correlation, scope, stable pagination, no-change versus pending/changed receipts, and nonmutation on the real isolated PostgreSQL service, including 1,500- and 6,501-member coalesced batches completed through the actual fenced writer.
+
+## Task-scoped subagents
+
+The acquired writer also implements `SubagentWriter`. Registry and turn state use
+the existing parent writer's fenced transaction queue; transcript writers remain
+separate. Stable parent call IDs deduplicate spawn/followup. Terminal turn state and
+its parent Event/Wake commit together. Startup `interruptSubagents()` marks queued
+or running work interrupted without replay. Terminal results remain immutable.
+Migration `1760000000007_subagents.sql` has explicit up/down; down is destructive
+and must not be run on user data automatically. See ADR 0025.

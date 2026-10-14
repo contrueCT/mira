@@ -78,3 +78,5 @@ export type { MemoryCheckpoint, MemoryCheckpointState, MemoryCheckpointWriter, M
 export { HistoryError } from './history.ts';
 export type { HistoryKind, HistorySearchMode, HistoryReference, HistoryMetadata, HistorySearchRequest, HistoryHit, HistorySearchResult, HistoryPageCursor, HistoryPageRequest, HistoryPageHit, HistoryPageResult, HistoryReadRequest, HistoryEvent, HistoryContext, HistoryTool, HistoryWake, HistoryEntry, HistoryReader, HistoryEventRun, HistoryRunPageRequest, HistoryRunPage, HistoryRunHeader, HistoryRunRequestsPage, RunHistoryReader } from './history.ts';
 export type { DreamingRequest, DreamingRequestResult, DreamingWriter } from './dreaming.ts';
+export { SubagentError, subagentCompletionPayload } from './subagents.ts';
+export type { SubagentWriter, SubagentRecord, SubagentTurn, SubagentStatus, SubagentSpec, SubagentResult } from './subagents.ts';
