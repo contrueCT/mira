@@ -12,7 +12,7 @@ const port = 3228;
 const origin = `http://mira-auth.test:${port}`;
 const password = 'synthetic-browser-password';
 async function access(page: Page) {
-  await page.getByRole('button', { name: '模型设置', exact: true }).click();
+  if (!await page.locator('dialog.settings-dialog').isVisible()) await page.getByRole('button', { name: '模型设置', exact: true }).click();
   await page.getByRole('tab', { name: '访问', exact: true }).click();
   await expect(page.getByRole('switch', { name: '使用访问密码' })).toBeVisible();
 }
