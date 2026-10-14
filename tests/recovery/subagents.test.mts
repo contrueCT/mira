@@ -283,28 +283,42 @@ test('child auto-compaction checkpoints survive PostgreSQL restart without main 
     const makeManager = () => new SubagentManager({ writer, acquire: id => db.acquire(id), tools: () => [],
       writeOverflowInput: async () => { throw Error('Unexpected overflow'); }, onCompletion: () => {}, onFailure: error => failures.push(error) });
     manager = makeManager(); await manager.initialize();
-    const c = await manager.spawn('pg-compaction', 'Read-only investigation', 'none', transport);
+    const parentCall = async (callId: string, name: string, args: Record<string, string>) => {
+      let requested = false;
+      const runtime = new PiDurableRuntime({ writer, model: { ...model, contextWindow: 1_000_000 }, autoCompaction: { enabled: false },
+        tools: createSubagentTools(manager!, transport), streamFn: () => {
+          if (requested) return streamOf(assistant('Delegation recorded'));
+          requested = true;
+          return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: callId, name, arguments: args }] });
+        } });
+      const context = await runtime.run(input(`Dispatch ${callId}`));
+      const result = context.entries.find(entry => entry.type === 'message' && entry.message.role === 'toolResult' && entry.message.toolCallId === callId);
+      assert.ok(result?.type === 'message' && result.message.role === 'toolResult');
+      const text = result.message.content.find(block => block.type === 'text'); assert.ok(text?.type === 'text');
+      return JSON.parse(text.text) as { id: string };
+    };
+    const c = await parentCall('pg-compaction', 'subagent_spawn', { task: 'Read-only investigation' });
     await until(async () => (await writer.getSubagent(c.id))!.turns.at(-1)!.status === 'completed');
     for (let i = 1; i <= 24 && summaries === 0; i++) {
-      await manager.send(`pg-followup-${i}`, c.id, `Continue ${i}`, transport);
+      await parentCall(`pg-followup-${i}`, 'subagent_send', { id: c.id, message: `Continue ${i}` });
       await until(async () => (await writer.getSubagent(c.id))!.turns.at(-1)!.status === 'completed');
     }
     assert.equal(summaries, 1); const child = (await writer.getSubagent(c.id))!;
     const records = (await db.admin.query('SELECT envelope FROM context_records WHERE mira_id=$1 ORDER BY version', [child.streamId])).rows;
     assert.equal(records.filter(row => row.envelope.kind === 'checkpoint').length, 1);
-    assert.equal((await writer.load()).records.length, 0);
+    assert.equal((await writer.load()).records.filter(record => record.kind === 'checkpoint').length, 0);
     assert.doesNotMatch(JSON.stringify(records), /miraMemory/);
     assert.deepEqual((await db.admin.query("SELECT checkpoint_version, consumed_receipt_order, last_triggered_at FROM dreaming_progress WHERE mira_id='compact-parent'")).rows, beforeDreaming);
     assert.equal((await db.admin.query("SELECT count(*)::int AS n FROM dreaming_progress WHERE mira_id LIKE 'subagent:%'")).rows[0].n, 0);
     await manager.close(); await writer.close();
     const beforeCalls = calls; writer = await db.acquire('compact-parent'); manager = makeManager(); await manager.initialize();
     assert.equal(calls, beforeCalls); assert.equal(summaries, 1);
-    await manager.send('pg-after-restart', c.id, 'RESTART_FOLLOWUP: inspect the preserved findings', transport);
+    await parentCall('pg-after-restart', 'subagent_send', { id: c.id, message: 'RESTART_FOLLOWUP: inspect the preserved findings' });
     await until(async () => (await writer.getSubagent(c.id))!.turns.at(-1)!.status === 'completed');
     assert.match(latest, /PG_TASK_SUMMARY/); assert.match(latest, /RESTART_FOLLOWUP/);
     assert.equal(calls, beforeCalls + 1);
     const after = (await db.admin.query('SELECT envelope FROM context_records WHERE mira_id=$1 ORDER BY version', [child.streamId])).rows;
     assert.deepEqual(after.slice(0, records.length), records);
-    assert.equal((await writer.load()).records.length, 0); assert.deepEqual(failures, []);
+    assert.equal((await writer.load()).records.filter(record => record.kind === 'checkpoint').length, 0); assert.deepEqual(failures, []);
   } finally { await manager?.close(); await db.close(); }
 });
