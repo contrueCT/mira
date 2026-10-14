@@ -28,6 +28,8 @@ CREATE TABLE subagent_turns (
   CHECK ((status IN ('queued','running') AND finished_at IS NULL AND result IS NULL)
       OR (status NOT IN ('queued','running') AND finished_at IS NOT NULL AND result IS NOT NULL))
 );
+CREATE INDEX subagent_parent_page ON subagents(parent_mira_id,created_at,child_id);
+CREATE INDEX subagent_pending_turns ON subagent_turns(child_id,sequence) WHERE status IN ('queued','running');
 CREATE UNIQUE INDEX subagent_one_running ON subagent_turns(child_id) WHERE status = 'running';
 
 CREATE FUNCTION mira_protect_subagent_turn() RETURNS trigger LANGUAGE plpgsql AS $$

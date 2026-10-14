@@ -1,5 +1,5 @@
-import { PostgresSubagents } from './subagents.ts';
-import { SubagentError, type SubagentWriter } from '@mira/life';
+import { PostgresSubagents, PostgresSubagentReader } from './subagents.ts';
+import { SubagentError, type SubagentWriter, type SubagentReader } from '@mira/life';
 import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
@@ -108,6 +108,8 @@ export class PostgresPersistence {
 
   /** Scoped read-only access does not acquire or displace the durable writer. */
   history(miraId: string): RunHistoryReader { return new PostgresHistoryReader(this.#options, miraId); }
+
+  subagents(miraId: string): SubagentReader { text(miraId, 'Mira ID'); return new PostgresSubagentReader(this.#options, miraId); }
 
   async acquire(miraId: string): Promise<DreamingWriter & SubagentWriter> {
     text(miraId, 'Mira ID');
@@ -234,7 +236,9 @@ class PostgresWriter implements DreamingWriter, SubagentWriter {
     });
   }
   createSubagent: SubagentWriter['createSubagent'] = (...args) => this.#subagents.create(...args);
-  listSubagents: SubagentWriter['listSubagents'] = () => this.#subagents.list();
+  listSubagents: SubagentWriter['listSubagents'] = before => this.#subagents.list(before);
+  findSubagentCall: SubagentWriter['findSubagentCall'] = callId => this.#subagents.findCall(callId);
+  readSubagentCalls: SubagentWriter['readSubagentCalls'] = callIds => this.#subagents.readCalls(callIds);
   getSubagent: SubagentWriter['getSubagent'] = id => this.#subagents.get(id);
   sendSubagent: SubagentWriter['sendSubagent'] = (...args) => this.#subagents.send(...args);
   claimSubagentTurn: SubagentWriter['claimSubagentTurn'] = id => this.#subagents.claim(id);

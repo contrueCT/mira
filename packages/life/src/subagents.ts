@@ -15,14 +15,27 @@ export interface SubagentTurn {
 }
 export interface SubagentRecord {
   id: string; streamId: string; spawnCallId: string; createdAt: string; spec: SubagentSpec;
+  /** Latest eight turns plus any pending turns (at most seventeen). */
   turns: SubagentTurn[];
+  turnCount: number;
+}
+export interface SubagentSummary {
+  id: string; createdAt: string; status: SubagentStatus; model: SubagentSpec['model'];
+}
+export interface SubagentPage { children: SubagentSummary[]; nextCursor: string | null }
+export interface SubagentCallView { childId: string; streamId: string; turnId: string; createdAt: string; status: SubagentStatus }
+export interface SubagentReader {
+  /** SQL-bounded metadata only; latest fifty children, no task/context/result bodies. */
+  listSubagents(before?: string): Promise<SubagentPage>;
+  getSubagent(id: string): Promise<SubagentRecord | null>;
+  findSubagentCall(callId: string): Promise<{ child: SubagentRecord; turn: SubagentTurn } | null>;
+  /** Fixed management projection, scoped to at most fifty parent call IDs. */
+  readSubagentCalls(callIds: string[]): Promise<SubagentCallView[]>;
 }
 /** All registry changes use the parent's existing fenced transaction queue.
  * Child transcript writers are independent and never append to parent context. */
-export interface SubagentWriter extends DurableWriter {
+export interface SubagentWriter extends DurableWriter, SubagentReader {
   createSubagent(callId: string, spec: SubagentSpec, maxConcurrent: number): Promise<SubagentRecord>;
-  listSubagents(): Promise<SubagentRecord[]>;
-  getSubagent(id: string): Promise<SubagentRecord | null>;
   sendSubagent(callId: string, id: string, instruction: string, maxConcurrent: number): Promise<SubagentRecord>;
   claimSubagentTurn(id: string): Promise<SubagentTurn | null>;
   finishSubagentTurn(id: string, status: 'completed' | 'interrupted' | 'cancelled' | 'failed', result: SubagentResult): Promise<void>;

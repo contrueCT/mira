@@ -33,6 +33,9 @@ Four children can occupy active slots. Followups are persisted, deduplicated by
 parent call ID and consumed after the current child turn. At most sixteen queued
 followups per child are accepted. An idle or terminal child can receive a new turn.
 Each turn retains its immutable terminal result; later work never overwrites it.
+Status listing selects at most fifty metadata rows in SQL, without task/context/result
+bodies. Individual status reads return the latest eight turns plus bounded pending
+turns; call retries use indexed direct lookups, including older turns.
 
 Parent ownership fences registry mutations. Children have separate transcript
 writers, tool intents/outcomes, provider call identities and history UUIDs. Losing
@@ -88,7 +91,10 @@ through the existing ordinary input-spool writer with a full-file path and expli
 truncation marker. Tool status exposes recent results. Existing run details show
 child identity, lifecycle state and safe execution projections from the latest ten
 child history records (explicitly labelled latest activity), without raw task payload, hidden reasoning or
-system prompts. Normal Timeline never publishes a child's result automatically;
+system prompts. Run-detail child metadata uses an independent read-only connection and at most
+fifty parent call IDs from the current page. Parent ownership loss does not disable
+history inspection; temporarily unavailable child details do not discard readable
+parent history. Normal Timeline never publishes a child's result automatically;
 only Mira decides what to relay.
 
 ## Verification

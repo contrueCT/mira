@@ -60,3 +60,19 @@ test to wait for an impossible completed state. The tests now check the real
 model-facing evidence and separately assert the durable enum; an offline regression
 covers explicit followup without repeating the effect. This first failure is kept
 here; the corrected exact-head PostgreSQL run is still required.
+
+
+## Independent review and followup
+
+A fresh independent `gpt-6.1-sol` / `max` review of `d0f1c0d` found two P2 issues:
+run details used the failed owner's writer for child metadata, and bounded UI output
+was preceded by an unbounded lifetime-registry read inside the parent transaction.
+The revision introduces a separate scoped read-only reader, SQL metadata pagination,
+direct call lookups, page-scoped management projection and bounded recent/pending
+turn reads. New PostgreSQL regressions cover 55 children, thirteen turns, payload
+omission, owner-loss reads and ordinary/child run details after terminating the owner.
+A fresh rereview and revised-head CI remain required.
+
+The earlier `d0f1c0d` passed complete CI run 38515268026, including PostgreSQL,
+SIGKILL/atomic rollback and all browser gates. That success does not establish the
+later review fixes; their exact-head result will be recorded separately.

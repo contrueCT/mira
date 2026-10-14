@@ -16,15 +16,22 @@ class Parent extends MemoryWriter implements SubagentWriter {
     const old = this.children.find(c => c.spawnCallId === callId); if (old) return structuredClone(old);
     if (this.children.filter(c => c.turns.some(t => ['queued','running'].includes(t.status))).length >= max) throw new SubagentError('capacity', 'full');
     const id = randomUUID(); const createdAt = new Date().toISOString();
-    const child: SubagentRecord = { id, streamId: `subagent:${id}`, spawnCallId: callId, createdAt, spec: structuredClone(spec), turns: [
+    const child: SubagentRecord = { id, streamId: `subagent:${id}`, spawnCallId: callId, createdAt, spec: structuredClone(spec), turnCount: 1, turns: [
       { id: randomUUID(), childId: id, callId, sequence: 1, instruction: spec.task, status: 'queued', createdAt, finishedAt: null, result: null },
     ] }; this.children.push(child); return structuredClone(child);
   }
-  async listSubagents() { return structuredClone(this.children); }
+  async listSubagents(before?: string) {
+    const end = before ? this.children.findIndex(c => c.id === before) : this.children.length;
+    const page = this.children.slice(Math.max(0,end-50),end);
+    return { children: page.map(c => ({ id: c.id, createdAt: c.createdAt, model: c.spec.model, status: c.turns.at(-1)!.status })), nextCursor: end>50 ? page[0]!.id : null };
+  }
+  async findSubagentCall(callId: string) { for (const child of this.children) { const turn = child.turns.find(t => t.callId === callId); if (turn) return structuredClone({ child,turn }); } return null; }
+  async readSubagentCalls(callIds: string[]) { return this.children.flatMap(c => c.turns.filter(t => callIds.includes(t.callId)).map(t => ({ childId:c.id,streamId:c.streamId,turnId:t.id,createdAt:t.createdAt,status:t.status }))); }
   async getSubagent(id: string) { return structuredClone(this.children.find(c => c.id === id) ?? null); }
   async sendSubagent(callId: string, id: string, instruction: string, _max: number) {
     const c = this.children.find(c => c.id === id)!;
     if (!c.turns.some(t => t.callId === callId)) c.turns.push({ id: randomUUID(), childId: id, callId, sequence: c.turns.length + 1, instruction, status: 'queued', createdAt: new Date().toISOString(), finishedAt: null, result: null });
+    c.turnCount = c.turns.length;
     return structuredClone(c);
   }
   async claimSubagentTurn(id: string) { const t = this.children.find(c => c.id === id)!.turns.find(t => t.status === 'queued'); if (!t) return null; t.status = 'running'; return structuredClone(t); }

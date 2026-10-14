@@ -121,7 +121,10 @@ const older = latest.nextCursor
 
 ## Task-scoped subagents
 
-The acquired writer also implements `SubagentWriter`. Registry and turn state use
+The acquired writer also implements `SubagentWriter`. `subagents(miraId)` provides
+an independent read-only reader for metadata/history after owner loss. Lists use
+SQL-bounded metadata pages; child reads include recent eight turns and bounded
+pending work; call dedupe and run associations use indexed scoped lookups. Registry and turn state use
 the existing parent writer's fenced transaction queue; transcript writers remain
 separate. Stable parent call IDs deduplicate spawn/followup. Terminal turn state and
 its parent Event/Wake commit together. Startup `interruptSubagents()` marks queued
