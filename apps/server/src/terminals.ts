@@ -10,7 +10,7 @@ type Chunk = { path: string; start: number; end: number; sha256: string };
 type Status = 'running' | 'exited' | 'closed' | 'output_limit' | 'unknown';
 interface Session {
   id: string; owner: string; callId: string | null; inputBytes: number; host: ChildProcess; status: Status; code: number | null;
-  signal: string | number | null; chunks: Chunk[]; bytes: number; received: number;
+  signal: string | number | null; pendingLogs: number; chunks: Chunk[]; bytes: number; received: number;
   log: Promise<void>; lock: Promise<void>; failure: unknown; changes: Set<() => void>;
   done: Promise<void>; resolveDone: () => void; closing: boolean;
   requests: Map<string, { resolve: () => void; reject: (error: Error) => void }>;
@@ -19,7 +19,7 @@ export interface TerminalExec { command: string; cwd?: string; shell?: string; t
 export interface TerminalWrite { session_id: string; offset: number; chars?: string; interrupt?: boolean; yield_ms?: number; max_output_bytes?: number }
 export interface TerminalResult {
   session_id: string; status: Status | 'unavailable'; output: string; offset: number; next_offset: number;
-  has_more: boolean; exit_code: number | null; signal: string | number | null;
+  has_more: boolean; output_pending?: boolean; exit_code: number | null; signal: string | number | null;
   cleanup_scope?: string; log_index?: string; message?: string; input_bytes_remaining?: number;
 }
 class TerminalError extends Error {}
@@ -78,7 +78,7 @@ export class TerminalManager {
     }
     const host = fork(new URL('./terminal-process.mts', import.meta.url), [], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], execArgv: [] });
     let resolveDone!: () => void;
-    const session: Session = { id: randomUUID(), owner, callId: callId ?? null, inputBytes: 0, host, status: 'running', code: null, signal: null, chunks: [], bytes: 0, received: 0,
+    const session: Session = { id: randomUUID(), owner, callId: callId ?? null, inputBytes: 0, host, status: 'running', code: null, signal: null, pendingLogs: 0, chunks: [], bytes: 0, received: 0,
       log: Promise.resolve(), lock: Promise.resolve(), failure: null, changes: new Set(), done: new Promise<void>(resolve => { resolveDone = resolve; }), resolveDone: () => resolveDone(), closing: false, requests: new Map() };
     this.#sessions.set(session.id, session);
     host.on('message', (message: { type: string; text?: string; code?: number | null; signal?: string | number | null; error?: string; request?: string; inputBytes?: number }) => {
@@ -91,9 +91,11 @@ export class TerminalManager {
         const text = message.text;
         session.received += Buffer.byteLength(text);
         if (session.received > terminalLimits.logBytes) {
-          session.status = 'output_limit'; session.closing = true; this.#send(session, { type: 'close' }); this.#notify(session); return;
+          session.status = 'output_limit'; session.closing = true; this.#send(session, { type: 'close', discard_output: true }); this.#notify(session); return;
         }
+        session.pendingLogs++;
         session.log = session.log.then(async () => {
+          if (session.failure) throw session.failure;
           // Immutable ordinary spool chunks, with native pipe/PTY backpressure until persisted.
           for (let start = 0; start < text.length; start += 16_384) {
             let end = Math.min(text.length, start + 16_384);
@@ -105,7 +107,7 @@ export class TerminalManager {
             if (end < Math.min(text.length, start + 16_384)) start--;
           }
           this.#send(session, { type: 'ack' }); this.#notify(session);
-        }).catch(error => { session.failure = error; session.status = 'unknown'; session.closing = true; this.#send(session, { type: 'close' }); this.#notify(session); });
+        }).catch(error => { session.failure = error; session.status = 'unknown'; session.closing = true; this.#send(session, { type: 'close', discard_output: true }); this.#notify(session); }).finally(() => { session.pendingLogs--; this.#notify(session); });
       } else if (message.type === 'output_limit') {
         session.status = 'output_limit'; session.closing = true; this.#notify(session);
       } else if (message.type === 'output_incomplete' || message.type === 'cleanup_unknown') {
@@ -156,15 +158,14 @@ export class TerminalManager {
   }
   async #collect(session: Session, offset: number, yieldMs: number, maxBytes: number, signal?: AbortSignal): Promise<TerminalResult> {
     const until = Date.now() + yieldMs;
-    while (session.status === 'running' && session.bytes <= offset && Date.now() < until && !signal?.aborted) {
+    while ((session.status === 'running' || session.pendingLogs > 0) && session.bytes <= offset && Date.now() < until && !signal?.aborted) {
       await new Promise<void>(resolve => {
         const done = () => { clearTimeout(timer); session.changes.delete(done); signal?.removeEventListener('abort', done); resolve(); };
         const timer = setTimeout(done, Math.max(0, until - Date.now())); session.changes.add(done); signal?.addEventListener('abort', done, { once: true });
         if (signal?.aborted) done();
       });
     }
-    for (;;) { const pending = session.log; await pending; if (pending === session.log) break; }
-    const snapshot = { bytes: session.bytes, chunks: [...session.chunks], status: session.status, code: session.code, signal: session.signal };
+    const snapshot = { pending: session.pendingLogs > 0, bytes: session.bytes, chunks: [...session.chunks], status: session.status, code: session.code, signal: session.signal };
     if (session.failure) throw session.failure;
     const buffers: Buffer[] = []; let length = 0;
     for (const chunk of snapshot.chunks) {
@@ -179,7 +180,7 @@ export class TerminalManager {
     let output: string;
     for (;;) { try { output = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(data); break; } catch { data = data.subarray(0, -1); } }
     const index = await this.#writeFile(`terminal-index:${session.id}:${snapshot.bytes}`, JSON.stringify({ session_id: session.id, encoding: 'utf8', bytes: snapshot.bytes, chunks: snapshot.chunks }, null, 2));
-    return { session_id: session.id, status: snapshot.status, output, offset, next_offset: offset + data.length, has_more: offset + data.length < snapshot.bytes,
+    return { session_id: session.id, status: snapshot.status, output, offset, next_offset: offset + data.length, has_more: offset + data.length < snapshot.bytes || snapshot.pending, output_pending: snapshot.pending,
       exit_code: snapshot.code, signal: snapshot.signal, cleanup_scope: 'Managed process group and descendants observable at close only. Regrouped and reparented jobs may survive; effects are not undone.', log_index: index.path, input_bytes_remaining: 1024 * 1024 - session.inputBytes,
       ...(signal?.aborted ? { message: 'Wait cancelled; the terminal was not terminated. Use write_stdin to continue or terminal_close to terminate.' } : snapshot.status === 'output_limit' ? { message: 'Terminal output limit reached (64 MiB total or 1 MiB pending PTY output). Excess output was not retained; termination requested.' } : snapshot.status === 'unknown' ? { message: 'Terminal host did not confirm complete output or cleanup. Inspect effects; do not replay automatically.' } : {}) };
   }

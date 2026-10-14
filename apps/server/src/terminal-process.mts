@@ -69,7 +69,7 @@ async function stop(): Promise<void> {
 }
 process.on('disconnect', () => { if (stopping && cleanupDone) process.exit(0); else void stop(); });
 process.on('SIGTERM', () => { void stop(); });
-type Message = { type: string; command?: string; cwd?: string; shell?: string; tty?: boolean; text?: string; request?: string };
+type Message = { type: string; command?: string; cwd?: string; shell?: string; tty?: boolean; text?: string; request?: string; discard_output?: boolean };
 const queued: Message[] = [];
 function input(message: Message): void {
   if (stopping) { send({ type: 'input_rejected', request: message.request }); return; }
@@ -89,7 +89,10 @@ function input(message: Message): void {
 }
 process.on('message', (message: Message) => {
   if (message.type === 'ack') { pendingBytes -= pending.shift() ?? 0; resume(); return; }
-  if (message.type === 'close') { void stop(); return; }
+  if (message.type === 'close') {
+    if (message.discard_output) { overflow = true; pending.length = 0; pendingBytes = 0; resume(); }
+    void stop(); return;
+  }
   if (message.type === 'write' || message.type === 'interrupt') { input(message); return; }
   if (message.type !== 'start' || pid || stopping) return;
   void (async () => {

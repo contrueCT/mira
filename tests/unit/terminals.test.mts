@@ -25,9 +25,9 @@ async function fixture(run: (manager: TerminalManager, base: string, create: () 
   try { await run(create(), base, create); }
   finally { await Promise.all(managers.map(manager => manager.close())); await rm(base, { recursive: true, force: true }); }
 }
-async function drain(manager: TerminalManager, first: TerminalResult, maxBytes = 8192): Promise<{ result: TerminalResult; output: string }> {
+async function drain(manager: TerminalManager, first: TerminalResult, maxBytes = 8192, timeoutMs = 15_000): Promise<{ result: TerminalResult; output: string }> {
   let result = first, output = first.output;
-  const until = Date.now() + 15_000;
+  const until = Date.now() + timeoutMs;
   while (result.status === 'running' || result.has_more) {
     assert.ok(Date.now() < until, `Terminal did not finish: ${result.session_id}`);
     const previous = result.next_offset;
@@ -96,10 +96,12 @@ test('same-session input is ordered and a waiting session does not block another
   assert.equal(ordered.output, '<one><two><end>');
   const slow = await manager.exec(owner, { command: 'sleep 30', yield_ms: 0 });
   let slowSettled = false;
-  const waiting = manager.write(owner, { session_id: slow.session_id, offset: 0, yield_ms: 10_000 }).then(value => { slowSettled = true; return value; });
+  const waiting = manager.write(owner, { session_id: slow.session_id, offset: 0, yield_ms: 1000 }).then(value => { slowSettled = true; return value; });
   const fast = await drain(manager, await manager.exec(owner, { command: 'printf independent', yield_ms: 0 }));
   assert.equal(fast.output, 'independent'); assert.equal(slowSettled, false);
-  await manager.closeSession(owner, slow.session_id); assert.equal((await waiting).status, 'closed');
+  const closing = manager.closeSession(owner, slow.session_id);
+  assert.equal((await waiting).status, 'running', 'close queues after the active read');
+  assert.equal((await closing).status, 'closed');
 }));
 
 test('wrong stream cannot read, write, or close another stream session', async () => fixture(async manager => {
@@ -244,7 +246,7 @@ test('slow durable storage cannot silently lose a fast PTY final tail', async ()
   } });
   try {
     const expected = 'x'.repeat(40_000);
-    const done = await drain(manager, await manager.exec(owner, { command: node(`process.stdout.write('x'.repeat(40000))`), tty: true, yield_ms: 0 }));
+    const done = await drain(manager, await manager.exec(owner, { command: node(`process.stdout.write('x'.repeat(40000))`), tty: true, yield_ms: 0 }), 8192, 45_000);
     assert.equal(done.output, expected); assert.equal(done.result.status, 'exited'); assert.equal(done.result.exit_code, 0);
   } finally { await manager.close(); }
 }));
@@ -323,8 +325,46 @@ test('PTY pending output overflow is explicit rather than silent truncation', as
   try {
     const result = await manager.exec(owner, { command: node("process.stdout.write('x'.repeat(4*1024*1024))"), tty: true, yield_ms: 0 });
     let current = result;
-    const deadline = Date.now() + 15_000;
+    const deadline = Date.now() + 30_000;
     while (current.status === 'running') { assert.ok(Date.now() < deadline); current = await manager.write(owner, { session_id: current.session_id, offset: current.next_offset, yield_ms: 100 }); }
     assert.equal(current.status, 'output_limit'); assert.match(current.message!, /Excess output was not retained/);
+  } finally { await manager.close(); }
+}));
+
+test('failed durable output and total log limit both release a paused pipe on shutdown', async () => fixture(async (_manager, base) => {
+  for (const mode of ['storage_failure', 'log_limit'] as const) {
+    const original = terminalLimits.logBytes;
+    if (mode === 'log_limit') (terminalLimits as { logBytes: number }).logBytes = 1024;
+    const manager = new TerminalManager({ cwd: base, writeOverflowInput: async (runId, content) => {
+      if (mode === 'storage_failure' && runId.startsWith('terminal:')) throw Error('synthetic disk full');
+      return writeWakeInput({ rootDirectory: path.join(base, mode), sourceDirectory, runId, content });
+    } });
+    try {
+      const work = manager.exec(owner, { command: node('process.stdout.write("x".repeat(1024*1024)); setTimeout(()=>{},30000)'), yield_ms: 1000 });
+      if (mode === 'storage_failure') await assert.rejects(work, /synthetic disk full/);
+      else assert.equal((await work).status, 'output_limit');
+      await Promise.race([manager.close(), delay(3500).then(() => { throw Error(`${mode} stalled shutdown`); })]);
+    } finally { (terminalLimits as { logBytes: number }).logBytes = original; await manager.close(); }
+  }
+}));
+
+test('cancelled or expired reads snapshot persisted output without waiting for a slow log backlog', async () => fixture(async (_manager, base) => {
+  let saving = false;
+  const manager = new TerminalManager({ cwd: base, writeOverflowInput: async (runId, content) => {
+    if (runId.startsWith('terminal:')) { saving = true; await delay(2500); }
+    return writeWakeInput({ rootDirectory: path.join(base, 'yield-spool'), sourceDirectory, runId, content });
+  } });
+  try {
+    const initial = await manager.exec(owner, { command: "printf result; sleep 30", yield_ms: 0 });
+    while (!saving) await delay(10);
+    const expiredAt = Date.now();
+    const expired = await manager.write(owner, { session_id: initial.session_id, offset: 0, yield_ms: 0 });
+    assert.ok(Date.now() - expiredAt < 1000); assert.equal(expired.output, ''); assert.equal(expired.output_pending, true); assert.equal(expired.has_more, true);
+    const abort = new AbortController(); const before = Date.now();
+    const waiting = manager.write(owner, { session_id: initial.session_id, offset: 0, yield_ms: 10_000 }, abort.signal);
+    await delay(50); abort.abort(); const cancelled = await waiting;
+    assert.ok(Date.now() - before < 1000); assert.equal(cancelled.output_pending, true); assert.match(cancelled.message!, /not terminated/);
+    const later = await manager.write(owner, { session_id: initial.session_id, offset: 0, yield_ms: 5000 });
+    assert.equal(later.output, 'result');
   } finally { await manager.close(); }
 }));

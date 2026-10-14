@@ -24,13 +24,17 @@ There are no terminal cards/buttons and no automatic result Wake or polling agen
 ## Protocol and budgets
 
 Exec returns `session_id`, `status`, `output`, byte `offset`/`next_offset`,
-`has_more`, `exit_code`, `signal` and an immutable ordinary-file `log_index`.
+`has_more`, `output_pending`, `exit_code`, `signal` and an immutable ordinary-file `log_index`.
 Read/write copies `next_offset`; 0 explicitly rereads without re-execution. UTF-8
 boundaries are preserved. Results are incremental snapshots, not a claim that a
 running command has completed. A running snapshot can have no more bytes yet.
 The referenced JSON index lists ordered UTF-8 chunk paths and byte ranges through
 its exact snapshot byte count. Ordinary `read` can inspect/reconstruct these files.
 Later output needs a later poll and index. Ended handles retain unread output.
+`has_more` also remains true while accepted output awaits durable storage;
+`output_pending` distinguishes that backlog. A bounded/cancelled poll snapshots
+already-persisted chunks without waiting for the whole backlog, even after the
+process exits. The index never claims to include bytes not yet stored.
 
 Calls are serialized per handle; separate handles run independently. Input is
 acknowledged by the supervisor before a result can claim it was accepted; this is
@@ -77,7 +81,10 @@ that old work is interrupted or unknown and saved outcomes/logs must be inspecte
 durable launch call ID, so a cancelled launch with no durable result is still
 discoverable on a child followup. It does not replay anything or reveal siblings.
 Historical running results stay truthful observations of their original call,
-never rewritten as completed. Host/storage errors are not fabricated successes.
+never rewritten as completed. Host/storage errors are not fabricated successes. Failed writes and total-output
+overflow explicitly discard pending supervisor buffers during shutdown, releasing
+pipe backpressure. Storage failure remains unknown and overflow remains partial;
+neither path pretends discarded bytes were preserved.
 
 Live user input retains ADR 0024: settle the current bounded terminal call, consume
 new input, and leave old siblings not-started. Terminals do not intercept steering
