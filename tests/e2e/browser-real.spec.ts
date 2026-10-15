@@ -153,11 +153,19 @@ test('real managed browser preserves page/cookie across handoff; rendered input,
     const remote = await canvas.evaluate(element => ({ width: (element as HTMLCanvasElement).width, height: (element as HTMLCanvasElement).height }));
     const box = await canvas.boundingBox(); if (!box) throw Error('Missing real remote frame');
     // The owned remote page's fixed CSS puts its password field at x=40,y=125.
-    await canvas.click({ position: { x: 100 / remote.width * box.width, y: 155 / remote.height * box.height } });
+    await page.mouse.move(box.x + 100 / remote.width * box.width, box.y + 155 / remote.height * box.height);
+    await page.mouse.down();
+    await expect.poll(() => service!.browser.list()[0]?.pressedButtons).toEqual(['left']);
+    await page.mouse.up();
+    await expect.poll(() => service!.browser.list()[0]?.pressedButtons).toEqual([]);
     await expect(bridge).toBeFocused();
     for (const target of [{ x: box.x - 20, y: box.y + box.height / 2 }, { x: box.x + box.width + 20, y: box.y + box.height / 2 }, { x: box.x + box.width / 2, y: box.y - 20 }, { x: box.x + box.width / 2, y: box.y + box.height + 20 }]) {
       await page.mouse.move(box.x + 100 / remote.width * box.width, box.y + 155 / remote.height * box.height);
-      await page.mouse.down(); await page.mouse.move(target.x, target.y); await page.mouse.up();
+      await page.mouse.down();
+      // Observe this press before releasing; an older queued gesture must not
+      // satisfy the next gesture's state checks or the held-return assertion.
+      await expect.poll(() => service!.browser.list()[0]?.pressedButtons).toEqual(['left']);
+      await page.mouse.move(target.x, target.y); await page.mouse.up();
       await expect.poll(() => service!.browser.list()[0]?.pressedButtons).toEqual([]);
       expect(service!.browser.list()[0]?.state).toBe('human'); await expect(bridge).toBeEnabled();
     }
