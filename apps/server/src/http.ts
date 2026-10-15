@@ -1,3 +1,4 @@
+import { registerBrowserHttp, type BrowserWebBackend } from './browser-http.ts';
 import { messageSource, type ExtensionMessageSource } from './extension-messages.ts';
 import { WebAccessAuth, WebAuthError, type WebAuthWrite } from './web-auth.ts';
 import { webPublicOrigin } from './web-config.ts';
@@ -21,6 +22,7 @@ import type { ModelDiscoveryResult } from './model-discovery.ts';
 import { parseWebSettings, parseWebSettingsWrite, WebSettingsError, webSettingsMaxBytes, type WebSettings } from './web-settings.ts';
 
 export interface WebBackend extends Partial<ManagementBackend> {
+  browser?: BrowserWebBackend;
   status(): Promise<{ state: 'idle' | 'working' | 'error' | 'stopped'; mode: 'synthetic' | 'live'; model: string | null; error: string | ModelRequestFailure | PersistenceFailureNotice | null; modelRetry?: ModelRetryStatus | null }>;
   timeline(before?: string): Promise<{
     items: Array<{ id: string; externalEventId?: string; source?: ExtensionMessageSource; role: 'user' | 'assistant' | 'notice'; text: string; occurredAt: string; attachments?: AttachmentDescriptor[] }>;
@@ -86,6 +88,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   const active = new WeakSet<FastifyRequest>(); let inFlight = 0;
   let interval = performance.now(); let reads = 0; let writes = 0; let discoveries = 0; let discovering = false;
   const methods = new Map<string, readonly string[]>([
+    ['/api/browser', ['GET']], ['/api/browser/:id/takeover', ['POST']], ['/api/browser/:id/return', ['POST']], ['/api/browser/:id/ticket', ['POST']],
     ['/api/auth/status', ['GET']], ['/api/auth/login', ['POST']], ['/api/auth/logout', ['POST']], ['/api/auth/settings', ['GET', 'PUT']],
     ['/api/attachments', ['POST']], ['/api/attachments/:id', ['GET']], ['/api/status', ['GET']], ['/api/timeline', ['GET', 'POST']], ['/api/messages', ['POST']], ['/api/settings', ['GET', 'PUT']],
     ['/api/memory', ['GET']], ['/api/messages/:id/status', ['GET']], ['/api/extensions', ['GET']], ['/api/extensions/:id', ['POST']], ['/api/extensions/:id/settings', ['GET', 'POST']], ['/api/extensions/:id/settings/actions', ['POST']], ['/api/extensions/:id/settings/cancel', ['POST']], ['/api/runs', ['GET']], ['/api/runs/:id', ['GET']], ['/api/runs/:id/requests', ['GET']],
@@ -213,6 +216,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     return reply.header('set-cookie', cookie).send({ ...options.auth.settings(), authenticated: true });
   });
   registerManagementHttp(app, backend);
+  registerBrowserHttp(app, backend.browser, origins, options.auth);
   app.setNotFoundHandler((_request, reply) => reply.code(404).send({ error: 'Not found' }));
   app.get('/api/status', { schema: { querystring: noQuery } }, async () => {
     const result = await backend.status();

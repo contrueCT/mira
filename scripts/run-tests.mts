@@ -1,3 +1,4 @@
+import { hostCapabilityTestEnvironment } from '../tests/host-capabilities.mts';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -17,6 +18,7 @@ try {
     XDG_CACHE_HOME: home, XDG_CONFIG_HOME: home, XDG_DATA_HOME: home,
     NODE_OPTIONS: `--import=${path.resolve('tests/deny-model-network.mts')}`,
     npm_execpath: process.env['npm_execpath'],
+    ...hostCapabilityTestEnvironment(process.env),
     ...(integration ? { MIRA_TEST_DATABASE_URL: process.env['MIRA_TEST_DATABASE_URL'] } : {}),
   };
   const child = spawn(process.execPath, ['--test', '--test-concurrency=1', '--test-timeout=60000', ...files], { stdio: 'inherit', env });

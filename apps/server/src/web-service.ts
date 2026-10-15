@@ -1,3 +1,5 @@
+import { BrowserManager } from './browser-manager.ts';
+import { createBrowserTools } from './browser-tools.ts';
 import { extensionMessage } from './extension-messages.ts';
 import { TerminalManager, createTerminalTools } from './terminals.ts';
 import { SubagentManager, createSubagentTools } from './subagents.ts';
@@ -91,6 +93,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   readonly #writer: DreamingWriter & LiveInputWriter & SubagentWriter;
   readonly #subagents: SubagentManager;
   readonly #terminals: TerminalManager;
+  readonly browser: BrowserManager;
   readonly #unsubscribeLiveInput: () => void;
   readonly #history: RunHistoryReader;
   readonly #subagentReader: SubagentReader;
@@ -114,8 +117,8 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   #settingsGeneration = 0;
   #kickRequested = false;
   readonly #cache = new Map<string, { item: Timeline['items'][number] | null }>();
-  private constructor(options: WebServiceOptions, writer: DreamingWriter & SchedulingWriter & LiveInputWriter & SubagentWriter, history: RunHistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, attachments: AttachmentStore, subagents: SubagentManager, subagentReader: SubagentReader, terminals: TerminalManager, host?: ExtensionHost) {
-    this.#terminals = terminals; this.#subagentReader = subagentReader; this.#subagents = subagents; this.#attachments = attachments; this.#options = options; this.#writer = writer; this.#history = history; this.#settings = settings;
+  private constructor(options: WebServiceOptions, writer: DreamingWriter & SchedulingWriter & LiveInputWriter & SubagentWriter, history: RunHistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, attachments: AttachmentStore, subagents: SubagentManager, subagentReader: SubagentReader, terminals: TerminalManager, browser: BrowserManager, host?: ExtensionHost) {
+    this.browser = browser; this.#terminals = terminals; this.#subagentReader = subagentReader; this.#subagents = subagents; this.#attachments = attachments; this.#options = options; this.#writer = writer; this.#history = history; this.#settings = settings;
     this.#settingsValue = settingsValue; this.#loop = loop; this.#host = host;
     this.#unsubscribeLiveInput = writer.onLiveInput(() => subagents.onLiveInput());
     writer.signal.addEventListener('abort', this.#ownershipLost, { once: true });
@@ -155,13 +158,16 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     let service: LocalWebService | undefined;
     let subagents: SubagentManager | undefined;
     let terminals: TerminalManager | undefined;
+    let browser: BrowserManager | undefined;
     try {
       const roots = options.memoryRoot ? await setupMemoryWorkspace({ memoryRoot: options.memoryRoot, sourceDirectory: options.sourceDirectory }) : undefined;
       const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content });
       terminals = new TerminalManager({ cwd, writeOverflowInput });
       const terminalManager = terminals;
       writer.signal.throwIfAborted();
-      const baseTools = [...createTerminalTools(terminalManager, writer.miraId), createAttachmentTool(attachments, cwd), ...createWorkspaceTools(cwd).map(tool => withVideoRead(tool, attachments, cwd)), ...createHistoryTools(persistence.history(writer.miraId))];
+      browser = new BrowserManager({ cwd, mainOwner: writer.miraId, ...(options.miraHome === undefined ? {} : { miraHome: options.miraHome }) });
+      const browserManager = browser;
+      const baseTools = [...createBrowserTools(browserManager, writer.miraId), ...createTerminalTools(terminalManager, writer.miraId), createAttachmentTool(attachments, cwd), ...createWorkspaceTools(cwd).map(tool => withVideoRead(tool, attachments, cwd)), ...createHistoryTools(persistence.history(writer.miraId))];
       if (options.extensions) {
         host = new ExtensionHost({ ...options.extensions, ownerSignal: writer.signal, privateStorageExcludedDirectories: [options.sourceDirectory, ...options.memoryRoot ? [options.memoryRoot] : []], schedules: extensionScheduling(writer), onSchedulesChanged: () => { if (service) service.#deliveries?.schedule(); }, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage', 'subagent_spawn', 'subagent_status', 'subagent_send', 'subagent_wait', 'subagent_cancel'], receive: async (extensionId, event, wake) => {
           const receipt = await extensionReceiver(writer)(extensionId, event, wake);
@@ -173,7 +179,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       const extensionHost = host;
       const management = extensionHost ? extensionManagementTools(extensionHost, () => writer.listScheduledDeliveries()) : [];
       subagents = new SubagentManager({ writer, loadSkills, ...(options.subagentConcurrency === undefined ? {} : { maxConcurrent: options.subagentConcurrency }), acquire: streamId => persistence.acquire(streamId),
-        tools: streamId => [...createWorkspaceTools(cwd), ...createTerminalTools(terminalManager, streamId), ...createHistoryTools(persistence.history(streamId))],
+        tools: streamId => [...createBrowserTools(browserManager, streamId), ...createWorkspaceTools(cwd), ...createTerminalTools(terminalManager, streamId), ...createHistoryTools(persistence.history(streamId))],
         writeOverflowInput, ...(roots ? { memoryRoot: roots.memoryRoot } : {}),
         onCompletion: () => { if (service && !service.#error) service.#kick(); },
         onFailure: error => { if (service && !service.#closed) service.#error = PersistenceFailureNotice.from(error) ?? publicFailure; },
@@ -208,14 +214,14 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       });
       if (roots && options.dreaming?.enabled !== false) await writer.initializeDreaming();
       writer.signal.throwIfAborted();
-      service = new LocalWebService(options, writer, persistence.history(writer.miraId), settings, settingsValue, loop, attachments, children, persistence.subagents(writer.miraId), terminalManager, host);
+      service = new LocalWebService(options, writer, persistence.history(writer.miraId), settings, settingsValue, loop, attachments, children, persistence.subagents(writer.miraId), terminalManager, browserManager, host);
       // Existing durable pending runs resume through the same recovery contracts.
       service.#deliveries?.schedule();
       service.#kick();
       return service;
     } catch (error) {
       // Every resource must be attempted, even if a sibling cleanup fails.
-      const results = await Promise.allSettled([host?.close(), terminals?.close(), subagents?.close()]);
+      const results = await Promise.allSettled([host?.close(), browser?.close(), terminals?.close(), subagents?.close()]);
       await writer.close();
       const failures = results.filter(result => result.status === 'rejected').map(result => result.reason as unknown);
       if (failures.length) throw new AggregateError([error, ...failures], 'Mira startup and cleanup failed');
@@ -437,7 +443,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     // Fence/cancel all independent resources now, before awaiting any lease.
     // In particular a settings action must not wait behind the runtime drain.
     const resources = [this.#host?.close(), this.#deliveries?.close(), this.#dreaming?.close(),
-      this.#terminals.close(), this.#subagents.close(), this.#drain];
+      this.browser.close(), this.#terminals.close(), this.#subagents.close(), this.#drain];
     this.#closeTask = (async () => {
       const results = await Promise.allSettled(resources);
       await this.#writer.close();
