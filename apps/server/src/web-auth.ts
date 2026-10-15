@@ -36,6 +36,9 @@ function parse(value: unknown): Stored {
 }
 /** One server process owns this file. No passwords or session tokens are persisted. */
 export class WebAccessAuth {
+  private readonly listeners = new Set<() => void>();
+  onChange(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
+  private notify(): void { for (const listener of this.listeners) listener(); }
   private readonly sessions = new Map<string, number>();
   private readonly attempts = new Map<string, { start: number; count: number }>();
   private globalAttempts = { start: 0, count: 0 };
@@ -103,7 +106,7 @@ export class WebAccessAuth {
     return this.issue(secure);
   }
   logout(cookie: string | undefined, secure: boolean): string {
-    const value = token(cookie); if (value) this.sessions.delete(digest(value));
+    const value = token(cookie); if (value) this.sessions.delete(digest(value)); this.notify();
     return `${cookieName}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure ? '; Secure' : ''}`;
   }
   async save(input: WebAuthWrite, cookie: string | undefined, address: string, secure: boolean): Promise<string> {
@@ -127,7 +130,7 @@ export class WebAccessAuth {
         try { await handle.writeFile(`${JSON.stringify(data)}\n`); await handle.sync(); } finally { await handle.close(); }
         await rename(temporary, this.file);
         // Publish revocation immediately after rename, including a later fsync failure.
-        this.data = data; this.sessions.clear();
+        this.data = data; this.sessions.clear(); this.notify();
         const dir = await open(path.dirname(this.file), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
         try { await dir.sync(); } finally { await dir.close(); }
       } catch { return unavailable(); }

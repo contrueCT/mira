@@ -11,11 +11,12 @@ import type { MemoryPanelProps } from './MemoryPanel.tsx';
 import { ExtensionsPanel } from './ExtensionsPanel.tsx';
 import { RunsPanel } from './RunsPanel.tsx';
 import { AccessPanel } from './AccessPanel.tsx';
+import { BrowserPanel } from './BrowserPanel.tsx';
 import type { BuiltinCatalog, CustomConnection, CustomConnectionWrite, CustomModel, CustomProtocol, Discovery, Settings, SettingsWrite, ThinkingLevel } from './types.ts';
 
 interface Props { synthetic: boolean; onClose: () => void; onSaved: () => void; returnFocus: RefObject<HTMLButtonElement | null>; memoryRequest: MemoryPanelProps['request']; memoryPending: MemoryPanelProps['pending']; sending: boolean; storageError: string | null; onMemorySubmit: MemoryPanelProps['onSubmit']; onMemoryRetry: MemoryPanelProps['onRetry'] }
-type SettingsTab = 'model' | 'memory' | 'extensions' | 'runs' | 'access';
-const tabs: { id: SettingsTab; label: string }[] = [{ id: 'model', label: '模型' }, { id: 'memory', label: 'Memory' }, { id: 'extensions', label: '扩展' }, { id: 'runs', label: '运行记录' }, { id: 'access', label: '访问' }];
+type SettingsTab = 'model' | 'memory' | 'extensions' | 'runs' | 'access' | 'browser';
+const tabs: { id: SettingsTab; label: string }[] = [{ id: 'model', label: '模型' }, { id: 'memory', label: 'Memory' }, { id: 'extensions', label: '扩展' }, { id: 'runs', label: '运行记录' }, { id: 'access', label: '访问' }, { id: 'browser', label: '浏览器' }];
 interface ModelDraft { originalId: string | null; id: string; name: string; contextWindow: string; maxTokens: string; reasoning: '' | 'true' | 'false'; reasoningFormat: '' | 'openai' | 'openrouter'; input: '' | 'text' | 'image' | 'text-image' }
 const blankModel = (id = '', name = ''): ModelDraft => ({ originalId: null, id, name, contextWindow: '', maxTokens: '', reasoning: 'false', reasoningFormat: '', input: 'text' });
 function modelDraftFrom(model: CustomModel): ModelDraft {
@@ -341,5 +342,6 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
     <section id="settings-panel-extensions" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-extensions" hidden={tab !== 'extensions'}><ExtensionsPanel active={tab === 'extensions'} /></section>
     <section id="settings-panel-runs" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-runs" hidden={tab !== 'runs'}><RunsPanel active={tab === 'runs'} /></section>
     <section id="settings-panel-access" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-access" hidden={tab !== 'access'}><AccessPanel active={tab === 'access'} onClose={onClose} /></section>
+    <section id="settings-panel-browser" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-browser" hidden={tab !== 'browser'}><BrowserPanel active={tab === 'browser'} /></section>
   </dialog>;
 }

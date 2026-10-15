@@ -241,6 +241,15 @@ test('native PTY dependency is allowed only at server composition', async () => 
   });
 });
 
+test('browser WebSocket transport remains at server composition only', async () => {
+  await fixture(async root => {
+    await writeFile(path.join(root, 'apps/server/src/ws-allowed.ts'), "import { WebSocketServer } from 'ws'; export { WebSocketServer };\n");
+    assert.deepEqual(await checkBoundaries(root), []);
+    await writeFile(path.join(root, 'packages/runtime-pi/src/ws-forbidden.ts'), "import 'ws';\n");
+    assert.ok((await checkBoundaries(root)).some(error => error.includes('external import not allowed ws')));
+  });
+});
+
 test('local QR rendering stays a Web dependency and is not available to core packages', async () => {
   await fixture(async root => {
     await writeFile(path.join(root,'packages/life/qr.ts'),"import qrcode from 'qrcode-generator'; void qrcode;");
