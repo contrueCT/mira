@@ -69,3 +69,9 @@ head763993f / run38734216371 的短probe保留原始 `No usable sandbox!` 错误
 ### 安装恢复与开发代理复审修复
 
 完整复审补充两项 P2 并已修复：每次新建受管会话重新解析官方可执行文件，避免旧 PATH 版本验证失败后缓存阻止标准目录安装生效；无 socket 回归先拒绝旧 PATH 版本，再安装标准目录候选并验证下次 open 选择它，显式路径仍优先。Vite 开发代理启用 WebSocket 转发，并对 proxyReqWs 使用与 HTTP 相同的精确本机 Host/Origin 改写；生产鉴权不变。无监听配置测试覆盖可信与不可信来源，但实际开发服务器 WS 联通仍未本地验收。
+
+### a8d5257 真实 CI 结果与测试预算修复
+
+Run 38742733368：官方已安装 Chrome 保持 sandbox 的短 probe 成功，launch/close 成功、ownedBrowserCaptured=true、cleanup=confirmed，无 probeError；完整 gate 内同样的 startup 与实际 daemon SIGKILL/独立 Chrome 清理均通过。主 UI 链路在首次模型请求前失败，后续 gate 跳过，不能报告功能验收通过。
+
+已用真实 PiDurableRuntime/MemoryWriter、生产 23 个工具 schema 与 7 个 skill metadata 的无 socket 探针确认测试夹具原因：复用 8192 上下文模型，但请求估计 18243 tokens，大于 7680 input budget；provider 调用为 0，错误为 Context exceeds input budget after compaction。浏览器真实测试现与既有完整服务 gate 一致，将合成模型上下文设为 100000；不改变生产预算、浏览器超时或安全设置。真实主链路仍需在新 head 上重跑。

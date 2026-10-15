@@ -83,7 +83,8 @@ test('real managed browser preserves page/cookie across handoff; rendered input,
     const tool = (id: string, name: string, args: Record<string, string | number | string[]>) => streamOf({ ...assistant(), stopReason: 'toolUse' as const, content: [{ type: 'toolCall' as const, id, name, arguments: args }] });
     const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'browser-real', sourceDirectory,
       workingDirectory: root, miraHome: root, spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'),
-      synthetic: true, syntheticModel: model, dreaming: { enabled: false }, autoCompaction: { enabled: false } };
+      // Full service prompt/tools exceed the small 8K recovery-fixture model.
+      synthetic: true, syntheticModel: { ...model, contextWindow: 100_000 }, dreaming: { enabled: false }, autoCompaction: { enabled: false } };
     const start = async () => {
       service = await LocalWebService.open({ ...options, syntheticStream: async (_model, transcript) => {
         expect(getCurrentTools(transcript.messages).some(tool => tool.name === 'browser_open')).toBe(true);
