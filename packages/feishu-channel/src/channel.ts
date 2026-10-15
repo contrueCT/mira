@@ -57,7 +57,7 @@ export class FeishuChannel {
     this.#store = context.privateDirectory ? new FeishuPrivateStore(path.join(context.privateDirectory, 'feishu-state.json'), fileURLToPath(new URL('../../../', import.meta.url))) : null;
   }
   register(): void {
-    this.#context.registerSettings({
+    const actions = this.#context.registerSettings({
       fields: [ { key: 'domain', label: '服务', type: 'select', options: [{ value: 'feishu', label: '飞书（中国）' }, { value: 'lark', label: 'Lark（国际）' }] },
         { key: 'appId', label: '手动配置 App ID（扫码连接可留空）', type: 'text' }, { key: 'appSecret', label: '手动配置 App Secret', type: 'secret' } ],
       actions: [
@@ -77,7 +77,21 @@ export class FeishuChannel {
         }); } },
       ], status: () => this.status(),
     });
-    this.#context.registerTool({ name: 'feishu_status', description: 'Read whether this ordinary Feishu/Lark extension is connected and paired. To connect, ask the user to open this extension’s settings and scan its official authorization link. Credentials and pairing challenges are only displayed there.', parameters: { type: 'object', additionalProperties: false }, execute: async () => ({ text: JSON.stringify(this.#observation()) }) });
+    this.#context.registerTool({ name: 'feishu_connect', description: 'Start this plugin’s connection action after the user asks to connect Feishu/Lark. Returns immediately while official authorization remains in this extension’s protected settings. Reuses the same settings operation and cancellation; never returns credentials, pairing challenges or provider URLs. An unknown registration must be reconciled in settings, not retried. Optional cancelOperationId cancels exactly that operation locally, without revoking remote effects.',
+      parameters: { type: 'object', properties: { cancelOperationId: { type: 'string' } }, additionalProperties: false },
+      execute: async (args, { signal }) => {
+        signal.throwIfAborted();
+        if (!object(args) || (args.cancelOperationId !== undefined && !validId(args.cancelOperationId))) return { text: 'Invalid connection arguments' };
+        if (typeof args.cancelOperationId === 'string') { await actions.cancel(args.cancelOperationId); return { text: '已请求取消本次本地连接操作。请在扩展设置核对结果；取消不撤销远端已创建的应用。' }; }
+        const current = await actions.current(); signal.throwIfAborted();
+        const guidance = '请打开设置 → 扩展 → 本扩展的连接设置，查看官方授权二维码或链接，授权后生成本人配对码并确认收发测试。';
+        if (current?.state === 'pending') return { text: JSON.stringify({ operation: current, instruction: guidance }) };
+        if (this.#data.registrationUnknown && !this.#data.app) return { text: '上次注册结果未知，未重新申请。请在扩展设置核对官方后台并恢复已有应用，避免重复创建。' };
+        if (this.#ready) return { text: JSON.stringify({ state: this.#state, instruction: this.#data.tested ? '已有连接，无需重复授权。' : guidance }) };
+        const operation = await actions.start(this.#data.app ? 'reconnect' : this.#config.appId ? 'connect' : 'register');
+        return { text: JSON.stringify({ operation, instruction: guidance }) };
+      } });
+    this.#context.registerTool({ name: 'feishu_status', description: 'Read whether this ordinary Feishu/Lark extension is connected and paired. Use feishu_connect to start this plugin’s settings operation when the user requests connection. Credentials and pairing challenges are only displayed there.', parameters: { type: 'object', additionalProperties: false }, execute: async () => ({ text: JSON.stringify(this.#observation()) }) });
     this.#context.registerTool({ name: 'feishu_send_message', description: 'Explicitly send text or proactive results as the bot to the one owner paired in this extension. It does not mirror Web replies. After a confirmed send, avoid repeating the same message body in the ordinary final reply; Web displays the sourced delivery separately. Optional replyToMessageId must identify a recent verified owner message. Long text is sent as ordered pieces; partial/unknown delivery is reported and never automatically replayed. Check the recipient’s intent and do not repeat an unknown delivery without checking.',
       parameters: { type: 'object', properties: { text: { type: 'string', minLength: 1 }, replyToMessageId: { type: 'string' } }, required: ['text'], additionalProperties: false },
       execute: async (args, { callId, signal }) => {

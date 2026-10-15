@@ -28,6 +28,19 @@ it does not depend on a mutable checkout at activation time.
 A manual entry pointing to `packages/feishu-channel/src/index.ts` in an explicitly
 configured extensions file is also supported. It is not the only installation route.
 
+## Start from dialogue or generic extension settings
+
+When the user asks to connect, the plugin's `feishu_connect` tool starts its declared
+settings action through the same host runner. It returns an operation receipt and
+instructions to open settings immediately; authorization URLs and credentials remain
+only in protected settings. Repeated calls reuse the pending operation; its optional
+`cancelOperationId` and the UI cancel button target that same operation. A saved app
+reconnects without registration. A ready connection is reused. Unknown registration
+outcomes block tool retries just as they block the settings button.
+
+The framework supplies no Feishu-specific tool, route or automatic popup. The user
+opens the existing settings panel to finish authorization and explicit pairing.
+
 ## Connect in the generic extension settings
 
 1. Choose 飞书 or Lark. These are separate application/tenant identity domains.

@@ -14,6 +14,10 @@ Mira 双向交流和主动发送，并进一步要求凭据与设置能力为所
 首版只接本人私聊文字，并用显式 `feishu_send_message` 发送回复或主动结果；Web
 final 不自动镜像。群聊、多用户、文档/通讯录授权、用户身份代发、媒体和语音另立范围。
 
+插件自行提供 `feishu_connect`，复用 `registerSettings` 返回的 start/current/cancel
+同一宿主操作；工具立即返回安全 operation 和设置路径说明，不携带 provider URL、
+配对挑战或凭据。网页按钮与对话工具共享 pending/取消/生命周期，不额外维护后台任务。
+
 ## 身份与可靠性
 
 扫码使用官方 Channel 0.7.1 的 registerApp；基础 SDK 固定 1.75.0。关闭 preset，

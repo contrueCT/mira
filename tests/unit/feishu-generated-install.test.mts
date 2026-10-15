@@ -25,7 +25,7 @@ test('shipped Feishu package follows real prepare, stage, content-test, install,
     const activation = await host.requestChange('feishu', { action: 'activate' }); assert.equal(activation.status, 'applied', activation.error);
     const settings = await host.extensionSettings('feishu'); assert.ok(settings); assert.equal(settings.status.state, 'unconfigured');
     assert.equal(settings.fields.find(field => field.key === 'appSecret')?.configured, false);
-    const tools = await host.prepare(); assert.deepEqual(tools.map(tool => tool.tool.name).sort(), ['feishu_send_message', 'feishu_status']);
+    const tools = await host.prepare(); assert.deepEqual(tools.map(tool => tool.tool.name).sort(), ['feishu_connect', 'feishu_send_message', 'feishu_status']);
     const status = tools.find(tool => tool.tool.name === 'feishu_status')!;
     assert.equal(JSON.parse((await status.tool.execute({}, { callId: 'status', signal: new AbortController().signal })).text).ownerBound, false);
     assert.ok(!JSON.stringify(await host.inspect()).includes('appSecret'), 'private key is not extension configuration');
