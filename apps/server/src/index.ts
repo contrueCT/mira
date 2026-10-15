@@ -81,10 +81,11 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
     const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content });
     terminals = new TerminalManager({ cwd: workingDirectory, writeOverflowInput });
     const terminalManager = terminals;
-    writer.signal.addEventListener('abort', () => { void terminalManager.close(); }, { once: true });
+    writer.signal.addEventListener('abort', () => { void terminalManager.close().catch(() => {}); }, { once: true });
+    writer.signal.throwIfAborted();
     const baseTools = [...createWorkspaceTools(workingDirectory), ...createTerminalTools(terminals, writer.miraId), ...createHistoryTools(persistence.history(writer.miraId))];
     if (options.extensions) {
-      extensions = new ExtensionHost({ ...options.extensions, privateStorageExcludedDirectories: [options.sourceDirectory, ...options.memory ? [options.memory.memoryRoot] : []], schedules: extensionScheduling(writer), reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage'], receive: extensionReceiver(writer) });
+      extensions = new ExtensionHost({ ...options.extensions, ownerSignal: writer.signal, privateStorageExcludedDirectories: [options.sourceDirectory, ...options.memory ? [options.memory.memoryRoot] : []], schedules: extensionScheduling(writer), reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage'], receive: extensionReceiver(writer) });
       await extensions.start();
       await extensions.withScheduledOwners(owners => writer.dispatchScheduledDeliveries(owners));
     }
@@ -116,7 +117,12 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
     });
     const completedRuns = await loop.drain();
     return { completedRuns, modelCalls, miraId: writer.miraId, version: (await writer.load()).version };
-  } finally { try { await terminals?.close(); } finally { try { await extensions?.close(); } finally { await writer.close(); } } }
+  } finally {
+    const results = await Promise.allSettled([extensions?.close(), terminals?.close()]);
+    await writer.close();
+    const failures = results.filter(result => result.status === 'rejected').map(result => result.reason as unknown);
+    if (failures.length) throw new AggregateError(failures, 'Mira demo cleanup failed');
+  }
 }
 
 

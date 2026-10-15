@@ -198,3 +198,10 @@ validated declarative fields, configured booleans and explicitly public status.
 No secret read endpoint or model credential-write tool exists. Actions return pending
 receipts and are checked with exact settings revisions; polling observes completion.
 Existing extension lifecycle/configuration remains authoritative. See ADR 0035.
+
+Writer ownership loss closes the same Web service resources as explicit shutdown:
+Host admission is fenced immediately, settings actions and runtime/child work are
+cancelled, and timers, terminals, extension cleanup and active work are drained.
+Concurrent `close()` callers join one result; sibling cleanup failures do not
+skip remaining resources or writer closure. CLI composition also binds its Host
+to the writer signal. No old writer reconnects and no uncertain effect is retried.
