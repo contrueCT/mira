@@ -8,7 +8,7 @@ import type { DurableWriter } from '@mira/life';
 export function extensionReceiver(writer: DurableWriter): ExtensionHostOptions['receive'] {
   return async (extensionId, event, wake) => writer.receive({
     id: JSON.stringify(['extension', extensionId, event.id]), type: event.type, source: 'extension', occurredAt: event.occurredAt,
-    payload: { extensionId, eventId: event.id, data: event.payload },
+    payload: { extensionId, eventId: event.id, data: event.payload, ...(event.message === undefined ? {} : { message: { ...event.message } }) },
   }, wake ? { id: JSON.stringify(['extension', extensionId, wake.id]), reason: wake.reason } : undefined);
 }
 export function extensionTools(registry: RegisteredTool[]): AgentTool[] {

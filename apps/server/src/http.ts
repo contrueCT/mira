@@ -1,3 +1,4 @@
+import { messageSource, type ExtensionMessageSource } from './extension-messages.ts';
 import { WebAccessAuth, WebAuthError, type WebAuthWrite } from './web-auth.ts';
 import { webPublicOrigin } from './web-config.ts';
 import { AttachmentError, attachmentDescriptor, attachmentLimits, type AttachmentDescriptor } from './attachments.ts';
@@ -22,7 +23,7 @@ import { parseWebSettings, parseWebSettingsWrite, WebSettingsError, webSettingsM
 export interface WebBackend extends Partial<ManagementBackend> {
   status(): Promise<{ state: 'idle' | 'working' | 'error' | 'stopped'; mode: 'synthetic' | 'live'; model: string | null; error: string | ModelRequestFailure | PersistenceFailureNotice | null; modelRetry?: ModelRetryStatus | null }>;
   timeline(before?: string): Promise<{
-    items: Array<{ id: string; externalEventId?: string; role: 'user' | 'assistant' | 'notice'; text: string; occurredAt: string; attachments?: AttachmentDescriptor[] }>;
+    items: Array<{ id: string; externalEventId?: string; source?: ExtensionMessageSource; role: 'user' | 'assistant' | 'notice'; text: string; occurredAt: string; attachments?: AttachmentDescriptor[] }>;
     nextCursor: string | null;
   }>;
   uploadAttachment?(name: string, bytes: Uint8Array): Promise<AttachmentDescriptor>;
@@ -222,7 +223,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   }, async request => {
     const result = await backend.timeline(request.query.before);
     return {
-      items: result.items.map(item => ({ id: item.id, role: item.role, text: item.text, occurredAt: item.occurredAt, ...(item.attachments?.length ? { attachments: item.attachments.map(attachmentDescriptor) } : {}), ...(item.role === 'user' && item.externalEventId !== undefined ? { externalEventId: item.externalEventId } : {}) })),
+      items: result.items.map(item => ({ id: item.id, role: item.role, text: item.text, occurredAt: item.occurredAt, ...(item.source ? { source: messageSource(item.source) } : {}), ...(item.attachments?.length ? { attachments: item.attachments.map(attachmentDescriptor) } : {}), ...(item.role === 'user' && item.externalEventId !== undefined ? { externalEventId: item.externalEventId } : {}) })),
       nextCursor: result.nextCursor,
     };
   });
@@ -232,7 +233,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     schema: { querystring: noQuery, body: objectSchema({ before: { type: 'string', minLength: 1, maxLength: 524_288, pattern: '^[A-Za-z0-9_=-]+$' } }, ['before']) },
   }, async request => {
     const result = await backend.timeline(request.body.before);
-    return { items: result.items.map(item => ({ id: item.id, role: item.role, text: item.text, occurredAt: item.occurredAt, ...(item.attachments?.length ? { attachments: item.attachments.map(attachmentDescriptor) } : {}), ...(item.role === 'user' && item.externalEventId !== undefined ? { externalEventId: item.externalEventId } : {}) })), nextCursor: result.nextCursor };
+    return { items: result.items.map(item => ({ id: item.id, role: item.role, text: item.text, occurredAt: item.occurredAt, ...(item.source ? { source: messageSource(item.source) } : {}), ...(item.attachments?.length ? { attachments: item.attachments.map(attachmentDescriptor) } : {}), ...(item.role === 'user' && item.externalEventId !== undefined ? { externalEventId: item.externalEventId } : {}) })), nextCursor: result.nextCursor };
   });
   app.post<{ Body: { id: string; text: string; occurredAt: string; attachmentIds?: string[] } }>('/api/messages', {
     schema: { querystring: noQuery, body: objectSchema({ id: identifier, text: { type: 'string', maxLength: 65_536 }, attachmentIds: { type: 'array', maxItems: 10, uniqueItems: true, items: { type: 'string', format: 'uuid' } }, occurredAt: { type: 'string', format: 'date-time', maxLength: 40 } }, ['id', 'text', 'occurredAt']) },

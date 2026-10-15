@@ -18,7 +18,17 @@ export interface ContextProvider {
   id: string;
   provide(context: { signal: AbortSignal }): Promise<{ text: string } | null>;
 }
-export interface ExtensionEvent { id: string; type: string; occurredAt: string; payload: Json }
+/** Optional immutable chat display, never a user role or action authorization.
+ * Sender verification is the emitting extension's claim, not host authentication.
+ * Publish outbound only after confirmed delivery; stable event IDs dedupe display. */
+export interface ExtensionMessage {
+  direction: 'inbound' | 'outbound';
+  text: string;
+  sourceLabel: string;
+  senderId?: string;
+  senderVerified?: boolean;
+}
+export interface ExtensionEvent { id: string; type: string; occurredAt: string; payload: Json; message?: ExtensionMessage }
 export interface ExtensionWake { id: string; reason: string; event: ExtensionEvent }
 /** Persistent one-shot UTC delivery; time-zone and reminder policy stay in extensions. */
 export interface ExtensionScheduleInput {

@@ -1,3 +1,4 @@
+import { extensionMessage } from './extension-messages.ts';
 import { TerminalManager, createTerminalTools } from './terminals.ts';
 import { SubagentManager, createSubagentTools } from './subagents.ts';
 import type { SubagentWriter, SubagentReader } from '@mira/life';
@@ -63,6 +64,7 @@ const publicFailure = '运行中断，请检查终端与配置。已保存的消
 type Timeline = Awaited<ReturnType<WebBackend['timeline']>>;
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
 function visible(entry: HistoryEntry): Timeline['items'][number] | null {
+  const sourced = extensionMessage(entry); if (sourced) return sourced;
   if (entry.kind === 'event') {
     const payload = entry.event.payload;
     if (entry.event.source === 'external' && entry.event.type === 'external.notification' && object(payload)

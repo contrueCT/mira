@@ -834,6 +834,27 @@ test('request retry status survives refresh and disappears on completion without
   await page.reload(); await expect(page.locator('.working-indicator')).toHaveCount(0);
 });
 
+test('ordinary plugin messages use subtle source labels without impersonating Web input', async ({ page }, testInfo) => {
+  const at = '2026-10-15T01:00:00Z';
+  const items = [
+    { id: 'plugin-in', role: 'user', text: '普通插件收到的消息', occurredAt: at, source: { kind: 'extension', extensionId: 'weather-station', label: '气象站', direction: 'inbound', senderId: 'sensor-1', senderVerified: true } },
+    { id: 'plugin-out', role: 'assistant', text: '已经发出的通知', occurredAt: at, source: { kind: 'extension', extensionId: 'weather-station', label: '气象站', direction: 'outbound' } },
+    { id: 'normal-final', role: 'assistant', text: '已经发出的通知', occurredAt: at },
+  ];
+  await page.route('**/api/timeline', route => route.fulfill({ json: { items, nextCursor: null } }));
+  await page.goto('/');
+  await expect(page.getByLabel('气象站 扩展消息')).toHaveCount(2);
+  await expect(page.getByText('已经发出的通知', { exact: true })).toHaveCount(2);
+  await expect(page.locator('.message-source')).toHaveCount(2);
+  await expect(page.locator('.message-source').first()).toHaveCSS('font-size', '10px');
+  await expect(page.locator('.message-source').first()).toHaveAttribute('title', '扩展 weather-station · 来源身份 sensor-1（由扩展验证）');
+  await page.screenshot({ path: testInfo.outputPath('extension-source-desktop.png'), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('extension-source-narrow.png'), fullPage: true });
+  await page.reload(); await expect(page.locator('.message-source')).toHaveCount(2);
+});
+
 // The host owns visibility. This generic fixture supplies only its current public
 // actions; the browser groups them without provider IDs or state-specific rules.
 test('generic extension actions default to primary, collapse secondary controls and keep cancellation reachable', async ({ page }, testInfo) => {

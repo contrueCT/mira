@@ -100,6 +100,10 @@ trusted code under the same OS account; they provide no security sandbox.
 `registerSettings` 返回当前安装/激活专属的 `ExtensionSettingsActions`。
 插件可以在自己的普通工具中选择调用 start/current/cancel；只返回安全 operation
 receipt，不返回受保护的 settings view 或 provider URL，详见 ADR0035。
+### Immutable sourced messages
+
+`emitEvent` / `requestWake` events may include `message: { direction: 'inbound' | 'outbound', text, sourceLabel, senderId?, senderVerified? }`. The same immutable event identity/content deduplication applies. The host keeps the configured extension ID; the Web Timeline renders text with a small source label and direction. The sender and verification are assertions by that trusted extension, never host authentication, a Web-user identity, or permission to execute an action. Projection does not wake by itself. Publish outbound only after confirmed delivery; uncertain delivery must not be displayed as sent. Raw event data remains outside this display DTO. Ordinary model finals are unchanged, so an extension/tool should advise the model not to repeat already-sent text; this is not a hard mirror/deduplication guarantee.
+
 
 设置动作可声明 `group: 'primary' | 'secondary'`（省略为 primary）。状态投影可提供
 `visibleActions: string[]`，仅包含已声明且当前可用的动作 ID；省略显示全部，空数组
