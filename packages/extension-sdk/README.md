@@ -100,3 +100,11 @@ trusted code under the same OS account; they provide no security sandbox.
 `registerSettings` 返回当前安装/激活专属的 `ExtensionSettingsActions`。
 插件可以在自己的普通工具中选择调用 start/current/cancel；只返回安全 operation
 receipt，不返回受保护的 settings view 或 provider URL，详见 ADR0035。
+
+设置动作可声明 `group: 'primary' | 'secondary'`（省略为 primary）。状态投影可提供
+`visibleActions: string[]`，仅包含已声明且当前可用的动作 ID；省略显示全部，空数组
+隐藏全部。数组顺序不改变声明顺序，重复或未声明 ID 视为无效状态并隐藏动作。
+插件自行决定业务状态对应哪些动作，Host/Web 不解释 provider 状态。可见集合纳入
+revision，页面与插件 handle 共用的 runner 拒绝过期 revision 或当前隐藏的动作。
+已有 operation 的查询/取消不受可见性影响。Web 将 secondary 与设置编辑收在默认
+折叠的“更多操作”中，primary、当前操作取消和编辑取消保持可见。

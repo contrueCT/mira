@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ExtensionHost, ExtensionSettingsError, readExtensionConfiguration } from '@mira/extension-host';
-import { RegisteredSettings } from '../../packages/extension-host/src/settings.ts';
+import { RegisteredSettings, validateSettings } from '../../packages/extension-host/src/settings.ts';
 import { ExtensionPrivateStorage } from '../../packages/extension-host/src/private-storage.ts';
 const sdk = import.meta.resolve('@mira/extension-sdk');
 async function fixture(run: (host: ExtensionHost, state: any, directory: string, file: string) => Promise<void>) {
@@ -399,4 +399,116 @@ test('concurrent public Host save and plugin start never execute a losing action
       if (action.status === 'fulfilled') { await handle.cancel(action.value.id); await new Promise(resolve => setTimeout(resolve, 10)); }
     }
   });
+});
+
+
+test('generic status visibility fences Host and actual plugin tool starts without changing public state', async () => {
+  await fixture(async (host, state) => {
+    const before = await host.extensionSettings('plugin'); assert.ok(before);
+    assert.deepEqual(before.actions, [{id:'connect', label:'Connect'}]); // Omitted group/visibility retain existing behavior.
+    state.status = {state:'disconnected', visibleActions:[]};
+    const hidden = await host.extensionSettings('plugin'); assert.ok(hidden);
+    assert.equal(hidden.status.state, before.status.state);
+    assert.deepEqual(hidden.actions, []);
+    assert.notEqual(hidden.revision, before.revision);
+    await assert.rejects(() => host.startSettingsAction('plugin', 'connect', before.revision), {code:'conflict'});
+    await assert.rejects(() => host.startSettingsAction('plugin', 'connect', hidden.revision), {code:'unavailable'});
+    const tool = (await host.prepareCapabilities()).tools.find(item => item.tool.name === 'start_settings')!.tool;
+    await assert.rejects(() => tool.execute({}, {callId:'hidden-settings-start', signal:new AbortController().signal}));
+    assert.equal(state.starts, 0);
+    assert.equal(await state.handles[0].current(), null);
+    state.status = {state:'disconnected', visibleActions:['connect']};
+    const result = await tool.execute({}, {callId:'visible-settings-start', signal:new AbortController().signal});
+    const operation = JSON.parse(result.text);
+    assert.equal(state.starts, 1);
+    state.status = {state:'connecting', visibleActions:[]};
+    assert.deepEqual((await host.extensionSettings('plugin'))?.actions, []);
+    // Current operation and cancellation do not depend on action visibility.
+    assert.deepEqual(await state.handles[0].current(), operation);
+    await host.cancelSettingsAction('plugin', operation.id);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal((await state.handles[0].current()).state, 'cancelled');
+  });
+});
+
+test('invalid visibility fails closed and never executes undeclared or hidden actions', async () => {
+  await fixture(async (host, state) => {
+    for (const visibleActions of [['undeclared'], ['connect', 'connect'], 'connect', [null], new Array(1)]) {
+      state.status = {state:'disconnected', visibleActions};
+      const view = await host.extensionSettings('plugin'); assert.ok(view);
+      assert.deepEqual(view.status, {state:'error', code:'unknown', visibleActions:[]});
+      assert.deepEqual(view.actions, []);
+      await assert.rejects(() => host.startSettingsAction('plugin', 'connect', view.revision), {code:'unavailable'});
+      await assert.rejects(() => state.handles[0].start('connect'), {code:'unavailable'});
+    }
+    assert.equal(state.starts, 0);
+  });
+});
+
+test('generic action groups validate and visibility order follows declaration with stable revision', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'mira-settings-groups-'));
+  const storage = new ExtensionPrivateStorage(path.join(directory, 'private'));
+  let visibleActions = ['inspect', 'repair'];
+  const definition = validateSettings({fields:[], actions:[
+    {id:'repair', label:'Repair', async execute() {}},
+    {id:'inspect', label:'Inspect', group:'secondary', async execute() {}},
+    {id:'hidden', label:'Hidden', group:'primary', async execute() {}},
+  ], status:() => ({state:'disconnected', visibleActions})});
+  const settings = new RegisteredSettings(definition, 'activation', 'owner', storage, () => null, () => {}, () => {});
+  try {
+    const first = await settings.view();
+    assert.deepEqual(first.actions, [{id:'repair', label:'Repair'}, {id:'inspect', label:'Inspect', group:'secondary'}]);
+    visibleActions = ['repair', 'inspect'];
+    assert.equal((await settings.view()).revision, first.revision);
+    visibleActions = new Array(2); visibleActions[0] = 'repair';
+    const invalid = await settings.view();
+    assert.deepEqual(invalid.status, {state:'error', code:'unknown', visibleActions:[]});
+    assert.deepEqual(invalid.actions, []);
+    await assert.rejects(() => settings.start('repair', invalid.revision), {code:'unavailable'});
+    assert.throws(() => validateSettings({...definition, actions:[{...definition.actions[0]!, group:'custom' as any}]}), ExtensionSettingsError);
+  } finally { await settings.drain(); await rm(directory, {recursive:true, force:true}); }
+});
+
+test('visibility is rechecked after asynchronous credential reads before action admission', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'mira-settings-visible-race-'));
+  const storage = new ExtensionPrivateStorage(path.join(directory, 'private'));
+  let visibleActions = ['work'], starts = 0;
+  const settings = new RegisteredSettings({fields:[], actions:[{id:'work',label:'Work',async execute() { starts++; }}],
+    status:() => ({state:'disconnected', visibleActions})}, 'activation', 'owner', storage, () => null, () => {}, () => {});
+  const reading = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
+  try {
+    const view = await settings.view();
+    const original = storage.values.bind(storage);
+    storage.values = async owner => { reading.resolve(); await resume.promise; return original(owner); };
+    const starting = settings.start('work', view.revision);
+    await reading.promise;
+    visibleActions = [];
+    resume.resolve();
+    await assert.rejects(() => starting, {code:'conflict'});
+    assert.equal(starts, 0);
+    assert.equal(settings.current(), null);
+  } finally { resume.resolve(); await settings.drain(); await rm(directory, {recursive:true, force:true}); }
+});
+
+test('visibility validation and operation admission have no intervening microtask', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'mira-settings-admit-turn-'));
+  const storage = new ExtensionPrivateStorage(path.join(directory, 'private'));
+  let visibleActions = ['work'], starts = 0;
+  const settings = new RegisteredSettings({fields:[], actions:[{id:'work',label:'Work',async execute() { starts++; }}],
+    status:() => ({state:'disconnected', visibleActions})}, 'activation', 'owner', storage, () => null, () => {}, () => {});
+  const reading = Promise.withResolvers<void>(), resume = Promise.withResolvers<Record<string, string>>();
+  try {
+    const view = await settings.view(), credentials = await storage.values('owner');
+    storage.values = () => { reading.resolve(); return resume.promise; };
+    const starting = settings.start('work', view.revision);
+    await reading.promise;
+    let admittedBeforeHide = false;
+    resume.resolve(credentials);
+    queueMicrotask(() => { admittedBeforeHide = settings.current()?.state === 'pending'; visibleActions = []; });
+    await starting;
+    // Hiding after admission does not retroactively cancel an operation. The
+    // earlier test hides before the read resolves and proves refusal instead.
+    assert.equal(admittedBeforeHide, true);
+    assert.equal(starts, 1);
+  } finally { resume.resolve({}); await settings.drain(); await rm(directory, {recursive:true, force:true}); }
 });
