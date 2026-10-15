@@ -63,6 +63,8 @@ jobs:
         run: pnpm test:live-input:e2e
       - name: Verify joined scheduling, subagents, skills and live user input
         run: pnpm test:capabilities:e2e
+      - name: Verify Feishu SDK fixtures through generic settings, PostgreSQL and browser
+        run: pnpm test:feishu:e2e
       - name: Keep synthetic browser verification evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

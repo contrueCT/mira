@@ -215,3 +215,27 @@ On restart, enabled desired entries initialize again and disabled ones do not
 import; extension initialization should handle its own idempotency. Activation UUID
 identifies a generation, SHA identifies content, and revision identifies code/config.
 Unknown outcomes after crashes need inspection/reconciliation, not blind replay.
+
+## An already-installed source package
+
+For a shipped or other explicitly selected local package with already-installed
+runtime dependencies, use the ordinary preparation helper before staging:
+
+```sh
+node scripts/prepare-extension-package.mts /absolute/source-package /absolute/new-workspace [src/index.ts]
+```
+
+Inspect the selected package first: it must contain no credentials or unrelated private files. The helper is not a secret scanner.
+The helper copies the selected source without `.git` or `node_modules`, links only
+its installed declared runtime dependency closure, and returns `entry.mjs`. It does
+not install packages, run scripts, fetch a registry or grant account access. Required
+missing dependencies and ambiguous root package resolutions are errors; absent
+optional dependencies/optional peers are allowed, and transitive versions retain
+separate original paths. Dependency graph cycles terminate; source backlinks or
+external source symlinks are rejected rather than capturing unrelated files.
+
+Stage the returned workspace, run content-bound tests, then install and activate via
+the same tools described above. Do not replace the normal digest-bound workflow with
+a manual JSON edit. The shipped Feishu/Lark consumer is at
+`packages/feishu-channel`; read its README before connecting, and let the user enter
+credentials or scan authorization in its generic protected extension settings.

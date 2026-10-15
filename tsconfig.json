@@ -87,6 +87,8 @@
     "tests/unit/tool-output-wire.test.mts",
     "tests/unit/web-auth.test.mts",
     "tests/unit/terminals.test.mts",
-    "tests/unit/extension-settings.test.mts"
+    "tests/unit/extension-settings.test.mts",
+    "tests/unit/extension-package-preparation.test.mts",
+    "tests/unit/feishu-generated-install.test.mts"
   ]
 }

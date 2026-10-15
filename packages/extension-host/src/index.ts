@@ -2,6 +2,7 @@ import { ExtensionPrivateStorage, credentialKey } from './private-storage.ts';
 import { RegisteredSettings, validateSettings, ExtensionSettingsError, type ExtensionSettingsView, type ExtensionSettingsWrite } from './settings.ts';
 export { ExtensionSettingsError } from './settings.ts';
 export type { ExtensionSettingsView, ExtensionSettingsWrite } from './settings.ts';
+import { validatedMessage } from './messages.ts';
 import { ArtifactStore, type ArtifactManifest } from './artifacts.ts';
 export { ArtifactStore } from './artifacts.ts';
 export type { ArtifactManifest, ArtifactTestCommand, ArtifactTestResult } from './artifacts.ts';
@@ -777,7 +778,7 @@ function validatedSchedule(input: ExtensionScheduleInput): ExtensionScheduleInpu
 }
 function validatedEvent(event: ExtensionEvent): ExtensionEvent {
   if (!event.id || !event.type || !Number.isFinite(Date.parse(event.occurredAt))) throw new Error('Event requires a stable ID, type and timestamp');
-  return { id: event.id, type: event.type, occurredAt: event.occurredAt, payload: structuredClone(event.payload) };
+  return { id: event.id, type: event.type, occurredAt: event.occurredAt, payload: structuredClone(event.payload), ...(event.message === undefined ? {} : { message: validatedMessage(event.message) }) };
 }
 export type { ExtensionEvent, ExtensionWake, ExtensionTool, ContextProvider, Json };
 

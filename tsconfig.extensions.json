@@ -11,7 +11,9 @@
     "tests/unit/extension-artifacts.test.mts",
     "tests/unit/generated-extensions.test.mts",
     "tests/unit/scheduling-host.test.mts",
-    "tests/unit/extension-settings.test.mts"
+    "tests/unit/extension-settings.test.mts",
+    "tests/unit/extension-package-preparation.test.mts",
+    "tests/unit/feishu-generated-install.test.mts"
   ],
   "exclude": [
     "node_modules",

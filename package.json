@@ -25,6 +25,7 @@
     "test:attachments:e2e": "node scripts/run-real-web-tests.mts attachments",
     "test:live-input:e2e": "node scripts/run-real-web-tests.mts live-input",
     "test:capabilities:e2e": "node scripts/run-real-web-tests.mts agent-capabilities",
+    "test:feishu:e2e": "node scripts/run-real-web-tests.mts feishu",
     "test:auth:e2e": "node scripts/run-real-web-tests.mts auth",
     "terminal:prepare": "node scripts/prepare-terminal.mts"
   },
