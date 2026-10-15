@@ -65,6 +65,7 @@ test('PG owner termination automatically cancels settings and cleans extension r
     assert.equal((await service.status()).state,'stopped');
     await assert.rejects(service.discover({}), error => error instanceof Error && error.message.includes('unavailable'));
     await assert.rejects(service.extensionSettings('owned'));
+    await assert.rejects(service.browser.bind(f.options.miraId).open('https://example.com'), /closed/i);
     const ticks = old.ticks; await delay(20); assert.equal(old.ticks,ticks);
     const event = {id:'late',type:'test',occurredAt:new Date().toISOString(),payload:null};
     await assert.rejects(old.ctx.emitEvent(event));
