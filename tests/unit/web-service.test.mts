@@ -41,3 +41,23 @@ test('chat omits delegation-only rows and reads while preserving text, attachmen
   assert.equal(childReads, 0, 'chat does not request child metadata or start child polling');
   assert.deepEqual(cursors, [undefined, 'older-history']);
 });
+
+test('automatic ownership close retains a safe persistence notice but suppresses ordinary shutdown errors', async () => {
+  const { DurableOperationError } = await import('@mira/life');
+  const { PersistenceFailureNotice } = await import('../../apps/server/src/persistence-errors.ts');
+  for (const failure of [new DurableOperationError('persistence-write-failure', 'private database detail'), new Error('private cancellation detail')]) {
+    const owner = new AbortController();
+    const resource = { close: async () => {} };
+    const writer = { signal: owner.signal, onLiveInput: () => () => {}, receiveLiveInput: async () => 'inserted', close: async () => {} };
+    const loop = { drain: async () => { await Promise.resolve(); owner.abort(failure); throw failure; } };
+    const service = Reflect.construct(LocalWebService, [{ synthetic: true, dreaming: { enabled: false } }, writer, {}, {}, { selection: null }, loop,
+      { resolve: async () => [] }, resource, {}, resource, resource]) as LocalWebService;
+    await service.submit({ id: 'diagnostic', text: 'Test shutdown', occurredAt: '2026-10-15T00:00:00.000Z' });
+    await service.close();
+    const status = await service.status();
+    assert.equal(status.state, 'stopped');
+    assert.equal(PersistenceFailureNotice.text(status.error), PersistenceFailureNotice.text(PersistenceFailureNotice.from(failure)));
+    if (!(failure instanceof DurableOperationError)) assert.equal(status.error, null);
+    assert.doesNotMatch(JSON.stringify(status), /private/);
+  }
+});

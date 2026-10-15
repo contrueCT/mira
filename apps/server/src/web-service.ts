@@ -110,7 +110,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   #closed = false;
   #closeTask: Promise<void> | undefined;
   readonly #ownershipLost = (): void => {
-    void this.close().catch(() => { this.#error = publicFailure; });
+    void this.close().catch(() => { this.#error ??= publicFailure; });
   };
   #settingsValue: WebSettings;
   #configurationWrite = false;
@@ -130,7 +130,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       // silently retry an already-failed cognitive run.
       if (result.enqueued && !this.#error) this.#kick();
       return result.nextDueAt;
-    }, error => { if (!this.#closed) this.#error = PersistenceFailureNotice.from(error) ?? publicFailure; });
+    }, error => { this.#recordFailure(error); });
     const policy = dreamingPolicy(options.dreaming);
     if (options.memoryRoot && policy.enabled !== false) {
       this.#dreaming = new DreamingScheduler(async () => {
@@ -140,7 +140,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
           minCompactions: policy.minCompactions, instruction: dreamingInstruction });
         if (result.status === 'inserted') { this.#kick(); return null; }
         return result.nextCheckAt;
-      }, error => { if (!this.#closed) this.#error = PersistenceFailureNotice.from(error) ?? publicFailure; });
+      }, error => { this.#recordFailure(error); });
     }
   }
   static async open(options: WebServiceOptions): Promise<LocalWebService> {
@@ -182,7 +182,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
         tools: streamId => [...createBrowserTools(browserManager, streamId), ...createWorkspaceTools(cwd), ...createTerminalTools(terminalManager, streamId), ...createHistoryTools(persistence.history(streamId))],
         writeOverflowInput, ...(roots ? { memoryRoot: roots.memoryRoot } : {}),
         onCompletion: () => { if (service && !service.#error) service.#kick(); },
-        onFailure: error => { if (service && !service.#closed) service.#error = PersistenceFailureNotice.from(error) ?? publicFailure; },
+        onFailure: error => { if (service) service.#recordFailure(error); },
       });
       await subagents.initialize();
       writer.signal.throwIfAborted();
@@ -228,6 +228,12 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       throw error;
     }
   }
+  #recordFailure(error: unknown, fallback: string | ModelRequestFailure = publicFailure): void {
+    // A durable write fault aborts ownership before its rejection reaches us.
+    // Keep its safe notice after fencing; ordinary shutdown errors stay silent.
+    const notice = PersistenceFailureNotice.from(error);
+    if (notice || !this.#closed) this.#error = notice ?? fallback;
+  }
   #kick(): void {
     if (this.#closed || this.#writer.signal.aborted) return;
     if (this.#configurationWrite || (!this.#options.synthetic && !hasSelectedWebApiKey(this.#settingsValue))) { this.#kickRequested = true; return; }
@@ -235,7 +241,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     this.#kickRequested = false;
     this.#error = null; this.#modelFailure = null;
     this.#drain = this.#loop.drain(this.#abort.signal).then(() => {}).catch((error: unknown) => {
-      if (!this.#closed) this.#error = PersistenceFailureNotice.from(error) ?? (error instanceof Error && error.message === this.#modelFailure?.terminalMessage ? this.#modelFailure : publicFailure);
+      this.#recordFailure(error, error instanceof Error && error.message === this.#modelFailure?.terminalMessage ? this.#modelFailure : publicFailure);
     }).finally(() => {
       this.#modelRetry = null;
       this.#drain = undefined;
