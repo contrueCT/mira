@@ -24,8 +24,11 @@ final 不自动镜像。群聊、多用户、文档/通讯录授权、用户身�
 仅申请 p2p read、send_as_bot 和 receive_v1 事件。飞书和 Lark 显式分域，拒绝意外品牌。
 租户批准、机器人能力及长连接订阅仍需实际验证，不能把二维码生成称为连接成功。
 
-本人绑定使用随机短时配对码加受保护设置内的身份确认。候选冻结，首个陌生消息不
-自动绑定；只认匹配的 tenant、sender open ID、private chat ID 和 human sender。
+本人绑定使用受保护设置内生成的高熵短时一次性配对码。匹配且未过期的私聊配对
+消息直接持久绑定 tenant、sender open ID、private chat ID 与已消费消息 ID；普通
+首个陌生消息不自动绑定。配对消息不进入聊天或模型，重启重投也不回放。删除二次
+身份确认、测试发送动作及 tested 状态，绑定和重连均不自动发送消息。connected
+只表示真实长连接就绪且本人已绑定，普通发送结果保留实际成功/未知证据。
 入站保存原始时间、消息/引用 ID 与完整文字；未知媒体明确告知未支持。
 
 Channel 的普通 pipeline 存在去重、过期丢弃、批处理和吞掉 handler 错误的问题，
@@ -54,3 +57,9 @@ install/activate 处理。无自动安装、catalog、全 node_modules 打包或
 ## 通用来源显示
 
 用户进一步批准所有普通扩展可使用不可变 `ExtensionEvent.message`（direction/text/sourceLabel/senderId/senderVerified）声明聊天文本投影。Host 白名单验证，Server 绑定真实安装 ID 和原始来源，不把 inbound 转成用户授权；前端只显示淡色小标签，不识别供应商 event type。沿用同一事件去重与时间线，无新增数据库或 final-delivery 协议。飞书确认发送分段才发布显示事件；失败仅补投显示、绝不重发。普通 final 不按文本隐藏。
+
+## 最小操作与来源脚注
+
+插件独立声明状态对应的 visibleActions 和次要 action group；未连接仅显示下一步，
+已连接只在通用“更多操作”下保留维护动作。框架只解释通用声明，不包含飞书状态、
+动作 ID 或供应商分支。所有插件消息的时间与来源共用同一行小号淡色脚注。

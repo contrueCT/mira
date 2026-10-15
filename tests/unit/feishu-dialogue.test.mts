@@ -81,7 +81,7 @@ for (const action of ['reconnect', 'unbind']) test(`cancelled ${action} preserve
     const start = async (id: string) => { const view = (await host.extensionSettings('owner-channel'))!; return host.startSettingsAction('owner-channel', id, view.revision); };
     await start('pair'); await until(async () => (await host.extensionSettings('owner-channel'))?.operation?.state === 'succeeded');
     const challenge = (await host.extensionSettings('owner-channel'))!.status.details!.find(item => item.value.startsWith('/mira pair '))!.value;
-    await state.receive(challenge); await start('confirm');
+    await state.receive(challenge);
     await until(async () => (await host.extensionSettings('owner-channel'))?.status.state === 'connected');
     const sendTool = (await host.prepare()).find(item => item.tool.name === 'feishu_send_message')!.tool;
     const send = (id: string, text = 'synthetic owner message') => sendTool.execute({ text }, { callId: id, signal: new AbortController().signal });
@@ -93,7 +93,7 @@ for (const action of ['reconnect', 'unbind']) test(`cancelled ${action} preserve
     state.holdSend = false; state.finishSend!(action === 'unbind');
     const outcome = await inFlight;
     assert.equal((await queued).name, 'AbortError');
-    assert.equal(state.sends, 2, 'only pairing test and the first in-flight part reached HTTP; no tail or queued replay');
+    assert.equal(state.sends, 1, 'only the first in-flight part reached HTTP; no automatic pairing test, tail or queued replay');
     await until(async () => (await host.extensionSettings('owner-channel'))?.operation?.state === 'cancelled');
     const after = (await host.extensionSettings('owner-channel'))!;
     assert.equal(after.status.state, 'connected'); assert.equal(after.fields.find(field => field.key === 'appSecret')?.configured, true);

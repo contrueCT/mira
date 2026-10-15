@@ -77,17 +77,19 @@ test('Feishu generic settings QR and explicit pairing reach the same durable Mir
     await panel.getByRole('button', { name: '生成本人配对码', exact: true }).click();
     await expect(panel).toContainText('/mira pair ');
     const challenge = (await panel.innerText()).match(/\/mira pair [A-Za-z0-9_-]+/)?.[0]; expect(challenge).toBeTruthy();
-    await deliver('om_pair', challenge!); await expect(panel).toContainText('ou_owner'); expect(requests).toBe(2);
     const pairingSecret = panel.locator('p').filter({ hasText: challenge! }); await expect(pairingSecret).toHaveCount(1);
-    const candidate = panel.locator('p').filter({ hasText: '待确认身份' }); await candidate.scrollIntoViewIfNeeded();
+    await pairingSecret.scrollIntoViewIfNeeded();
     await page.screenshot({ path: testInfo.outputPath('feishu-pairing-desktop.png'), fullPage: true, mask: [pairingSecret] });
-    await page.setViewportSize({ width: 390, height: 844 }); await candidate.scrollIntoViewIfNeeded(); await expect(candidate).toBeInViewport({ ratio: 1 }); await page.screenshot({ path: testInfo.outputPath('feishu-pairing-narrow.png'), fullPage: true, mask: [pairingSecret] });
+    await page.setViewportSize({ width: 390, height: 844 }); await pairingSecret.scrollIntoViewIfNeeded(); await expect(pairingSecret).toBeInViewport({ ratio: 1 }); await page.screenshot({ path: testInfo.outputPath('feishu-pairing-narrow.png'), fullPage: true, mask: [pairingSecret] });
     await page.setViewportSize({ width: 1440, height: 1000 });
-    await panel.getByRole('button', { name: '确认这是本人并发送测试消息', exact: true }).click(); await expect(panel).toContainText('已连接');
-    expect(effectful).toHaveLength(1); await deliver('om_user', '（合成测试）请告诉我今天的任务进度。');
+    await expect(panel.getByRole('button', { name: /确认这是本人|测试消息/ })).toHaveCount(0);
+    await deliver('om_pair', challenge!); await expect(panel).toContainText('已连接'); await expect(panel).toContainText('ou_owner'); expect(requests).toBe(2);
+    await expect(panel.getByRole('button', { name: '重新连接', exact: true })).not.toBeVisible();
+    await expect(panel.getByRole('button', { name: '扫码连接', exact: true })).toHaveCount(0);
+    expect(effectful).toHaveLength(0); await deliver('om_user', '（合成测试）请告诉我今天的任务进度。');
     await expect.poll(() => effectful.some(item => item.text === '（合成测试）已收到你的飞书消息，任务进度会在这里同步。')).toBe(true);
     await expect.poll(async () => (await service!.status()).state).toBe('idle'); expect(requests).toBe(4);
-    await deliver('om_user', '（合成测试）请告诉我今天的任务进度。'); await new Promise(resolve => setTimeout(resolve, 50)); expect(effectful).toHaveLength(2);
+    await deliver('om_user', '（合成测试）请告诉我今天的任务进度。'); await new Promise(resolve => setTimeout(resolve, 50)); expect(effectful).toHaveLength(1);
     expect((await db.admin.query("SELECT count(*)::integer AS count FROM life_events WHERE event->>'type'='feishu.owner_message'")).rows[0].count).toBe(1);
     await expect(panel).not.toContainText('/mira pair ');
     await panel.getByRole('heading', { name: '连接与设置' }).evaluate(element => element.scrollIntoView({ block: 'start' }));
@@ -102,6 +104,10 @@ test('Feishu generic settings QR and explicit pairing reach the same durable Mir
     await expect(page.locator('.message-source').filter({ hasText: '普通插件 · ordinary' })).toHaveCount(1);
     await expect(page.locator('.message-source').filter({ hasText: '飞书 · feishu · 收到' })).toHaveCount(1);
     await expect(page.locator('.message-source').first()).toHaveCSS('font-size', '10px');
+    for (const meta of await page.locator('.message-meta').filter({ has: page.locator('.message-source') }).all()) {
+      const source = await meta.locator('.message-source').boundingBox(); const time = await meta.locator('time').boundingBox();
+      expect(Math.abs(source!.y - time!.y)).toBeLessThan(3);
+    }
     await page.screenshot({ path: testInfo.outputPath('feishu-connected-desktop.png'), fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({ path: testInfo.outputPath('feishu-inbound-narrow.png'), fullPage: true });
@@ -111,7 +117,7 @@ test('Feishu generic settings QR and explicit pairing reach the same durable Mir
     const durableCounts = (await db.admin.query('SELECT (SELECT count(*) FROM wake_requests)::integer AS wakes, (SELECT count(*) FROM wake_runs)::integer AS runs')).rows[0];
     await app.close(); app = undefined; await service.close(); service = undefined; expect(closed).toBe(true);
     service = await LocalWebService.open({ ...common, extensions: await readExtensionConfiguration(configuration) });
-    await deliver('om_user', '（合成测试）请告诉我今天的任务进度。'); expect(effectful).toHaveLength(2);
+    await deliver('om_user', '（合成测试）请告诉我今天的任务进度。'); expect(effectful).toHaveLength(1);
     expect((await db.admin.query('SELECT (SELECT count(*) FROM wake_requests)::integer AS wakes, (SELECT count(*) FROM wake_runs)::integer AS runs')).rows[0]).toEqual(durableCounts);
     expect((await db.admin.query("SELECT count(*)::integer AS count FROM life_events WHERE event->>'type'='feishu.owner_message'")).rows[0].count).toBe(1);
   } finally { delete registry.miraFeishuSynthetic; await app?.close(); await service?.close(); await db?.close(); await rm(root, { recursive: true, force: true }); }

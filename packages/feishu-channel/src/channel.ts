@@ -12,10 +12,10 @@ type SendResult = { status: 'sent' | 'unknown' | 'partial' | 'not_sent'; message
 type Receipt = { digest: string; parts: Part[] };
 interface Stored {
   version: 1; registrationUnknown?: boolean; connectionId: string; app: { appId: string; domain: 'feishu' | 'lark' } | null;
-  owner: Owner | null; tested: boolean; inbox: ExtensionWake[]; recentMessages: string[]; sends: Record<string, Receipt>;
+  owner: Owner | null; pairingMessageId?: string; inbox: ExtensionWake[]; recentMessages: string[]; sends: Record<string, Receipt>;
 }
-interface Pairing { code: string; expiresAt: string; candidate: (Owner & { messageId: string }) | null }
-const initial = (): Stored => ({ version: 1, connectionId: randomUUID(), app: null, owner: null, tested: false, inbox: [], recentMessages: [], sends: {} });
+interface Pairing { code: string; expiresAt: string }
+const initial = (): Stored => ({ version: 1, connectionId: randomUUID(), app: null, owner: null, inbox: [], recentMessages: [], sends: {} });
 const validId = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 512 && !/[\u0000-\u001f\u007f]/u.test(value);
 const sameOwner = (a: Owner, b: Owner) => a.tenantKey === b.tenantKey && a.senderOpenId === b.senderOpenId && a.chatId === b.chatId;
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -24,7 +24,7 @@ function stored(value: unknown): Stored {
   if (!object(value) || value.version !== 1 || !validId(value.connectionId) || !('app' in value) || !('owner' in value)
     || (value.app !== null && (!object(value.app) || !validId(value.app.appId) || !['feishu', 'lark'].includes(String(value.app.domain))))
     || (value.owner !== null && (!object(value.owner) || !validId(value.owner.tenantKey) || !validId(value.owner.senderOpenId) || !validId(value.owner.chatId)))
-    || (value.registrationUnknown !== undefined && typeof value.registrationUnknown !== 'boolean') || typeof value.tested !== 'boolean' || !Array.isArray(value.inbox) || !Array.isArray(value.recentMessages) || !value.recentMessages.every(validId) || !object(value.sends)) throw new Error('Private Feishu state is invalid; it was not replaced');
+    || (value.registrationUnknown !== undefined && typeof value.registrationUnknown !== 'boolean') || (value.pairingMessageId !== undefined && !validId(value.pairingMessageId)) || !Array.isArray(value.inbox) || !Array.isArray(value.recentMessages) || !value.recentMessages.every(validId) || !object(value.sends)) throw new Error('Private Feishu state is invalid; it was not replaced');
   for (const item of value.inbox) if (!object(item) || !validId(item.id) || !object(item.event) || !validId(item.event.id) || item.event.type !== 'feishu.owner_message' || typeof item.event.occurredAt !== 'string' || !Number.isFinite(Date.parse(item.event.occurredAt))) throw new Error('Private Feishu state is invalid');
   for (const receipt of Object.values(value.sends)) if (!object(receipt) || typeof receipt.digest !== 'string' || !/^[a-f0-9]{64}$/u.test(receipt.digest) || !Array.isArray(receipt.parts) || receipt.parts.some(part => !object(part) || !validId(part.uuid) || !['not_started', 'unknown', 'sent'].includes(String(part.status)))) throw new Error('Private Feishu state is invalid');
   return value as unknown as Stored;
@@ -37,6 +37,7 @@ export class FeishuChannel {
   readonly #store: FeishuPrivateStore<Stored> | null;
   #data = initial();
   #storageReady = false;
+  #authorizationRetry = false;
   #connection: Awaited<ReturnType<FeishuSdk['connect']>> | undefined;
   #credentials: FeishuCredentials | undefined;
   #serial: Promise<unknown> = Promise.resolve();
@@ -61,19 +62,17 @@ export class FeishuChannel {
       fields: [ { key: 'domain', label: '服务', type: 'select', options: [{ value: 'feishu', label: '飞书（中国）' }, { value: 'lark', label: 'Lark（国际）' }] },
         { key: 'appId', label: '手动配置 App ID（扫码连接可留空）', type: 'text' }, { key: 'appSecret', label: '手动配置 App Secret', type: 'secret' } ],
       actions: [
-        { id: 'register', label: '扫码连接（创建应用）', execute: ({ signal }) => this.#register(signal) },
-        { id: 'refresh_authorization', label: '授权过期后重新申请二维码', execute: ({ signal }) => this.#register(signal) },
-        { id: 'connect', label: '验证手动配置并连接', execute: ({ signal }) => this.#queue(() => this.#manual(signal)) },
+        { id: 'register', label: '扫码连接', execute: ({ signal }) => this.#register(signal) },
+        { id: 'refresh_authorization', label: '重新申请授权', execute: ({ signal }) => this.#register(signal) },
+        { id: 'connect', label: '连接已有应用', execute: ({ signal }) => this.#data.app ? this.#changeConnection(signal, async () => { await this.#disconnect(); await this.#connect(signal); }) : this.#queue(() => this.#manual(signal)) },
         { id: 'pair', label: '生成本人配对码', execute: async () => this.#queue(async () => {
           if (!this.#ready || this.#data.owner) throw new Error('先连接未绑定的机器人');
-          this.#pairing = { code: randomBytes(18).toString('base64url'), expiresAt: new Date(Date.now() + 600_000).toISOString(), candidate: null }; this.#state = 'pending';
+          this.#pairing = { code: randomBytes(18).toString('base64url'), expiresAt: new Date(Date.now() + 600_000).toISOString() }; this.#state = 'pending';
         }) },
-        { id: 'confirm', label: '确认这是本人并发送测试消息', execute: ({ signal }) => this.#confirm(signal) },
-        { id: 'cancel_pair', label: '取消配对', execute: async () => this.#queue(async () => { this.#pairing = null; this.#settle(); }) },
-        { id: 'reconnect', label: '重新连接', execute: ({ signal }) => this.#changeConnection(signal, async () => { await this.#disconnect(); await this.#connect(signal); }) },
-        { id: 'test', label: '发送新的测试消息', execute: ({ signal }) => this.#test(`test:${randomUUID()}`, signal) },
-        { id: 'unbind', label: '解绑并清除本地凭据', execute: ({ signal }) => this.#changeConnection(signal, async () => {
-          await this.#disconnect(); await this.#context.credentials.delete('appSecret'); await this.#save(initial()); this.#storageReady = true; this.#credentials = undefined; this.#pairing = null; this.#error = null; this.#state = 'unconfigured';
+        { id: 'cancel_pair', group: 'secondary', label: '取消配对', execute: async () => this.#queue(async () => { this.#pairing = null; this.#settle(); }) },
+        { id: 'reconnect', group: 'secondary', label: '重新连接', execute: ({ signal }) => this.#changeConnection(signal, async () => { await this.#disconnect(); await this.#connect(signal); }) },
+        { id: 'unbind', group: 'secondary', label: '解绑并清除本地凭据', execute: ({ signal }) => this.#changeConnection(signal, async () => {
+          await this.#disconnect(); await this.#context.credentials.delete('appSecret'); await this.#save(initial()); this.#storageReady = true; this.#authorizationRetry = false; this.#credentials = undefined; this.#pairing = null; this.#error = null; this.#state = 'unconfigured';
         }) },
       ], status: () => this.status(),
     });
@@ -84,11 +83,11 @@ export class FeishuChannel {
         if (!object(args) || (args.cancelOperationId !== undefined && !validId(args.cancelOperationId))) return { text: 'Invalid connection arguments' };
         if (typeof args.cancelOperationId === 'string') { await actions.cancel(args.cancelOperationId); return { text: '已请求取消本次本地连接操作。请在扩展设置核对结果；取消不撤销远端已创建的应用。' }; }
         const current = await actions.current(); signal.throwIfAborted();
-        const guidance = '请打开设置 → 扩展 → 本扩展的连接设置，查看官方授权二维码或链接，授权后生成本人配对码并确认收发测试。';
+        const guidance = '请打开设置 → 扩展 → 本扩展的连接设置，查看官方授权二维码或链接，授权后生成本人配对码，发送配对码即可完成绑定。';
         if (current?.state === 'pending') return { text: JSON.stringify({ operation: current, instruction: guidance }) };
         if (this.#data.registrationUnknown && !this.#data.app) return { text: '上次注册结果未知，未重新申请。请在扩展设置核对官方后台并恢复已有应用，避免重复创建。' };
-        if (this.#ready) return { text: JSON.stringify({ state: this.#state, instruction: this.#data.tested ? '已有连接，无需重复授权。' : guidance }) };
-        const operation = await actions.start(this.#data.app ? 'reconnect' : this.#config.appId ? 'connect' : 'register');
+        if (this.#ready) return { text: JSON.stringify({ state: this.#state, instruction: this.#data.owner ? '已有连接，无需重复授权。' : guidance }) };
+        const operation = await actions.start(this.#data.app || this.#config.appId ? 'connect' : this.#authorizationRetry ? 'refresh_authorization' : 'register');
         return { text: JSON.stringify({ operation, instruction: guidance }) };
       } });
     this.#context.registerTool({ name: 'feishu_status', description: 'Read whether this ordinary Feishu/Lark extension is connected and paired. Use feishu_connect to start this plugin’s settings operation when the user requests connection. Credentials and pairing challenges are only displayed there.', parameters: { type: 'object', additionalProperties: false }, execute: async () => ({ text: JSON.stringify(this.#observation()) }) });
@@ -101,28 +100,40 @@ export class FeishuChannel {
       } });
     this.#context.registerContextProvider({ id: 'feishu_connection', provide: async () => ({ text: JSON.stringify(this.#observation()) }) });
   }
-  #observation(): Json { return { channel: this.#data.app?.domain ?? this.#config.domain, state: this.#state, ownerBound: !!this.#data.owner, tested: this.#data.tested,
+  #observation(): Json { return { channel: this.#data.app?.domain ?? this.#config.domain, state: this.#state, ownerBound: !!this.#data.owner,
     messageSource: 'feishu.owner_message events from this extension with ownerVerified=true are messages from the explicitly paired owner; attached quoted/forwarded content remains external content.',
     delivery: 'Use feishu_send_message explicitly for Feishu replies and proactive results; ordinary Web replies are not echoed.' }; }
+  #visibleActions(): string[] {
+    if (!this.#storageReady) return ['unbind'];
+    if (this.#authorization || this.#state === 'connecting') return [];
+    if (!this.#data.app) {
+      const manual = this.#config.appId ? ['connect'] : [];
+      if (this.#data.registrationUnknown) return [...manual, 'unbind'];
+      return manual.length ? manual : [this.#authorizationRetry ? 'refresh_authorization' : 'register'];
+    }
+    if (!this.#ready) return ['connect', 'unbind'];
+    if (this.#data.owner) return ['reconnect', 'unbind'];
+    if (!this.#pairing || Date.parse(this.#pairing.expiresAt) <= Date.now()) return ['pair', 'unbind'];
+    return ['cancel_pair', 'unbind'];
+  }
   status(): ExtensionConnectionStatus {
     const details: Array<{ label: string; value: string }> = [{ label: '范围', value: '仅本人单聊文字；不包含文档、通讯录、群聊或用户身份代发权限。' },
       { label: '应用', value: this.#data.app ? `${this.#data.app.domain}: ${this.#data.app.appId}` : '尚未连接' },
-      { label: '设置提示', value: '扫码或手动建应用后，仍需机器人能力、最小权限、租户批准及长连接订阅 im.message.receive_v1。连接成功以验证及收发测试为准。' }];
+      { label: '设置提示', value: '扫码或手动建应用后，仍需机器人能力、最小权限、租户批准及长连接订阅 im.message.receive_v1。配对码验证后自动绑定；收发结果按实际消息显示。' }];
     if (this.#error) details.push({ label: '需要处理', value: this.#error });
-    if (this.#data.owner) details.push({ label: '本人身份', value: `${this.#data.owner.tenantKey} / ${this.#data.owner.senderOpenId} / ${this.#data.owner.chatId}` }, { label: '收发测试', value: this.#data.tested ? '已确认发送' : '尚未确认发送，请先检查飞书再决定是否发新测试' });
+    if (this.#data.owner) details.push({ label: '本人身份', value: `${this.#data.owner.tenantKey} / ${this.#data.owner.senderOpenId} / ${this.#data.owner.chatId}` });
     const pairing = this.#pairing;
     if (pairing) {
       if (Date.parse(pairing.expiresAt) <= Date.now()) details.push({ label: '配对', value: '配对码已过期，请重新生成。' });
       else {
         details.push({ label: '请在机器人单聊中发送', value: `/mira pair ${pairing.code}` }, { label: '过期时间', value: pairing.expiresAt });
-        if (pairing.candidate) details.push({ label: '待确认身份（确认前不会作为主人接收）', value: `${pairing.candidate.tenantKey} / ${pairing.candidate.senderOpenId} / ${pairing.candidate.chatId}` });
       }
     }
     if (this.#data.registrationUnknown && !this.#data.app && this.#state !== 'connecting' && this.#state !== 'pending') details.push({ label: '注册结果待核对', value: '上次注册可能已创建应用。请先到官方后台核对，已有应用用手动配置恢复；确认未创建后才可解绑清除本地记录并重新申请。' });
     const authorization = this.#authorization && Date.parse(this.#authorization.expiresAt) > Date.now() ? this.#authorization : null;
-    if (this.#authorization && !authorization) details.push({ label: '授权', value: '二维码已过期。等待本次操作结束后点击“授权过期后重新申请二维码”；仍在处理时可先取消。' });
+    if (this.#authorization && !authorization) details.push({ label: '授权', value: '二维码已过期。等待本次操作结束后点击“重新申请授权”；仍在处理时可先取消。' });
     if (this.#authorization) details.push({ label: '授权链接有效期', value: this.#authorization.expiresAt });
-    return { state: this.#state, ...(this.#error ? { code: 'unknown' as const } : {}), details,
+    return { state: this.#state, visibleActions: this.#visibleActions(), ...(this.#error ? { code: 'unknown' as const } : {}), details,
       ...(authorization ? { authorization: { url: authorization.url, label: `在${this.#config.domain === 'feishu' ? '飞书' : 'Lark'}官方页面扫码确认应用与最小权限`, qr: true } } : {}) };
   }
   async initialize(): Promise<void> {
@@ -153,7 +164,7 @@ export class FeishuChannel {
   async #register(signal: AbortSignal): Promise<void> {
     if (!this.#store || !this.#storageReady || this.#closed || this.#data.app || this.#data.registrationUnknown || this.#authorization) throw new Error('请先解绑或取消现有应用连接');
     const combined = AbortSignal.any([signal, this.#abort.signal]); const epoch = this.#epoch;
-    this.#state = 'connecting'; this.#error = null;
+    this.#state = 'connecting'; this.#error = null; this.#authorizationRetry = false;
     try {
       await this.#queue(async () => { combined.throwIfAborted(); if (this.#data.registrationUnknown || this.#data.app) throw new Error('Registration already attempted'); await this.#save({ ...structuredClone(this.#data), registrationUnknown: true }); });
       const credentials = await this.#sdk.register({ domain: this.#config.domain, signal: combined,
@@ -171,8 +182,8 @@ export class FeishuChannel {
         await this.#connect(combined);
       });
     } catch (error) {
-      if (!this.#closed && error instanceof FeishuSdkError && (error.code === 'registration_expired' || error.code === 'registration_denied') && !combined.aborted) await this.#queue(async () => { await this.#save({ ...structuredClone(this.#data), registrationUnknown: false }); });
-      if (!this.#closed) { this.#state = this.#data.registrationUnknown && !this.#data.app ? 'error' : combined.aborted ? (this.#data.app ? 'disconnected' : 'unconfigured') : 'error'; this.#error = error instanceof FeishuSdkError && error.code === 'registration_expired' ? '授权已过期，旧二维码不可再用。点击“授权过期后重新申请二维码”获取新的授权请求；如已创建应用，请先用手动配置恢复。' : error instanceof FeishuSdkError && error.code === 'registration_denied' ? '授权被拒绝。本次操作已结束，可确认权限后重新申请。' : this.#data.registrationUnknown && !this.#data.app ? '注册结果未知或已取消。请先核对官方后台，避免重复创建应用；取消本地操作不撤销已创建的远端应用。' : combined.aborted ? null : '扫码注册、应用权限或连接验证未完成。请检查租户审批，也可使用手动配置。'; }
+      if (!this.#closed && error instanceof FeishuSdkError && (error.code === 'registration_expired' || error.code === 'registration_denied') && !combined.aborted) await this.#queue(async () => { await this.#save({ ...structuredClone(this.#data), registrationUnknown: false }); this.#authorizationRetry = true; });
+      if (!this.#closed) { this.#state = this.#data.registrationUnknown && !this.#data.app ? 'error' : combined.aborted ? (this.#data.app ? 'disconnected' : 'unconfigured') : 'error'; this.#error = error instanceof FeishuSdkError && error.code === 'registration_expired' ? '授权已过期，旧二维码不可再用。点击“重新申请授权”获取新的授权请求；如已创建应用，请先用手动配置恢复。' : error instanceof FeishuSdkError && error.code === 'registration_denied' ? '授权被拒绝。本次操作已结束，可确认权限后重新申请。' : this.#data.registrationUnknown && !this.#data.app ? '注册结果未知或已取消。请先核对官方后台，避免重复创建应用；取消本地操作不撤销已创建的远端应用。' : combined.aborted ? null : '扫码注册、应用权限或连接验证未完成。请检查租户审批，也可使用手动配置。'; }
       throw new Error(combined.aborted ? 'Feishu registration cancelled' : 'Feishu registration was not verified');
     } finally { this.#authorization = null; }
   }
@@ -198,30 +209,20 @@ export class FeishuChannel {
     } catch { this.#ready = false; this.#state = 'error'; this.#error = '机器人权限或长连接尚未验证，请检查凭据、最小权限、审批和长连接事件订阅。'; throw new Error('Feishu connection was not verified'); }
   }
   async #disconnect(): Promise<void> { this.#epoch++; this.#ready = false; const connection = this.#connection; this.#connection = undefined; this.#credentials = undefined; this.#settle(); await connection?.close(); }
-  #settle(): void { this.#state = !this.#data.app ? 'unconfigured' : !this.#ready ? 'disconnected' : this.#data.owner && this.#data.tested ? 'connected' : 'pending'; }
-  async #confirm(signal: AbortSignal): Promise<void> {
-    await this.#queue(async () => {
-    const pairing = this.#pairing;
-    if (!this.#ready || !pairing?.candidate || Date.parse(pairing.expiresAt) <= Date.now()) throw new Error('配对码无效或尚未收到待确认的本人单聊');
-    const { tenantKey, senderOpenId, chatId, messageId } = pairing.candidate;
-    await this.#save({ ...structuredClone(this.#data), owner: { tenantKey, senderOpenId, chatId }, recentMessages: [messageId], tested: false });
-    this.#pairing = null; }); await this.#test(`pair-test:${this.#data.connectionId}`, signal);
-  }
-  async #test(callId: string, signal: AbortSignal): Promise<void> {
-    const outcome = await this.#send(callId, 'Mira 连接测试。收到这条消息说明本次发送已到达飞书；你可以继续向这里发送文字，与同一个 Mira 交流。', undefined, signal);
-    if (outcome.status === 'sent') { await this.#queue(async () => { await this.#save({ ...structuredClone(this.#data), tested: true }); this.#error = null; this.#settle(); }); }
-    else { this.#state = 'error'; this.#error = '测试消息发送结果未确认。请先检查飞书，再明确选择是否发送新的测试；不会自动重发。'; throw new Error('Feishu test delivery is unconfirmed'); }
-  }
+  #settle(): void { this.#state = !this.#data.app ? 'unconfigured' : !this.#ready ? 'disconnected' : this.#data.owner ? 'connected' : 'pending'; }
   async #receive(message: FeishuIncomingText): Promise<void> {
     if (!this.#data.app || message.chatType !== 'p2p' || message.senderType !== 'user' || !validId(message.messageId) || !validId(message.chatId) || !validId(message.senderOpenId) || !validId(message.tenantKey) || !Number.isFinite(Date.parse(message.createdAt))) return;
     const owner = { tenantKey: message.tenantKey, senderOpenId: message.senderOpenId, chatId: message.chatId };
     if (!this.#data.owner) {
-      const pairing = this.#pairing; if (!pairing || pairing.candidate || Date.parse(pairing.expiresAt) <= Date.now() || message.messageType !== 'text') return;
+      const pairing = this.#pairing; if (!pairing || Date.parse(pairing.expiresAt) <= Date.now() || message.messageType !== 'text') return;
       const supplied = Buffer.from(message.text.trim()); const expected = Buffer.from(`/mira pair ${pairing.code}`);
       if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return;
-      pairing.candidate = { ...owner, messageId: message.messageId }; this.#state = 'pending'; return;
+      await this.#save({ ...structuredClone(this.#data), owner, pairingMessageId: message.messageId });
+      this.#pairing = null; this.#error = null; this.#settle(); return;
     }
     if (!sameOwner(this.#data.owner, owner)) return;
+    // Pairing commands are control messages, never conversation or model input.
+    if (message.messageId === this.#data.pairingMessageId || /^\/mira pair [A-Za-z0-9_-]+$/u.test(message.text.trim())) return;
     const id = createHash('sha256').update(JSON.stringify([this.#data.connectionId, this.#data.app.domain, this.#data.app.appId, message.messageId])).digest('hex');
     const wake: ExtensionWake = { id, reason: 'Message from the explicitly paired Mira owner', event: { id, type: 'feishu.owner_message', occurredAt: message.createdAt,
       message: { direction: 'inbound', text: message.text, sourceLabel: this.#data.app.domain === 'feishu' ? '飞书' : 'Lark', senderId: message.senderOpenId, senderVerified: true },

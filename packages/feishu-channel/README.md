@@ -47,7 +47,7 @@ opens the existing settings panel to finish authorization and explicit pairing.
 ## Connect in the generic extension settings
 
 1. Choose 飞书 or Lark. These are separate application/tenant identity domains.
-2. Choose 扫码连接（创建应用） and open/scan the official authorization link. The action
+2. Choose 扫码连接 and open/scan the official authorization link. The action
    remains pending while polling; cancel stops accepting late results. App credentials are saved privately once registration returns, even if approval or
    connection verification still fails; reconnect can retry verification without creating
    another app. Cancelling does not delete an app already created. No secret is
@@ -58,15 +58,21 @@ opens the existing settings panel to finish authorization and explicit pairing.
    and ensure the app is available to the intended owner.
 4. Only `im:message.p2p_msg:readonly` and `im:message:send_as_bot` are requested. No Docs,
    Contacts, group-read or user-impersonation permissions are requested.
-5. Generate a pairing code, send the displayed `/mira pair …` in the bot's private chat,
-   inspect the candidate tenant/open-user/chat identity, then explicitly confirm it in
-   Mira. The first sender does not automatically become the owner. Confirmation sends
-   one test message. A verified connection and confirmed test send are required before
-   the extension reports connected.
+5. Generate a short-lived, high-entropy pairing code and send the displayed
+   `/mira pair …` in the bot's private chat. Only the matching unexpired code binds
+   that human sender's tenant/open-user/chat identity, saved with the consumed message
+   ID. Ordinary first senders cannot claim ownership. The code is consumed once;
+   pairing commands never reach the conversation or model, including redelivery after
+   restart. A verified live connection and bound owner report connected. There is no
+   separate identity-confirmation action, test-send action or automatic test message.
+
+The plugin declares only the next applicable action for its current state. Recovery
+and maintenance controls live under the generic 更多操作 menu. The host and Web UI
+only interpret generic action groups and visibility; they contain no Feishu flow.
 
 Manual fallback: create/publish a self-built app, enable its bot and the same minimum
 scopes/event subscription, then save App ID and App Secret in the generic protected
-settings and choose 验证手动配置并连接. App Secret is write-only and stored through the
+settings and choose 连接已有应用. App Secret is write-only and stored through the
 host's installation-scoped credential API. It never belongs in extension JSON config,
 Memory, Timeline, tool arguments or URLs.
 
@@ -96,8 +102,8 @@ prerequisites still require an authorized real-tenant check; denial fails closed
   Each piece's unknown intent is saved before HTTP; the same call never resumes or
   retries after an ambiguous effect, even after restart. No exactly-once network claim.
 - The SDK refreshes tenant tokens normally. Effectful message create/reply calls have no
-  automatic retry, reply fallback or Channel message splitting. Binding/reconnect is
-  distinct from an explicit new test send.
+  automatic retry, reply fallback or Channel message splitting. Binding/reconnect never sends a message. Actual ordinary send outcomes are
+  reported by the send tool and durable receipts.
 - The private state file has a 2 MB bound. Capacity/storage failure stops intake or
   further sends with a visible failure rather than dropping queued evidence. Source
   code, Memory and artifact folders do not hold channel state.
@@ -146,7 +152,7 @@ SDK HTTP requests have a 15-second timeout each, rather than holding cleanup ind
 
 Authorization expiry comes from the official registration response (seconds). The
 plugin hides an expired URL even before the SDK polling promise settles. After an
-provider-expired/denied operation ends, the plugin-declared “授权过期后重新申请二维码” action
+provider-expired/denied operation ends, the plugin-declared “重新申请授权” action
 requests a new provider authorization; it never merely redraws the previous URL.
 While an operation is pending, use the existing settings cancellation first. Cancellation
 or network failure (including the SDK’s local polling deadline) may leave a remotely created app: a durable unknown-attempt marker
