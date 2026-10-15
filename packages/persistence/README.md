@@ -224,7 +224,7 @@ final interrupted summary identities and project confirmed completion without an
 UPDATE, a late callback, a new Event/Wake, or a change to the terminal result. Thus
 restart also handles a missing completion callback. Public DTOs omit these links;
 no new migration, replay path or independent state engine is introduced.
-Both subagent migrations have explicit up/down; down is destructive and must not
+Subagent migrations have explicit up/down; down is destructive and must not
 be run on user data automatically. See ADR 0025 and ADR 0026.
 
 ### Complete large originals through text pages
@@ -249,3 +249,33 @@ writer-valid timestamp cannot make all pages exceed the response budget. Fixed
 Mira scope is enforced by the query, never a model-supplied parameter.
 
 ADR 0037: child terminal results join the active non-final main run as sourced supplemental input and yield at the current single-tool boundary. Idle/finalized runs retain ordinary queued delivery; a failed parent is not retried or cleared. Public live ingress stays user-only. `subagent_wait` reports `live_input` for an early supplemental-input release.
+
+### Live parent instructions in a running child
+
+Migration `1760000000009_task-live-input.sql` adds child-stream-owned input/final
+links, an immutable `subagent_calls` namespace shared by turn and live admissions,
+and ordered `subagent_live_inputs`. An already-admitted queued or running task without a final receives an
+ordered instruction in that same turn; later inputs cannot overtake older queued work. An idle or finalized child receives the
+existing queued followup turn. The combined pending live-input/queued-turn limit
+is sixteen. Same-call retries retain their original target and exact instruction;
+a rejected capacity attempt does not reserve the call.
+
+`TaskInputWriter` links each initial/live input and final to its transcript append
+atomically under the child's own fence and context CAS. Parent admission and the
+task input/tool-start/final gates lock the same `subagents` row across independent
+connections. A winning input blocks the next old sibling and final; a winning
+final routes new work into a queued turn. Generic checkpoint publication keeps its
+independent transaction, preserving cancellation-versus-summary-COMMIT evidence.
+No child operation awaits the parent writer while holding the task boundary, and
+no child Wake or additional cognition loop is introduced.
+
+Consumption means a durable context append, not proof the model acted on it.
+Child reads expose the latest sixteen receipt statuses without instruction text;
+indexed `findSubagentCall` retains the exact source instruction for retry checks.
+Call/run associations include live receipts. Cancellation, failure and startup
+interruption terminalize unread inputs without retargeting or replay, while
+consumed links and unknown tool evidence remain immutable. Lost COMMIT replies
+stop the affected writer; recovery inspects exact receipts and record links.
+The real PostgreSQL tests in `tests/recovery/task-live-persistence.test.mts` cover
+both lock winners, ordered/CAS consumption, cross-stream isolation, bounded
+admission, run associations, restart and lost receipt/consumption acknowledgements.

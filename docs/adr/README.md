@@ -77,5 +77,7 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 - [0032 — Persistent terminal processes](0032-persistent-terminal-processes.md): approved cross-turn processes, service-scoped lifecycle, explicit PTY/input/close, no restart replay or UI.
 
 - [0037: Live subagent results](0037-live-subagent-results.md): accepted single-tool boundary delivery, preserving sourced results and the sole main loop.
+
+- [0039 — Parent-to-child live followups](0039-live-child-followups.md): accepted scope; implementation under verification. Separate task inbox and child transcript boundary, no main Wake ownership.
 - [0035 扩展私有凭据与声明式设置](0035-extension-private-settings.md)：Accepted，2026-10-15；手工/生成扩展共用安装命名空间、私有凭据、纯文本字段/动作/状态与本地授权二维码。
 - [0036 飞书本人单聊扩展](0036-feishu-owner-channel.md)：已批准普通 Cordis 扩展，使用通用设置/凭据和既有安装生命周期；固定官方 SDK、显式本人绑定、持久收件与未知投递保护，真实租户联通未执行。

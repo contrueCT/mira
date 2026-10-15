@@ -25,6 +25,7 @@
 - 事件与可选 Wake 原子落库；无 Wake 的事件不得启动推理；重复 ID 必须核对全部记录
 - claim 全部积累请求为一批，普通运行中新到请求留下一批；显式 receiveLiveInput 通过独立补充表归属非终态活动 run、原始请求不变（ADR 0024）；持久 child 终态通过内部同事务入口复用补充队列（ADR 0037），公开入口仍仅 user；关联不可变、每 Mira 仅一个活动 run
 - 输入/终止回复与 run 关联同事务，最终回复后先完成再追加；Pi 语义由 Runtime 核对
+- child 的 TaskInputWriter 使用独立 stream/CAS 与持久 input/final links；parent send 与 child input/tool-start/final 同锁 subagents 行，已接收且未 final 的 queued/running task 接收有序 inbox，final 后保留 queued turn。subagent_calls 统一调用去重与管理关联；取消/失败/重启终止未消费输入并保留证据，不使用主 Wake 表或自动重放。普通 checkpoint 保留独立提交边界，不在 child 锁内等待 parent RPC
 - Dreaming 的初始化基线、空闲时间和消费游标持久化；条件检查、普通 Event/Wake 与触发基线同一 fenced 事务。只数已提交 checkpoint，来源时间不用于空闲，不新增语义状态或自动失败重试。
 - 单次日程以 Mira/owner/key 唯一；pending 的 replace/cancel 用版本 CAS，入队与普通 Event/Wake 同一 fenced 事务。只处理组装层提供的当前有效 owner，不解释时区/重复规则、不建立独立租约。终态保留，cancel 不撤销已入队记录。
 - `RunHistoryReader` 只连接既有 Event/Wake/Memory receipt 与版本区间内记录引用；不新增日志/表或解释 Runtime payload，cursor 绑定 Mira 和 Wake。

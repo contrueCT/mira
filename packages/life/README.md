@@ -48,3 +48,8 @@ than the complete-read budget. Its code-point offset and first-page SHA-256 revi
 prevent silently concatenating changed tool/Wake originals; each page retains the
 fixed Mira and History identity. It adds no state, history copy or Runtime parsing.
 The same `history_read` tool exposes this through optional offset/revision fields.
+
+`TaskInputWriter` defines independent child-task input, ordered parent supplements,
+single-tool admission and final arbitration. It is not a WakeWriter and does not
+create a second Life/WakeLoop. Parent receipt state remains separate from whether
+the worker has acted on an instruction (ADR 0039).

@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import { getCurrentSystemMessage, getSystemMessageText, getCurrentTools } from '@earendil-works/pi-ai';
+import type { RuntimeRecord } from '@mira/context';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
-import { SubagentError, emptySubagentActivity, type SubagentActivityInput, type SubagentWriter, type SubagentRecord, type SubagentSpec, type SubagentResult, type LifeEvent, type WakeReceipt } from '@mira/life';
+import { SubagentError, emptySubagentActivity, type SubagentActivityInput, type SubagentWriter, type SubagentRecord, type SubagentSpec, type SubagentResult, type SubagentFollowupReceipt, type TaskInputWriter, type TaskTurnState, type ToolIntent, type LifeEvent, type WakeReceipt } from '@mira/life';
 import { PiDurableRuntime, freezeSubagentContext, encodeEntry, decodeRecords, type PiRuntimeActivity } from '@mira/runtime-pi';
 import { SubagentManager, createSubagentTools } from '../../apps/server/src/subagents.ts';
 import { MemoryWriter, assistant, streamOf, model, deferred, seed, input, effectTool, result } from '../recovery/fixtures.mts';
@@ -12,20 +13,29 @@ import { MemoryWriter, assistant, streamOf, model, deferred, seed, input, effect
 class Parent extends MemoryWriter implements SubagentWriter {
   children: SubagentRecord[] = [];
   events: LifeEvent[] = [];
+  links = new Map<string, { inputRecordId: string | null; finalRecordId: string | null }>();
+  followups = new Map<string, SubagentFollowupReceipt & { turnId: string }>();
   async createSubagent(callId: string, spec: SubagentSpec, max: number) {
     const old = this.children.find(c => c.spawnCallId === callId); if (old) return structuredClone(old);
     if (this.children.filter(c => c.turns.some(t => ['queued','running'].includes(t.status))).length >= max) throw new SubagentError('capacity', 'full');
     const id = randomUUID(); const createdAt = new Date().toISOString();
     const child: SubagentRecord = { id, streamId: `subagent:${id}`, spawnCallId: callId, createdAt, spec: structuredClone(spec), turnCount: 1, turns: [
       { id: randomUUID(), childId: id, callId, sequence: 1, instruction: spec.task, status: 'queued', createdAt, startedAt: null, activity: emptySubagentActivity(), finishedAt: null, result: null },
-    ] }; this.children.push(child); return structuredClone(child);
+    ] }; this.children.push(child); this.links.set(child.turns[0]!.id, { inputRecordId: null, finalRecordId: null }); return structuredClone(child);
   }
   async listSubagents(before?: string) {
     const end = before ? this.children.findIndex(c => c.id === before) : this.children.length;
     const page = this.children.slice(Math.max(0,end-50),end);
     return { children: page.map(c => ({ id: c.id, createdAt: c.createdAt, model: c.spec.model, status: c.turns.at(-1)!.status })), nextCursor: end>50 ? page[0]!.id : null };
   }
-  async findSubagentCall(callId: string) { for (const child of this.children) { const turn = child.turns.find(t => t.callId === callId); if (turn) return structuredClone({ child,turn }); } return null; }
+  async findSubagentCall(callId: string) {
+    const followup = this.followups.get(callId);
+    for (const child of this.children) {
+      const turn = child.turns.find(t => t.callId === callId || t.id === followup?.turnId);
+      if (turn) return structuredClone({ child, turn, ...(followup ? { followup } : {}) });
+    }
+    return null;
+  }
   async readSubagentCalls(callIds: string[]) { return this.children.flatMap(c => c.turns.filter(t => callIds.includes(t.callId)).map(t => ({ callId:t.callId,runId:null,childId:c.id,streamId:c.streamId,turnId:t.id,createdAt:t.createdAt,status:t.status }))); }
   async getSubagentForRun(id: string, _runId: string) { return this.getSubagent(id); }
   async readSubagentsForRun(_runId: string, before?: string) { return this.listSubagents(before); }
@@ -43,7 +53,18 @@ class Parent extends MemoryWriter implements SubagentWriter {
   async getSubagent(id: string) { return structuredClone(this.children.find(c => c.id === id) ?? null); }
   async sendSubagent(callId: string, id: string, instruction: string, _max: number) {
     const c = this.children.find(c => c.id === id)!;
-    if (!c.turns.some(t => t.callId === callId)) c.turns.push({ id: randomUUID(), childId: id, callId, sequence: c.turns.length + 1, instruction, status: 'queued', createdAt: new Date().toISOString(), startedAt: null, activity: emptySubagentActivity(), finishedAt: null, result: null });
+    const previous = await this.findSubagentCall(callId);
+    if (previous) {
+      assert.equal(previous.child.id, id); assert.equal(previous.followup?.instruction ?? previous.turn.instruction, instruction);
+      return structuredClone(c);
+    }
+    const running = c.turns.find(t => ['queued','running'].includes(t.status) && !this.links.get(t.id)!.finalRecordId);
+    if (running) this.followups.set(callId, { turnId: running.id, callId, instruction, status: 'pending', createdAt: new Date().toISOString(), inputRecordId: null });
+    else {
+      const turnId = randomUUID();
+      c.turns.push({ id: turnId, childId: id, callId, sequence: c.turns.length + 1, instruction, status: 'queued', createdAt: new Date().toISOString(), startedAt: null, activity: emptySubagentActivity(), finishedAt: null, result: null });
+      this.links.set(turnId, { inputRecordId: null, finalRecordId: null });
+    }
     c.turnCount = c.turns.length;
     return structuredClone(c);
   }
@@ -51,6 +72,9 @@ class Parent extends MemoryWriter implements SubagentWriter {
   async finishSubagentTurn(id: string, status: 'completed' | 'interrupted' | 'cancelled' | 'failed', value: SubagentResult) {
     const t = this.children.flatMap(c => c.turns).find(t => t.id === id)!;
     if (!['queued', 'running'].includes(t.status)) { assert.equal(t.status, status); assert.deepEqual(t.result, value); return; }
+    for (const followup of this.followups.values()) if (followup.turnId === id && followup.status === 'pending') {
+      assert.notEqual(status, 'completed', 'completion cannot overtake pending parent input'); followup.status = status as 'interrupted' | 'cancelled' | 'failed';
+    }
     t.activity.current = null; t.status = status; t.result = structuredClone(value); t.finishedAt = new Date().toISOString();
     this.events.push({ id: `subagent-result:${id}`, type: 'subagent.result', source: 'system', occurredAt: t.finishedAt, payload: { childId: t.childId, status } });
   }
@@ -58,12 +82,54 @@ class Parent extends MemoryWriter implements SubagentWriter {
   async interruptSubagents() { for (const c of this.children) for (const t of c.turns) if (['queued','running'].includes(t.status)) await this.finishSubagentTurn(t.id, 'interrupted', { text: 'Interrupted without replay', truncated: false, fullResultPath: null, finalRecordId: null }); }
   override async receive(event: LifeEvent, _wake?: WakeReceipt): Promise<'inserted'> { this.events.push(event); return 'inserted'; }
 }
+/** Shared registry/transcript links model admission; no PostgreSQL locking is implied. */
+class ChildWriter extends MemoryWriter implements TaskInputWriter {
+  readonly parent: Parent;
+  readonly streamId: string;
+  constructor(parent: Parent, streamId: string) { super(); this.parent = parent; this.streamId = streamId; }
+  private turn(id: string) {
+    const child = this.parent.children.find(child => child.streamId === this.streamId)!;
+    const turn = child.turns.find(turn => turn.id === id)!; assert.ok(turn);
+    return turn;
+  }
+  private active(id: string) {
+    const turn = this.turn(id); this.assertActive(); assert.equal(turn.status, 'running');
+    assert.equal(this.parent.links.get(id)!.finalRecordId, null);
+  }
+  async loadTaskTurn(id: string): Promise<TaskTurnState> {
+    const turn = this.turn(id);
+    return structuredClone({ id, callId: turn.callId, createdAt: turn.createdAt, status: turn.status, ...this.parent.links.get(id)! });
+  }
+  async loadTaskInputs(id: string) {
+    this.turn(id);
+    return [...this.parent.followups.values()].filter(input => input.turnId === id && ['pending', 'consumed'].includes(input.status))
+      .map(({ callId, instruction, createdAt, inputRecordId }) => ({ callId, instruction, createdAt, inputRecordId }));
+  }
+  async appendTaskInput(id: string, version: number, record: RuntimeRecord, signal?: AbortSignal) {
+    this.active(id); assert.equal(this.parent.links.get(id)!.inputRecordId, null);
+    const next = await this.append(version, record, signal); this.parent.links.get(id)!.inputRecordId = record.id; return next;
+  }
+  async appendTaskLiveInput(id: string, callId: string, version: number, record: RuntimeRecord, signal?: AbortSignal) {
+    this.active(id);
+    const first = [...this.parent.followups.values()].find(input => input.turnId === id && input.status === 'pending')!;
+    assert.equal(first.callId, callId);
+    const next = await this.append(version, record, signal); first.inputRecordId = record.id; first.status = 'consumed'; return next;
+  }
+  async tryBeginTaskTool(id: string, version: number, intent: ToolIntent) {
+    this.active(id); if ((await this.loadTaskInputs(id)).some(input => !input.inputRecordId)) return false;
+    await this.beginTool(version, intent); return true;
+  }
+  async tryAppendTaskFinal(id: string, version: number, record: RuntimeRecord, signal?: AbortSignal) {
+    this.active(id); if ((await this.loadTaskInputs(id)).some(input => !input.inputRecordId)) return null;
+    const next = await this.append(version, record, signal); this.parent.links.get(id)!.finalRecordId = record.id; return next;
+  }
+}
 async function until(check: () => boolean | Promise<boolean>) { const end = Date.now() + 3000; while (!await check()) { if (Date.now() > end) throw Error('Condition did not settle'); await new Promise(resolve => setTimeout(resolve, 5)); } }
 function fixture(parent = new Parent(), tools = () => [] as ReturnType<typeof createSubagentTools>, maxConcurrent?: number) {
-  const writers = new Map<string, MemoryWriter>(); const errors: unknown[] = []; const spooled: string[] = []; let notifications = 0;
+  const writers = new Map<string, ChildWriter>(); const errors: unknown[] = []; const spooled: string[] = []; let notifications = 0;
   const manager = new SubagentManager({ writer: parent, ...(maxConcurrent === undefined ? {} : { maxConcurrent }), acquire: async id => {
     let writer = writers.get(id);
-    if (!writer || writer.signal.aborted) { const next = new MemoryWriter(); if (writer) next.state = structuredClone(writer.state); writer = next; writers.set(id, writer); }
+    if (!writer || writer.signal.aborted) { const next = new ChildWriter(parent, id); if (writer) next.state = structuredClone(writer.state); writer = next; writers.set(id, writer); }
     return writer;
   }, tools, writeOverflowInput: async (_id, content) => { spooled.push(content); return { path: '/tmp/synthetic-full-result.txt', bytes: Buffer.byteLength(content) }; }, memoryRoot: '/tmp/synthetic-main-Memory', onCompletion: () => { notifications++; }, onFailure: error => errors.push(error) });
   return { manager, parent, writers, errors, spooled, notifications: () => notifications };
@@ -194,21 +260,93 @@ test('frozen projection preserves section-based system constraints and existing 
   assert.match(frozen.text, /NEVER_PUBLISH_CONSTRAINT/); assert.match(frozen.text, /SUMMARY_PRESERVED/); assert.match(frozen.text, /recent user material/);
 });
 
-test('followup queued during a running child executes once; cancelling completed work never overwrites results', async () => {
-  const f = fixture(); const release = deferred(); let calls = 0;
-  const t = transport(async () => { calls++; if (calls === 1) await release.promise; return streamOf(assistant(`result-${calls}`)); });
+test('running followup is consumed once in the current turn; cancelling completed work never overwrites results', async () => {
+  const f = fixture(); const release = deferred(); let calls = 0; let followupContext = '';
+  const t = transport(async (_m, context) => {
+    calls++; if (calls === 1) await release.promise;
+    else followupContext = JSON.stringify(context.messages);
+    return streamOf(assistant(`result-${calls}`));
+  });
   try {
-    const c = await f.manager.spawn('queue-spawn', 'First task', 'none', t);
+    const c = await f.manager.spawn('live-spawn', 'First task', 'none', t);
     await until(() => calls === 1);
-    await f.manager.send('queue-message', c.id, 'Second task', t);
-    await f.manager.send('queue-message', c.id, 'Second task', t);
-    assert.equal(f.parent.children[0]!.turns.length, 2); assert.equal(calls, 1);
-    release.resolve(); await until(() => f.parent.children[0]!.turns[1]?.status === 'completed');
-    assert.equal(calls, 2); const saved = structuredClone(f.parent.children[0]!.turns);
+    const admitted = await f.manager.send('live-message', c.id, 'Second task', t);
+    const duplicate = await f.manager.send('live-message', c.id, 'Second task', t);
+    assert.equal(admitted.delivery.route, 'current_turn'); assert.equal(admitted.delivery.status, 'pending');
+    assert.equal(admitted.delivery.inputRecordId, null); assert.deepEqual(duplicate.delivery, admitted.delivery);
+    assert.equal(f.parent.children[0]!.turns.length, 1); assert.equal(calls, 1);
+    await assert.rejects(f.manager.send('live-message', c.id, 'Changed task', t), /different content/);
+    release.resolve(); await until(() => f.parent.children[0]!.turns[0]?.status === 'completed');
+    assert.equal(calls, 2); assert.match(followupContext, /Second task/); assert.match(followupContext, /miraParentInstruction/);
+    const receipt = await f.manager.send('live-message', c.id, 'Second task', t);
+    assert.equal(receipt.delivery.route, 'current_turn'); assert.equal(receipt.delivery.status, 'consumed');
+    assert.ok(receipt.delivery.inputRecordId);
+    const records = [...f.writers.values()][0]!.state.records;
+    assert.equal(records.filter(record => record.id === receipt.delivery.inputRecordId).length, 1);
+    assert.equal(f.parent.events.length, 1, 'one terminal result for the current turn');
+    const saved = structuredClone(f.parent.children[0]!.turns);
     await f.manager.cancel(c.id); assert.deepEqual(f.parent.children[0]!.turns, saved);
   } finally { release.resolve(); await f.manager.close(); }
 });
 
+
+test('running followup waits for the current tool outcome and leaves old siblings unstarted', async () => {
+  const entered = deferred(); const release = deferred(); const effects: string[] = []; let requests = 0; let cancelledTool = false; let revisedContext = '';
+  const f = fixture(new Parent(), () => [effectTool(async (callId, _args, signal) => {
+    const onAbort = () => { cancelledTool = true; };
+    effects.push(callId); signal?.addEventListener('abort', onAbort, { once: true });
+    entered.resolve(); await release.promise; signal?.removeEventListener('abort', onAbort); return result;
+  })]);
+  const t = transport((_m, context) => {
+    if (++requests === 1) return streamOf({ ...assistant(), stopReason: 'toolUse', content: [
+      { type: 'toolCall', id: 'current-effect', name: 'effect', arguments: {} },
+      { type: 'toolCall', id: 'unstarted-effect', name: 'effect', arguments: {} },
+    ] });
+    revisedContext = JSON.stringify(context.messages);
+    return streamOf(assistant('Completed the revised assignment'));
+  });
+  try {
+    const child = await f.manager.spawn('tool-boundary-spawn', 'Work on two sources', 'none', t); await entered.promise;
+    const admitted = await f.manager.send('tool-boundary-live', child.id, 'Inspect only the completed effect', t);
+    assert.equal(admitted.delivery.route, 'current_turn'); assert.equal(admitted.delivery.status, 'pending');
+    assert.equal(requests, 1); assert.equal(cancelledTool, false); assert.deepEqual(effects, ['current-effect']);
+    release.resolve(); await until(() => f.parent.children[0]!.turns[0]!.status === 'completed');
+    assert.equal(requests, 2); assert.equal(cancelledTool, false); assert.deepEqual(effects, ['current-effect']);
+    assert.equal(f.parent.children[0]!.turns.length, 1); assert.equal(f.parent.events.length, 1);
+    const childWriter = [...f.writers.values()][0]!;
+    assert.equal(childWriter.state.executions.length, 1); assert.ok(childWriter.state.executions[0]!.outcome);
+    assert.equal(f.parent.followups.get('tool-boundary-live')!.status, 'consumed'); assert.deepEqual(f.errors, []);
+    assert.match(revisedContext, /Inspect only the completed effect/); assert.match(revisedContext, /Execution did not start through this runtime/);
+  } finally { release.resolve(); await f.manager.close(); }
+});
+
+test('a child final committed before a followup queues a new turn with the accepting transport', async () => {
+  const entered = deferred(); const release = deferred(); let blocked = false; let oldCalls = 0; let newCalls = 0;
+  class FinalWonParent extends Parent {
+    override async finishSubagentTurn(...args: Parameters<Parent['finishSubagentTurn']>) {
+      if (!blocked && args[1] === 'completed') { blocked = true; entered.resolve(); await release.promise; }
+      return super.finishSubagentTurn(...args);
+    }
+  }
+  const f = fixture(new FinalWonParent());
+  const oldTransport = transport(() => { oldCalls++; return streamOf(assistant('Initial committed final')); });
+  const nextTransport = transport((_m, context) => {
+    newCalls++; assert.match(JSON.stringify(context.messages), /Initial committed final/); assert.match(JSON.stringify(context.messages), /New assignment after final/);
+    return streamOf(assistant('Next turn final'));
+  });
+  try {
+    const child = await f.manager.spawn('final-won-spawn', 'Finish initial task', 'none', oldTransport); await entered.promise;
+    const first = f.parent.children[0]!.turns[0]!;
+    assert.equal(first.status, 'running'); assert.ok(f.parent.links.get(first.id)!.finalRecordId);
+    const admitted = await f.manager.send('final-won-followup', child.id, 'New assignment after final', nextTransport);
+    assert.equal(admitted.delivery.route, 'queued_turn'); assert.equal(admitted.delivery.status, 'queued');
+    assert.notEqual(admitted.delivery.turnId, first.id); assert.equal(f.parent.followups.size, 0);
+    release.resolve(); await until(() => f.parent.children[0]!.turns[1]!.status === 'completed');
+    assert.equal(oldCalls, 1); assert.equal(newCalls, 1); assert.equal(f.parent.events.length, 2);
+    assert.equal(first.result?.text, 'Initial committed final'); assert.equal(f.parent.children[0]!.turns[1]!.result?.text, 'Next turn final');
+    assert.deepEqual(f.errors, []);
+  } finally { release.resolve(); await f.manager.close(); }
+});
 
 test('explicit followup sees the model-facing unknown recovery wording, not internal status fields', async () => {
   const entered = deferred(); let effects = 0; let calls = 0;
@@ -282,7 +420,7 @@ test('followup after interruption before first child input retains original task
       model: { provider: model.provider, id: model.id, api: model.api, configurationHash: createHash('sha256').update(JSON.stringify(model)).digest('hex') },
     }, 4);
     if (systemOnly) {
-      const writer = new MemoryWriter();
+      const writer = new ChildWriter(parent, child.streamId);
       await seed(writer, [{ role: 'system', content: 'task-scoped worker', timestamp: Date.now() }]);
       f.writers.set(child.streamId, writer);
     }
@@ -303,19 +441,29 @@ test('followup after interruption before first child input retains original task
 });
 
 
-test('queued followup uses the accepting parent turn transport after a same-model settings refresh', async () => {
+test('running followups retain the active transport; subsequent new turns use their accepting parent transport', async () => {
   const f = fixture(); const release = deferred(); let oldCalls = 0; let newCalls = 0; let newestCalls = 0;
-  const oldTransport = transport(async () => { oldCalls++; await release.promise; return streamOf(assistant('old turn complete')); });
+  const oldTransport = transport(async (_m, context) => {
+    oldCalls++; if (oldCalls === 1) await release.promise;
+    else { assert.match(JSON.stringify(context.messages), /First live instruction/); assert.match(JSON.stringify(context.messages), /Second live instruction/); }
+    return streamOf(assistant('old transport current-turn result'));
+  });
   const newTransport = transport(() => { newCalls++; return streamOf(assistant('new transport result')); });
   const newestTransport = transport(() => { newestCalls++; return streamOf(assistant('newest transport result')); });
   try {
     const child = await f.manager.spawn('transport-spawn', 'Hold the initial task', 'none', oldTransport);
     await until(() => oldCalls === 1);
-    await f.manager.send('transport-followup', child.id, 'Use the refreshed parent transport', newTransport);
-    await f.manager.send('transport-followup-next', child.id, 'Use the next parent transport', newestTransport);
+    assert.equal((await f.manager.send('transport-live', child.id, 'First live instruction', newTransport)).delivery.route, 'current_turn');
+    assert.equal((await f.manager.send('transport-live-next', child.id, 'Second live instruction', newestTransport)).delivery.route, 'current_turn');
     release.resolve();
+    await until(() => f.parent.children[0]!.turns[0]!.status === 'completed');
+    assert.equal(oldCalls, 2); assert.equal(newCalls, 0); assert.equal(newestCalls, 0);
+    assert.equal(f.parent.children[0]!.turns.length, 1);
+    assert.equal((await f.manager.send('transport-followup', child.id, 'Continue in a new turn', newTransport)).delivery.route, 'queued_turn');
+    await until(() => f.parent.children[0]!.turns[1]!.status === 'completed');
+    assert.equal((await f.manager.send('transport-followup-next', child.id, 'Continue in another new turn', newestTransport)).delivery.route, 'queued_turn');
     await until(() => f.parent.children[0]!.turns[2]!.status === 'completed');
-    assert.equal(oldCalls, 1); assert.equal(newCalls, 1); assert.equal(newestCalls, 1);
+    assert.equal(oldCalls, 2); assert.equal(newCalls, 1); assert.equal(newestCalls, 1);
     assert.equal(f.parent.children[0]!.turns[1]!.result?.text, 'new transport result');
     assert.equal(f.parent.children[0]!.turns[2]!.result?.text, 'newest transport result');
   } finally { release.resolve(); await f.manager.close(); }
@@ -564,26 +712,29 @@ test('close settles an admission committed after dispatch was closed without lea
   } finally { release.resolve(); await f.manager.close(); }
 });
 
-test('close marks unstarted followups interrupted after the real in-flight child settles', async () => {
+test('close interrupts unread live followups after the real in-flight child settles', async () => {
   const release = deferred(); let requests = 0;
   const f = fixture();
   const t = transport(async () => { requests++; await release.promise; return streamOf(assistant('late response')); });
   try {
     const child = await f.manager.spawn('close-followup-spawn', 'First assignment', 'none', t);
     await until(() => requests === 1);
-    await f.manager.send('close-followup-next', child.id, 'Queued assignment', t);
+    await f.manager.send('close-followup-next', child.id, 'Unread parent instruction', t);
     const closing = f.manager.close(); release.resolve(); await closing;
     assert.equal(requests, 1);
-    assert.deepEqual(f.parent.children[0]!.turns.map(turn => turn.status), ['interrupted', 'interrupted']);
-    assert.equal(f.parent.children[0]!.turns[1]!.startedAt, null);
-    assert.equal(f.parent.events.length, 2);
+    assert.deepEqual(f.parent.children[0]!.turns.map(turn => turn.status), ['interrupted']);
+    const followup = (await f.parent.findSubagentCall('close-followup-next'))!.followup!;
+    assert.equal(followup.status, 'interrupted'); assert.equal(followup.inputRecordId, null);
+    assert.equal(f.parent.events.length, 1);
   } finally { release.resolve(); await f.manager.close(); }
 });
 
 // Real child dispatcher and Pi compaction hook; summaries are deterministic
 // synthetic responses, not evidence of live-provider summarization quality.
-test('long child followups compact their own transcript with task-only instructions and retain queued input', async () => {
-  const f = fixture(); const summarizing = deferred(); const release = deferred(); let summaries = 0; let calls = 0;
+test('live child followup during frozen task summary is consumed after checkpoint in the current turn without replay', async () => {
+  let effects = 0;
+  const f = fixture(new Parent(), () => [effectTool(async () => { effects++; return result; })]);
+  const summarizing = deferred(); const release = deferred(); let summaries = 0; let calls = 0;
   let childId = ''; const seen: string[] = [];
   const t = transport(async (_m, context) => {
     const system = getSystemMessageText(getCurrentSystemMessage(context.messages)!);
@@ -592,6 +743,7 @@ test('long child followups compact their own transcript with task-only instructi
       assert.doesNotMatch(system, /你是 Mira|Memory 由系统另行注入/);
       const data = JSON.parse(String(context.messages.find(m => m.role === 'user')?.content));
       assert.equal(data.memory_snapshot, null);
+      assert.doesNotMatch(JSON.stringify(data), /LIVE_DURING_SUMMARY/);
       assert.match(data.persona_context, /task-scoped worker/);
       assert.ok(data.source_messages.length > 0);
       assert.ok(data.source_messages.every((m: { history_id: string }) => /^[a-f0-9-]{36}$/.test(m.history_id)));
@@ -600,6 +752,7 @@ test('long child followups compact their own transcript with task-only instructi
     }
     calls++; seen.push(JSON.stringify(context.messages));
     assert.match(system, /task-scoped worker/);
+    if (calls === 1) return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'compact-original-effect', name: 'effect', arguments: {} }] });
     return streamOf(assistant(`result-${calls}: ${'bounded research evidence '.repeat(60)}`));
   });
   try {
@@ -617,17 +770,26 @@ test('long child followups compact their own transcript with task-only instructi
     assert.ok(f.parent.children[0]!.turns.at(-1)!.activity.current?.checkpointId);
     assert.doesNotMatch(JSON.stringify(await f.manager.status(childId)), /checkpointId|toolHistoryId/);
     const currentCount = f.parent.children[0]!.turns.length;
-    await f.manager.send('compact-queued', childId, 'QUEUED_DURING_SUMMARY: inspect the new evidence only', t);
-    assert.equal(f.parent.children[0]!.turns.at(-1)!.status, 'queued');
+    const currentTurn = f.parent.children[0]!.turns.at(-1)!;
+    const admitted = await f.manager.send('compact-live', childId, 'LIVE_DURING_SUMMARY: inspect the new evidence only', t);
+    assert.equal(admitted.delivery.route, 'current_turn'); assert.equal(admitted.delivery.status, 'pending');
+    assert.equal(admitted.delivery.turnId, currentTurn.id);
+    assert.equal(f.parent.children[0]!.turns.at(-1)!.status, 'running');
+    assert.equal(f.parent.followups.get('compact-live')!.inputRecordId, null);
     release.resolve();
     await until(() => f.parent.children[0]!.turns.every(turn => turn.status === 'completed'));
-    assert.equal(f.parent.children[0]!.turns.length, currentCount + 1);
+    assert.equal(f.parent.children[0]!.turns.length, currentCount);
     assert.ok(f.parent.children[0]!.turns.flatMap(turn => turn.activity.events).some(event => event.name === 'context-compaction' && event.phase === 'finished' && event.status === 'completed'));
     assert.doesNotMatch(JSON.stringify(await f.manager.status(childId)), /checkpointId|toolHistoryId/);
-    assert.match(seen.at(-1)!, /QUEUED_DURING_SUMMARY/);
+    assert.match(seen.at(-1)!, /LIVE_DURING_SUMMARY/);
     assert.match(seen.at(-1)!, /TASK_SUMMARY/);
     const childWriter = [...f.writers.values()][0]!;
-    assert.ok(childWriter.state.records.some(record => record.kind === 'checkpoint'));
+    const followup = f.parent.followups.get('compact-live')!;
+    assert.equal(followup.status, 'consumed'); assert.ok(followup.inputRecordId);
+    const checkpointIndex = childWriter.state.records.findIndex(record => record.kind === 'checkpoint');
+    assert.ok(checkpointIndex >= 0);
+    assert.ok(childWriter.state.records.findIndex(record => record.id === followup.inputRecordId) > checkpointIndex);
+    assert.equal(effects, 1, 'pre-summary tool history is never replayed');
     assert.ok(!JSON.stringify(childWriter.state.records).includes('miraMemory'));
     assert.deepEqual(f.parent.state, parentBefore, 'child checkpoints do not enter main transcript');
     assert.deepEqual(f.errors, []);
@@ -677,6 +839,31 @@ for (const failure of ['error', 'cancel'] as const) test(`child summary ${failur
     assert.deepEqual(after.slice(0, saved.length), saved);
     assert.equal(after.filter(record => record.kind === 'checkpoint').length, 1);
     assert.equal(summaries, 2); assert.equal(calls, oldCalls + 1);
+    assert.deepEqual(f.errors, []);
+  } finally { release.resolve(); await f.manager.close(); }
+});
+
+
+test('followups before first claim join the same queued task in order and cannot be overtaken', async () => {
+  const f = await fixture(); const entered = deferred(), release = deferred(); let calls = 0;
+  const claim = f.parent.claimSubagentTurn.bind(f.parent);
+  f.parent.claimSubagentTurn = async id => { entered.resolve(); await release.promise; return claim(id); };
+  const t = transport((_m, context) => {
+    calls++; const text = JSON.stringify(context.messages);
+    assert.ok(text.indexOf('QUEUED_FIRST') < text.indexOf('QUEUED_SECOND'));
+    assert.match(text, /QUEUED_FIRST/); assert.match(text, /QUEUED_SECOND/);
+    return streamOf(assistant('Completed one ordered task'));
+  });
+  try {
+    const child = await f.manager.spawn('queued-order-spawn', 'Original assignment', 'none', t);
+    await entered.promise;
+    const first = await f.manager.send('queued-order-first', child.id, 'QUEUED_FIRST', t);
+    const second = await f.manager.send('queued-order-second', child.id, 'QUEUED_SECOND', t);
+    assert.equal(first.delivery.route, 'queued_task'); assert.equal(second.delivery.route, 'queued_task');
+    assert.equal(first.delivery.status, 'pending'); assert.equal(f.parent.children[0]!.turnCount, 1);
+    release.resolve(); await until(() => f.parent.children[0]!.turns[0]!.status === 'completed');
+    assert.equal(calls, 1); assert.equal(f.parent.children[0]!.turnCount, 1);
+    assert.ok([...f.parent.followups.values()].every(value => value.status === 'consumed'));
     assert.deepEqual(f.errors, []);
   } finally { release.resolve(); await f.manager.close(); }
 });

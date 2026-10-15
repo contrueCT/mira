@@ -123,3 +123,13 @@ Extension SDK 绑定持久安装身份，扩展负责时区、DST、提醒内容
 ## 可选网页访问密码
 
 [ADR 0033](adr/0033-web-password-access.md) 扩展本地 Web 的技术访问边界：精确 public origin 加可选共用密码，不增加认知会话、账户系统或模型动作批准。只有静态登录壳/auth 状态与登录公开，私有 API 和附件统一校验 cookie；External SDK 保持回环来源限制。
+
+## Parent-to-child live instructions
+
+[ADR 0039](adr/0039-live-child-followups.md) adds an independent task inbox and
+child transcript boundary. Running parent followups are consumed after the current
+single tool, before old siblings; final-first/idle inputs keep queued turns. The
+parent and child fenced connections share a child-row admission lock without
+sharing main Wake ownership. Durable parent-call provenance, receipt order,
+unknown-effect recovery and frozen task-only compaction remain explicit. No new
+Memory, Dreaming, nested delegation or UI lifecycle is introduced.
