@@ -1,9 +1,10 @@
+import { hostCapabilityTestEnvironment, maySkipUnavailableHostSocket } from '../host-capabilities.mts';
 import { diagnosticText, startupEvidence, startupProbePassed } from '../e2e/browser-native-probe.mts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawn } from 'node:child_process';
 import { BrowserProcesses } from '../../apps/server/src/browser-processes.ts';
-import { mkdtemp, writeFile, chmod, rm, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, chmod, rm, readFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { BrowserManager, BrowserControlError } from '../../apps/server/src/browser-manager.ts';
@@ -109,14 +110,14 @@ test('real spawn checks pinned version without shell interpretation or launching
 
 test('real supervised daemon transport launches once, preserves generation, and never respawns after death', async t => {
   const base = await mkdtemp(path.join(tmpdir(), 'mira-browser-daemon-test-'));
-  const executable = path.join(base, 'fake-native'); const log = path.join(base, 'commands.jsonl'); const failure = path.join(base, 'failure'); const descendant = path.join(base, 'descendant'); const relaunch = path.join(base, 'relaunch');
+  const executable = path.join(base, 'fake-native'); const log = path.join(base, 'commands.jsonl'); const failure = path.join(base, 'failure'); const descendant = path.join(base, 'descendant'); const relaunch = path.join(base, 'relaunch'); const rejectLaunch = path.join(base, 'reject-launch');
   const session = '11111111-1111-1111-1111-111111111111';
   const script = `#!${process.execPath}
 const fs = require('node:fs'), net = require('node:net'), path = require('node:path');
 if (process.argv.includes('--version')) { console.log('agent-browser 0.39.1'); process.exit(0); }
 const dir = process.env.AGENT_BROWSER_SOCKET_DIR, session = process.env.AGENT_BROWSER_SESSION;
 fs.writeFileSync(path.join(dir, session + '.pid'), String(process.pid));
-const server = net.createServer(socket => { let text = ''; socket.on('data', chunk => { text += chunk; if (!text.includes('\\n')) return; const cmd = JSON.parse(text.split('\\n')[0]); if (cmd.action === 'launch' || (cmd.action === 'snapshot' && fs.existsSync(${JSON.stringify(relaunch)}))) { const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {detached:true, stdio:'ignore'}); fs.appendFileSync(${JSON.stringify(descendant)}, String(child.pid) + '\\n'); } fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ action: cmd.action, pid: process.pid, directory: dir, engine: process.env.AGENT_BROWSER_ENGINE, requestedEngine: cmd.engine }) + '\\n'); socket.end(JSON.stringify({ id: cmd.id, success: true, data: { ...(cmd.action === 'stream_status' ? {enabled: true, port: 12345} : {ok: true}), lifecycle: { launched: cmd.action === 'launch', relaunchedBrowser: fs.existsSync(${JSON.stringify(relaunch)}) && cmd.action === 'snapshot', restartedBackground: false } } }) + '\\n'); if (cmd.action === 'close') server.close(() => process.exit(0)); }); });
+const server = net.createServer(socket => { let text = ''; socket.on('data', chunk => { text += chunk; if (!text.includes('\\n')) return; const cmd = JSON.parse(text.split('\\n')[0]); if (cmd.action === 'launch' && fs.existsSync(${JSON.stringify(rejectLaunch)})) { socket.end(JSON.stringify({id:cmd.id,success:false,error:'synthetic-startup-private-detail'}) + '\\n'); return; } if (cmd.action === 'launch' || (cmd.action === 'snapshot' && fs.existsSync(${JSON.stringify(relaunch)}))) { const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {detached:true, stdio:'ignore'}); fs.appendFileSync(${JSON.stringify(descendant)}, String(child.pid) + '\\n'); } fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ action: cmd.action, pid: process.pid, directory: dir, engine: process.env.AGENT_BROWSER_ENGINE, requestedEngine: cmd.engine }) + '\\n'); socket.end(JSON.stringify({ id: cmd.id, success: true, data: { ...(cmd.action === 'stream_status' ? {enabled: true, port: 12345} : {ok: true}), lifecycle: { launched: cmd.action === 'launch', relaunchedBrowser: fs.existsSync(${JSON.stringify(relaunch)}) && cmd.action === 'snapshot', restartedBackground: false } } }) + '\\n'); if (cmd.action === 'close') server.close(() => process.exit(0)); }); });
 server.on('error', e => { fs.writeFileSync(${JSON.stringify(failure)}, e.code || 'unknown'); process.exit(1); });
 server.listen(path.join(dir, session + '.sock'));
 `;
@@ -124,7 +125,7 @@ server.listen(path.join(dir, session + '.sock'));
   try {
     await writeFile(executable, script); await chmod(executable, 0o700);
     try { await driver.open(session, 'https://example.com'); }
-    catch (error) { if (!process.env['CI'] && await readFile(failure, 'utf8').catch(() => '') === 'EPERM') { t.skip('Host prohibits Unix sockets; real daemon transport gate is blocked'); return; } throw error; }
+    catch (error) { if (maySkipUnavailableHostSocket(await readFile(failure, 'utf8').catch(() => ''), process.env)) { t.skip('Host prohibits Unix sockets; real daemon transport gate is blocked'); return; } throw error; }
     await driver.command(session, ['snapshot']);
     const lines = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     assert.deepEqual(lines.map(line => line.action), ['launch', 'navigate', 'snapshot']);
@@ -142,6 +143,11 @@ server.listen(path.join(dir, session + '.sock'));
     }
     await assert.rejects(driver.command(session, ['snapshot']), /ended|transport|generation|ENOENT|invalidated/);
     assert.equal((await readFile(log, 'utf8')).trim().split('\n').length, 4);
+    await writeFile(rejectLaunch, '1');
+    await assert.rejects(driver.open('22222222-2222-2222-2222-222222222222', 'https://example.com'), error => {
+      assert.match(String(error), /native launch failed.*cleanup confirmed/);
+      assert.equal(String(error).includes('synthetic-startup-private-detail'), false); return true;
+    });
   } finally { await driver.dispose(); const childPids = (await readFile(descendant, 'utf8').catch(() => '')).trim().split('\n').map(Number); for (const childPid of childPids) if (childPid > 1) { try { process.kill(-childPid, 'SIGKILL'); } catch {} } await rm(base, { recursive: true, force: true }); }
 });
 
@@ -329,4 +335,51 @@ test('startup probe verdict rejects native close rejection and uncertain command
   const good = { launch: { success: true }, close: { success: true }, ownedBrowserCaptured: true, cleanup: 'confirmed' };
   assert.equal(startupProbePassed(good), true);
   for (const patch of [{ close: { success: false } }, { close: undefined }, { probeError: { text: 'lost reply' } }, { cleanup: 'unknown' }]) assert.equal(startupProbePassed({ ...good, ...patch }), false);
+});
+
+
+test('isolated test harness preserves strict socket requirement without forwarding CI to browsers', () => {
+  const strict = hostCapabilityTestEnvironment({ CI: 'true' });
+  assert.deepEqual(strict, { MIRA_TEST_REQUIRE_HOST_SOCKETS: '1' });
+  assert.equal(maySkipUnavailableHostSocket('EPERM', strict), false);
+  assert.equal(maySkipUnavailableHostSocket('EPERM', {}), true);
+  assert.equal(maySkipUnavailableHostSocket('EACCES', {}), false);
+  assert.equal('CI' in strict, false);
+});
+
+
+test('managed browser discovers a later skill-prefix install and keeps explicit executable priority', async () => {
+  const home = await mkdtemp(path.join(tmpdir(), 'mira-browser-discovery-'));
+  const previous = process.env['MIRA_AGENT_BROWSER_EXECUTABLE']; delete process.env['MIRA_AGENT_BROWSER_EXECUTABLE'];
+  const previousPath = process.env['PATH'];
+  try {
+    const old = path.join(home, 'old'); await mkdir(old);
+    const oldLauncher = path.join(old, 'agent-browser.js');
+    await writeFile(oldLauncher, '// official-layout fixture'); await chmod(oldLauncher, 0o700);
+    await symlink(oldLauncher, path.join(old, 'agent-browser'));
+    process.env['PATH'] = old;
+    const driver = new AgentBrowserDriver({ miraHome: home });
+    const bin = path.join(home, 'tools', 'agent-browser', 'node_modules', 'agent-browser', 'bin');
+    await mkdir(bin, { recursive: true });
+    const launcher = path.join(bin, 'agent-browser.js'); await writeFile(launcher, '// official-layout fixture, never executed'); await chmod(launcher, 0o700);
+    const glibc = (process.report.getReport() as { header?: { glibcVersionRuntime?: string } }).header?.glibcVersionRuntime;
+    const platform = process.platform === 'linux' && !glibc ? 'linux-musl' : process.platform;
+    const native = path.join(bin, `agent-browser-${platform}-${process.arch}`);
+    const log = path.join(home, 'selected');
+    const oldNative = path.join(old, path.basename(native));
+    await writeFile(oldNative, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(log)}, 'old-path'); console.log('agent-browser 0.1.0');`); await chmod(oldNative, 0o700);
+    // Temporarily remove the standard launcher to reproduce first resolution via PATH.
+    await rm(launcher);
+    await assert.rejects(driver.open('22222222-2222-2222-2222-222222222222', 'https://example.test'), /pinned/);
+    assert.equal(await readFile(log, 'utf8'), 'old-path');
+    await writeFile(launcher, '// official-layout fixture'); await chmod(launcher, 0o700);
+    await writeFile(native, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(log)}, 'skill-prefix'); console.log('agent-browser 9.9.9');`); await chmod(native, 0o700);
+    await assert.rejects(driver.open('33333333-3333-3333-3333-333333333333', 'https://example.test'), /pinned/);
+    assert.equal(await readFile(log, 'utf8'), 'skill-prefix');
+    const override = path.join(home, 'override');
+    await writeFile(override, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(log)}, 'explicit'); console.log('agent-browser 9.9.9');`); await chmod(override, 0o700);
+    const explicit = new AgentBrowserDriver({ miraHome: home, executable: override });
+    await assert.rejects(explicit.open('44444444-4444-4444-4444-444444444444', 'https://example.test'), /pinned/);
+    assert.equal(await readFile(log, 'utf8'), 'explicit');
+  } finally { if (previousPath === undefined) delete process.env['PATH']; else process.env['PATH'] = previousPath; if (previous === undefined) delete process.env['MIRA_AGENT_BROWSER_EXECUTABLE']; else process.env['MIRA_AGENT_BROWSER_EXECUTABLE'] = previous; await rm(home, { recursive: true, force: true }); }
 });

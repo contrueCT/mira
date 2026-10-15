@@ -51,3 +51,21 @@ CDP composition 事件检查不是操作系统原生 IME 全平台认证。下�
 ## 首次真实 CI 失败（保留记录）
 
 PR39 head01e83b4 / run38729341707 的真实 browser gate 2/2 失败：runtime browser_open 后为 error；直接 driver.open 的启动失败又被 cleanup unknown 掩盖。尚未进入接管或 kill-daemon 断言，截图不计成功验收。其他已执行 gates 与 macOS 通过。增加无URL/账户/输入的隔离原生启动probe，保留受限startup响应与stderr用于取证，不改变生产日志、浏览器安全参数或cleanup判据。
+
+## 原生启动原因已取证
+
+head763993f / run38734216371 的短probe保留原始 `No usable sandbox!` 错误：Playwright下载版Chromium受到Ubuntu AppArmor user namespace限制。未启用no-sandbox、未透传CI开关、未改OS策略。下一批仅合成CI选runner预装的官方Google Chrome stable（版本写入job日志），使用其现有受支持sandbox；不移动binary，不做安全降级fallback。生产启动错误改为分别报告失败阶段与清理状态，原始native错误不进工具历史。下一次真实probe与完整gate仍待执行。
+
+后续完整复审修复了导航以proxy收包时间误丢静态新页帧的问题，现使用已验证的native事件时间戳；真实测试要求静态提交页有新可用画面。test harness用专门strict socket标记维持CI禁止skip，不向native透传CI。普通安装增加既有miraHome/tools标准目录发现，显式路径仍优先，无安装器/下载器；新增后安装发现与override回归。以上仍待最终完整独立复审和新head真实CI。
+
+### 延迟状态轮询修复
+
+完整复审发现 browser list GET 可晚于更新的控制/WS 状态返回，覆盖同 epoch 的 requesting→human 或新 epoch，并清空已渲染输入 fence。面板现在为本地状态更新计数；读取开始后若发生更新，则丢弃该读取及其错误。新增两项 Playwright 回归：延迟 agent/旧 epoch 与 requesting/同 epoch GET，先收到 human 状态与唯一静态帧，再释放旧 GET，仍可发送绑定该帧的输入。真实浏览器回归等待 CI，未以本地 EPERM 环境宣称通过。
+
+### 官方 stream 启动流量修复
+
+后续完整复审用未修改代理的内存 WebSocket 替身复现：官方种子 status/tabs/frame，加上身份复核两次 stream_status 的 command/result/tabs，会在验证完成前超过原 8 条缓存而误断连。现在忽略不会转发的事件后才计数，仅保留有序 frame/url/tabs/status，并同时限制 8 条/8MiB；身份复核完成前仍不转发。无 socket 回归执行生产代理源码，覆盖官方启动序列、40 条 console 消息不泄漏、条数与字节溢出关闭，均通过。这是协议替身测试，不替代仍待运行的真实官方 daemon/Chrome gate。
+
+### 安装恢复与开发代理复审修复
+
+完整复审补充两项 P2 并已修复：每次新建受管会话重新解析官方可执行文件，避免旧 PATH 版本验证失败后缓存阻止标准目录安装生效；无 socket 回归先拒绝旧 PATH 版本，再安装标准目录候选并验证下次 open 选择它，显式路径仍优先。Vite 开发代理启用 WebSocket 转发，并对 proxyReqWs 使用与 HTTP 相同的精确本机 Host/Origin 改写；生产鉴权不变。无监听配置测试覆盖可信与不可信来源，但实际开发服务器 WS 联通仍未本地验收。

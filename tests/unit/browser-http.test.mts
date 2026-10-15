@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { IncomingMessage } from 'node:http';
@@ -55,4 +56,27 @@ test('capture-time fence drops cached old frames arriving after tab/URL transiti
   assert.equal(fence.accepts(299), false);
   assert.equal(fence.accepts(301), true);
   for (const bad of [undefined, null, 0, NaN, Infinity, '999']) assert.equal(fence.accepts(bad), false);
+});
+
+
+test('delayed navigation delivery accepts a valid post-event static frame without accepting pre-event captures', () => {
+  const fence = new BrowserFrameFence(); fence.page('target', 'https://example.test/', 1000);
+  // Native navigation emission 2000; IPC/proxy processes the event at 2030.
+  fence.url('https://example.test/static', 2000);
+  assert.equal(fence.accepts(1999), false);
+  assert.equal(fence.accepts(2010), true, 'post-event frame must not be compared with proxy receipt time 2030');
+  fence.url('https://example.test/static', 3000);
+  assert.equal(fence.accepts(2999), false, 'same URL reload retains document fencing');
+  assert.equal(fence.accepts(3010), true);
+});
+
+
+test('stream identity verification buffers only bounded viewport traffic, never command/console contents', () => {
+  for (const scenario of ['normal', 'count', 'bytes']) {
+    execFileSync(process.execPath, ['tests/browser-stream-startup.mjs', scenario], { timeout: 15_000, stdio: 'pipe' });
+  }
+});
+
+test('development HTTP and WebSocket proxy rewrite only the trusted local origin', () => {
+  execFileSync(process.execPath, ['tests/browser-dev-proxy.mjs'], { timeout: 15_000, stdio: 'pipe' });
 });

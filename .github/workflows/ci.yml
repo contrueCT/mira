@@ -36,7 +36,9 @@ jobs:
           echo "MIRA_AGENT_BROWSER_EXECUTABLE=$BINARY" >> "$GITHUB_ENV"
       - name: Record synthetic native startup result
         run: |
-          export MIRA_BROWSER_EXECUTABLE_PATH="$(node --input-type=module -e 'import { chromium } from "@playwright/test"; console.log(chromium.executablePath())')"
+          export MIRA_BROWSER_EXECUTABLE_PATH=/usr/bin/google-chrome
+          test -x "$MIRA_BROWSER_EXECUTABLE_PATH"
+          "$MIRA_BROWSER_EXECUTABLE_PATH" --version
           node --input-type=module -e 'import { mkdir, writeFile } from "node:fs/promises"; import { probeNativeBrowserLaunch, startupProbePassed } from "./tests/e2e/browser-native-probe.mts"; const result = await probeNativeBrowserLaunch(); await mkdir("test-results", {recursive:true}); await writeFile("test-results/native-startup-diagnostic.json", JSON.stringify(result,null,2)); if (!startupProbePassed(result)) process.exitCode=1;'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
@@ -87,6 +89,11 @@ jobs:
           chmod u+x "$BINARY"
           "$BINARY" --version
           echo "MIRA_AGENT_BROWSER_EXECUTABLE=$BINARY" >> "$GITHUB_ENV"
+      - name: Select runner-installed official Chrome for managed-browser tests
+        run: |
+          test -x /usr/bin/google-chrome
+          /usr/bin/google-chrome --version
+          echo "MIRA_BROWSER_EXECUTABLE_PATH=/usr/bin/google-chrome" >> "$GITHUB_ENV"
       - name: Verify browser interactions and render screenshots
         run: pnpm test:e2e
       - name: Verify managed browser handoff through real daemon, HTTP, PostgreSQL and Chromium

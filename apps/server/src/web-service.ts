@@ -157,7 +157,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content });
       terminals = new TerminalManager({ cwd, writeOverflowInput });
       const terminalManager = terminals;
-      browser = new BrowserManager({ cwd, mainOwner: writer.miraId });
+      browser = new BrowserManager({ cwd, mainOwner: writer.miraId, ...(options.miraHome === undefined ? {} : { miraHome: options.miraHome }) });
       const browserManager = browser;
       writer.signal.addEventListener('abort', () => { void browserManager.close(); }, { once: true });
       writer.signal.addEventListener('abort', () => { void terminalManager.close(); }, { once: true });

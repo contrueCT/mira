@@ -43,3 +43,5 @@ ADR 0007 回归直接工具调用与模型普通澄清，保留 schema/参数、
 - 终端：`unit/terminals.test.mts`真实spawn/PTY/进程树与owner崩溃；`recovery/terminals.test.mts`真实PG/service跨轮次与插话边界。执行前显式 `pnpm terminal:prepare`，Mac/Linux CI不可用mock替代真实PTY。
 
 - 受管浏览器：browser-manager/browser-http 离线机制、browser.spec UI fixture 与 browser-real 实际 daemon/PG/HTTP/浏览器链路分开报告；本地 socket/Chromium 被拒绝时不得将编译成功计为验收。
+
+- 浏览器 native socket 合约由 run-tests 的 MIRA_TEST_REQUIRE_HOST_SOCKETS 标记在 CI 禁止跳过；该 test-only 标记不传 native 环境，不透传会改变 sandbox 行为的 CI。

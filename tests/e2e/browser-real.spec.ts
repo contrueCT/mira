@@ -47,6 +47,14 @@ test('real managed browser preserves page/cookie across handoff; rendered input,
   let db: Awaited<ReturnType<typeof createTestDatabase>> | undefined;
   let service: LocalWebService | undefined;
   let app: ReturnType<typeof createLocalHttp> | undefined;
+  let lastRemoteNavigationGeneration = 0; let lastRemoteFrameGeneration = 0;
+  page.on('websocket', socket => { if (!socket.url().endsWith('/api/browser/stream')) return;
+    socket.on('framereceived', event => {
+      const value = JSON.parse(String(event.payload)) as { type?: string; generation?: number };
+      if (value.type === 'url') lastRemoteNavigationGeneration = value.generation ?? 0;
+      if (value.type === 'frame') lastRemoteFrameGeneration = value.generation ?? 0;
+    });
+  });
   const cookie = 'browser-real-session';
   let submitted: { value: string; cookie: string } | undefined;
   let documentRequests = 0; let submissions = 0;
@@ -182,10 +190,14 @@ test('real managed browser preserves page/cookie across handoff; rendered input,
     await page.setViewportSize({ width: 390, height: 844 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath('browser-real-narrow.png'), fullPage: true });
+    const generationBeforeSubmit = lastRemoteFrameGeneration;
     await bridge.focus(); await page.keyboard.press('Tab'); await page.keyboard.press('Enter');
     await expect.poll(() => submitted?.value).toBe('Latin-中文-paste');
     expect(submitted?.cookie).toContain(`test_session=${cookie}`);
     expect(documentRequests).toBe(1);
+    await expect.poll(() => lastRemoteNavigationGeneration).toBeGreaterThan(generationBeforeSubmit);
+    await expect.poll(() => lastRemoteFrameGeneration).toBeGreaterThanOrEqual(lastRemoteNavigationGeneration);
+    await expect(bridge).toBeEnabled(); // Static destination has a new usable frame, not a blank connected viewport.
     await page.getByRole('button', { name: '交还 Mira', exact: true }).click();
     await expect.poll(() => service!.browser.list()[0]?.state).toBe('agent');
     await expect(managed.command(opened.id, ['get', 'title'], observed.observation)).rejects.toThrow(/Fresh browser snapshot/);

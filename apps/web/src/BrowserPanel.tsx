@@ -32,13 +32,15 @@ export function BrowserPanel({ active }: { active: boolean }) {
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
   const [expanded, setExpanded] = useState(false);
+  const statusRevision = useRef(0);
   useVisiblePoll(active, async signal => {
+    const revision = statusRevision.current;
     try {
       const result = await api<{ browsers: BrowserStatus[] }>('/api/browser', { signal });
-      if (signal.aborted) return;
+      if (signal.aborted || revision !== statusRevision.current) return;
       setBrowsers(result.browsers); setLoaded(true); setError(null);
       setSelected(current => result.browsers.some(browser => browser.id === current) ? current : result.browsers[0]?.id ?? '');
-    } catch { if (!signal.aborted) { setLoaded(true); setError('暂时无法读取浏览器状态，请重试。'); } }
+    } catch { if (!signal.aborted && revision === statusRevision.current) { setLoaded(true); setError('暂时无法读取浏览器状态，请重试。'); } }
   }, 2500, version);
   useEffect(() => {
     const dialog = document.querySelector('.settings-dialog');
@@ -52,7 +54,7 @@ export function BrowserPanel({ active }: { active: boolean }) {
     {!loaded && <p role="status">正在读取浏览器…</p>}
     {loaded && !error && browsers.length === 0 && <div className="browser-empty">还没有活动的浏览器。Mira 使用浏览器时会显示在这里。</div>}
     {browsers.length > 0 && <label className="browser-select">当前浏览器<select value={selected} onChange={event => setSelected(event.target.value)}>{browsers.map((item, index) => <option key={item.id} value={item.id}>{item.ownerLabel || `浏览器 ${index + 1}`} · {item.domain ?? '空白页'}</option>)}</select></label>}
-    {active && browser && <BrowserViewport key={browser.id} browser={browser} expanded={expanded} onExpand={() => setExpanded(value => !value)} onStatus={next => setBrowsers(current => current.map(item => item.id === next.id && item.epoch <= next.epoch ? next : item))} />}
+    {active && browser && <BrowserViewport key={browser.id} browser={browser} expanded={expanded} onExpand={() => setExpanded(value => !value)} onStatus={next => { statusRevision.current += 1; setBrowsers(current => current.map(item => item.id === next.id && item.epoch <= next.epoch ? next : item)); }} />}
     {window.location.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname) && <p className="browser-note">当前远程连接未加密。输入账号密码前，请使用 HTTPS 连接 Mira。</p>}
     <p className="browser-note">关闭设置或连接中断不会自动交还控制权。文件选择、上传和下载暂不支持。</p>
   </div>;

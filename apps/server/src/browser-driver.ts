@@ -6,7 +6,7 @@ import { mkdtemp, lstat, readFile, rm, realpath, access } from 'node:fs/promises
 import { setTimeout as delay } from 'node:timers/promises';
 import { connect } from 'node:net';
 import { get } from 'node:http';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import path from 'node:path';
 
 export interface BrowserDriver {
@@ -72,11 +72,13 @@ export class AgentBrowserDriver implements BrowserDriver {
   readonly #explicitExecutable: boolean;
   #resolved: string | undefined;
   readonly #cwd: string;
+  readonly #miraHome: string;
   readonly #env: NodeJS.ProcessEnv;
   readonly #browserExecutable: string | undefined;
-  constructor(options: { cwd?: string; executable?: string } = {}) {
+  constructor(options: { cwd?: string; executable?: string; miraHome?: string } = {}) {
     this.#explicitExecutable = options.executable !== undefined || process.env['MIRA_AGENT_BROWSER_EXECUTABLE'] !== undefined;
     this.#executable = options.executable ?? process.env['MIRA_AGENT_BROWSER_EXECUTABLE'] ?? 'agent-browser'; this.#cwd = options.cwd ?? process.cwd();
+    this.#miraHome = options.miraHome ?? process.env['MIRA_HOME'] ?? path.join(homedir(), '.mira');
     this.#env = browserLaunchEnvironment(process.env);
     this.#browserExecutable = process.env['MIRA_BROWSER_EXECUTABLE_PATH'];
   }
@@ -92,8 +94,9 @@ export class AgentBrowserDriver implements BrowserDriver {
     });
   }
   async #resolveExecutable(): Promise<void> {
-    if (this.#resolved) return;
+    // Re-resolve each new session so an on-demand install or replacement is visible.
     const candidates = this.#executable.includes('/') ? [this.#executable] : (this.#env['PATH'] ?? '').split(path.delimiter).map(dir => path.join(dir, this.#executable));
+    if (!this.#explicitExecutable) candidates.unshift(path.join(this.#miraHome, 'tools', 'agent-browser', 'node_modules', 'agent-browser', 'bin', 'agent-browser.js'));
     for (const candidate of candidates) {
       try {
         let resolved = await realpath(candidate); await access(resolved, 1);
@@ -122,6 +125,7 @@ export class AgentBrowserDriver implements BrowserDriver {
     const owned = child.pid ? new BrowserProcesses(child.pid) : undefined;
     let ended = false;
     const exited = new Promise<void>(resolve => { child.once('exit', () => { ended = true; owned?.retireRoot(); this.#notifyExit(session); void owned?.cleanup().catch(() => {}); resolve(); }); child.once('error', () => { ended = true; owned?.retireRoot(); this.#notifyExit(session); void owned?.cleanup().catch(() => {}); resolve(); }); });
+    let stage = 'daemon startup';
     try {
       const socket = path.join(directory, `${session}.sock`);
       const deadline = Date.now() + 10_000;
@@ -133,16 +137,23 @@ export class AgentBrowserDriver implements BrowserDriver {
           this.#handles.set(session, { directory, socket, dev: stat.dev, ino: stat.ino, pid, process: child, exited, owned: owned!, invalid: false }); break;
         } catch { await delay(25); }
       }
+      stage = 'initial process ownership';
       await owned!.capture();
+      stage = 'native launch';
       const browserExecutable = this.#browserExecutable;
       await this.#request(session, { action: 'launch', headless: true, engine: 'chrome', pinTab: true, plugins: [], ...(browserExecutable ? { executablePath: browserExecutable } : {}) });
       await owned!.capture(true);
+      stage = 'initial navigation';
       const output = await this.#request(session, browserProtocolCommand(['open', url]));
       await owned!.capture();
       return output;
     } catch {
-      await this.#stop(child, exited, owned); this.#handles.delete(session); await rm(directory, { recursive: true, force: true });
-      throw Error('Browser launch failed or outcome unknown; captured owned processes were stopped');
+      let cleanup = 'confirmed';
+      try { await this.#stop(child, exited, owned); } catch { cleanup = 'unknown'; }
+      // Preserve the failure phase separately from cleanup, without exposing native
+      // errors (which can include paths or page data) through a model tool result.
+      if (cleanup === 'confirmed') { this.#handles.delete(session); await rm(directory, { recursive: true, force: true }); }
+      throw Error(`Browser ${stage} failed or outcome unknown; owned-process cleanup ${cleanup}`);
     }
   }
   async #stop(child: ChildProcess, exited: Promise<void>, owned?: BrowserProcesses): Promise<void> {
@@ -165,7 +176,7 @@ export class AgentBrowserDriver implements BrowserDriver {
     if (!stat.isSocket() || stat.dev !== h.dev || stat.ino !== h.ino || pid !== h.pid) throw Error('Browser generation changed');
     process.kill(h.pid, 0);
     type Response = { id?: string; success?: boolean; data?: { lifecycle?: { launched?: boolean; relaunchedBrowser?: boolean; restartedBackground?: boolean } } };
-    let response: Response;
+    let response: Response | undefined;
     try { response = await new Promise<Response>((resolve, reject) => {
       const requestId = randomUUID();
       const socket = connect(h.socket); let bytes = 0; const chunks: Buffer[] = []; let settled = false;
@@ -189,10 +200,10 @@ export class AgentBrowserDriver implements BrowserDriver {
       h.owned.markUnobservableCommand(); throw error;
     } finally {
       // Capture replacement process groups before interpreting lifecycle changes or invalidating.
-      try { await h.owned.capture(command.action !== 'close'); }
+      try { await h.owned.capture(command.action !== 'close' && !(command.action === 'launch' && response?.success === false)); }
       catch { this.#notifyExit(session); throw Error('Browser ownership capture failed; command and cleanup outcome unknown'); }
     }
-    if (response.success !== true) throw Error('Browser command failed or outcome unknown');
+    if (response?.success !== true) throw Error('Browser command failed or outcome unknown');
     const lifecycle = response.data?.lifecycle;
     if (!lifecycle || (command.action !== 'launch' && (lifecycle.launched !== false || lifecycle.relaunchedBrowser !== false || lifecycle.restartedBackground !== false))) {
       this.#notifyExit(session); throw Error('Browser instance changed during the command; outcome unknown');

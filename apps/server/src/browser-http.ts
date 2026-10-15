@@ -167,15 +167,25 @@ export function registerBrowserHttp(app: FastifyInstance, backend: BrowserWebBac
         url.search = '?pacing=ack&maxFps=15';
         const upstream = new WebSocket(url, { maxPayload: 4 * 1024 * 1024, perMessageDeflate: false, handshakeTimeout: 5000 }); connection.upstream = upstream;
         upstream.on('error', () => close(connection)); upstream.on('close', () => close(connection));
-        const pending: Array<{ data: string; binary: boolean }> = [];
+        const pending: Array<{ data: string; binary: boolean }> = []; let pendingBytes = 0;
         upstream.on('open', () => {
           void Promise.resolve(backend.stream(browser.id)).then(current => {
             if (connection.closed || current !== address) { close(connection); return; }
-            upstreamVerified = true; for (const message of pending.splice(0)) receive(message.data, message.binary);
+            upstreamVerified = true; pendingBytes = 0; for (const message of pending.splice(0)) receive(message.data, message.binary);
           }).catch(() => close(connection));
         });
         upstream.on('message', (data, binary) => {
-          if (!upstreamVerified) { if (pending.length >= 8) { close(connection); return; } pending.push({ data: data.toString(), binary }); return; }
+          if (!upstreamVerified) {
+            if (binary) return;
+            const text = data.toString(); let value: Record<string, unknown>;
+            try { value = JSON.parse(text) as Record<string, unknown>; } catch { close(connection); return; }
+            // Verification itself emits command/result traffic. Never retain it
+            // (or console/input contents); only viewport events need ordered replay.
+            if (!value || !['frame', 'url', 'tabs', 'status'].includes(String(value.type))) return;
+            const bytes = Buffer.byteLength(text);
+            if (pending.length >= 8 || pendingBytes + bytes > 8 * 1024 * 1024) { close(connection); return; }
+            pendingBytes += bytes; pending.push({ data: text, binary: false }); return;
+          }
           receive(data.toString(), binary);
         });
         const receive = (data: string, binary: boolean) => {
@@ -191,13 +201,17 @@ export function registerBrowserHttp(app: FastifyInstance, backend: BrowserWebBac
             frame = { seq: value.seq, generation, width: m.deviceWidth, height: m.deviceHeight };
             send(connection, { type: 'frame', seq: value.seq, data: value.data, epoch: browser.epoch, generation, metadata: { deviceWidth: m.deviceWidth, deviceHeight: m.deviceHeight, timestamp: finite(m.timestamp, Number.MAX_SAFE_INTEGER) ? m.timestamp : 0 } });
           } else if (value.type === 'url' || value.type === 'tabs') {
+            // Native emission time, not delayed proxy receipt time, separates
+            // pre-navigation captures from a valid static destination frame.
+            if (!integer(value.timestamp) || Number(value.timestamp) <= 0 || Number(value.timestamp) > Date.now() + 1000) { close(connection); return; }
+            const emittedAt = Number(value.timestamp);
             let changed = false;
-            if (value.type === 'url' && typeof value.url === 'string') changed = fence.url(value.url);
+            if (value.type === 'url' && typeof value.url === 'string') changed = fence.url(value.url, emittedAt);
             if (value.type === 'tabs') {
               const tabs = Array.isArray(value.tabs) ? value.tabs as Array<Record<string, unknown>> : [];
               const active = tabs.find(tab => tab?.active === true);
               if (!active || typeof active.targetId !== 'string' || typeof active.url !== 'string') { backend.invalidate(browser.id); close(connection); return; }
-              changed = fence.page(active.targetId, active.url);
+              changed = fence.page(active.targetId, active.url, emittedAt);
             }
             if (!changed) return;
             if (frame) upstream.send(JSON.stringify({ type: 'ack', seq: frame.seq }));

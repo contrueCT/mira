@@ -105,3 +105,38 @@ test('browser settings empty/error states and canceled late ticket cannot open a
   await page.getByRole('tab', { name: '模型', exact: true }).click(); resolveTicket!();
   await page.waitForTimeout(100); expect(sockets).toBe(0);
 });
+
+for (const stale of [{ state: 'agent', epoch: 1 }, { state: 'requesting', epoch: 2 }]) {
+  test(`delayed ${stale.state} poll cannot replace a newer rendered human lease`, async ({ page }) => {
+    let status = { id: 'poll-browser', state: stale.state, epoch: stale.epoch, ownerLabel: 'Mira', domain: 'example.test' };
+    let defer = false;
+    let release: (() => Promise<void>) | undefined;
+    let socket: WebSocketRoute | undefined;
+    const received: Record<string, unknown>[] = [];
+    await page.route('**/api/browser', async route => {
+      const snapshot = { ...status };
+      if (defer) { defer = false; await new Promise<void>(resolve => { release = async () => { await route.fulfill({ json: { browsers: [snapshot] } }); resolve(); }; }); }
+      else await route.fulfill({ json: { browsers: [snapshot] } });
+    });
+    await page.route('**/api/browser/poll-browser/ticket', route => route.fulfill({ json: { ticket: 'poll-ticket', epoch: status.epoch } }));
+    await page.routeWebSocket('**/api/browser/stream', ws => { socket = ws; ws.onMessage(message => received.push(JSON.parse(String(message)) as Record<string, unknown>)); });
+    await page.goto('/'); await page.getByRole('button', { name: '模型设置', exact: true }).click();
+    await page.getByRole('tab', { name: '浏览器', exact: true }).click();
+    await expect.poll(() => !!socket).toBe(true);
+    defer = true; await page.getByRole('button', { name: '刷新', exact: true }).click();
+    await expect.poll(() => !!release).toBe(true);
+    status = { ...status, state: 'human', epoch: 2 };
+    socket!.send(JSON.stringify({ type: 'mira_state', browser: status }));
+    await expect(page.getByText('由你操作', { exact: true })).toBeVisible();
+    const data = await page.evaluate(() => { const canvas = document.createElement('canvas'); canvas.width = 100; canvas.height = 100; return canvas.toDataURL('image/jpeg').split(',')[1]!; });
+    socket!.send(JSON.stringify({ type: 'frame', seq: 1, generation: 1, epoch: 2, data, metadata: { deviceWidth: 100, deviceHeight: 100 } }));
+    await expect.poll(() => received.some(item => item.type === 'ack')).toBe(true);
+    const response = page.waitForResponse(response => new URL(response.url()).pathname === '/api/browser');
+    await release!(); await response;
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(page.getByText('由你操作', { exact: true })).toBeVisible();
+    await page.locator('.browser-viewport canvas').click();
+    await expect.poll(() => received.some(item => item.type === 'input_mouse' && item.epoch === 2 && item.frameSeq === 1)).toBe(true);
+    await expect(page.getByLabel('浏览器键盘输入，按 Escape 离开', { exact: true })).toBeEnabled();
+  });
+}

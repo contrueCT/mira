@@ -14,7 +14,7 @@ export class BrowserManager {
   readonly #driver: BrowserDriver;
   readonly #mainOwner: string;
   #closed = false;
-  constructor(options: { driver?: BrowserDriver; cwd?: string; mainOwner?: string } = {}) { this.#mainOwner = options.mainOwner ?? 'main'; this.#driver = options.driver ?? new AgentBrowserDriver(options.cwd === undefined ? {} : { cwd: options.cwd });
+  constructor(options: { driver?: BrowserDriver; cwd?: string; miraHome?: string; mainOwner?: string } = {}) { this.#mainOwner = options.mainOwner ?? 'main'; this.#driver = options.driver ?? new AgentBrowserDriver({ ...(options.cwd === undefined ? {} : { cwd: options.cwd }), ...(options.miraHome === undefined ? {} : { miraHome: options.miraHome }) });
     this.#driver.onExit?.(session => { const s = [...this.#sessions.values()].find(s => s.session === session); if (s) this.#unknown(s); });
   }
   #status(s: Session): BrowserStatus { return { id: s.id, state: s.state, epoch: s.epoch, observation: s.observation, pressedButtons: [...s.pressedButtons], queuedInputs: Math.max(0, s.pendingInputs - (s.inFlightInput ? 1 : 0)), ...(s.cancelledInputs !== undefined ? { cancelledInputs: s.cancelledInputs } : {}), ownerLabel: s.owner === this.#mainOwner ? 'Mira' : 'Task', ...(s.domain ? { domain: s.domain } : {}), ...(s.state === 'unknown' ? { message: s.cleanupUnknown ? 'Browser cleanup could not be verified. Agent and human control remain disabled; closing may be retried.' : 'Browser outcome unknown. Do not replay commands. Close this browser and explicitly open a new one.' } : {}) }; }

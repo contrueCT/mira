@@ -34,6 +34,6 @@ python3 -m venv "$TOOLS_HOME/documents-venv"
 
 `browser_open`、`browser_command`、`browser_list`、`browser_close` 由 Web service 按 main/child 身份注入。需预先安装官方 agent-browser 0.39.1 及 Chrome/Chromium；应用不安装依赖。使用 snapshot 返回的 observation 进行下一条命令，之后重新 snapshot。设置→浏览器提供同页面人工接管；断线保持等待，交还取消未发送输入、等待在途命令并失效旧 refs。见 [ADR 0034](../adr/0034-managed-browser-handoff.md)。
 
-可用 `MIRA_AGENT_BROWSER_EXECUTABLE` 指向已安装的官方平台 native binary；PATH 中官方 launcher 可解析到同包 native binary。该配置属于启动环境，不是模型参数。保持依赖安装脚本关闭，首次启动前核对 `--version` 为 0.39.1。
+显式 `MIRA_AGENT_BROWSER_EXECUTABLE` 优先；未设置时先查服务的 miraHome/tools/agent-browser/node_modules/agent-browser/bin/agent-browser.js，再查 PATH，官方 launcher 解析到同包 native binary。按 skill 在标准目录安装并核对版本后，运行中的 Mira 下一次 browser_open 即可发现，无需改 PATH 或重启。该配置属于启动环境，不是模型参数。保持依赖安装脚本关闭，首次启动前核对 `--version` 为 0.39.1。
 
-`MIRA_BROWSER_EXECUTABLE_PATH` 可显式指定已安装 Chromium 的可执行文件；CI 使用已固定安装的 Chromium，并在隔离 HOME 下运行。`pnpm test:browser:e2e` 要求隔离 PostgreSQL、官方 agent-browser native binary 与 Chromium，不以 UI fixture 代替。
+`MIRA_BROWSER_EXECUTABLE_PATH` 可显式指定已安装 Chrome/Chromium 的可执行文件。未设置时复用上游发现：agent-browser 下载缓存优先，其次系统 Chrome，再查 Puppeteer/Playwright 缓存。Ubuntu AppArmor 不支持下载版 Chromium sandbox 时，选系统正常安装的官方 Chrome 路径（如 /usr/bin/google-chrome），不移动二进制、不修改 OS 策略、不默认禁用 sandbox。CI 的受管浏览器选择 runner 预装官方 Chrome、记录版本并隔离 HOME；UI 测试仍用固定 Playwright Chromium。`pnpm test:browser:e2e` 要求隔离 PostgreSQL、官方 agent-browser native binary 与 Chromium，不以 UI fixture 代替。
