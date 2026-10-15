@@ -94,3 +94,5 @@ pnpm check
 - [ADR 0033](docs/adr/0033-web-password-access.md)：可选网页密码在现有设置，统一 API/附件鉴权；明确 public origin 支持 0.0.0.0 绑定，仍保留 Host/Origin/CSRF 防护和 External SDK 回环限制。
 
 - [ADR 0035](docs/adr/0035-extension-private-settings.md)：通用扩展私有凭据/安装数据目录与声明式设置，现有扩展管理内使用；运行时凭据不入config/模型，动作按代取消/排空，同OS可信边界不变。
+
+- ADR 0035 的动作 group/visibleActions 仅为通用展示与可用性契约，业务状态映射归插件；HTTP/handle 同 runner 校验，系统层不含 provider 分支。

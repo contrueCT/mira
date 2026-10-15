@@ -5,7 +5,7 @@ import { ownDraft, secretUpdates } from './extension-settings-drafts.ts';
 import { useVisiblePoll } from './useVisiblePoll.ts';
 
 type Field = { key: string; label: string; type: 'text' | 'secret' | 'boolean' | 'select'; value?: string | boolean; configured?: boolean; options?: Array<{ value: string; label: string }> };
-type View = { revision: string; fields: Field[]; actions: Array<{ id: string; label: string }>;
+type View = { revision: string; fields: Field[]; actions: Array<{ id: string; label: string; group?: 'primary' | 'secondary' }>;
   status: { state: 'unconfigured' | 'disconnected' | 'connecting' | 'pending' | 'connected' | 'error'; code?: string; details?: Array<{ label: string; value: string }>; authorization?: { url: string; label: string; qr?: boolean } };
   operation: { id: string; action: string; state: 'pending' | 'succeeded' | 'failed' | 'cancelled' } | null };
 const labels = { unconfigured: '待配置', disconnected: '未连接', connecting: '连接中', pending: '等待操作', connected: '已连接', error: '连接异常' };
@@ -54,6 +54,7 @@ export function ExtensionSettings({ id, active }: { id: string; active: boolean 
   if (!loaded || !view) return error ? <p className="field-notice">{error}</p> : null;
   const pending = view.operation?.state === 'pending';
   const authorization = view.status.authorization, url = authorization ? safeLink(authorization.url) : null;
+  const actionButton = (action: View['actions'][number]) => <button key={action.id} type="button" className="secondary-button" disabled={busy || uncertain || pending || editing} onClick={() => { void send('/actions', { action: action.id, expectedRevision: view.revision }); }}>{action.label}</button>;
   return <section className="extension-settings" aria-label={`${id} 连接设置`}>
     <h4>连接与设置</h4><p role="status">{labels[view.status.state]}</p>
     {view.status.code && <p className="field-notice">{({ authentication: '认证失败，请核对凭据。', network: '连接异常，请稍后核对。', configuration: '请检查配置。', unknown: '扩展报告错误，原始诊断已隐藏。' } as Record<string, string>)[view.status.code] ?? '扩展报告错误。'}</p>}
@@ -64,13 +65,19 @@ export function ExtensionSettings({ id, active }: { id: string; active: boolean 
     {error && <p role="alert" className="field-notice">{error}</p>}
     {uncertain && <button type="button" className="secondary-button" disabled={busy} onClick={() => { const controller = new AbortController(); void read(controller.signal, true); }}>重新读取并核对设置</button>}
     <div className="management-actions">
-      {view.actions.map(action => <button key={action.id} type="button" className="secondary-button" disabled={busy || uncertain || pending || editing} onClick={() => { void send('/actions', { action: action.id, expectedRevision: view.revision }); }}>{action.label}</button>)}
+      {view.actions.filter(action => action.group !== 'secondary').map(actionButton)}
       {pending && <button type="button" className="secondary-button" disabled={busy || uncertain} onClick={() => { void send('/cancel', { operationId: view.operation!.id }); }}>取消当前操作</button>}
-      <button type="button" className="text-button" disabled={busy || pending || uncertain} onClick={() => {
-        if (editing) { reset(); return; }
-        setRevision(view.revision); setValues(Object.fromEntries(view.fields.filter(field => field.type !== 'secret').map(field => [field.key, field.value ?? (field.type === 'boolean' ? false : '')]))); setEditing(true);
-      }}>{editing ? '取消设置编辑' : '编辑连接设置'}</button>
+      {editing && <button type="button" className="text-button" disabled={busy} onClick={reset}>取消设置编辑</button>}
     </div>
+    <details className="extension-more-actions">
+      <summary>更多操作</summary>
+      <div className="management-actions">
+        {view.actions.filter(action => action.group === 'secondary').map(actionButton)}
+        {!editing && <button type="button" className="text-button" disabled={busy || pending || uncertain} onClick={() => {
+          setRevision(view.revision); setValues(Object.fromEntries(view.fields.filter(field => field.type !== 'secret').map(field => [field.key, field.value ?? (field.type === 'boolean' ? false : '')]))); setEditing(true);
+        }}>编辑连接设置</button>}
+      </div>
+    </details>
     {editing && <form className="extension-config" onSubmit={event => { event.preventDefault(); const updates = secretUpdates(view.fields.filter(field => field.type === 'secret').map(field => field.key), secrets, clear); void send('', { expectedRevision: revision, values, secrets: updates }); }}>
       {view.fields.map(field => <div key={field.key}>
         <label className="field-label" htmlFor={`${id}-setting-${field.key}`}>{field.label}</label>

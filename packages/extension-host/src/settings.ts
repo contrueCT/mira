@@ -5,7 +5,7 @@ import { credentialKey, credentialRevision, CredentialConflictError, ExtensionPr
 export interface ExtensionSettingsView {
   revision: string;
   fields: Array<ExtensionSettingField & { value?: string | boolean; configured?: boolean }>;
-  actions: Array<{ id: string; label: string }>;
+  actions: Array<{ id: string; label: string; group?: 'primary' | 'secondary' }>;
   status: ExtensionConnectionStatus;
   operation: ExtensionSettingsOperation | null;
 }
@@ -33,13 +33,19 @@ export function validateSettings(definition: ExtensionSettingsDefinition): Exten
   keys.clear();
   const actions = definition.actions.map(action => {
     credentialKey(action.id); if (keys.has(action.id) || typeof action.execute !== 'function') invalid(); keys.add(action.id);
-    return { id: action.id, label: text(action.label), execute: action.execute.bind(action) };
+    if (action.group !== undefined && action.group !== 'primary' && action.group !== 'secondary') invalid();
+    return { id: action.id, label: text(action.label), ...(action.group === undefined ? {} : { group: action.group }), execute: action.execute.bind(action) };
   });
   return { fields, actions, status: definition.status.bind(definition) };
 }
-function publicStatus(value: ExtensionConnectionStatus): ExtensionConnectionStatus {
+function publicStatus(value: ExtensionConnectionStatus, actions: ExtensionSettingsDefinition['actions']): ExtensionConnectionStatus {
   if (!value || !['unconfigured', 'disconnected', 'connecting', 'pending', 'connected', 'error'].includes(value.state)) return invalid();
   const status: ExtensionConnectionStatus = { state: value.state };
+  if (value.visibleActions !== undefined) {
+    if (!Array.isArray(value.visibleActions) || value.visibleActions.length > actions.length || new Set(value.visibleActions).size !== value.visibleActions.length || value.visibleActions.some(id => !actions.some(action => action.id === id))) invalid();
+    // Declaration order is stable; provider array order is not a UI ordering API.
+    status.visibleActions = actions.filter(action => value.visibleActions!.includes(action.id)).map(action => action.id);
+  }
   if (value.code !== undefined) { if (!['authentication', 'network', 'configuration', 'unknown'].includes(value.code)) invalid(); status.code = value.code; }
   if (value.details !== undefined) {
     if (!Array.isArray(value.details) || value.details.length > 12) invalid();
@@ -76,21 +82,21 @@ export class RegisteredSettings {
   }
   private project(credentials: Record<string, string>): ExtensionSettingsView {
     let status: ExtensionConnectionStatus;
-    try { status = publicStatus(this.definition.status()); } catch { status = { state: 'error', code: 'unknown' }; }
+    try { status = publicStatus(this.definition.status(), this.definition.actions); } catch { status = { state: 'error', code: 'unknown', visibleActions: [] }; }
     const config = this.config();
     const fields = structuredClone(this.definition.fields).map(field => {
       if (field.type === 'secret') return { ...field, configured: Object.hasOwn(credentials, field.key) };
       const value = config && typeof config === 'object' && !Array.isArray(config) ? config[field.key] : undefined;
       return { ...field, ...(typeof value === 'string' || typeof value === 'boolean' ? { value } : {}) };
     });
-    const view = { fields, actions: this.definition.actions.map(({ id, label }) => ({ id, label })), status, operation: this.operation ? { ...this.operation } : null };
+    const view = { fields, actions: this.definition.actions.filter(action => status.visibleActions === undefined || status.visibleActions.includes(action.id)).map(({ id, label, group }) => ({ id, label, ...(group === undefined ? {} : { group }) })), status, operation: this.operation ? { ...this.operation } : null };
     // Inspect string leaves rather than JSON syntax (a token such as "true"
     // must not collide with the configured boolean). Keep a usable clear path.
     const privateStrings = Object.values(credentials);
     const encodedSecrets = privateStrings.flatMap(secret => { try { return [encodeURIComponent(secret)]; } catch { return []; } });
     const containsSecret = (value: string): boolean => [...privateStrings, ...encodedSecrets].some(secret => value.includes(secret));
     const strings = (value: unknown): string[] => typeof value === 'string' ? [value] : Array.isArray(value) ? value.flatMap(strings) : value && typeof value === 'object' ? Object.values(value).flatMap(strings) : [];
-    if (strings(view.status.details ?? []).some(containsSecret) || (view.status.authorization && strings(view.status.authorization).some(containsSecret))) view.status = { state: 'error', code: 'unknown' };
+    if (strings(view.status.details ?? []).some(containsSecret) || (view.status.authorization && strings(view.status.authorization).some(containsSecret))) { view.status = { state: 'error', code: 'unknown', visibleActions: [] }; view.actions = []; }
     for (const field of view.fields) {
       if ('value' in field && typeof field.value === 'string' && containsSecret(field.value)) delete field.value;
       if (containsSecret(field.label)) field.label = '';
@@ -99,9 +105,11 @@ export class RegisteredSettings {
     for (const action of view.actions) if (containsSecret(action.label)) action.label = '';
     return { revision: createHash('sha256').update(JSON.stringify([this.activation, view, credentials])).digest('hex'), ...structuredClone(view) };
   }
-  async check(revision: string): Promise<string> {
+  async check(revision: string, actionId?: string): Promise<string> {
     const credentials = await this.storage.values(this.owner); this.assertActive();
-    if (this.project(credentials).revision !== revision) throw new ExtensionSettingsError('conflict');
+    const view = this.project(credentials);
+    if (view.revision !== revision) throw new ExtensionSettingsError('conflict');
+    if (actionId !== undefined && !view.actions.some(action => action.id === actionId)) throw new ExtensionSettingsError('unavailable');
     return credentialRevision(credentials);
   }
   private admit(): void {
@@ -112,7 +120,7 @@ export class RegisteredSettings {
   async start(actionId: string, revision: string): Promise<ExtensionSettingsView> {
     this.admit();
     try {
-      await this.check(revision);
+      await this.check(revision, actionId);
       const action = this.definition.actions.find(item => item.id === actionId); if (!action) invalid();
       this.assertActive();
       const controller = new AbortController(), id = randomUUID(); this.controller = controller;

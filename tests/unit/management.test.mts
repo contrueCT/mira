@@ -110,7 +110,7 @@ test('run HTTP discards obsolete mixed-child refresh metadata and raw child payl
 test('extension settings HTTP is protected, bounded, write-only and reprojects credential fields', async t => {
   let writes = 0;
   const settings = { revision, fields: [{ key:'appId',label:'App ID',type:'text' as const,value:'example' },
-    {key:'secret',label:'Secret',type:'secret' as const,configured:true,value:secret}], actions:[{id:'connect',label:'Connect',execute:secret}],
+    {key:'secret',label:'Secret',type:'secret' as const,configured:true,value:secret}], actions:[{id:'connect',label:'Connect',execute:secret},{id:'inspect',label:'Inspect',group:'secondary' as const,execute:secret}],
     status:{state:'disconnected' as const,details:[{label:'Public',value:'safe',raw:secret}],raw:secret},operation:null,raw:secret };
   const app=createLocalHttp({port,backend:backend({extensionSettings:async()=>settings,
     saveExtensionSettings:async(_id,input)=>{writes++;assert.equal(input.secrets['secret'],secret);},
@@ -118,11 +118,13 @@ test('extension settings HTTP is protected, bounded, write-only and reprojects c
   })}); t.after(()=>app.close());
   const url='/api/extensions/example/settings';
   const response=await app.inject({url,headers:readHeaders}); assert.equal(response.statusCode,200); assert.doesNotMatch(response.body,new RegExp(secret));
+  assert.deepEqual(response.json().settings.actions, [{id:'connect',label:'Connect'}, {id:'inspect',label:'Inspect',group:'secondary'}]);
   assert.equal((await app.inject({url})).statusCode,403);
   assert.equal((await app.inject({method:'POST',url,headers:{...writeHeaders,origin:'https://evil.example'},payload:{expectedRevision:revision,values:{},secrets:{secret}}})).statusCode,403);
   assert.equal((await app.inject({method:'POST',url,headers:writeHeaders,payload:{expectedRevision:revision,values:{},secrets:{secret}}})).statusCode,200); assert.equal(writes,1);
   assert.equal((await app.inject({method:'POST',url,headers:writeHeaders,payload:{expectedRevision:revision,values:{},secrets:{secret:''}}})).statusCode,400);
   const action=await app.inject({method:'POST',url:url+'/actions',headers:writeHeaders,payload:{expectedRevision:revision,action:'connect'}});
   assert.equal(action.statusCode,200);assert.doesNotMatch(action.body,new RegExp(secret));
+  assert.deepEqual(action.json().settings.actions, response.json().settings.actions);
   assert.equal((await app.inject({method:'PUT',url,headers:writeHeaders,payload:{}})).statusCode,405);
 });

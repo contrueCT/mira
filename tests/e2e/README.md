@@ -35,3 +35,5 @@ without executing the extension again. Desktop/narrow screenshots use the same
 fresh-process PG crash tests or establish live-provider behavior.
 
 `pnpm test:auth:e2e` 从默认无密码开始，经真实 HTTP/PG/service 与不可变附件存储启用密码、错误登录、成功登录、改密、注销、重启与关闭，使用显式非loopback浏览器hostname（只解析到隔离回环listener，不部署公共服务）。私有API和附件未登录均需401，桌面与窄屏实际截图在 `test-results/auth-real/`。改密竞态段只在测试服务器 onSend 暂时持有实际 PUT/Set-Cookie 响应，让浏览器旧 cookie 轮询由生产鉴权返回真实 401，验证私有 DOM 立即撤下、迟到成功响应安全恢复。响应延迟是测试安排，不冒充自然网络故障；没有 route.fetch 转发或伪造 401。其余登录/凭据/附件路径为生产实现，模型为合成。保留首次失败截图与trace。
+
+扩展设置的通用动作分组分别由 HTTP fixture 与真实管理链路覆盖。未标组和 primary 动作直接显示，secondary 与编辑入口置于默认收起的“更多操作”；折叠不隐藏取消。真实 settings-fixture 扩展通过 visibleActions 在连接、断开和 pending 间切换，走真实 Host 过滤、HTTP 与浏览器；桌面收起态和窄屏展开态截图保留在 management-real 的 CI 产物中。fixture 另测键盘展开、编辑中折叠、关闭/返回清空草稿、重复启动、重开取消和未知结果核对。
