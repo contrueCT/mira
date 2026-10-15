@@ -14,7 +14,7 @@ test('supplied designs, user-approved runtime prompt revision and original archi
   const base = new URL('../../docs/design/', import.meta.url);
   const manifest = JSON.parse(await readFile(new URL('sources.json', base), 'utf8')) as {
     path_base: string;
-    sources: Array<{ path: string; bytes: number; sha256: string; current_version_number?: number; version_id?: string | null; original_bytes?: number; original_sha256?: string }>;
+    sources: Array<{ path: string; bytes: number; sha256: string; original_bytes?: number; original_sha256?: string }>;
   };
   assert.equal(manifest.path_base, 'docs/design');
   assert.equal(manifest.sources.length, expected.length);
@@ -36,9 +36,8 @@ test('supplied designs, user-approved runtime prompt revision and original archi
       assert.equal(Buffer.byteLength(original), item.original_bytes);
       assert.equal(createHash('sha256').update(original).digest('hex'), item.original_sha256);
     }
-    if (index < 3) {
-      assert.equal(item.current_version_number, 0);
-      assert.equal(item.version_id, null);
+    for (const privateField of ['library_file_id', 'file_id', 'current_version_number', 'version_id']) {
+      assert.equal(Object.hasOwn(item, privateField), false, `${source.path}: private source metadata ${privateField}`);
     }
   }
 });
