@@ -25,7 +25,7 @@ test('chat omits delegation-only rows and reads while preserving text, attachmen
   };
   let childReads = 0;
   const reader = { readSubagentCalls: async () => { childReads++; return [{ callId: 'spawn', runId: randomUUID(), childId: randomUUID() }]; } };
-  const service = Reflect.construct(LocalWebService, [{ dreaming: { enabled: false } }, { onLiveInput: () => () => {} }, history, {}, {}, {}, {}, {}, reader]) as LocalWebService;
+  const service = Reflect.construct(LocalWebService, [{ dreaming: { enabled: false } }, { signal: new AbortController().signal, onLiveInput: () => () => {} }, history, {}, {}, {}, {}, {}, reader]) as LocalWebService;
   const first = await service.timeline();
   assert.equal(first.nextCursor, 'older-history');
   assert.deepEqual(first.items.map(item => item.id), [user.id, reply.id]);

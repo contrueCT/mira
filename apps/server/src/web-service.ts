@@ -268,7 +268,8 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     }
   }
   async discover(connection: unknown, signal?: AbortSignal) {
-    return this.#settings.discover(connection, { ...(signal ? { signal } : {}) });
+    if (this.#closed || this.#writer.signal.aborted) throw new WebHttpError('unavailable');
+    return this.#settings.discover(connection, { signal: signal ? AbortSignal.any([signal, this.#abort.signal]) : this.#abort.signal });
   }
   async uploadAttachment(name: string, bytes: Uint8Array) {
     if (this.#closed || this.#writer.signal.aborted) throw new WebHttpError('unavailable');
