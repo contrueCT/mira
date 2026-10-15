@@ -6,7 +6,8 @@ export interface LiveWakeInput {
   request: WakeRequest;
   inputRecordId: string | null;
 }
-/** Optional capability for user input at model-request / single-tool boundaries.
+/** Optional capability for supplemental input at model-request / single-tool boundaries.
+ * Public reception remains user-only; internal child terminal receipts preserve their source.
  * Durable reads and atomic gates are authoritative; notifications are hints only. */
 export interface LiveInputWriter extends WakeWriter {
   receiveLiveInput(event: LifeEvent, wake: WakeReceipt): Promise<'inserted' | 'duplicate'>;

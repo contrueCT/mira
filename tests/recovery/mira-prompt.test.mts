@@ -4,8 +4,13 @@ import { test } from 'node:test';
 import { getCurrentSystemMessage, getSystemMessageText, type TranscriptContext } from '@earendil-works/pi-ai';
 import type { PiRuntimeOptions } from '@mira/runtime-pi';
 import { createTestDatabase } from '../integration/database.mts';
-import { assistant, input, runtime, streamOf } from './fixtures.mts';
+import { assistant, input, model, runtime, streamOf } from './fixtures.mts';
 
+import { estimateRequestTokens } from '../../packages/runtime-pi/src/budget.ts';
+
+// This fixture verifies full-persona continuity, not an 8K model's capacity.
+// Summary requests include the persona reference, source history and output reserve.
+const continuityModel = { ...model, contextWindow: 16_384 };
 const template = await readFile(new URL('../../packages/runtime-pi/prompts/mira-system-v0.2.md', import.meta.url), 'utf8');
 function assertFullPrompt(context: TranscriptContext): string {
   assert.equal(JSON.stringify(context.messages).split('# Mira System Prompt v0.2').length - 1, 1, 'raw provider transcript contains one full prompt, not additive obsolete copies');
@@ -40,7 +45,7 @@ test('real PostgreSQL: full Mira prompt refreshes Memory atomically at compactio
     await runtime(writer, (_model, context) => {
       requests++; assert.match(assertFullPrompt(context), /Frozen original Memory/);
       return streamOf(assistant('Earlier response '.repeat(150)));
-    }, { miraPrompt: configured, autoCompaction: { enabled: false } }).run(input('Older discussion '.repeat(150)));
+    }, { model: continuityModel, miraPrompt: configured, autoCompaction: { enabled: false } }).run(input('Older discussion '.repeat(150)));
     assert.equal(loads, 1);
     const prefix = await rawHistory(db, writer.miraId);
     await writer.close();
@@ -51,13 +56,18 @@ test('real PostgreSQL: full Mira prompt refreshes Memory atomically at compactio
       const text = assertFullPrompt(context);
       assert.match(text, /Frozen original Memory/); assert.match(text, /2026-10-05T13:00:00.000Z/);
       return streamOf(assistant('Latest answer'));
-    }, { miraPrompt: noRead, autoCompaction: { enabled: false } }).run(input('Latest question'));
+    }, { model: continuityModel, miraPrompt: noRead, autoCompaction: { enabled: false } }).run(input('Latest question'));
     let summaries = 0;
     const refresh = { ...noRead, loadMemory: async () => { loads++; return 'New Memory at compaction'; } };
-    const compacted = await runtime(restarted, () => {
+    const compacted = await runtime(restarted, (_model, context, options) => {
+      assert.ok(estimateRequestTokens(context.messages) + options!.maxTokens! <= continuityModel.contextWindow);
+      const source = JSON.parse(context.messages.findLast(message => message.role === 'user')!.content as string);
+      assert.match(source.persona_context, /<delegation>/);
+      assert.match(JSON.stringify(source.source_messages), /Older discussion/);
+      assert.equal(source.memory_snapshot, 'New Memory at compaction');
       summaries++; return streamOf(assistant('Synthetic SDK summary preserving the earlier discussion'));
-    }, { miraPrompt: refresh, autoCompaction: { enabled: false } }).compact({ keepRecentTokens: 1 });
-    assert.ok(summaries > 0, 'full public SDK compaction called the injected summarizer');
+    }, { model: continuityModel, miraPrompt: refresh, autoCompaction: { enabled: false } }).compact({ keepRecentTokens: 1 });
+    assert.equal(summaries, 1, 'full public SDK compaction called the injected summarizer exactly once');
     assert.equal(compacted.entries.filter(entry => entry.type === 'compaction').length, 1);
     await restarted.close();
     const afterCompaction = await db.acquire('prompt-continuity');
@@ -66,7 +76,7 @@ test('real PostgreSQL: full Mira prompt refreshes Memory atomically at compactio
       const text = assertFullPrompt(context);
       assert.match(text, /New Memory at compaction/); assert.doesNotMatch(text, /Frozen original Memory/);
       return streamOf(assistant());
-    }, { miraPrompt: noRead, autoCompaction: { enabled: false } }).run(input('Continue after compaction'));
+    }, { model: continuityModel, miraPrompt: noRead, autoCompaction: { enabled: false } }).run(input('Continue after compaction'));
     assert.equal(requests, 3); assert.equal(loads, 2);
     assert.deepEqual((await rawHistory(db, writer.miraId)).slice(0, prefix.length), prefix, 'raw PostgreSQL envelope prefix is byte-for-byte immutable');
   } finally { await db.close(); }

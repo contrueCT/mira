@@ -83,4 +83,5 @@ export type { ScheduledDeliveryInput, ScheduledDelivery, ScheduledMutation, Sche
 export type { LiveInputWriter, LiveWakeInput } from './live-input.ts';
 export { SubagentError, subagentCompletionPayload } from './subagents.ts';
 export { emptySubagentActivity } from './subagents.ts';
-export type { SubagentActivity, SubagentActivityEvent, SubagentActivityInput, SubagentReader, SubagentPage, SubagentSummary, SubagentCallView, SubagentWriter, SubagentRecord, SubagentTurn, SubagentStatus, SubagentSpec, SubagentResult } from './subagents.ts';
+export type { SubagentFollowupReceipt, SubagentFollowupView, SubagentActivity, SubagentActivityEvent, SubagentActivityInput, SubagentReader, SubagentPage, SubagentSummary, SubagentCallView, SubagentWriter, SubagentRecord, SubagentTurn, SubagentStatus, SubagentSpec, SubagentResult } from './subagents.ts';
+export type { TaskInputWriter, TaskTurnState, TaskLiveInput } from './task-input.ts';

@@ -23,6 +23,9 @@ opaque JSON Pi entry in a versioned envelope.
 - `continueTurn(turn, signal?)` implements the core cognition contract using a
   `WakeWriter`; input and terminal response associations are atomic, and persisted
   final responses are never regenerated
+- `continueTaskTurn(options, signal?)` uses the independent `TaskInputWriter`
+  boundary for parent instructions, single-tool input and final arbitration; it
+  does not create a main Wake or load Memory (ADR 0039)
 - `compact(options?)` snapshots the authority, runs full public SDK compaction in
   a disposable in-memory session, and conditionally publishes its exact checkpoint
 - `encodeEntry`, `decodeRecords`, `messageEntry`, and `jsonValue` implement the
@@ -451,7 +454,8 @@ render Mira's persona, or read skill bodies; ordinary read/bash remain explicit.
 `freezeSubagentContext` produces a bounded, role-labelled textual snapshot of the
 current Pi projection (existing summaries retained, hidden reasoning/provider
 metadata excluded). It rejects oversized snapshots instead of silently truncating.
-Worker assembly reuses `PiDurableRuntime.run` with an independent PostgreSQL writer;
+Worker assembly uses `PiDurableRuntime.continueTaskTurn` with an independent
+PostgreSQL task-boundary writer (ADR 0039);
 no parent tool call is inserted into the child's protocol. See ADR 0025.
 
 ## Public task activity observations
@@ -537,3 +541,16 @@ deciding whether they need evidence files, so those files remain reconstructible
 after compaction/model changes. Annotations that cannot fit fail before dispatch.
 History text-page envelopes omit unbounded original Mira/timestamp strings; their
 exact values remain inside the lossless paged JSON text.
+
+### Delegation guidance and published prompt revisions
+
+[ADR 0038](../../docs/adr/0038-delegation-first-prompt.md) adds main-only guidance
+to delegate substantial independent work while remaining responsive and owning
+result review. New prompt snapshots include their `templateSha256`. Missing
+identity refers only to the hash-checked pre-delegation v0.2 resource; both known
+revisions validate against their own immutable bytes, and unknown identities or
+mismatched text fail closed. Normal request preparation appends the current
+revision before provider execution using the existing frozen Memory. Recovery
+never rewrites history or reloads Memory, and compaction preserves the preceding
+template identity. A new process uses the new prompt on its first normal main
+request; editing source files does not hot-reload an already running process.
