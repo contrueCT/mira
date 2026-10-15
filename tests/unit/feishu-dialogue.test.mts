@@ -7,15 +7,15 @@ import { pathToFileURL } from 'node:url';
 import { ExtensionHost } from '@mira/extension-host';
 const pluginUrl = pathToFileURL(path.resolve('packages/feishu-channel/src/index.ts')).href;
 const until = async (ready: () => Promise<boolean>) => { for (let i = 0; i < 100; i++) { if (await ready()) return; await new Promise(resolve => setTimeout(resolve, 5)); } assert.fail('operation did not settle'); };
-async function fixture(run: (host: ExtensionHost, state: { registrations: number; connections: number; closes: number; sends: number; holdSend: boolean; finishSend: ((unknown?: boolean) => void) | null; receive(text: string): Promise<void>; finish(): void }) => Promise<void>) {
+async function fixture(run: (host: ExtensionHost, state: { registrations: number; connections: number; closes: number; sends: number; holdSend: boolean; finishSend: ((unknown?: boolean) => void) | null; receive(text: string): Promise<void>; reconnecting(): void; finish(): void }) => Promise<void>) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mira-feishu-dialogue-'));
   const entry = path.join(root, 'plugin.mjs'); const configurationFile = path.join(root, 'extensions.json');
   await writeFile(entry, `import { createFeishuExtension } from ${JSON.stringify(pluginUrl)};
-    export const state = {registrations:0,connections:0,closes:0,finish:null,sends:0,holdSend:false,finishSend:null,receive:null};
+    export const state = {registrations:0,connections:0,closes:0,finish:null,sends:0,holdSend:false,finishSend:null,receive:null,reconnecting:null};
     export default createFeishuExtension({
       async register(options) { state.registrations++; options.onQRCode({url:'https://accounts.feishu.cn/synthetic-private-challenge',expireIn:600}); return new Promise((resolve,reject)=>{const abort=()=>reject(Error('synthetic cancelled'));options.signal.addEventListener('abort',abort,{once:true});state.finish=()=>{options.signal.removeEventListener('abort',abort);resolve({appId:'cli_synthetic',appSecret:'synthetic-private-credential',domain:'feishu'});};}); },
       async verify(){return {botOpenId:'bot',scopes:[]};},
-      async connect(credentials,handlers){state.connections++;state.receive=text=>handlers.onMessage({messageId:'pair',chatId:'owner-chat',chatType:'p2p',senderOpenId:'owner',senderType:'user',tenantKey:'tenant',createdAt:new Date(0).toISOString(),text,messageType:'text'});handlers.onState('connected');return {state:()=> 'connected',async close(){state.closes++;}};},
+      async connect(credentials,handlers){state.connections++;state.reconnecting=()=>handlers.onState('reconnecting');state.receive=text=>handlers.onMessage({messageId:'pair',chatId:'owner-chat',chatType:'p2p',senderOpenId:'owner',senderType:'user',tenantKey:'tenant',createdAt:new Date(0).toISOString(),text,messageType:'text'});handlers.onState('connected');return {state:()=> 'connected',async close(){state.closes++;}};},
       async send(){state.sends++;if(state.holdSend)return new Promise((resolve,reject)=>{state.finishSend=unknown=>unknown?reject(Error('synthetic unknown')):resolve({messageId:'sent-'+state.sends});});return {messageId:'sent-'+state.sends};}
     });`);
   const entries = [{ id: 'owner-channel', path: entry, config: { domain: 'feishu' } }];
@@ -102,5 +102,24 @@ for (const action of ['reconnect', 'unbind']) test(`cancelled ${action} preserve
     const beforeReplay = state.sends; assert.equal(JSON.parse((await send('in-flight', longText)).text).status, JSON.parse(outcome.text).status); assert.equal(state.sends, beforeReplay);
     assert.equal(JSON.parse((await send('new-send')).text).status, 'sent'); assert.equal(state.sends, beforeReplay + 1);
     await execute(host); assert.equal(state.registrations, 1); assert.equal(state.connections, 1);
+  });
+});
+
+
+test('background WebSocket reconnect retains usable generic recovery actions without a pending settings operation', async () => {
+  await fixture(async (host, state) => {
+    await execute(host); await until(async () => state.registrations === 1); state.finish();
+    await until(async () => (await host.extensionSettings('owner-channel'))?.operation?.state === 'succeeded');
+    state.reconnecting();
+    const view = (await host.extensionSettings('owner-channel'))!;
+    assert.equal(view.status.state, 'connecting'); assert.equal(view.operation?.state, 'succeeded');
+    assert.deepEqual(view.actions.map(action => action.id), ['connect', 'unbind']);
+    await host.startSettingsAction('owner-channel', 'connect', view.revision);
+    await until(async () => (await host.extensionSettings('owner-channel'))?.operation?.state === 'succeeded');
+    assert.equal(state.connections, 2); assert.equal(state.registrations, 1); assert.equal(state.closes, 1);
+    state.reconnecting(); const recovery = (await host.extensionSettings('owner-channel'))!;
+    await host.startSettingsAction('owner-channel', 'unbind', recovery.revision);
+    await until(async () => (await host.extensionSettings('owner-channel'))?.status.state === 'unconfigured');
+    assert.equal(state.closes, 2); assert.equal(state.sends, 0);
   });
 });

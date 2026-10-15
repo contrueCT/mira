@@ -105,7 +105,7 @@ export class FeishuChannel {
     delivery: 'Use feishu_send_message explicitly for Feishu replies and proactive results; ordinary Web replies are not echoed.' }; }
   #visibleActions(): string[] {
     if (!this.#storageReady) return ['unbind'];
-    if (this.#authorization || this.#state === 'connecting') return [];
+    if (this.#authorization || (this.#state === 'connecting' && !this.#connection)) return [];
     if (!this.#data.app) {
       const manual = this.#config.appId ? ['connect'] : [];
       if (this.#data.registrationUnknown) return [...manual, 'unbind'];

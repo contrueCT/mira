@@ -326,6 +326,7 @@ test('plugin alone projects the next connection step and collapsible maintenance
   assert.deepEqual(f.settings.status().visibleActions, ['reconnect', 'unbind']);
   assert.equal(f.sdk.sends.length, 0);
   for (const id of f.settings.status().visibleActions!) assert.equal(f.settings.actions.find(action => action.id === id)!.group, 'secondary');
+  f.sdk.connections.at(-1)!.onState('reconnecting'); assert.deepEqual(f.settings.status().visibleActions, ['connect', 'unbind']);
   f.sdk.connections.at(-1)!.onState('failed'); assert.deepEqual(f.settings.status().visibleActions, ['connect', 'unbind']);
   await f.action('connect'); assert.equal(f.sdk.calls.connect, 2); assert.equal(f.sdk.calls.register, 0); assert.equal(f.settings.status().state, 'connected');
   await f.action('unbind'); assert.deepEqual(f.settings.status().visibleActions, ['connect']);

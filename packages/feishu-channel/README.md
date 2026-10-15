@@ -69,6 +69,8 @@ opens the existing settings panel to finish authorization and explicit pairing.
 The plugin declares only the next applicable action for its current state. Recovery
 and maintenance controls live under the generic 更多操作 menu. The host and Web UI
 only interpret generic action groups and visibility; they contain no Feishu flow.
+During automatic WebSocket reconnection, connect and unbind remain available for
+explicit recovery even when the provider keeps retrying indefinitely.
 
 Manual fallback: create/publish a self-built app, enable its bot and the same minimum
 scopes/event subscription, then save App ID and App Secret in the generic protected
