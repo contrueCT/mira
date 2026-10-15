@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { ExtensionHost } from '@mira/extension-host';
@@ -8,7 +8,7 @@ import { extensionTools } from '@mira/server';
 import { toolName } from '../../packages/mcp-plugin/src/client.ts';
 import { assistant, input, MemoryWriter, runtime, streamOf } from '../recovery/fixtures.mts';
 for (const remoteTool of ['known_error', 'unknown_after_effect']) test(`real MCP ${remoteTool} preserves durable known/unknown boundary without replay`, { timeout: 30_000 }, async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'mira-mcp-runtime-'));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-mcp-runtime-')));
   const marker = path.join(root, 'effects'); const configurationFile = path.join(root, 'extensions.json');
   const entries = [{ id: 'mcp', path: path.resolve('packages/mcp-plugin/src/index.ts'), config: { command: process.execPath, argsJson: JSON.stringify([path.resolve('tests/fixtures/mcp/server.mts'), 'legacy', marker]) } }];
   await writeFile(configurationFile, JSON.stringify({ entries }));

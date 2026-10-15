@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { ExtensionHost } from '@mira/extension-host';
@@ -32,7 +32,7 @@ test('MCP config validates transport, explicit local version, names and output p
   assert.equal(unsupported.isError, true); assert.match(unsupported.text, /not delivered/); assert.ok(!JSON.stringify(unsupported).includes('hidden'));
 });
 for (const protocol of ['legacy', '2026-07-28']) test(`real official SDK ${protocol} stdio connects once, isolates instances and cleans owned descendants`, { timeout: 30_000 }, async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'mira-mcp-'));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-mcp-')));
   const marker = path.join(root, 'starts.txt');
   const configurationFile = path.join(root, 'extensions.json');
   const entries = ['one', 'two'].map(id => ({ id, path: plugin, config: { transport: 'stdio', command: process.execPath, argsJson: JSON.stringify([fixture, protocol, marker]), protocol } }));

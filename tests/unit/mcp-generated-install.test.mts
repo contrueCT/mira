@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -8,7 +8,7 @@ import { prepareExtensionPackage } from '../../scripts/prepare-extension-package
 const source = path.resolve(import.meta.dirname, '../../packages/mcp-plugin');
 
 test('shipped MCP package follows real prepare, stage, content-test, install, activate and cleanup workflow', { timeout: 120_000 }, async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'mira-mcp-install-'));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-mcp-install-')));
   let host: ExtensionHost | undefined;
   try {
     const workspace = await prepareExtensionPackage(source, path.join(root, 'workspace'));

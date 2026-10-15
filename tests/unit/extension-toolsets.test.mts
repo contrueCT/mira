@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
@@ -24,7 +24,7 @@ test('toolset replacement validates all candidates, collisions and snapshots bef
   cleanup?.(); assert.equal(registry.has('next'), false); assert.equal(registry.has('other'), true);
 });
 test('real Host retains begun revision, fences unbegun snapshots and atomically changes schema', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'mira-toolset-'));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-toolset-')));
   const file = path.join(root, 'plugin.mts');
   await writeFile(file, `export let replace, release; export let began = false;
 export default { name:'dynamic', apply({mira:ctx}) {
@@ -52,7 +52,7 @@ export default { name:'dynamic', apply({mira:ctx}) {
 });
 
 test('dynamic toolsets share writer ownership cancellation and cannot republish after loss', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'mira-toolset-owner-'));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-toolset-owner-')));
   const file = path.join(root, 'plugin.mts');
   await writeFile(file, `export let replace, began=false, cancelled=false;
 export default { name:'owned-dynamic', apply({mira:ctx}) {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { ExtensionHost } from '@mira/extension-host';
@@ -9,7 +9,7 @@ import { httpFixture } from '../fixtures/mcp/http.mts';
 const plugin = path.resolve('packages/mcp-plugin/src/index.ts');
 for (const protocol of ['legacy', '2026-07-28', 'auto']) test(`official SDK HTTP ${protocol} tools, refresh, known staleness and no effect retry`, { timeout: 30_000 }, async () => {
   const fixture = await httpFixture();
-  const root = await mkdtemp(path.join(os.tmpdir(), 'mira-mcp-http-'));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-mcp-http-')));
   const configurationFile = path.join(root, 'extensions.json');
   const entries = [{ id: 'remote', path: plugin, config: { transport: 'http', url: fixture.url, protocol } }];
   await writeFile(configurationFile, JSON.stringify({ entries }));
@@ -45,4 +45,28 @@ for (const protocol of ['legacy', '2026-07-28', 'auto']) test(`official SDK HTTP
       assert.equal(fixture.calls.length, before + 1, `${mode} must not automatically replay tools/call`);
     }
   } finally { await host.close(); await fixture.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('late MCP notifications during ownership-loss lifecycle drain do not strand client cleanup', { timeout: 10_000 }, async () => {
+  const fixture = await httpFixture();
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-mcp-retire-')));
+  const blocker = path.join(root, 'blocker.mts');
+  await writeFile(blocker, `export let entered=false,release; const gate=new Promise(resolve=>release=resolve); export default {name:'blocker',apply({mira:ctx}){ctx.onCleanup(async()=>{entered=true;await gate;});}};`);
+  const { pathToFileURL } = await import('node:url');
+  const module = await import(pathToFileURL(blocker).href);
+  const owner = new AbortController();
+  const entries = [{ id: 'blocker', path: blocker }, { id: 'remote', path: plugin, config: { transport: 'http', url: fixture.url, protocol: '2026-07-28' } }];
+  const configurationFile = path.join(root, 'extensions.json'); await writeFile(configurationFile, JSON.stringify({ entries }));
+  const host = new ExtensionHost({ entries, configurationFile, ownerSignal: owner.signal, receive: async () => 'inserted' });
+  try {
+    await host.start(); assert.equal((await host.extensionSettings('remote'))?.status.state, 'connected');
+    const retiring = host.requestChange('blocker', { action: 'disable' });
+    for (let attempt = 0; attempt < 100 && !module.entered; attempt++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(module.entered, true);
+    owner.abort(); fixture.change();
+    // The lifecycle queue is deliberately held while the actual SDK receives
+    // its list-change notification; Host publication is already fenced.
+    await new Promise(resolve => setTimeout(resolve, 100));
+    module.release(); await retiring; await host.close();
+  } finally { module.release?.(); await host.close(); await fixture.close(); await rm(root, { recursive: true, force: true }); }
 });

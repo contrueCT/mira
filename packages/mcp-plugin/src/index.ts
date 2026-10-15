@@ -77,6 +77,12 @@ class McpInstallation {
     // Enabled installations reconnect. Disabled ones never instantiate us.
     try { await this.connect(new AbortController().signal, false); } catch { /* Safe state remains visible in existing settings. */ }
   }
+  private withdraw(): void {
+    // An empty candidate cannot fail validation. A retired/closing Host may
+    // reject publication before its plugin cleanup runs; still finish closing
+    // the owned client and never throw from an SDK notification callback.
+    try { this.toolset.replace([]); } catch { /* Host admission is already fenced. */ }
+  }
   private publish(connection: Connection, generation: number, tools: Tool[]): void {
     if (this.stopped || generation !== this.generation || this.connection !== connection) return;
     this.toolset.replace(remoteTools(this.context.id, tools, this.config, async (tool, args, signal) => {
@@ -95,9 +101,9 @@ class McpInstallation {
       changed: (error, tools) => {
         if (generation !== this.generation || this.stopped) return;
         try { if (error || !tools) throw new Error('Tool refresh failed'); this.publish(connection, generation, tools); }
-        catch { this.toolset.replace([]); this.state = 'error'; this.code = 'configuration'; }
+        catch { this.withdraw(); this.state = 'error'; this.code = 'configuration'; }
       },
-      closed: () => { if (generation === this.generation && !this.stopped) { this.toolset.replace([]); this.state = 'disconnected'; } },
+      closed: () => { if (generation === this.generation && !this.stopped) { this.withdraw(); this.state = 'disconnected'; } },
     });
     this.connection = connection;
     await connection.client.connect(connection.transport, { signal, timeout: 15_000 });
@@ -132,10 +138,10 @@ class McpInstallation {
     const connection = this.connection, generation = this.generation;
     if (!connection || this.state !== 'connected') throw new Error('MCP is disconnected');
     try { this.publish(connection, generation, (await connection.client.listTools(undefined, { signal, timeout: 15_000, cacheMode: 'refresh' })).tools); }
-    catch { if (generation === this.generation) { this.toolset.replace([]); this.state = 'error'; this.code = 'network'; } throw new Error('MCP tools could not be refreshed'); }
+    catch { if (generation === this.generation) { this.withdraw(); this.state = 'error'; this.code = 'network'; } throw new Error('MCP tools could not be refreshed'); }
   }
   private async disconnect(): Promise<void> {
-    ++this.generation; this.toolset.replace([]);
+    ++this.generation; this.withdraw();
     const connection = this.connection; this.connection = undefined;
     await Promise.allSettled([...this.calls]);
     await connection?.client.close(); this.authorization = null; this.state = 'disconnected';
