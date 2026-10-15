@@ -50,3 +50,26 @@ export default { name:'dynamic', apply({mira:ctx}) {
     await host.requestChange('dynamic', { action: 'disable' }); assert.throws(() => module.replace());
   } finally { module.release?.(); await host.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test('dynamic toolsets share writer ownership cancellation and cannot republish after loss', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mira-toolset-owner-'));
+  const file = path.join(root, 'plugin.mts');
+  await writeFile(file, `export let replace, began=false, cancelled=false;
+export default { name:'owned-dynamic', apply({mira:ctx}) {
+ const tool={name:'owned_tool',description:'owned',parameters:{type:'object'},execute:async(_, {signal})=>{began=true; await new Promise(resolve=>signal.addEventListener('abort',()=>{cancelled=true;resolve();},{once:true})); return {text:'settled'};}};
+ const set=ctx.registerToolset([tool]); replace=()=>set.replace([tool]);
+}};`);
+  const module = await import(pathToFileURL(file).href);
+  const owner = new AbortController();
+  const host = new ExtensionHost({ ownerSignal: owner.signal, entries: [{ id: 'owned', path: file }], receive: async () => 'inserted' });
+  try {
+    await host.start(); const declaration = (await host.prepare())[0]!;
+    const pending = declaration.tool.execute({}, { callId: 'begun', signal: new AbortController().signal });
+    assert.equal(module.began, true); owner.abort();
+    assert.throws(() => module.replace());
+    const stale = await declaration.tool.execute({}, { callId: 'after-loss', signal: new AbortController().signal });
+    assert.equal(stale.isError, true); assert.equal((stale.details as { executed: boolean }).executed, false);
+    assert.equal((await pending).text, 'settled'); assert.equal(module.cancelled, true);
+    await host.close();
+  } finally { owner.abort(); await host.close(); await rm(root, { recursive: true, force: true }); }
+});

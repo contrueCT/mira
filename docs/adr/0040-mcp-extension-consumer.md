@@ -1,4 +1,4 @@
-# ADR 0037: MCP as an ordinary extension consumer
+# ADR 0040: MCP as an ordinary extension consumer
 
 Status: user-approved design; implementation acceptance tracked by checks, not assumed from this document.
 
