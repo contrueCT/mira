@@ -92,3 +92,15 @@ test('invalid or wrong-protocol compatibility declarations fail before requests'
     assert.throws(() => parseModelConfiguration({ customConnections: [{ id: 'fixture', api, baseUrl: 'https://synthetic.example/v1', apiKeyEnv: 'KEY', models: [{ id: 'test', contextWindow: 32000, maxTokens: 4096, reasoning: true, reasoningFormat, input: ['text'] }] }] }));
   }
 });
+
+test('automatic custom format preserves pinned Pi URL compatibility and configured effort', async () => {
+  for (const [baseUrl, expectedField] of [['https://synthetic.example/v1', 'reasoning_effort'], ['https://openrouter.ai/api/v1', 'reasoning']] as const) {
+    let body: Record<string, unknown> | undefined;
+    const configuration = { builtinCredentials: {}, customConnections: [{ id: 'fixture', api: 'openai-completions' as const, baseUrl, apiKeyEnv: 'KEY', models: [{ id: 'fixture-model', contextWindow: 32000, maxTokens: 4096, reasoning: true, input: ['text' as const] }] }] };
+    const transport = createModelTransport(configuration, { kind: 'custom', connection: 'fixture', model: 'fixture-model' }, { env: () => key, fetch: async (_url, init) => { body = JSON.parse(String(init?.body)); return completion(); } });
+    const stream = await transport.streamFn(transport.model, normalizeContext({ messages: [{ role: 'user', content: 'Fixture', timestamp: 1 }] }), { reasoning: 'high' });
+    await stream.result(); assert.ok(body);
+    assert.equal(body['reasoning_effort'], expectedField === 'reasoning_effort' ? 'high' : undefined);
+    assert.deepEqual(body['reasoning'], expectedField === 'reasoning' ? { effort: 'high' } : undefined);
+  }
+});

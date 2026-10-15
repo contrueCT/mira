@@ -168,4 +168,4 @@ never modified to suppress SDK logging.
 
 ## 自定义推理参数格式
 
-模型设置内可为 Chat Completions 明确选择 `reasoningFormat: "openai"`（`reasoning_effort`）或 `"openrouter"`（`reasoning.effort`）。按实际服务文档选择，不能仅因模型有推理能力就确定格式。未指定的已有配置继续沿用 Pi 协议/URL默认，保留推理强度；UI提示尚未单独确认。此字段不能用于 Responses/Anthropic，后二者仍使用各自原生适配。400错误不自动切换、丢弃字段或重试。详见 [ADR 0041](../adr/0041-custom-model-discovery-and-reasoning-format.md)。
+模型设置内可为 Chat Completions 明确选择 `reasoningFormat: "openai"`（`reasoning_effort`）或 `"openrouter"`（`reasoning.effort`）。按实际服务文档选择，不能仅因模型有推理能力就确定格式。未指定的已有配置继续沿用 Pi 协议/URL默认，保留推理强度；UI显示“自动（沿用接口适配）”，新旧模型均不强制另选格式。更改服务地址保留显式格式，仅切换至非 Chat Completions 协议时移除不适用字段。此字段不能用于 Responses/Anthropic，后二者仍使用各自原生适配。400错误不自动切换、丢弃字段或重试。详见 [ADR 0041](../adr/0041-custom-model-discovery-and-reasoning-format.md)。

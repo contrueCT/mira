@@ -21,12 +21,11 @@ const blankModel = (id = '', name = ''): ModelDraft => ({ originalId: null, id, 
 function modelDraftFrom(model: CustomModel): ModelDraft {
   return { originalId: model.id, id: model.id, name: model.name ?? '', contextWindow: String(model.contextWindow), maxTokens: String(model.maxTokens), reasoning: model.reasoning ? 'true' : 'false', reasoningFormat: model.reasoningFormat ?? '', input: model.input.length === 2 ? 'text-image' : model.input[0] ?? '' };
 }
-function parseModel(model: ModelDraft, api: CustomProtocol, changedTarget: boolean): CustomModel {
+function parseModel(model: ModelDraft): CustomModel {
   const contextWindow = Number(model.contextWindow); const maxTokens = Number(model.maxTokens);
   if (!model.id.trim()) throw new Error('请填写模型 ID');
   if (!Number.isSafeInteger(contextWindow) || contextWindow < 1 || !Number.isSafeInteger(maxTokens) || maxTokens < 1) throw new Error('请根据服务商文档填写上下文窗口与最大输出，均须为正整数');
   if (maxTokens > contextWindow) throw new Error('最大输出不能超过上下文窗口');
-  if (api === 'openai-completions' && model.reasoning === 'true' && !model.reasoningFormat && (model.originalId !== model.id.trim() || changedTarget)) throw new Error('请按服务文档选择此模型的推理参数格式；未知格式请先向服务商确认');
   if (!model.reasoning || !model.input) throw new Error('请明确选择推理能力和输入类型');
   return { id: model.id.trim(), ...(model.name.trim() ? { name: model.name.trim() } : {}), contextWindow, maxTokens, reasoning: model.reasoning === 'true', ...(model.reasoningFormat ? { reasoningFormat: model.reasoningFormat } : {}), input: model.input === 'text-image' ? ['text', 'image'] : [model.input] };
 }
@@ -133,7 +132,6 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
   const credential = draft?.configuration.builtinCredentials[providerId] ?? { hasApiKey: false };
   const originalConnection = originalConnectionsRef.current.find(item => item.id === connectionId);
   const targetChanged = !!connection && !!originalConnection && !sameCredentialTarget(connection, originalConnection);
-  const reasoningTargetChanged = !!connection && !!originalConnection && (connection.api !== originalConnection.api || connection.baseUrl !== originalConnection.baseUrl);
 
   const editCredential = (value: string | null | undefined) => change(current => {
     const previous = current.configuration.builtinCredentials[providerId] ?? { hasApiKey: false };
@@ -158,17 +156,10 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
   };
   const editConnection = (patch: Partial<CustomConnectionWrite>) => {
     stopDiscovery();
-    if (patch.api !== undefined || patch.baseUrl !== undefined) setModelDraft(current => current ? { ...current, reasoningFormat: '' } : current);
+    if (patch.api !== undefined && patch.api !== 'openai-completions') setModelDraft(current => current ? { ...current, reasoningFormat: '' } : current);
     change(current => ({ ...current, configuration: { ...current.configuration, customConnections: current.configuration.customConnections.map(item => {
       if (item.id !== connectionId) return item;
-      const changedEndpoint = (patch.api !== undefined && patch.api !== item.api) || (patch.baseUrl !== undefined && patch.baseUrl !== item.baseUrl);
-      const target = { ...item, ...patch };
-      const original = originalConnectionsRef.current.find(entry => entry.id === item.id);
-      const restoredTarget = original?.baseUrl === target.baseUrl && original.api === target.api;
-      const next = { ...target, ...(changedEndpoint ? { models: item.models.map(({ reasoningFormat: _format, ...model }) => {
-        const format = restoredTarget ? original.models.find(entry => entry.id === model.id)?.reasoningFormat : undefined;
-        return { ...model, ...(format ? { reasoningFormat: format } : {}) };
-      }) } : {}) };
+      const next = { ...item, ...patch, ...(patch.api !== undefined && patch.api !== 'openai-completions' ? { models: item.models.map(({ reasoningFormat: _format, ...model }) => model) } : {}) };
       // Never reuse a stored or entered secret at a newly edited destination.
       return sameCredentialTarget(item, next) ? next : withApiKey({ ...next, hasApiKey: false }, undefined);
     }) } }));
@@ -254,13 +245,12 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
         validateConnection(connection);
         if (connection.apiKey !== null && !hasUsableApiKey(connection)) throw new Error('请填写此连接的 API Key；更改服务地址、协议或发现地址后也需要重新输入');
         if (modelDraft) {
-          const model = parseModel(modelDraft, connection.api, reasoningTargetChanged);
+          const model = parseModel(modelDraft);
           if (connection.models.some(item => item.id === model.id && item.id !== modelDraft.originalId)) throw new Error('此连接中已存在相同的模型 ID');
           next.configuration.customConnections = next.configuration.customConnections.map(item => item.id === connection.id ? { ...item, models: [...item.models.filter(existing => existing.id !== modelDraft.originalId), model] } : item);
           next.selection = connection.apiKey === null ? null : { kind: 'custom', connection: connection.id, model: model.id };
         } else if (connection.apiKey === null) next.selection = null;
         else if (!selectedCustom || next.selection?.kind !== 'custom') throw new Error('请选择模型，或手动填写模型 ID 和能力');
-        else if (connection.api === 'openai-completions' && selectedCustom.reasoning && !selectedCustom.reasoningFormat && reasoningTargetChanged) throw new Error('服务地址已更改，请编辑模型能力并重新确认推理参数格式');
       }
     } catch (cause) { setError(errorText(cause)); return; }
     saveBusyRef.current = true; setSaving(true); setError(null); setSaved(false);
@@ -320,15 +310,15 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
               </div>
               <div className="field-heading"><label className="field-label" htmlFor="custom-model">已配置模型</label><button type="button" className="text-button" onClick={() => { touch(); setModelDraft(blankModel()); }}>手动添加</button></div>
               <select id="custom-model" value={modelDraft ? '' : selectedCustom?.id ?? ''} onChange={event => { setModelDraft(null); change(current => ({ ...current, selection: { kind: 'custom', connection: connection.id, model: event.target.value } })); }}><option value="" disabled>{modelDraft ? '正在填写模型' : '选择模型'}</option>{connection.models.map(item => <option key={item.id} value={item.id}>{item.name ?? item.id}</option>)}</select>
-              {selectedCustom && !modelDraft && <div className="model-facts"><p>{modelSummary(selectedCustom)}</p>{selectedCustom.reasoning && connection.api === 'openai-completions' && !selectedCustom.reasoningFormat && <p className="field-hint">沿用协议默认推理参数。此接口的兼容格式尚未单独确认，可在模型能力中设置。</p>}<button type="button" className="text-button" onClick={() => { touch(); setModelDraft(modelDraftFrom(selectedCustom)); }}>编辑模型能力</button></div>}
+              {selectedCustom && !modelDraft && <div className="model-facts"><p>{modelSummary(selectedCustom)}</p>{selectedCustom.reasoning && connection.api === 'openai-completions' && !selectedCustom.reasoningFormat && <p className="field-hint">推理参数：自动（沿用接口适配）。仅在服务文档明确要求时更改。</p>}<button type="button" className="text-button" onClick={() => { touch(); setModelDraft(modelDraftFrom(selectedCustom)); }}>编辑模型能力</button></div>}
               {modelDraft && <div className="model-editor">
                 <div className="field-heading"><h3>{modelDraft.originalId ? '编辑模型' : '配置模型'}</h3>{connection.models.length > 0 && <button type="button" className="text-button" onClick={() => setModelDraft(null)}>取消编辑</button>}</div>
-                <p className="field-hint">已填入目录提供的信息。未提供的 token 限额请按服务文档补充；输入类型默认选为文本；推理格式按服务文档选择。</p>
+                <p className="field-hint">已填入目录提供的信息。未提供的 token 限额请按服务文档补充；输入类型默认选为文本；推理格式通常无需更改。</p>
                 <label className="field-label" htmlFor="model-id">模型 ID</label><input id="model-id" spellCheck={false} autoComplete="off" value={modelDraft.id} placeholder="服务商定义的精确 ID" onChange={event => updateModelDraft({ id: event.target.value })} />
                 <label className="field-label" htmlFor="model-name">显示名称 <span className="optional">可选</span></label><input id="model-name" value={modelDraft.name} onChange={event => updateModelDraft({ name: event.target.value })} />
                 <div className="field-grid"><div><label className="field-label" htmlFor="context-window">上下文窗口</label><input id="context-window" type="number" min="1" step="1" placeholder="tokens" value={modelDraft.contextWindow} onChange={event => updateModelDraft({ contextWindow: event.target.value })} /></div><div><label className="field-label" htmlFor="max-tokens">最大输出</label><input id="max-tokens" type="number" min="1" step="1" placeholder="tokens" value={modelDraft.maxTokens} onChange={event => updateModelDraft({ maxTokens: event.target.value })} /></div></div>
                 <div className="field-grid"><div><label className="field-label" htmlFor="reasoning">推理能力</label><select id="reasoning" value={modelDraft.reasoning} onChange={event => updateModelDraft({ reasoning: event.target.value as ModelDraft['reasoning'] })}><option value="" disabled>请选择</option><option value="false">未声明或不支持</option><option value="true">支持</option></select></div><div><label className="field-label" htmlFor="model-input">输入类型</label><select id="model-input" value={modelDraft.input} onChange={event => updateModelDraft({ input: event.target.value as ModelDraft['input'] })}><option value="" disabled>请选择</option><option value="text">文本</option><option value="image">图片</option><option value="text-image">文本和图片</option></select></div></div>
-                {modelDraft.reasoning === 'true' && connection.api === 'openai-completions' && <><label className="field-label" htmlFor="reasoning-format">推理参数格式</label><select id="reasoning-format" value={modelDraft.reasoningFormat} onChange={event => updateModelDraft({ reasoningFormat: event.target.value as ModelDraft['reasoningFormat'] })}><option value="" disabled={modelDraft.originalId !== modelDraft.id.trim() || reasoningTargetChanged}>{modelDraft.originalId !== modelDraft.id.trim() || reasoningTargetChanged ? '请选择此服务使用的格式' : '沿用协议默认（未单独确认）'}</option><option value="openai">OpenAI · reasoning_effort</option><option value="openrouter">OpenRouter · reasoning.effort</option></select><p className="field-hint">按此服务的文档选择。兼容 Chat Completions 不代表使用相同推理参数；不会自动尝试其他格式。</p></> }
+                {modelDraft.reasoning === 'true' && connection.api === 'openai-completions' && <><label className="field-label" htmlFor="reasoning-format">推理参数格式</label><select id="reasoning-format" value={modelDraft.reasoningFormat} onChange={event => updateModelDraft({ reasoningFormat: event.target.value as ModelDraft['reasoningFormat'] })}><option value="">自动（沿用接口适配）</option><option value="openai">OpenAI · reasoning_effort</option><option value="openrouter">OpenRouter · reasoning.effort</option></select><p className="field-hint">标准 Chat Completions 通常发送 reasoning_effort；仅在服务文档明确要求时更改。不会自动试发其他格式。</p></> }
               </div>}
             </>}
           </section>}

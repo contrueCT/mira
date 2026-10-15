@@ -975,7 +975,7 @@ test('custom discovery prefills supplied metadata, keeps unknown limits blank an
   await page.setViewportSize({ width: 1440, height: 1100 });
   await openSettings(page); await page.getByRole('button', { name: '自定义连接', exact: true }).click();
   await expect(page.getByLabel('默认推理强度', { exact: true })).toBeEnabled();
-  await expect(page.getByText('沿用协议默认推理参数。', { exact: false })).toBeVisible();
+  await expect(page.getByText('推理参数：自动（沿用接口适配）。', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: '获取可用模型', exact: true }).click();
   await page.getByLabel('发现的候选模型', { exact: true }).selectOption('rich-model');
   await expect(page.getByLabel('模型 ID', { exact: true })).toHaveValue('rich-model');
@@ -983,9 +983,6 @@ test('custom discovery prefills supplied metadata, keeps unknown limits blank an
   await expect(page.getByLabel('最大输出', { exact: true })).toHaveValue('8192');
   await expect(page.getByLabel('输入类型', { exact: true })).toHaveValue('text-image');
   await expect(page.getByLabel('推理参数格式', { exact: true })).toHaveValue('');
-  await page.getByRole('button', { name: '保存设置', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('选择此模型的推理参数格式');
-  expect(writes).toHaveLength(0);
   await page.getByLabel('推理参数格式', { exact: true }).selectOption('openrouter');
   await expect(page.getByLabel('默认推理强度', { exact: true })).toBeEnabled();
   await page.getByLabel('发现的候选模型', { exact: true }).selectOption('gpt-6-luna');
@@ -1053,26 +1050,58 @@ test('a single discovered candidate can be selected again after manual entry, ca
   }
 });
 
-test('retargeting a reasoning connection requires format confirmation and restoring its endpoint preserves the saved format', async ({ page }) => {
-  const initial = settingsFixture(); const model = initial.configuration.customConnections[0]!.models[0]!;
-  model.reasoning = true; model.reasoningFormat = 'openrouter';
+test('endpoint edits preserve explicit formats for open drafts and all saved models', async ({ page }) => {
+  const initial = settingsFixture(); const connection = initial.configuration.customConnections[0]!;
+  const model = connection.models[0]!; model.reasoning = true; model.reasoningFormat = 'openrouter';
+  connection.models.push({ ...model, id: 'second-model' });
   const { writes } = await mockSettings(page, initial);
   await openSettings(page); await page.getByRole('button', { name: '自定义连接', exact: true }).click();
+  await page.getByRole('button', { name: '编辑模型能力', exact: true }).click();
   const address = page.getByLabel('服务地址', { exact: true });
   await address.fill('http://127.0.0.1:9998/v1');
-  await page.getByLabel('API Key', { exact: true }).fill('synthetic-new-route-key');
-  await page.getByRole('button', { name: '保存设置', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('重新确认推理参数格式'); expect(writes).toHaveLength(0);
-  await address.fill(initial.configuration.customConnections[0]!.baseUrl);
+  await address.fill(connection.baseUrl);
+  await expect(page.getByLabel('推理参数格式', { exact: true })).toHaveValue('openrouter');
   await page.getByLabel('API Key', { exact: true }).fill('synthetic-original-route-key');
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await expect(page.getByText(/配置已保存/u)).toBeVisible();
-  expect(writes[0]!.configuration.customConnections[0]!.models[0]!.reasoningFormat).toBe('openrouter');
+  expect(writes[0]!.configuration.customConnections[0]!.models.every(entry => entry.reasoningFormat === 'openrouter')).toBe(true);
   await address.fill('http://127.0.0.1:9998/v1');
   await page.getByLabel('API Key', { exact: true }).fill('synthetic-new-route-key');
-  await page.getByRole('button', { name: '编辑模型能力', exact: true }).click();
-  await page.getByLabel('推理参数格式', { exact: true }).selectOption('openai');
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await expect(page.getByText(/配置已保存/u)).toBeVisible();
-  expect(writes).toHaveLength(2); expect(writes[1]!.configuration.customConnections[0]!.models[0]!.reasoningFormat).toBe('openai');
+  expect(writes).toHaveLength(2);
+  expect(writes[1]!.configuration.customConnections[0]!.models.every(entry => entry.reasoningFormat === 'openrouter')).toBe(true);
+  await page.getByLabel('已配置模型', { exact: true }).selectOption('second-model');
+  await page.getByRole('button', { name: '编辑模型能力', exact: true }).click();
+  await expect(page.getByLabel('推理参数格式', { exact: true })).toHaveValue('openrouter');
+});
+
+test('new reasoning models can save the automatic format without a confirmation gate', async ({ page }) => {
+  const { writes } = await mockSettings(page);
+  await openSettings(page); await page.getByRole('button', { name: '自定义连接', exact: true }).click();
+  await page.getByRole('button', { name: '手动添加', exact: true }).click();
+  await page.getByLabel('模型 ID', { exact: true }).fill('new-reasoning-model');
+  await page.getByLabel('上下文窗口', { exact: true }).fill('32000');
+  await page.getByLabel('最大输出', { exact: true }).fill('4096');
+  await page.getByLabel('推理能力', { exact: true }).selectOption('true');
+  await expect(page.getByLabel('推理参数格式', { exact: true })).toHaveValue('');
+  await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  await expect(page.getByText(/配置已保存/u)).toBeVisible();
+  expect(writes[0]!.configuration.customConnections[0]!.models.find(entry => entry.id === 'new-reasoning-model')!.reasoningFormat).toBeUndefined();
+});
+
+test('switching away from Chat Completions removes incompatible formats from saved models and the open draft', async ({ page }) => {
+  const initial = settingsFixture(); const connection = initial.configuration.customConnections[0]!;
+  const model = connection.models[0]!; model.reasoning = true; model.reasoningFormat = 'openrouter';
+  connection.models.push({ ...model, id: 'second-model' });
+  const { writes } = await mockSettings(page, initial);
+  await openSettings(page); await page.getByRole('button', { name: '自定义连接', exact: true }).click();
+  await page.getByRole('button', { name: '编辑模型能力', exact: true }).click();
+  await page.locator('#connection-protocol').selectOption('openai-responses');
+  await expect(page.getByLabel('推理参数格式', { exact: true })).toHaveCount(0);
+  await page.getByLabel('API Key', { exact: true }).fill('synthetic-native-route-key');
+  await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  await expect(page.getByText(/配置已保存/u)).toBeVisible();
+  expect(writes[0]!.configuration.customConnections[0]!.api).toBe('openai-responses');
+  expect(writes[0]!.configuration.customConnections[0]!.models.every(entry => entry.reasoningFormat === undefined)).toBe(true);
 });
