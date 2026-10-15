@@ -12,9 +12,11 @@ async function fixture(run: (host: ExtensionHost, state: any, directory: string,
   const directory = await mkdtemp(path.join(tmpdir(), 'mira-extension-settings-'));
   const file = path.join(directory, 'plugin.mjs');
   await writeFile(file, `import { defineExtension } from ${JSON.stringify(sdk)};
-    export const state = { contexts: [], status: {state:'disconnected'}, cleanups:0, starts:0, failCleanup:false };
-    export default defineExtension({ name: 'settings', apply(ctx,config) {
+    export const state = { contexts: [], status: {state:'disconnected'}, cleanups:0, starts:0, failCleanup:false, failApply:false, observed:[] };
+    export default defineExtension({ name: 'settings', async apply(ctx,config) {
       state.contexts.push(ctx);
+      state.observed.push(await ctx.credentials.get('secret'));
+      if (state.failApply) throw Error('synthetic-private-apply-error');
       ctx.registerSettings({fields:[{key:'appId',label:'App ID',type:'text'},{key:'secret',label:'Secret',type:'secret'}],
         actions:[{id:'connect',label:'Connect',async execute({signal}) {state.starts++; state.status={state:'connecting'}; await new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true})); state.status={state:'disconnected'};}}],
         status:()=>state.status});
@@ -93,6 +95,12 @@ test('escaped credentials cannot leak and prototype names do not count as config
   await fixture(async(host,state)=>{
     const ctx=state.contexts.at(-1);
     assert.equal(await ctx.credentials.get('toString'),null); assert.equal(await ctx.credentials.has('constructor'),false);
+    await assert.rejects(() => ctx.credentials.set('__proto__', 'synthetic-invalid-key'));
+    await assert.rejects(() => ctx.credentials.get('__proto__'));
+    for (const key of ['constructor', 'toString', 'valueOf']) {
+      await ctx.credentials.set(key, 'synthetic-' + key);
+      assert.equal(await ctx.credentials.get(key), 'synthetic-' + key);
+    }
     const secret='quote"slash\\private-value'; await ctx.credentials.set('secret',secret);
     state.status={state:'pending',details:[{label:'Status',value:secret}]};
     assert.equal((await host.extensionSettings('plugin'))?.status.code,'unknown');
@@ -163,7 +171,7 @@ test('secret-only writes preserve every supported JSON config shape',async()=>{
     for(const config of [null,'string',false,3,[],{existing:'value'}]) {
       const settings=new RegisteredSettings({fields:[{key:'token',label:'Token',type:'secret'}],actions:[],status:()=>({state:'disconnected'})},'activation','owner',store,()=>config,()=>{},()=>{});
       const view=await settings.view();
-      assert.deepEqual(await settings.write({expectedRevision:view.revision,values:{},secrets:{token:'synthetic-secret-only'}}),config);
+      assert.deepEqual((await settings.write({expectedRevision:view.revision,values:{},secrets:{token:'synthetic-secret-only'}})).config,config);
     }
   } finally { await rm(directory,{recursive:true,force:true}); }
 });
@@ -224,8 +232,58 @@ test('private location guard uses source identity rather than an ordinary launch
     const {spawnSync}=await import('node:child_process');
     const script=`import {mkdir,writeFile} from 'node:fs/promises'; import path from 'node:path'; import {ExtensionHost} from ${JSON.stringify(import.meta.resolve('@mira/extension-host'))};
       const home=${JSON.stringify(directory)};process.chdir(home);await mkdir('.mira');const configurationFile=path.join(home,'.mira/extensions.json');await writeFile(configurationFile,JSON.stringify({entries:[]}));
-      const host=new ExtensionHost({entries:[],configurationFile,privateStorageExcludedDirectories:[${JSON.stringify(process.cwd())}],receive:async()=> 'inserted'});try{await host.start();}finally{await host.close();}`;
+      const host=new ExtensionHost({entries:[],configurationFile,privateStorageExcludedDirectories:[${JSON.stringify(process.cwd())}],receive:async()=> 'inserted'});try{await host.start();}finally{await host.close();}
+      const relative=new ExtensionHost({entries:[],configurationFile:'.mira/extensions.json',receive:async()=> 'inserted'});try{await relative.start();}finally{await relative.close();}`;
     const child=spawnSync(process.execPath,['--input-type=module','-e',script],{encoding:'utf8'});
     assert.equal(child.status,0,child.stderr);
   } finally {await rm(directory,{recursive:true,force:true});}
+});
+
+
+test('UI credential changes reapply initialized clients once, no-ops and runtime refresh do not', async () => {
+  await fixture(async (host, state) => {
+    const save = async (secrets: Record<string, string | null>, values = {}) => {
+      const view = await host.extensionSettings('plugin'); assert.ok(view);
+      await host.saveExtensionSettings('plugin', { expectedRevision: view.revision, values, secrets });
+    };
+    const initial = state.contexts[0];
+    assert.deepEqual(state.observed, [null]);
+    await save({}); await save({}, {appId:'visible-id'}); await save({secret:null});
+    assert.deepEqual(state.observed, [null]);
+    await save({secret:'synthetic-first'});
+    assert.deepEqual(state.observed, [null, 'synthetic-first']);
+    assert.equal(state.cleanups, 1);
+    assert.equal(host.changeStatus().at(-1)?.action, 'reload');
+    assert.equal(host.changeStatus().at(-1)?.persistence, 'not-required');
+    await assert.rejects(() => initial.credentials.set('secret', 'late'));
+    await save({secret:'synthetic-first'});
+    assert.equal(state.observed.length, 2);
+    await save({secret:'synthetic-second'});
+    await save({secret:null});
+    assert.deepEqual(state.observed, [null, 'synthetic-first', 'synthetic-second', null]);
+    await state.contexts.at(-1).credentials.set('secret', 'synthetic-runtime-refresh');
+    assert.equal(state.observed.length, 4);
+  });
+});
+
+test('credential save with failed reapply preserves new credential and reports failure until explicit recovery', async () => {
+  await fixture(async (host, state, directory) => {
+    const view = await host.extensionSettings('plugin'); assert.ok(view);
+    const privateDirectory = state.contexts[0].privateDirectory;
+    state.failApply = true;
+    await assert.rejects(() => host.saveExtensionSettings('plugin', {expectedRevision:view.revision, values:{}, secrets:{secret:'synthetic-recovery-token'}}), ExtensionSettingsError);
+    assert.deepEqual(state.observed, [null, 'synthetic-recovery-token']);
+    assert.equal(host.inspect().find(entry => entry.id === 'plugin')?.status, 'failed');
+    assert.equal(await host.extensionSettings('plugin'), null);
+    assert.equal(host.changeStatus().at(-1)?.status, 'failed');
+    assert.equal(host.changeStatus().at(-1)?.persistence, 'not-required');
+    assert.equal(JSON.parse(await readFile(path.join(path.dirname(privateDirectory), 'credentials.json'), 'utf8')).secret, 'synthetic-recovery-token');
+    assert.ok(!(await readFile(path.join(directory, 'extensions.json'), 'utf8')).includes('synthetic-recovery-token'));
+    state.failApply = false;
+    assert.equal(state.observed.length, 2); // No rollback or implicit retry.
+    const recovered = await host.requestChange('plugin', {action:'reload'});
+    assert.equal(recovered.status, 'applied');
+    assert.deepEqual(state.observed, [null, 'synthetic-recovery-token', 'synthetic-recovery-token']);
+    assert.equal((await host.extensionSettings('plugin'))?.fields.find(field => field.key === 'secret')?.configured, true);
+  });
 });

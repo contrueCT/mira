@@ -355,6 +355,8 @@ test('extension private settings traverse real browser, HTTP, Cordis and Postgre
   let service: LocalWebService | undefined;
   let app: ReturnType<typeof createLocalHttp> | undefined;
   const secret = 'synthetic-extension-secret-e2e';
+  const delayedParentPoll = deferred();
+  let parentPollWaiting = false;
   const source = path.join(root, 'settings-extension.mjs');
   const configurationFile = path.join(root, 'extensions.json');
   const contexts: TranscriptContext[] = [];
@@ -363,8 +365,8 @@ test('extension private settings traverse real browser, HTTP, Cordis and Postgre
     await writeFile(source, `import {defineExtension} from ${JSON.stringify(import.meta.resolve('@mira/extension-sdk'))};
       export default defineExtension({name:'settings-fixture',apply(ctx,config){
         let status={state:'disconnected'};
-        ctx.registerSettings({fields:[{key:'appId',label:'Application ID',type:'text'},{key:'token',label:'Private token',type:'secret'}],
-          actions:[{id:'connect',label:'Connect fixture',async execute({signal}){ if(!await ctx.credentials.has('token'))throw Error('missing'); status={state:'connected'};}},
+        ctx.registerSettings({fields:[{key:'appId',label:'Application ID',type:'text'},{key:'token',label:'Private token',type:'secret'},...['constructor','toString','valueOf'].map(key=>({key,label:'Private '+key,type:'secret'}))],
+          actions:[{id:'connect',label:'Connect fixture',async execute({signal}){ if(!await ctx.credentials.has('token'))throw Error('missing'); for(const key of ['constructor','toString','valueOf'])if(await ctx.credentials.get(key)!=='synthetic-'+key)throw Error('prototype credential missing'); status={state:'connected'};}},
           {id:'authorize',label:'Authorize fixture',async execute({signal}){status={state:'pending',authorization:{url:'https://example.com/authorize?challenge=synthetic-public',label:'Official authorization',qr:true}}; await new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true})); status={state:'disconnected'};}}],status:()=>status});
         ctx.registerTool({name:'check_fixture',description:'Check connection',parameters:{type:'object'},async execute(){return {text:status.state}}});
         ctx.onCleanup(()=>{status={state:'disconnected'}});
@@ -388,7 +390,39 @@ test('extension private settings traverse real browser, HTTP, Cordis and Postgre
     await page.getByRole('button',{name:'编辑连接设置',exact:true}).click();
     await expect(page.getByLabel('Private token',{exact:true})).toHaveValue('');
     await page.getByLabel('Application ID',{exact:true}).fill('saved-id');
+    // Keep the parent's slower activation refresh behind a deterministic barrier.
+    await page.route(`${origin}/api/extensions`, async route => {
+      if (route.request().method() === 'GET') { parentPollWaiting = true; await delayedParentPoll.promise; }
+      await route.continue();
+    });
     await page.getByLabel('Private token',{exact:true}).fill(secret);
+    for (const key of ['constructor', 'toString', 'valueOf']) {
+      const input = page.getByLabel('Private ' + key, {exact:true});
+      await expect(input).toBeEnabled(); await expect(input).toHaveValue('');
+      await input.fill('synthetic-' + key);
+    }
+    await page.getByRole('button',{name:'保存连接设置',exact:true}).click();
+    await expect(page.getByRole('button',{name:'编辑连接设置',exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'编辑连接设置',exact:true}).click();
+    await page.getByLabel('Private token',{exact:true}).fill('transient-next-draft');
+    await expect.poll(() => parentPollWaiting, {timeout:10000}).toBe(true);
+    const refreshedParent = page.waitForResponse(response => response.url() === `${origin}/api/extensions` && response.request().method() === 'GET');
+    delayedParentPoll.resolve(); await (await refreshedParent).finished();
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    // A delayed parent activation A→B refresh must not remount the already
+    // reconciled child and silently discard its new draft.
+    await expect(page.getByLabel('Private token',{exact:true})).toHaveValue('transient-next-draft');
+    await page.getByRole('button',{name:'取消设置编辑',exact:true}).click();
+    await page.unroute(`${origin}/api/extensions`);
+    // An unrelated ordinary edit must leave every blank secret unchanged, even
+    // when its supported schema key is an Object.prototype property name.
+    await page.getByRole('button',{name:'编辑连接设置',exact:true}).click();
+    for (const key of ['constructor', 'toString', 'valueOf']) {
+      const input = page.getByLabel('Private ' + key, {exact:true});
+      await expect(input).toBeEnabled(); await expect(input).toHaveValue('');
+      await expect(input).toHaveAttribute('placeholder', '已保存，留空保持不变');
+    }
+    await page.getByLabel('Application ID',{exact:true}).fill('ordinary-edit-only');
     await page.getByRole('button',{name:'保存连接设置',exact:true}).click();
     await expect(page.getByRole('button',{name:'编辑连接设置',exact:true})).toBeVisible();
     await page.getByRole('button',{name:'Connect fixture',exact:true}).click();
@@ -413,5 +447,5 @@ test('extension private settings traverse real browser, HTTP, Cordis and Postgre
     const history = await db.admin.query('SELECT intent, outcome FROM tool_executions');
     expect(JSON.stringify(history.rows)).not.toContain(secret);
     expect(await page.evaluate(()=>JSON.stringify([localStorage,sessionStorage]))).not.toContain(secret);
-  } finally { await app?.close(); await service?.close(); await db?.close(); await rm(root,{recursive:true,force:true}); }
+  } finally { delayedParentPoll.resolve(); await app?.close(); await service?.close(); await db?.close(); await rm(root,{recursive:true,force:true}); }
 });

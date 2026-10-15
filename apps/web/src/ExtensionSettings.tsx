@@ -1,6 +1,7 @@
 import qrcode from 'qrcode-generator';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api.ts';
+import { ownDraft, secretUpdates } from './extension-settings-drafts.ts';
 import { useVisiblePoll } from './useVisiblePoll.ts';
 
 type Field = { key: string; label: string; type: 'text' | 'secret' | 'boolean' | 'select'; value?: string | boolean; configured?: boolean; options?: Array<{ value: string; label: string }> };
@@ -70,13 +71,13 @@ export function ExtensionSettings({ id, active }: { id: string; active: boolean 
         setRevision(view.revision); setValues(Object.fromEntries(view.fields.filter(field => field.type !== 'secret').map(field => [field.key, field.value ?? (field.type === 'boolean' ? false : '')]))); setEditing(true);
       }}>{editing ? '取消设置编辑' : '编辑连接设置'}</button>
     </div>
-    {editing && <form className="extension-config" onSubmit={event => { event.preventDefault(); const updates: Record<string, string | null> = {}; for (const field of view.fields) if (field.type === 'secret') { if (clear[field.key]) updates[field.key] = null; else if (secrets[field.key]) updates[field.key] = secrets[field.key]!; } void send('', { expectedRevision: revision, values, secrets: updates }); }}>
+    {editing && <form className="extension-config" onSubmit={event => { event.preventDefault(); const updates = secretUpdates(view.fields.filter(field => field.type === 'secret').map(field => field.key), secrets, clear); void send('', { expectedRevision: revision, values, secrets: updates }); }}>
       {view.fields.map(field => <div key={field.key}>
         <label className="field-label" htmlFor={`${id}-setting-${field.key}`}>{field.label}</label>
-        {field.type === 'boolean' ? <input id={`${id}-setting-${field.key}`} type="checkbox" checked={values[field.key] === true} disabled={busy} onChange={event => setValues(current => ({ ...current, [field.key]: event.target.checked }))} />
-          : field.type === 'select' ? <select id={`${id}-setting-${field.key}`} value={String(values[field.key] ?? '')} disabled={busy} onChange={event => setValues(current => ({ ...current, [field.key]: event.target.value }))}><option value="">请选择</option>{field.options?.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
-          : field.type === 'secret' ? <><input id={`${id}-setting-${field.key}`} type="password" autoComplete="new-password" value={secrets[field.key] ?? ''} disabled={busy || clear[field.key]} onChange={event => setSecrets(current => ({ ...current, [field.key]: event.target.value }))} placeholder={field.configured ? '已保存，留空保持不变' : '未保存'} /><label><input type="checkbox" checked={clear[field.key] === true} disabled={busy} onChange={event => { setClear(current => ({ ...current, [field.key]: event.target.checked })); setSecrets(current => ({ ...current, [field.key]: '' })); }} />明确清除此凭据</label></>
-          : <input id={`${id}-setting-${field.key}`} type="text" autoComplete="off" value={String(values[field.key] ?? '')} disabled={busy} onChange={event => setValues(current => ({ ...current, [field.key]: event.target.value }))} />}
+        {field.type === 'boolean' ? <input id={`${id}-setting-${field.key}`} type="checkbox" checked={ownDraft(values, field.key) === true} disabled={busy} onChange={event => setValues(current => ({ ...current, [field.key]: event.target.checked }))} />
+          : field.type === 'select' ? <select id={`${id}-setting-${field.key}`} value={String(ownDraft(values, field.key) ?? '')} disabled={busy} onChange={event => setValues(current => ({ ...current, [field.key]: event.target.value }))}><option value="">请选择</option>{field.options?.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+          : field.type === 'secret' ? <><input id={`${id}-setting-${field.key}`} type="password" autoComplete="new-password" value={ownDraft(secrets, field.key) ?? ''} disabled={busy || ownDraft(clear, field.key) === true} onChange={event => setSecrets(current => ({ ...current, [field.key]: event.target.value }))} placeholder={field.configured ? '已保存，留空保持不变' : '未保存'} /><label><input type="checkbox" checked={ownDraft(clear, field.key) === true} disabled={busy} onChange={event => { setClear(current => ({ ...current, [field.key]: event.target.checked })); setSecrets(current => ({ ...current, [field.key]: '' })); }} />明确清除此凭据</label></>
+          : <input id={`${id}-setting-${field.key}`} type="text" autoComplete="off" value={String(ownDraft(values, field.key) ?? '')} disabled={busy} onChange={event => setValues(current => ({ ...current, [field.key]: event.target.value }))} />}
       </div>)}
       <p className="field-hint">凭据不回显。保存后按现有扩展配置流程重载，连接状态以实际结果为准。取消或关闭设置会清除未保存输入。关闭窗口不会自动取消已开始的连接操作。</p>
       {revision !== view.revision && <p className="field-notice">状态已变化，请取消编辑后重新核对。</p>}

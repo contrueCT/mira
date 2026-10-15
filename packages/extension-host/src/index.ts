@@ -127,7 +127,7 @@ export class ExtensionHost {
       }
       this.entries.set(entry.id, { ...structuredClone(entry), config: structuredClone(entry.config ?? null) });
     }
-    this.privateStorage = options.privateDirectory || options.configurationFile ? new ExtensionPrivateStorage(options.privateDirectory ?? path.join(path.dirname(options.configurationFile!), 'extension-private'), [fileURLToPath(new URL('../../../', import.meta.url)), ...options.privateStorageExcludedDirectories ?? [], ...options.artifactsDirectory ? [options.artifactsDirectory] : []]) : undefined;
+    this.privateStorage = options.privateDirectory || options.configurationFile ? new ExtensionPrivateStorage(options.privateDirectory ?? path.resolve(path.dirname(options.configurationFile!), 'extension-private'), [fileURLToPath(new URL('../../../', import.meta.url)), ...options.privateStorageExcludedDirectories ?? [], ...options.artifactsDirectory ? [options.artifactsDirectory] : []]) : undefined;
     this.options = { ...options, entries: structuredClone(options.entries) };
   }
 
@@ -512,9 +512,14 @@ export class ExtensionHost {
     this.assertOpen();
     await this.serialize(async () => {
       const settings = this.settings.get(id); if (!settings) throw new ExtensionSettingsError('unavailable');
-      const config = await settings.write(input);
-      const receipt: ChangeStatus = { id: randomUUID(), extensionId: id, action: 'configure', status: 'failed', runtime: null, persistence: this.configuration ? 'not-attempted' : 'not-required' };
-      try { await this.applyChange(receipt, { action: 'configure', config }); } finally { this.cleanupScope = undefined; }
+      const { config, credentialsChanged } = await settings.write(input);
+      const configChanged = !isDeepStrictEqual(this.entries.get(id)?.config ?? null, config);
+      if (!configChanged && !credentialsChanged) return;
+      // Cordis skips equal-config updates. A changed UI credential still needs
+      // one forced reapply so clients initialized during apply see the new value.
+      const change: ExtensionChange = configChanged ? { action: 'configure', config } : { action: 'reload' };
+      const receipt: ChangeStatus = { id: randomUUID(), extensionId: id, action: change.action, status: 'failed', runtime: null, persistence: this.configuration && configChanged ? 'not-attempted' : 'not-required' };
+      try { await this.applyChange(receipt, change); } finally { this.cleanupScope = undefined; }
       receipt.runtime = this.snapshot().find(entry => entry.id === id) ?? null; this.receipts.push(receipt);
       if (receipt.status !== 'applied') throw new ExtensionSettingsError('unavailable');
     });

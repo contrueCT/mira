@@ -65,13 +65,15 @@ export class ExtensionPrivateStorage {
     return task;
   }
   async values(owner: string): Promise<Record<string, string>> { return this.serial(owner, () => this.read(owner)); }
-  async update(owner: string, updates: Record<string, string | null>, assertActive: () => void, expectedRevision?: string): Promise<void> {
+  async update(owner: string, updates: Record<string, string | null>, assertActive: () => void, expectedRevision?: string): Promise<boolean> {
     for (const [key, value] of Object.entries(updates)) { credentialKey(key); if (value !== null && (typeof value !== 'string' || !value.length || value.length > 16_384 || value.includes('\0'))) throw new Error('Invalid extension credential value'); }
     return this.serial(owner, async () => {
       assertActive();
       const data = await this.read(owner);
       if (expectedRevision !== undefined && credentialRevision(data) !== expectedRevision) throw new CredentialConflictError();
+      const before = credentialRevision(data);
       for (const [key, value] of Object.entries(updates)) { if (value === null) delete data[key]; else Object.defineProperty(data, key, { value, enumerable: true, configurable: true, writable: true }); }
+      if (credentialRevision(data) === before) { assertActive(); return false; }
       const serialized = JSON.stringify(data);
       if (Buffer.byteLength(serialized, 'utf8') > 262_144) throw new Error('Extension credential storage limit exceeded');
       const directory = this.directory(owner), temporary = path.join(directory, `.credentials-${randomUUID()}.tmp`);
@@ -81,6 +83,7 @@ export class ExtensionPrivateStorage {
         assertActive();
         await rename(temporary, path.join(directory, 'credentials.json'));
       } finally { await rm(temporary, { force: true }); }
+      return true;
     });
   }
   /** Explicit uninstall only. Plugin state remains separate from credential deletion. */

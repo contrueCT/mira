@@ -120,7 +120,7 @@ export class RegisteredSettings {
   }
   cancel(): void { this.controller?.abort(); }
   async drain(): Promise<void> { this.cancel(); await this.task; }
-  async write(input: ExtensionSettingsWrite): Promise<Json> {
+  async write(input: ExtensionSettingsWrite): Promise<{ config: Json; credentialsChanged: boolean }> {
     const expectedCredentials = await this.check(input.expectedRevision);
     if (this.task) throw new ExtensionSettingsError('conflict');
     const config = this.config();
@@ -133,8 +133,9 @@ export class RegisteredSettings {
       Object.defineProperty(next, key, { value, enumerable: true, configurable: true, writable: true });
     }
     for (const key of Object.keys(input.secrets)) if (!this.definition.fields.some(field => field.key === key && field.type === 'secret')) invalid();
-    try { await this.storage.update(this.owner, input.secrets, this.assertActive, expectedCredentials); }
+    let credentialsChanged: boolean;
+    try { credentialsChanged = await this.storage.update(this.owner, input.secrets, this.assertActive, expectedCredentials); }
     catch (error) { if (error instanceof CredentialConflictError) throw new ExtensionSettingsError('conflict'); throw error; }
-    return changesConfig ? next : structuredClone(config);
+    return { config: changesConfig ? next : structuredClone(config), credentialsChanged };
   }
 }
