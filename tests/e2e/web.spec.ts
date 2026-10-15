@@ -383,7 +383,9 @@ test('discovery uses an unsaved key transiently and resetting the connection cle
   await openSettings(page); await page.getByRole('button', { name: '自定义连接', exact: true }).click();
   await page.getByLabel('API Key', { exact: true }).fill(dummy);
   await page.getByRole('button', { name: '获取可用模型', exact: true }).click();
-  await expect(page.getByLabel('发现的候选模型', { exact: true })).toHaveValue('discovered-dummy-model');
+  await expect(page.getByLabel('发现的候选模型', { exact: true })).toHaveValue('');
+  await page.getByLabel('发现的候选模型', { exact: true }).selectOption('discovered-dummy-model');
+  await expect(page.getByLabel('模型 ID', { exact: true })).toHaveValue('discovered-dummy-model');
   expect(discoveries).toHaveLength(1);
   expect(discoveries[0]).toMatchObject({ connection: { id: 'existing-local', apiKey: dummy } });
   expect(writes).toHaveLength(0);
@@ -392,7 +394,9 @@ test('discovery uses an unsaved key transiently and resetting the connection cle
   await expect(page.getByLabel('API Key', { exact: true })).toHaveValue('');
   await expect(page.getByLabel('发现的候选模型', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '获取可用模型', exact: true }).click();
-  await expect(page.getByLabel('发现的候选模型', { exact: true })).toHaveValue('discovered-dummy-model');
+  await expect(page.getByLabel('发现的候选模型', { exact: true })).toHaveValue('');
+  await page.getByLabel('发现的候选模型', { exact: true }).selectOption('discovered-dummy-model');
+  await expect(page.getByLabel('模型 ID', { exact: true })).toHaveValue('discovered-dummy-model');
   expect(discoveries).toHaveLength(2);
   expect(discoveries[1]).toMatchObject({ connection: { id: 'existing-local', hasApiKey: true } });
   expect((discoveries[1] as { connection: unknown }).connection).not.toHaveProperty('apiKey');
@@ -979,6 +983,9 @@ test('custom discovery prefills supplied metadata, keeps unknown limits blank an
   await expect(page.getByLabel('最大输出', { exact: true })).toHaveValue('8192');
   await expect(page.getByLabel('输入类型', { exact: true })).toHaveValue('text-image');
   await expect(page.getByLabel('推理参数格式', { exact: true })).toHaveValue('');
+  await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('选择此模型的推理参数格式');
+  expect(writes).toHaveLength(0);
   await page.getByLabel('推理参数格式', { exact: true }).selectOption('openrouter');
   await expect(page.getByLabel('默认推理强度', { exact: true })).toBeEnabled();
   await page.getByLabel('发现的候选模型', { exact: true }).selectOption('gpt-6-luna');
@@ -1025,4 +1032,47 @@ test('empty and unsupported discovery leave manual entry available; unsupported 
   await page.getByRole('button', { name: '取消', exact: true }).click();
   await expect(page.getByText(/reasoning_effort/u)).toBeVisible();
   expect(requests).toBe(2);
+});
+
+test('a single discovered candidate can be selected again after manual entry, cancellation and configured-model selection', async ({ page }) => {
+  await mockSettings(page);
+  await page.route('**/api/models/discover', route => route.fulfill({ json: { endpoint: 'http://127.0.0.1:9999/v1/models', models: [{ id: 'single-model', contextWindow: 64000, maxTokens: 4096 }] } }));
+  await openSettings(page); await page.getByRole('button', { name: '自定义连接', exact: true }).click();
+  await page.getByRole('button', { name: '获取可用模型', exact: true }).click();
+  const picker = page.getByLabel('发现的候选模型', { exact: true });
+  for (const action of ['manual', 'cancel', 'configured'] as const) {
+    await picker.selectOption('single-model');
+    await expect(page.getByLabel('模型 ID', { exact: true })).toHaveValue('single-model');
+    if (action === 'manual') await page.getByRole('button', { name: '手动添加', exact: true }).click();
+    if (action === 'cancel') await page.getByRole('button', { name: '取消编辑', exact: true }).click();
+    if (action === 'configured') await page.getByLabel('已配置模型', { exact: true }).selectOption('original-model');
+    await expect(picker).toHaveValue('');
+    await picker.selectOption('single-model');
+    await expect(page.getByLabel('模型 ID', { exact: true })).toHaveValue('single-model');
+    await expect(page.getByLabel('上下文窗口', { exact: true })).toHaveValue('64000');
+  }
+});
+
+test('retargeting a reasoning connection requires format confirmation and restoring its endpoint preserves the saved format', async ({ page }) => {
+  const initial = settingsFixture(); const model = initial.configuration.customConnections[0]!.models[0]!;
+  model.reasoning = true; model.reasoningFormat = 'openrouter';
+  const { writes } = await mockSettings(page, initial);
+  await openSettings(page); await page.getByRole('button', { name: '自定义连接', exact: true }).click();
+  const address = page.getByLabel('服务地址', { exact: true });
+  await address.fill('http://127.0.0.1:9998/v1');
+  await page.getByLabel('API Key', { exact: true }).fill('synthetic-new-route-key');
+  await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('重新确认推理参数格式'); expect(writes).toHaveLength(0);
+  await address.fill(initial.configuration.customConnections[0]!.baseUrl);
+  await page.getByLabel('API Key', { exact: true }).fill('synthetic-original-route-key');
+  await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  await expect(page.getByText(/配置已保存/u)).toBeVisible();
+  expect(writes[0]!.configuration.customConnections[0]!.models[0]!.reasoningFormat).toBe('openrouter');
+  await address.fill('http://127.0.0.1:9998/v1');
+  await page.getByLabel('API Key', { exact: true }).fill('synthetic-new-route-key');
+  await page.getByRole('button', { name: '编辑模型能力', exact: true }).click();
+  await page.getByLabel('推理参数格式', { exact: true }).selectOption('openai');
+  await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  await expect(page.getByText(/配置已保存/u)).toBeVisible();
+  expect(writes).toHaveLength(2); expect(writes[1]!.configuration.customConnections[0]!.models[0]!.reasoningFormat).toBe('openai');
 });

@@ -21,11 +21,12 @@ const blankModel = (id = '', name = ''): ModelDraft => ({ originalId: null, id, 
 function modelDraftFrom(model: CustomModel): ModelDraft {
   return { originalId: model.id, id: model.id, name: model.name ?? '', contextWindow: String(model.contextWindow), maxTokens: String(model.maxTokens), reasoning: model.reasoning ? 'true' : 'false', reasoningFormat: model.reasoningFormat ?? '', input: model.input.length === 2 ? 'text-image' : model.input[0] ?? '' };
 }
-function parseModel(model: ModelDraft): CustomModel {
+function parseModel(model: ModelDraft, api: CustomProtocol, changedTarget: boolean): CustomModel {
   const contextWindow = Number(model.contextWindow); const maxTokens = Number(model.maxTokens);
   if (!model.id.trim()) throw new Error('请填写模型 ID');
   if (!Number.isSafeInteger(contextWindow) || contextWindow < 1 || !Number.isSafeInteger(maxTokens) || maxTokens < 1) throw new Error('请根据服务商文档填写上下文窗口与最大输出，均须为正整数');
   if (maxTokens > contextWindow) throw new Error('最大输出不能超过上下文窗口');
+  if (api === 'openai-completions' && model.reasoning === 'true' && !model.reasoningFormat && (model.originalId !== model.id.trim() || changedTarget)) throw new Error('请按服务文档选择此模型的推理参数格式；未知格式请先向服务商确认');
   if (!model.reasoning || !model.input) throw new Error('请明确选择推理能力和输入类型');
   return { id: model.id.trim(), ...(model.name.trim() ? { name: model.name.trim() } : {}), contextWindow, maxTokens, reasoning: model.reasoning === 'true', ...(model.reasoningFormat ? { reasoningFormat: model.reasoningFormat } : {}), input: model.input === 'text-image' ? ['text', 'image'] : [model.input] };
 }
@@ -65,7 +66,6 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
   const [discovery, setDiscovery] = useState<Discovery | null>(null);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [discovering, setDiscovering] = useState(false);
-  const [candidateId, setCandidateId] = useState('');
   const loadAbortRef = useRef<AbortController | null>(null);
   const discoveryAbortRef = useRef<AbortController | null>(null);
   const saveAbortRef = useRef<AbortController | null>(null);
@@ -119,7 +119,7 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
   }, [tab]);
 
   const touch = () => { editVersionRef.current += 1; setDirty(true); setSaved(false); setError(null); };
-  const stopDiscovery = () => { discoveryAbortRef.current?.abort(); discoveryAbortRef.current = null; setDiscovering(false); setDiscovery(null); setDiscoveryError(null); setCandidateId(''); };
+  const stopDiscovery = () => { discoveryAbortRef.current?.abort(); discoveryAbortRef.current = null; setDiscovering(false); setDiscovery(null); setDiscoveryError(null);  };
   const change = (update: (value: SettingsWrite) => SettingsWrite) => { touch(); setDraft(current => current ? update(current) : current); };
   const provider = catalog?.providers.find(item => item.id === providerId);
   const connection = draft?.configuration.customConnections.find(item => item.id === connectionId);
@@ -133,6 +133,7 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
   const credential = draft?.configuration.builtinCredentials[providerId] ?? { hasApiKey: false };
   const originalConnection = originalConnectionsRef.current.find(item => item.id === connectionId);
   const targetChanged = !!connection && !!originalConnection && !sameCredentialTarget(connection, originalConnection);
+  const reasoningTargetChanged = !!connection && !!originalConnection && (connection.api !== originalConnection.api || connection.baseUrl !== originalConnection.baseUrl);
 
   const editCredential = (value: string | null | undefined) => change(current => {
     const previous = current.configuration.builtinCredentials[providerId] ?? { hasApiKey: false };
@@ -161,7 +162,13 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
     change(current => ({ ...current, configuration: { ...current.configuration, customConnections: current.configuration.customConnections.map(item => {
       if (item.id !== connectionId) return item;
       const changedEndpoint = (patch.api !== undefined && patch.api !== item.api) || (patch.baseUrl !== undefined && patch.baseUrl !== item.baseUrl);
-      const next = { ...item, ...patch, ...(changedEndpoint ? { models: item.models.map(({ reasoningFormat: _format, ...model }) => model) } : {}) };
+      const target = { ...item, ...patch };
+      const original = originalConnectionsRef.current.find(entry => entry.id === item.id);
+      const restoredTarget = original?.baseUrl === target.baseUrl && original.api === target.api;
+      const next = { ...target, ...(changedEndpoint ? { models: item.models.map(({ reasoningFormat: _format, ...model }) => {
+        const format = restoredTarget ? original.models.find(entry => entry.id === model.id)?.reasoningFormat : undefined;
+        return { ...model, ...(format ? { reasoningFormat: format } : {}) };
+      }) } : {}) };
       // Never reuse a stored or entered secret at a newly edited destination.
       return sameCredentialTarget(item, next) ? next : withApiKey({ ...next, hasApiKey: false }, undefined);
     }) } }));
@@ -198,14 +205,14 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
   };
   const discover = async () => {
     if (!connection || discovering || discoveryAbortRef.current) return;
-    setDiscoveryError(null); setDiscovery(null); setCandidateId('');
+    setDiscoveryError(null); setDiscovery(null);
     try { validateConnection(connection); if (!hasUsableApiKey(connection)) throw new Error('请先填写此连接的 API Key'); } catch (cause) { setDiscoveryError(errorText(cause)); return; }
     const controller = new AbortController(); discoveryAbortRef.current = controller;
     const version = editVersionRef.current;
     setDiscovering(true);
     try {
       const result = await api<Discovery>('/api/models/discover', { method: 'POST', body: JSON.stringify({ connection }), signal: controller.signal });
-      if (!controller.signal.aborted && aliveRef.current && version === editVersionRef.current) { setDiscovery(result); setCandidateId(''); }
+      if (!controller.signal.aborted && aliveRef.current && version === editVersionRef.current) { setDiscovery(result); }
     } catch (cause) { if (!controller.signal.aborted && aliveRef.current) setDiscoveryError('无法获取模型，请检查服务地址、API Key 和服务权限'); }
     finally { if (discoveryAbortRef.current === controller) { discoveryAbortRef.current = null; if (aliveRef.current) setDiscovering(false); } }
   };
@@ -213,7 +220,7 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
     const candidate = discovery?.models.find(item => item.id === id);
     if (!candidate) return;
     const existing = connection?.models.find(item => item.id === candidate.id);
-    touch(); setCandidateId(id); setModelDraft(existing ? modelDraftFrom(existing) : {
+    touch(); setModelDraft(existing ? modelDraftFrom(existing) : {
       ...blankModel(candidate.id, candidate.name),
       contextWindow: candidate.contextWindow === undefined ? '' : String(candidate.contextWindow),
       maxTokens: candidate.maxTokens === undefined ? '' : String(candidate.maxTokens),
@@ -247,12 +254,13 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
         validateConnection(connection);
         if (connection.apiKey !== null && !hasUsableApiKey(connection)) throw new Error('请填写此连接的 API Key；更改服务地址、协议或发现地址后也需要重新输入');
         if (modelDraft) {
-          const model = parseModel(modelDraft);
+          const model = parseModel(modelDraft, connection.api, reasoningTargetChanged);
           if (connection.models.some(item => item.id === model.id && item.id !== modelDraft.originalId)) throw new Error('此连接中已存在相同的模型 ID');
           next.configuration.customConnections = next.configuration.customConnections.map(item => item.id === connection.id ? { ...item, models: [...item.models.filter(existing => existing.id !== modelDraft.originalId), model] } : item);
           next.selection = connection.apiKey === null ? null : { kind: 'custom', connection: connection.id, model: model.id };
         } else if (connection.apiKey === null) next.selection = null;
         else if (!selectedCustom || next.selection?.kind !== 'custom') throw new Error('请选择模型，或手动填写模型 ID 和能力');
+        else if (connection.api === 'openai-completions' && selectedCustom.reasoning && !selectedCustom.reasoningFormat && reasoningTargetChanged) throw new Error('服务地址已更改，请编辑模型能力并重新确认推理参数格式');
       }
     } catch (cause) { setError(errorText(cause)); return; }
     saveBusyRef.current = true; setSaving(true); setError(null); setSaved(false);
@@ -308,7 +316,7 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
               <details className="discovery-options"><summary>指定模型发现地址</summary><label className="field-label" htmlFor="models-url">发现地址 <span className="optional">可选，与服务地址同源</span></label><input id="models-url" type="url" autoComplete="off" spellCheck={false} placeholder="https://api.example.com/v1/models" value={connection.modelsUrl ?? ''} onChange={event => { const modelsUrl = event.target.value; if (modelsUrl) editConnection({ modelsUrl }); else { stopDiscovery(); change(current => ({ ...current, configuration: { ...current.configuration, customConnections: current.configuration.customConnections.map(item => { if (item.id !== connectionId) return item; const { modelsUrl: _url, ...rest } = item; return withApiKey({ ...rest, hasApiKey: false }, undefined); }) } })); } }} /></details>
               <div className="discovery-section"><button type="button" className="secondary-button" onClick={() => { void discover(); }} disabled={discovering}>{discovering ? '正在获取模型…' : '获取可用模型'}</button><p className="field-hint">会请求上方服务的模型目录。你也可以直接填写模型 ID。</p>
                 {discoveryError && <p className="inline-error" role="alert">{discoveryError}。仍可手动填写模型</p>}
-                {discovery && (discovery.models.length ? <div className="discovery-candidates"><label className="field-label" htmlFor="discovered-model">发现的候选模型</label><select id="discovered-model" value={candidateId} onChange={event => useCandidate(event.target.value)}><option value="" disabled>选择模型并填入可用信息</option>{discovery.models.map(item => <option key={item.id} value={item.id}>{item.name ? `${item.name} · ` : ''}{item.id}</option>)}</select></div> : <p className="field-notice">此服务未返回候选模型，请手动填写 ID。</p>)}
+                {discovery && (discovery.models.length ? <div className="discovery-candidates"><label className="field-label" htmlFor="discovered-model">发现的候选模型</label><select id="discovered-model" value="" onChange={event => useCandidate(event.target.value)}><option value="" disabled>选择模型并填入可用信息</option>{discovery.models.map(item => <option key={item.id} value={item.id}>{item.name ? `${item.name} · ` : ''}{item.id}</option>)}</select></div> : <p className="field-notice">此服务未返回候选模型，请手动填写 ID。</p>)}
               </div>
               <div className="field-heading"><label className="field-label" htmlFor="custom-model">已配置模型</label><button type="button" className="text-button" onClick={() => { touch(); setModelDraft(blankModel()); }}>手动添加</button></div>
               <select id="custom-model" value={modelDraft ? '' : selectedCustom?.id ?? ''} onChange={event => { setModelDraft(null); change(current => ({ ...current, selection: { kind: 'custom', connection: connection.id, model: event.target.value } })); }}><option value="" disabled>{modelDraft ? '正在填写模型' : '选择模型'}</option>{connection.models.map(item => <option key={item.id} value={item.id}>{item.name ?? item.id}</option>)}</select>
@@ -320,7 +328,7 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
                 <label className="field-label" htmlFor="model-name">显示名称 <span className="optional">可选</span></label><input id="model-name" value={modelDraft.name} onChange={event => updateModelDraft({ name: event.target.value })} />
                 <div className="field-grid"><div><label className="field-label" htmlFor="context-window">上下文窗口</label><input id="context-window" type="number" min="1" step="1" placeholder="tokens" value={modelDraft.contextWindow} onChange={event => updateModelDraft({ contextWindow: event.target.value })} /></div><div><label className="field-label" htmlFor="max-tokens">最大输出</label><input id="max-tokens" type="number" min="1" step="1" placeholder="tokens" value={modelDraft.maxTokens} onChange={event => updateModelDraft({ maxTokens: event.target.value })} /></div></div>
                 <div className="field-grid"><div><label className="field-label" htmlFor="reasoning">推理能力</label><select id="reasoning" value={modelDraft.reasoning} onChange={event => updateModelDraft({ reasoning: event.target.value as ModelDraft['reasoning'] })}><option value="" disabled>请选择</option><option value="false">未声明或不支持</option><option value="true">支持</option></select></div><div><label className="field-label" htmlFor="model-input">输入类型</label><select id="model-input" value={modelDraft.input} onChange={event => updateModelDraft({ input: event.target.value as ModelDraft['input'] })}><option value="" disabled>请选择</option><option value="text">文本</option><option value="image">图片</option><option value="text-image">文本和图片</option></select></div></div>
-                {modelDraft.reasoning === 'true' && connection.api === 'openai-completions' && <><label className="field-label" htmlFor="reasoning-format">推理参数格式</label><select id="reasoning-format" value={modelDraft.reasoningFormat} onChange={event => updateModelDraft({ reasoningFormat: event.target.value as ModelDraft['reasoningFormat'] })}><option value="">协议默认（未单独确认）</option><option value="openai">OpenAI · reasoning_effort</option><option value="openrouter">OpenRouter · reasoning.effort</option></select><p className="field-hint">按此服务的文档选择。兼容 Chat Completions 不代表使用相同推理参数；不会自动尝试其他格式。</p></> }
+                {modelDraft.reasoning === 'true' && connection.api === 'openai-completions' && <><label className="field-label" htmlFor="reasoning-format">推理参数格式</label><select id="reasoning-format" value={modelDraft.reasoningFormat} onChange={event => updateModelDraft({ reasoningFormat: event.target.value as ModelDraft['reasoningFormat'] })}><option value="" disabled={modelDraft.originalId !== modelDraft.id.trim() || reasoningTargetChanged}>{modelDraft.originalId !== modelDraft.id.trim() || reasoningTargetChanged ? '请选择此服务使用的格式' : '沿用协议默认（未单独确认）'}</option><option value="openai">OpenAI · reasoning_effort</option><option value="openrouter">OpenRouter · reasoning.effort</option></select><p className="field-hint">按此服务的文档选择。兼容 Chat Completions 不代表使用相同推理参数；不会自动尝试其他格式。</p></> }
               </div>}
             </>}
           </section>}

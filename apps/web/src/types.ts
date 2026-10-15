@@ -44,7 +44,7 @@ export interface Settings {
 export interface CatalogModel extends CustomModel { thinkingLevels: ThinkingLevel[]; provider: string; protocol: { id: string; name: string }; catalogBaseUrl: string | null }
 export interface CatalogProvider { id: string; name: string; apiKeySupport: { supported: boolean; explanation: string }; models: CatalogModel[] }
 export interface BuiltinCatalog { source: string; generatedAt: string | null; providers: CatalogProvider[] }
-export interface Discovery { endpoint: string; models: (Pick<CustomModel, 'id' | 'name'> & Partial<Omit<CustomModel, 'id' | 'name'>>)[] }
+export interface Discovery { endpoint: string; models: (Pick<CustomModel, 'id' | 'name'> & Partial<Pick<CustomModel, 'contextWindow' | 'maxTokens' | 'input' | 'reasoning'>>)[] }
 
 /** Secret values exist only in the transient settings form and write requests. */
 export interface ApiKeyStatus { hasApiKey: boolean }

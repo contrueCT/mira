@@ -1,6 +1,6 @@
 import { parseModelConfiguration, type CustomConnection, type CustomModelConfiguration } from './model-config.ts';
 
-export type DiscoveredModel = Pick<CustomModelConfiguration, 'id' | 'name'> & Partial<Omit<CustomModelConfiguration, 'id' | 'name'>>;
+export type DiscoveredModel = Pick<CustomModelConfiguration, 'id' | 'name'> & Partial<Pick<CustomModelConfiguration, 'contextWindow' | 'maxTokens' | 'input' | 'reasoning'>>;
 export interface ModelDiscoveryResult {
   endpoint: string;
   models: DiscoveredModel[];
