@@ -130,11 +130,14 @@ SDK HTTP requests have a 15-second timeout each, rather than holding cleanup ind
 
 Authorization expiry comes from the official registration response (seconds). The
 plugin hides an expired URL even before the SDK polling promise settles. After an
-expired/denied operation ends, the plugin-declared “授权过期后重新申请二维码” action
+provider-expired/denied operation ends, the plugin-declared “授权过期后重新申请二维码” action
 requests a new provider authorization; it never merely redraws the previous URL.
 While an operation is pending, use the existing settings cancellation first. Cancellation
-or network failure may leave a remotely created app: a durable unknown-attempt marker
+or network failure (including the SDK’s local polling deadline) may leave a remotely created app: a durable unknown-attempt marker
 blocks another registration, including after restart. Check the official app console and
 recover existing App ID/Secret with manual configuration. Only after confirming that no
 app was created should the user explicitly unbind/reset and register again. A saved app
 always uses reconnect, never registration. Local cancellation does not revoke remote apps.
+
+SDK begin does not support request cancellation. The adapter retires its local wait
+on abort or a 15-second begin deadline and suppresses late callbacks/results; this does not cancel or undo remote effects.

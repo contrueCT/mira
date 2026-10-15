@@ -127,6 +127,9 @@ test('Feishu registration cancellation retires late QR and credentials', async t
   const f = await fixture(t, { sdk, secrets: new Map() }); const controller = new AbortController(); const registration = f.action('register', controller.signal);
   await until(() => !!options); controller.abort(); options.onQRCode({ url: 'https://accounts.feishu.cn/late', expireIn: 60 }); finish(credentials);
   await assert.rejects(registration, /cancelled/); assert.equal(f.settings.status().authorization, undefined); assert.equal(f.secrets.size, 0); assert.equal(sdk.calls.connect, 0);
+  assert.equal((await f.state()).registrationUnknown, true); await f.close();
+  const restored = await fixture(t, { directory: f.directory, sdk, secrets: f.secrets });
+  await assert.rejects(restored.action('refresh_authorization')); assert.equal(sdk.calls.register, 1);
 });
 test('Feishu instances isolate binding, credentials, inbox, sends and unbind', async t => {
   const a = await fixture(t); const b = await fixture(t); await a.action('connect'); await a.pair();

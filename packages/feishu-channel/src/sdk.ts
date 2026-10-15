@@ -65,6 +65,21 @@ export interface FeishuSdkDependencies {
   registerApp?: typeof registerApp;
   createWebSocket?: (options: FeishuWsOptions) => FeishuWsTransport;
   connectTimeoutMs?: number;
+  registrationBeginTimeoutMs?: number;
+}
+
+// registerApp's initial begin request does not observe AbortSignal in SDK 1.75.0.
+// Retire our local operation promptly without claiming cancellation of remote effects.
+function abortableRegistration<T>(signal: AbortSignal, run: () => Promise<T>): Promise<T> {
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => { signal.removeEventListener('abort', abort); reject(new FeishuSdkError('registration_failed')); };
+    signal.addEventListener('abort', abort, { once: true });
+    Promise.resolve().then(() => { signal.throwIfAborted(); return run(); }).then(
+      value => { signal.removeEventListener('abort', abort); resolve(value); },
+      error => { signal.removeEventListener('abort', abort); reject(error); },
+    );
+  });
 }
 
 export function createFeishuSdk(dependencies: FeishuSdkDependencies = {}): FeishuSdk {
@@ -101,24 +116,27 @@ export function createFeishuSdk(dependencies: FeishuSdkDependencies = {}): Feish
   };
   return {
     async register(options) {
+      const beginTimeout = new AbortController();
+      const signal = AbortSignal.any([options.signal, beginTimeout.signal]);
+      const timer = setTimeout(() => beginTimeout.abort(), dependencies.registrationBeginTimeoutMs ?? 15_000);
       try {
-        options.signal.throwIfAborted();
-        const result = await (dependencies.registerApp ?? registerApp)({
+        signal.throwIfAborted();
+        const result = await abortableRegistration(signal, () => (dependencies.registerApp ?? registerApp)({
           domain: options.domain === 'feishu' ? 'accounts.feishu.cn' : 'accounts.larksuite.com',
-          larkDomain: 'accounts.larksuite.com', signal: options.signal, source: 'mira', createOnly: true,
+          larkDomain: 'accounts.larksuite.com', signal, source: 'mira', createOnly: true,
           appPreset: { name: 'Mira', desc: 'Mira personal assistant text channel' },
           addons: { preset: false, scopes: { tenant: [...FEISHU_REQUIRED_SCOPES], user: [] }, events: { items: { tenant: ['im.message.receive_v1'], user: [] } } },
-          onQRCodeReady: info => { if (!options.signal.aborted) options.onQRCode(info); },
-          onStatusChange: info => { if (!options.signal.aborted) options.onStatus(info.status); },
-        });
-        options.signal.throwIfAborted();
+          onQRCodeReady: info => { clearTimeout(timer); if (!signal.aborted) options.onQRCode(info); },
+          onStatusChange: info => { if (!signal.aborted) options.onStatus(info.status); },
+        }));
+        signal.throwIfAborted();
         if (!result.client_id || !result.client_secret || (result.user_info?.tenant_brand && result.user_info.tenant_brand !== options.domain)) throw new Error();
         return { appId: result.client_id, appSecret: result.client_secret, domain: result.user_info?.tenant_brand ?? options.domain,
           ...(result.user_info?.open_id ? { ownerOpenId: result.user_info.open_id } : {}) };
       } catch (error) {
         const code = record(error).code;
-        throw new FeishuSdkError(code === 'expired_token' ? 'registration_expired' : code === 'access_denied' ? 'registration_denied' : 'registration_failed');
-      }
+        throw new FeishuSdkError(code === 'expired_token' && record(error).description !== 'Polling timed out' ? 'registration_expired' : code === 'access_denied' ? 'registration_denied' : 'registration_failed');
+      } finally { clearTimeout(timer); }
     },
     verify,
     async connect(credentials, handlers) {

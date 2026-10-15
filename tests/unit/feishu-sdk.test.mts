@@ -49,7 +49,7 @@ test('Feishu registration uses official minimal options and never treats QR crea
     assert.equal(options.addons?.preset, false); assert.equal(options.createOnly, true);
     assert.deepEqual(options.addons?.scopes?.tenant, [...FEISHU_REQUIRED_SCOPES]);
     assert.deepEqual(options.addons?.events?.items?.tenant, ['im.message.receive_v1']);
-    assert.equal(options.domain, 'accounts.larksuite.com'); assert.equal(options.signal, abort.signal);
+    assert.equal(options.domain, 'accounts.larksuite.com'); assert.equal(options.signal?.aborted, false);
     options.onQRCodeReady({ url: 'https://accounts.larksuite.com/synthetic', expireIn: 60 });
     options.onStatusChange?.({ status: 'polling' });
     return { client_id: 'cli_new', client_secret: 'synthetic', user_info: { open_id: 'ou_admin', tenant_brand: 'lark' } };
@@ -174,4 +174,31 @@ test('registration preserves only safe expiry/denial classifications and never r
     const sdk = createFeishuSdk({ registerApp: async () => { throw { code: provider, description: 'synthetic-secret-never-project' }; } });
     await assert.rejects(sdk.register({ domain: 'feishu', signal: new AbortController().signal, onQRCode() {}, onStatus() {} }), error => error instanceof Error && error.message === `Feishu ${expected}`);
   }
+});
+
+
+test('registration cancellation settles even while official begin is unresolved and ignores late QR', async () => {
+  let options!: Parameters<NonNullable<FeishuSdkDependencies['registerApp']>>[0];
+  let finish!: (value: Awaited<ReturnType<NonNullable<FeishuSdkDependencies['registerApp']>>>) => void;
+  const sdk = createFeishuSdk({ registerApp: async value => { options = value; return new Promise(resolve => { finish = resolve; }); } });
+  const abort = new AbortController();
+  const pending = sdk.register({ domain: 'feishu', signal: abort.signal, onQRCode() { assert.fail('late QR'); }, onStatus() { assert.fail('late status'); } });
+  await Promise.resolve(); abort.abort(); await assert.rejects(pending, /registration_failed/);
+  options.onQRCodeReady({ url: 'https://accounts.feishu.cn/synthetic-late', expireIn: 60 });
+  finish({ client_id: 'late', client_secret: 'synthetic-late' }); await Promise.resolve();
+});
+test('local SDK polling deadline remains unknown because a remote app could already exist', async () => {
+  const sdk = createFeishuSdk({ registerApp: async () => { throw { code: 'expired_token', description: 'Polling timed out' }; } });
+  await assert.rejects(sdk.register({ domain: 'feishu', signal: new AbortController().signal, onQRCode() {}, onStatus() {} }), /registration_failed/);
+});
+
+
+test('registration begin timeout is bounded and suppresses late authorization and success', async () => {
+  let options!: Parameters<NonNullable<FeishuSdkDependencies['registerApp']>>[0];
+  let finish!: (value: Awaited<ReturnType<NonNullable<FeishuSdkDependencies['registerApp']>>>) => void;
+  const sdk = createFeishuSdk({ registrationBeginTimeoutMs: 5, registerApp: async value => { options = value; return new Promise(resolve => { finish = resolve; }); } });
+  await assert.rejects(sdk.register({ domain: 'feishu', signal: new AbortController().signal, onQRCode() { assert.fail('late QR'); }, onStatus() { assert.fail('late status'); } }), /registration_failed/);
+  assert.equal(options.signal?.aborted, true);
+  options.onQRCodeReady({ url: 'https://accounts.feishu.cn/synthetic-late', expireIn: 60 });
+  finish({ client_id: 'late', client_secret: 'synthetic-late' }); await Promise.resolve();
 });
