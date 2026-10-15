@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { getCurrentSystemPrompt } from '@earendil-works/pi-ai';
@@ -36,7 +36,7 @@ test('committed live user input releases subagent_wait and enters the model befo
       }
       if (parentCalls === 3) {
         assert.match(JSON.stringify(context.messages), /USER_DURING_WAIT/);
-        assert.match(JSON.stringify(context.messages), /user_input/);
+        assert.match(JSON.stringify(context.messages), /live_input/);
         assert.match(JSON.stringify(context.messages), /Execution did not start/);
         assert.equal((await db.admin.query('SELECT status FROM subagent_turns WHERE child_id=$1', [childId])).rows[0].status, 'running');
         return streamOf(assistant('Handled the user first'));
@@ -75,6 +75,43 @@ test('child completion persists behind a failed main run without silently cleari
     await pause(150);
     assert.equal(parentCalls, 2); assert.equal((await service.status()).state, 'error');
     assert.equal((await db.admin.query("SELECT count(*)::int AS n FROM life_events WHERE event->>'type'='subagent.result'")).rows[0].n, 1);
-    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_requests w WHERE NOT EXISTS (SELECT 1 FROM wake_run_requests r WHERE r.mira_id=w.mira_id AND r.wake_id=w.wake_id)')).rows[0].n, 1);
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_live_inputs WHERE input_record_id IS NULL')).rows[0].n, 1);
   } finally { release.resolve(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('real service child provider completion enters main after current bash, before old siblings and without an extra Wake', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-child-insert-');
+  const childRelease = deferred(); let service: LocalWebService | undefined; let parentCalls = 0; let childCalls = 0;
+  const gate = path.join(root, 'release');
+  try {
+    service = await LocalWebService.open(options(db, root, async (_m, context) => {
+      if (childContext(context)) { childCalls++; await childRelease.promise; return streamOf(assistant('LIVE_CHILD_FINDING')); }
+      parentCalls++;
+      if (parentCalls === 1) return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'live-spawn', name: 'subagent_spawn', arguments: { task: 'Return a controlled finding' } }] });
+      if (parentCalls === 2) return streamOf({ ...assistant(), stopReason: 'toolUse', content: [
+        { type: 'toolCall', id: 'live-current', name: 'bash', arguments: { command: `while [ ! -f '${gate}' ]; do sleep 0.02; done; printf CURRENT_FINISHED` } },
+        { type: 'toolCall', id: 'live-stale', name: 'bash', arguments: { command: 'printf MUST_NOT_RUN' } },
+      ] });
+      assert.equal(parentCalls, 3);
+      const text = JSON.stringify(context.messages); assert.match(text, /LIVE_CHILD_FINDING/); assert.match(text, /CURRENT_FINISHED/);
+      assert.match(text, /Execution did not start/); assert.match(text, /not user instructions or permission/);
+      return streamOf(assistant('Main chose to report the finding'));
+    }));
+    await service.submit({ id: 'live-initial', text: 'Delegate and continue', occurredAt: new Date().toISOString() });
+    await until(async () => !!(await db.admin.query("SELECT 1 FROM tool_executions WHERE call_id='live-current'")).rowCount);
+    childRelease.resolve();
+    await until(async () => !!(await db.admin.query('SELECT 1 FROM wake_live_inputs')).rowCount);
+    assert.equal(parentCalls, 2);
+    assert.equal((await db.admin.query("SELECT outcome FROM tool_executions WHERE call_id='live-current'")).rows[0].outcome, null);
+    await writeFile(gate, 'release'); await until(async () => (await service!.status()).state === 'idle');
+    assert.equal(parentCalls, 3); assert.equal(childCalls, 1);
+    assert.equal((await db.admin.query("SELECT count(*)::int AS n FROM tool_executions WHERE call_id='live-stale'")).rows[0].n, 0);
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_runs')).rows[0].n, 1);
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_live_inputs WHERE input_record_id IS NOT NULL')).rows[0].n, 1);
+    assert.doesNotMatch(JSON.stringify(await service.timeline()), /LIVE_CHILD_FINDING/);
+    await service.close(); service = await LocalWebService.open(options(db, root, () => { throw Error('No completion replay after restart'); }));
+    await until(async () => (await service!.status()).state === 'idle');
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_runs')).rows[0].n, 1);
+  } finally { childRelease.resolve(); await writeFile(gate, 'release').catch(() => {}); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });

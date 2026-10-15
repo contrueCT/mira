@@ -78,7 +78,7 @@ function registryFixture(writer: MemoryWriter) {
     }
     throw Error(`Unexpected fixture SQL: ${sql}`);
   } } as unknown as Client;
-  const registry = new PostgresSubagents(client, 'parent', async work => work(), async () => { receipts++; });
+  const registry = new PostgresSubagents(client, 'parent', async work => work(), async () => { receipts++; return null; }, () => {});
   return { registry, row, receipts: () => receipts };
 }
 for (const boundary of ['before-commit', 'after-commit', 'cancel-wins-parent', 'cancel-wins-parent-no-callback', 'lost-writer', 'lost-writer-no-callback'] as const) {

@@ -219,7 +219,7 @@ class PostgresWriter implements DreamingWriter, SchedulingWriter, LiveInputWrite
   #ended: Promise<void> | undefined;
 
   constructor(client: Client, miraId: string, epoch: string, key: number) {
-    this.#subagents = new PostgresSubagents(client, miraId, work => this.#transaction(work), (event, wake) => this.#receive(event, wake));
+    this.#subagents = new PostgresSubagents(client, miraId, work => this.#transaction(work), async (event, wake) => (await this.#receiveSupplemental(event, wake)).runId, runId => this.#notifyLiveInput(runId));
     this.#client = client; this.miraId = miraId; this.epoch = epoch; this.#key = key; this.signal = this.#abort.signal;
     client.on('error', (error: Error) => this.#stop(error));
     client.on('end', () => this.#stop(new PersistenceError('ownership', 'PostgreSQL ownership connection ended')));
@@ -542,22 +542,26 @@ class PostgresWriter implements DreamingWriter, SchedulingWriter, LiveInputWrite
     const event = copy(input); const wake = copy(requestedWake);
     validateEvent(event); validateWake(wake);
     if (event.source !== 'user') fail('invalid', 'Live input must be a user event');
-    const result = await this.#transaction(async () => {
-      const receipt = await this.#receive(event, wake);
-      if (receipt === 'duplicate') return { receipt, runId: null };
-      const active = await this.#activeWakeRun();
-      if (!active || active.final_record_id) return { receipt, runId: null };
-      await this.#client.query('INSERT INTO wake_run_requests(mira_id, wake_id, run_id) VALUES ($1, $2, $3)', [this.miraId, wake.id, active.run_id]);
-      await this.#client.query('INSERT INTO wake_live_inputs(mira_id, wake_id, run_id) VALUES ($1, $2, $3)', [this.miraId, wake.id, active.run_id]);
-      return { receipt, runId: active.run_id };
-    });
-    // Only committed input may interrupt a request. No duplicate notification.
-    if (result.runId) for (const listener of this.#liveInputListeners) {
-      // A notification consumer cannot turn committed acceptance into a failed
-      // receipt or suppress the durable gates used by another consumer.
-      try { listener(result.runId); } catch { /* Notifications are hints only. */ }
-    }
+    const result = await this.#transaction(() => this.#receiveSupplemental(event, wake));
+    this.#notifyLiveInput(result.runId);
     return result.receipt;
+  }
+  /** Internal only: caller holds the owner transaction. Child terminal receipts
+   * originate in PostgresSubagents from its persisted turn, never public ingress. */
+  async #receiveSupplemental(event: LifeEvent, wake: WakeReceipt): Promise<{ receipt: 'inserted' | 'duplicate'; runId: string | null }> {
+    const receipt = await this.#receive(event, wake);
+    if (receipt === 'duplicate') return { receipt, runId: null };
+    const active = await this.#activeWakeRun();
+    if (!active || active.final_record_id) return { receipt, runId: null };
+    await this.#client.query('INSERT INTO wake_run_requests(mira_id, wake_id, run_id) VALUES ($1, $2, $3)', [this.miraId, wake.id, active.run_id]);
+    await this.#client.query('INSERT INTO wake_live_inputs(mira_id, wake_id, run_id) VALUES ($1, $2, $3)', [this.miraId, wake.id, active.run_id]);
+    return { receipt, runId: active.run_id };
+  }
+  #notifyLiveInput(runId: string | null): void {
+    // Call only after COMMIT. Durable gates cover lost hints and restart.
+    if (runId) for (const listener of this.#liveInputListeners) {
+      try { listener(runId); } catch { /* Notifications are hints only. */ }
+    }
   }
   loadLiveInputs(runId: string): Promise<LiveWakeInput[]> {
     historyId(runId);

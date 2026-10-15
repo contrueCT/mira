@@ -178,3 +178,5 @@ groups; restart returns unavailable old handles and never replays effects.
 Native setup: `pnpm terminal:prepare` after script-disabled install. Mac/Linux only.
 See [ADR 0032](../../docs/adr/0032-persistent-terminal-processes.md) for bounds,
 cancellation, child isolation and supervision limits.
+
+ADR 0037: child terminal results join the active non-final main run as sourced supplemental input and yield at the current single-tool boundary. Idle/finalized runs retain ordinary queued delivery; a failed parent is not retried or cleared. Public live ingress stays user-only. `subagent_wait` reports `live_input` for an early supplemental-input release.
