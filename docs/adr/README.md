@@ -82,3 +82,5 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 - [0039 — Parent-to-child live followups](0039-live-child-followups.md): accepted scope; implementation under verification. Separate task inbox and child transcript boundary, no main Wake ownership.
 - [0035 扩展私有凭据与声明式设置](0035-extension-private-settings.md)：Accepted，2026-10-15；手工/生成扩展共用安装命名空间、私有凭据、纯文本字段/动作/状态与本地授权二维码。
 - [0036 飞书本人单聊扩展](0036-feishu-owner-channel.md)：已批准普通 Cordis 扩展，使用通用设置/凭据和既有安装生命周期；固定官方 SDK、显式本人绑定、持久收件与未知投递保护，真实租户联通未执行。
+
+- [0037 MCP 普通扩展消费者](0037-mcp-extension-consumer.md)：Accepted，2026-10-15；独立安装复用既有生命周期，通用动态工具集/已知错误契约，官方 MCP SDK、显式本地协议、私有 OAuth 和无隐式工具重放。

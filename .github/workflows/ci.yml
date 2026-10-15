@@ -65,6 +65,8 @@ jobs:
         run: pnpm test:capabilities:e2e
       - name: Verify Feishu SDK fixtures through generic settings, PostgreSQL and browser
         run: pnpm test:feishu:e2e
+      - name: Verify MCP lifecycle through real HTTP, PostgreSQL, runtime and browser
+        run: pnpm test:mcp:e2e
       - name: Keep synthetic browser verification evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -89,4 +91,4 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm terminal:prepare
       - name: Verify real Mac terminals and private ledger recovery
-        run: node --import ./tests/deny-model-network.mts --test --test-timeout=60000 tests/unit/terminals.test.mts tests/unit/feishu-store.test.mts
+        run: node --import ./tests/deny-model-network.mts --test --test-timeout=60000 tests/unit/terminals.test.mts tests/unit/feishu-store.test.mts tests/unit/mcp-plugin.test.mts tests/unit/mcp-oauth.test.mts

@@ -116,5 +116,14 @@
       "@larksuite/channel",
       "@larksuiteoapi/node-sdk"
     ]
+  },
+  "@mira/mcp-plugin": {
+    "path": "packages/mcp-plugin",
+    "allow": [
+      "@mira/extension-sdk"
+    ],
+    "external": [
+      "@modelcontextprotocol/client"
+    ]
   }
 }

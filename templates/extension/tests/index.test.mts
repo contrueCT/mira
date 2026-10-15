@@ -11,7 +11,7 @@ async function registeredTool(config: HostConfig = null): Promise<ExtensionTool>
   const context: ExtensionContext = {
     privateDirectory: null, registerSettings: unexpected, credentials: {get: unexpected, has: unexpected, set: unexpected, delete: unexpected},
     schedules: { create: unexpected, get: unexpected, list: unexpected, replace: unexpected, cancel: unexpected },
-    id: 'local-template-test', registerTool: tool => { tools.push(tool); }, registerContextProvider: unexpected,
+    id: 'local-template-test', registerToolset: unexpected, registerTool: tool => { tools.push(tool); }, registerContextProvider: unexpected,
     emitEvent: unexpected, requestWake: unexpected, provideService: unexpected,
     service: unexpected, onCleanup: unexpected, onEvent: unexpected,
     publish: unexpected, interval: unexpected,

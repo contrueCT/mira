@@ -12,19 +12,21 @@ export function extensionReceiver(writer: DurableWriter): ExtensionHostOptions['
   }, wake ? { id: JSON.stringify(['extension', extensionId, wake.id]), reason: wake.reason } : undefined);
 }
 export function extensionTools(registry: RegisteredTool[]): AgentTool[] {
-  return registry.map(({ extensionId, activation, digest, tool }) => ({
+  return registry.map(({ extensionId, activation, toolRevision, digest, tool }) => ({
     name: tool.name, label: tool.name,
     // Existing Pi declaration deltas persist activation identity even when a code
     // reload retains the same schema. This is an instance ID, not a source hash.
-    description: `${tool.description}\nExtension ${JSON.stringify(extensionId)}, activation ${activation}.${digest ? ` Content SHA-256 ${digest}.` : ''}`,
+    description: `${tool.description}\nExtension ${JSON.stringify(extensionId)}, activation ${activation}.${toolRevision ? ` Toolset revision ${toolRevision}.` : ''}${digest ? ` Content SHA-256 ${digest}.` : ''}`,
     parameters: Type.Unsafe(structuredClone(tool.parameters)),
     execute: async (callId, args, signal) => {
       let result;
       try { result = await tool.execute(args as Json, { callId, signal: signal ?? new AbortController().signal }); }
       catch { throw new Error('Extension execution did not return a known outcome. Verify external effects before retrying. Raw diagnostics are hidden.'); }
+      const isError = result.isError;
+      if (isError !== undefined && typeof isError !== 'boolean') throw new Error('Extension returned an invalid known-outcome flag.');
       const stale = result.details !== null && typeof result.details === 'object' && !Array.isArray(result.details)
         && result.details?.['status'] === 'stale' && result.details?.['executed'] === false;
-      return { content: [{ type: 'text' as const, text: result.text }], details: result.details ?? null, ...(stale ? { isError: true } : {}) };
+      return { content: [{ type: 'text' as const, text: result.text }], details: result.details ?? null, ...((stale || isError === true) ? { isError: true } : {}) };
     },
   }));
 }

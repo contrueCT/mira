@@ -1,3 +1,4 @@
+import pnpmNodeShim from './fixtures/pnpm-node-shim.mts';
 import { cp, lstat, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -62,11 +63,64 @@ async function validateSourceTree(root: string, directory: string, ancestors = n
  * Only declared closure roots and their sparse namespace ancestors are eligible. */
 async function validateDependencyTrees(closure: Set<string>): Promise<void> {
   const roots = [...closure]; const visited = new Set<string>();
+  // Recognize one pinned package-manager format, never a comment alone. Data
+  // substitutions are path-only and every executable branch must match the
+  // captured declared bin. Unknown shim versions fail closed. The template is
+  // pnpm 11.28.4's Node POSIX shim (MIT, fixtures/LICENSE.pnpm).
+  const template = pnpmNodeShim;
+  const bins = new Map<string, Map<string, string>>();
+  for (const root of roots) {
+    const manifest: unknown = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
+    if (!object(manifest)) throw new Error('Invalid runtime manifest');
+    const entries = typeof manifest.bin === 'string' && typeof manifest.name === 'string'
+      ? { [manifest.name.split('/').at(-1)!]: manifest.bin } : manifest.bin;
+    if (entries === undefined) continue;
+    if (!object(entries)) throw new Error('Invalid runtime bin declaration');
+    for (const [name, relative] of Object.entries(entries)) {
+      if (!/^[A-Za-z0-9_.-]+$/u.test(name) || name === '.' || name === '..' || typeof relative !== 'string' || path.isAbsolute(relative)) throw new Error('Invalid runtime bin declaration');
+      const target = await realpath(path.resolve(root, relative));
+      if (!inside(root, target) || path.relative(root, target).split(path.sep).some(part => part === 'node_modules' || part === '.git') || !(await lstat(target)).isFile()) throw new Error('Runtime bin escapes its declared package');
+      const values = bins.get(name) ?? new Map<string, string>(); values.set(target, root); bins.set(name, values);
+    }
+  }
   const visit = async (input: string): Promise<void> => {
+    if (path.basename(input) === '.bin' && (await lstat(input)).isSymbolicLink()) throw new Error('Runtime dependency .bin directory must not be a link');
     const actual = await realpath(input);
     const contained = roots.some(root => inside(root, actual) && !path.relative(root, actual).split(path.sep).some(part => part === 'node_modules' || part === '.git'));
     const namespace = roots.some(root => /^node_modules(?:\/@[^/]+)?$/u.test(path.relative(root, actual).split(path.sep).join('/')));
-    if (!contained && !namespace) throw new Error('Runtime dependency link or directory escapes the declared closure');
+    const binParent = roots.find(root => path.dirname(actual) === path.join(root, 'node_modules', '.bin'));
+    const binDirectory = roots.some(root => actual === path.join(root, 'node_modules', '.bin'));
+    let shim = false;
+    if (binParent && (await lstat(input)).isFile()) {
+      const declared = bins.get(path.basename(actual));
+      if (declared) {
+        const bytes = await readFile(actual, 'utf8');
+        const markers = [...bytes.matchAll(/^# cmd-shim-target=(.+)$/gm)];
+        if (markers.length === 1) {
+          const target = await optionalRealpath(markers[0]![1]!);
+          const packageRoot = target && declared.get(target);
+          if (target && packageRoot) {
+            const relative = path.relative(path.dirname(actual), target).split(path.sep).join('/');
+            // Do not interpolate shell syntax, even in an otherwise recognized
+            // template. Unsupported path spelling must be prepared elsewhere.
+            const safe = (value: string) => !/["\\$`\r\n:]/u.test(value);
+            const nodePaths = [path.join(packageRoot, 'node_modules')];
+            let modules = path.dirname(packageRoot);
+            if (path.basename(modules).startsWith('@')) modules = path.dirname(modules);
+            if (path.basename(modules) === 'node_modules') {
+              nodePaths.push(modules);
+              const store = path.dirname(path.dirname(modules));
+              if (path.basename(store) === '.pnpm') nodePaths.push(path.join(store, 'node_modules'));
+            }
+            if ([target, relative, ...nodePaths].every(safe)) {
+              const expected = template.replaceAll('@@TARGET@@', target).replaceAll('@@RELATIVE@@', relative).replaceAll('@@NODE_PATH@@', nodePaths.join(':'));
+              shim = bytes === expected;
+            }
+          }
+        }
+      }
+    }
+    if (!contained && !namespace && !binDirectory && !shim) throw new Error('Runtime dependency link or directory escapes the declared closure');
     if (visited.has(actual)) return; visited.add(actual);
     const info = await lstat(actual);
     if (info.isFile()) return;

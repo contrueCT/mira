@@ -28,3 +28,4 @@
 
 - 准备helper在写目标之前拒绝源码树内部符号链接，避免展平后改变Node相对导入；声明runtime闭包中的受控依赖/pnpm链接仍支持。
 - 准备器仅支持根运行时依赖声明；拒绝嵌套安装/运行时声明、源码与依赖或目标闭包重叠、排除树入口和入口URL元字符。普通根node_modules及仅type/imports/exports子作用域必须保留正例。
+- Declared dependency pnpm .bin shims require an existing declared bin name, captured target, and byte-exact pinned pnpm 11.28.4 Node shim template with validated path substitutions; arbitrary names, external links and nested folders remain rejected. Preparation never executes a shim.

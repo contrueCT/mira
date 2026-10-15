@@ -259,3 +259,8 @@ already admitted work and cleanup. This is cooperative lifecycle management,
 not a sandbox: arbitrary trusted plugin network/filesystem effects cannot be
 forcibly preempted or rolled back. Plugins must retain their own durable
 idempotency/CAS and unknown-outcome handling across process overlap.
+Dynamic collections use the SDK `registerToolset` handle. A candidate is fully
+validated/cloned before any live registry change; publication carries a revision
+in the normal declaration identity. Existing activation/admission/lease guards
+also cover set replacement and every captured declaration. Cleanup withdraws
+only this set's registrations. The host contains no MCP protocol or OAuth code.

@@ -1,3 +1,4 @@
+import { createToolset, snapshotTool } from './toolsets.ts';
 import { ExtensionPrivateStorage, credentialKey } from './private-storage.ts';
 import { RegisteredSettings, validateSettings, ExtensionSettingsError, type ExtensionSettingsView, type ExtensionSettingsWrite } from './settings.ts';
 export { ExtensionSettingsError } from './settings.ts';
@@ -51,7 +52,7 @@ export interface ExtensionHostOptions {
   /** Ordinary release files outside the source repository, not a sandbox. */
   artifactsDirectory?: string;
 }
-export interface RegisteredTool { extensionId: string; activation: string; digest?: string; tool: ExtensionTool }
+export interface RegisteredTool { extensionId: string; activation: string; toolRevision?: string; digest?: string; tool: ExtensionTool }
 export interface ContextProviderSample {
   extensionId: string; activation: string; providerId: string; digest?: string;
   status: 'ok' | 'empty' | 'failed' | 'stale' | 'too-large' | 'budget-exceeded';
@@ -320,6 +321,26 @@ export class ExtensionHost {
       ctx.fiber.assertActive();
       if (ctx.fiber.state !== 1 && ctx.fiber.state !== 2) throw new Error('Cannot register resources while extension is retiring');
     };
+    const wrapTool = (tool: ExtensionTool, revision?: string): RegisteredTool => {
+      const { name, description, parameters, execute } = tool;
+        const registered: RegisteredTool = { extensionId: id, activation, ...(revision ? { toolRevision: revision } : {}), ...(this.entries.get(id)?.generated ? { digest: this.entries.get(id)!.generated!.digest } : {}), tool: {
+          name, description, parameters: structuredClone(parameters),
+          execute: async (arguments_, execution) => {
+            if (retired || this.closed || this.closing || this.options.ownerSignal?.aborted || ctx.fiber.state !== 2 || this.tools.get(name) !== registered) {
+              return {
+                isError: true,
+                text: `Tool ${name} was not executed because extension activation ${activation} is stale. Use the next model request’s fresh tool declarations before retrying.`,
+                details: { status: 'stale', executed: false, extensionId: id, activation, toolName: name },
+              };
+            }
+            const lease = Promise.withResolvers<void>();
+            executions.add(lease.promise);
+            try { return await execute.call(tool, arguments_, { ...execution, signal: this.options.ownerSignal ? AbortSignal.any([execution.signal, this.options.ownerSignal]) : execution.signal }); }
+            finally { executions.delete(lease.promise); lease.resolve(); }
+          },
+        } };
+      return registered;
+    };
     const context: ExtensionContext = {
       id,
       privateDirectory: this.privateStorage && this.scheduleOwner(id) ? path.join(this.privateStorage.directory(this.scheduleOwner(id)!), 'data') : null,
@@ -355,30 +376,17 @@ export class ExtensionHost {
         });
       },
       schedules: this.scopedSchedules(id, () => { canRegister(); }),
-      registerTool: tool => {
-        canRegister();
-        const name = tool.name, description = tool.description, parameters = tool.parameters, execute = tool.execute;
-        if (typeof name !== 'string' || !/^[a-zA-Z_]/.test(name) || name.length > 64 || /[^a-zA-Z0-9_-]/.test(name)) throw new Error('Invalid extension tool name: use 1-64 ASCII letters, digits, underscores or hyphens, starting with a letter or underscore');
-        if (!description.trim() || parameters.type !== 'object' || typeof execute !== 'function') throw new Error('Invalid extension tool');
-        if (this.reserved.has(name) || this.tools.has(name)) throw new Error(`Duplicate registered tool: ${name}`);
-        const registered: RegisteredTool = { extensionId: id, activation, ...(this.entries.get(id)?.generated ? { digest: this.entries.get(id)!.generated!.digest } : {}), tool: {
-          name, description, parameters: structuredClone(parameters),
-          execute: async (arguments_, execution) => {
-            if (retired || this.closed || this.closing || this.options.ownerSignal?.aborted || ctx.fiber.state !== 2 || this.tools.get(name) !== registered) {
-              return {
-                text: `Tool ${name} was not executed because extension activation ${activation} is stale. Use the next model request’s fresh tool declarations before retrying.`,
-                details: { status: 'stale', executed: false, extensionId: id, activation, toolName: name },
-              };
-            }
-            const lease = Promise.withResolvers<void>();
-            executions.add(lease.promise);
-            try { return await execute.call(tool, arguments_, { ...execution, signal: this.options.ownerSignal ? AbortSignal.any([execution.signal, this.options.ownerSignal]) : execution.signal }); }
-            finally { executions.delete(lease.promise); lease.resolve(); }
-          },
-        } };
-        resourceDrains.push(releaseResource(() => { if (this.tools.get(name) === registered) this.tools.delete(name); }));
-        this.tools.set(name, registered);
+      registerTool: candidate => {
+        canRegister(); const tool = snapshotTool(candidate);
+        if (this.reserved.has(tool.name) || this.tools.has(tool.name)) throw new Error(`Duplicate registered tool: ${tool.name}`);
+        const registered = wrapTool(tool);
+        resourceDrains.push(releaseResource(() => { if (this.tools.get(tool.name) === registered) this.tools.delete(tool.name); }));
+        this.tools.set(tool.name, registered);
       },
+      registerToolset: tools => createToolset({
+        registry: this.tools, reserved: this.reserved, assertActive: canRegister,
+        wrap: wrapTool, cleanup: cleanup => { resourceDrains.push(releaseResource(cleanup)); },
+      }, tools),
       registerContextProvider: provider => {
         canRegister();
         const providerId = provider.id, provide = provider.provide;

@@ -1,3 +1,4 @@
+import template from '../../scripts/fixtures/pnpm-node-shim.mts';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -178,4 +179,34 @@ test('standard file URL encoding preserves a trailing-space entry through movabl
   const store = new ArtifactStore(path.join(root, 'artifacts')); const artifact = await store.stage(prepared.directory, prepared.entryRelative);
   const receipt = await store.test(artifact, { command: process.execPath, args: ['--input-type=module', '-e', "if((await import('./entry.mjs')).default !== 'literal') throw Error('entry identity changed');"] });
   assert.equal(receipt.passed, true, receipt.stderr);
+}));
+
+test('pnpm bin shims admit only declared captured targets and preserve all external-link fences', async () => fixture(async root => {
+  const source = path.join(root, 'source'), dep = path.join(root, 'dep'), executable = path.join(root, 'executable');
+  await pkg(source, { dependencies: { dep: '1' } });
+  await pkg(dep, { dependencies: { executable: '1' } });
+  await pkg(executable, { name: 'executable', bin: { demo: 'run.mjs' } });
+  await writeFile(path.join(executable, 'run.mjs'), 'console.log("synthetic");');
+  await link(source, 'dep', dep); await link(dep, 'executable', executable);
+  const bin = path.join(dep, 'node_modules', '.bin'); await mkdir(bin);
+  const shim = path.join(bin, 'demo'); const target = path.join(executable, 'run.mjs');
+  const valid = template.replaceAll('@@TARGET@@', target).replaceAll('@@RELATIVE@@', path.relative(bin, target)).replaceAll('@@NODE_PATH@@', path.join(executable, 'node_modules'));
+  await writeFile(shim, valid);
+  const prepared = await prepareExtensionPackage(source, path.join(root, 'good'), 'index.mjs');
+  await new ArtifactStore(path.join(root, 'artifacts')).stage(prepared.directory, prepared.entryRelative);
+  for (const content of ['#!/bin/sh\nexit 0\n', `#!/bin/sh\n# cmd-shim-target=${path.join(root, 'unrelated')}\n`, `#!/bin/sh\n# cmd-shim-target=${target}\n# cmd-shim-target=${target}\n`, `#!/bin/sh\n# cmd-shim-target=${target}\nexec /arbitrary/external/executable \"$@\"\n`, valid + 'echo injected\n', valid.replace('exec node  ', 'exec /external/node  '), valid.replace(path.join(executable, 'node_modules'), '/external/node_modules')]) {
+    await writeFile(shim, content); await assert.rejects(prepareExtensionPackage(source, path.join(root, 'bad'), 'index.mjs'), /escapes the declared closure/);
+    await assert.rejects(realpath(path.join(root, 'bad')), /ENOENT/);
+  }
+  await writeFile(shim, valid);
+  await writeFile(path.join(bin, 'undeclared'), `#!/bin/sh\n# cmd-shim-target=${target}\n`);
+  await assert.rejects(prepareExtensionPackage(source, path.join(root, 'bad'), 'index.mjs'), /escapes the declared closure/);
+  await rm(path.join(bin, 'undeclared'));
+  await mkdir(path.join(root, 'unrelated')); await writeFile(path.join(root, 'unrelated', 'secret'), 'synthetic-private');
+  await symlink(path.join(root, 'unrelated'), path.join(bin, 'nested'));
+  await assert.rejects(prepareExtensionPackage(source, path.join(root, 'bad'), 'index.mjs'), /escapes the declared closure/);
+  await rm(path.join(bin, 'nested')); await rm(shim); await symlink(path.join(root, 'unrelated', 'secret'), shim);
+  await assert.rejects(prepareExtensionPackage(source, path.join(root, 'bad'), 'index.mjs'), /escapes the declared closure/);
+  await rm(bin, { recursive: true }); await symlink(path.join(root, 'unrelated'), bin);
+  await assert.rejects(prepareExtensionPackage(source, path.join(root, 'bad'), 'index.mjs'), /must not be a link/);
 }));

@@ -112,3 +112,17 @@ receipt，不返回受保护的 settings view 或 provider URL，详见 ADR0035�
 revision，页面与插件 handle 共用的 runner 拒绝过期 revision 或当前隐藏的动作。
 已有 operation 的查询/取消不受可见性影响。Web 将 secondary 与设置编辑收在默认
 折叠的“更多操作”中，primary、当前操作取消和编辑取消保持可见。
+
+### Dynamic toolsets and known failures
+
+`registerToolset(initialTools)` returns an activation-owned handle with
+`replace(candidateTools)`. The complete candidate is validated and cloned before
+one synchronous publication. Names must be unique against other sets, static
+tools and reserved names. The returned revision changes on every publication;
+old not-yet-started declarations return known stale/not-executed, while begun
+calls keep their implementation and execution lease. Retired/closing/owner-lost
+activations cannot replace a toolset. Replacement does not request a Wake.
+
+Tool results may set `isError: true` for a known failed outcome. Throwing still
+means the external result is unknown; it must not be used for a known business
+failure. Complete schema JSON is preserved for the ordinary runtime validator.
