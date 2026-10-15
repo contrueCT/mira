@@ -167,3 +167,11 @@ test('pending inbound handlers cannot overwrite closed state after explicit shut
     assert.equal(connection.state(), 'closed'); assert.deepEqual(states, ['connecting', 'connected', 'closed']);
   }
 });
+
+
+test('registration preserves only safe expiry/denial classifications and never raw provider errors', async () => {
+  for (const [provider, expected] of [['expired_token', 'registration_expired'], ['access_denied', 'registration_denied'], ['unknown', 'registration_failed']]) {
+    const sdk = createFeishuSdk({ registerApp: async () => { throw { code: provider, description: 'synthetic-secret-never-project' }; } });
+    await assert.rejects(sdk.register({ domain: 'feishu', signal: new AbortController().signal, onQRCode() {}, onStatus() {} }), error => error instanceof Error && error.message === `Feishu ${expected}`);
+  }
+});

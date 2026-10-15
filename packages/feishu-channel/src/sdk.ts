@@ -27,7 +27,7 @@ export interface FeishuSdk {
 }
 export const FEISHU_REQUIRED_SCOPES = ['im:message.p2p_msg:readonly', 'im:message:send_as_bot'] as const;
 export class FeishuSdkError extends Error {
-  readonly code: 'registration_failed' | 'verification_failed' | 'connection_failed' | 'receive_failed' | 'send_unknown';
+  readonly code: 'registration_failed' | 'registration_expired' | 'registration_denied' | 'verification_failed' | 'connection_failed' | 'receive_failed' | 'send_unknown';
   constructor(code: FeishuSdkError['code']) { super(`Feishu ${code}`); this.name = 'FeishuSdkError'; this.code = code; }
 }
 const quietLogger: Logger = { error() {}, warn() {}, info() {}, debug() {}, trace() {} };
@@ -115,7 +115,10 @@ export function createFeishuSdk(dependencies: FeishuSdkDependencies = {}): Feish
         if (!result.client_id || !result.client_secret || (result.user_info?.tenant_brand && result.user_info.tenant_brand !== options.domain)) throw new Error();
         return { appId: result.client_id, appSecret: result.client_secret, domain: result.user_info?.tenant_brand ?? options.domain,
           ...(result.user_info?.open_id ? { ownerOpenId: result.user_info.open_id } : {}) };
-      } catch { throw new FeishuSdkError('registration_failed'); }
+      } catch (error) {
+        const code = record(error).code;
+        throw new FeishuSdkError(code === 'expired_token' ? 'registration_expired' : code === 'access_denied' ? 'registration_denied' : 'registration_failed');
+      }
     },
     verify,
     async connect(credentials, handlers) {

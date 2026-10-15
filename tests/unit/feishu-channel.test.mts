@@ -5,9 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import type { ExtensionContext, ExtensionTool, ExtensionEvent, ExtensionWake, ContextProvider, Json } from '@mira/extension-sdk';
 import { createFeishuExtension } from '../../packages/feishu-channel/src/index.ts';
+import { FeishuSdkError } from '../../packages/feishu-channel/src/sdk.ts';
 import type { FeishuSdk, FeishuIncomingText, FeishuRegistrationOptions, FeishuCredentials } from '../../packages/feishu-channel/src/sdk.ts';
 
 type Settings = { actions: Array<{ id: string; execute(context: { signal: AbortSignal }): Promise<void> }>; status(): { state: string; details?: Array<{ label: string; value: string }>; authorization?: { url: string } } };
+const until = async (ready: () => boolean) => { for (let i = 0; i < 100 && !ready(); i++) await new Promise(resolve => setTimeout(resolve, 5)); assert.ok(ready()); };
 const secret = 'synthetic-private-app-secret';
 const credentials: FeishuCredentials = { appId: 'app-test', appSecret: secret, domain: 'feishu' };
 const incoming = (overrides: Partial<FeishuIncomingText> = {}): FeishuIncomingText => ({ messageId: 'message-1', chatId: 'chat-owner', chatType: 'p2p', senderOpenId: 'user-owner', senderType: 'user', tenantKey: 'tenant-owner', createdAt: '2026-01-01T00:00:00.000Z', text: 'hello', messageType: 'text', ...overrides });
@@ -58,6 +60,7 @@ test('Feishu QR credentials stay private and authorization never enters model ob
   const sdk = fakeSdk(); let finish!: (credentials: FeishuCredentials) => void;
   sdk.setRegister(async options => { options.onQRCode({ url: 'https://accounts.feishu.cn/authorize?token=private-qr', expireIn: 60 }); return new Promise(resolve => { finish = resolve; }); });
   const f = await fixture(t, { sdk, secrets: new Map() }); const registration = f.action('register');
+  await until(() => !!f.settings.status().authorization);
   assert.equal(f.settings.status().authorization?.url, 'https://accounts.feishu.cn/authorize?token=private-qr');
   const publicProjection = JSON.stringify([await f.tools.get('feishu_status')!.execute({}, { callId: 'status', signal: new AbortController().signal }), await f.providers[0]!.provide({ signal: new AbortController().signal })]);
   assert.ok(!publicProjection.includes('private-qr')); assert.ok(!publicProjection.includes(secret));
@@ -122,7 +125,7 @@ test('Feishu registration cancellation retires late QR and credentials', async t
   const sdk = fakeSdk(); let options!: FeishuRegistrationOptions; let finish!: (credentials: FeishuCredentials) => void;
   sdk.setRegister(async value => { options = value; return new Promise(resolve => { finish = resolve; }); });
   const f = await fixture(t, { sdk, secrets: new Map() }); const controller = new AbortController(); const registration = f.action('register', controller.signal);
-  controller.abort(); options.onQRCode({ url: 'https://accounts.feishu.cn/late', expireIn: 60 }); finish(credentials);
+  await until(() => !!options); controller.abort(); options.onQRCode({ url: 'https://accounts.feishu.cn/late', expireIn: 60 }); finish(credentials);
   await assert.rejects(registration, /cancelled/); assert.equal(f.settings.status().authorization, undefined); assert.equal(f.secrets.size, 0); assert.equal(sdk.calls.connect, 0);
 });
 test('Feishu instances isolate binding, credentials, inbox, sends and unbind', async t => {
@@ -153,7 +156,7 @@ test('Feishu close cancels in-flight registration and ignores late QR callbacks'
   const sdk = fakeSdk(); let options!: FeishuRegistrationOptions; let finish!: (credentials: FeishuCredentials) => void;
   sdk.setRegister(async value => { options = value; return new Promise(resolve => { finish = resolve; }); });
   const f = await fixture(t, { sdk, secrets: new Map() }); const registration = f.action('register');
-  await f.close(); assert.equal(options.signal.aborted, true);
+  await until(() => !!options); await f.close(); assert.equal(options.signal.aborted, true);
   options.onQRCode({ url: 'https://accounts.feishu.cn/late', expireIn: 60 }); finish(credentials);
   await assert.rejects(registration, /cancelled/); assert.equal(f.secrets.size, 0); assert.equal(sdk.calls.connect, 0); assert.equal(f.settings.status().state, 'disconnected');
 });
@@ -276,4 +279,25 @@ test('startup inbox replay and newly arriving owner messages use the same state 
   assert.deepEqual(received.map(wake => (wake.event.payload as { text: string }).text), ['old', 'new after restart']);
   const saved = JSON.parse(await readFile(path.join(root, 'feishu-state.json'), 'utf8'));
   assert.equal(saved.inbox.length, 0); assert.ok(saved.recentMessages.includes('arrived-during-startup'));
+});
+
+
+test('expired authorization disappears and a plugin refresh action obtains a new provider URL', async t => {
+  const sdk = fakeSdk(); let reject!: (error: Error) => void;
+  sdk.setRegister(async options => { options.onQRCode({ url: `https://accounts.feishu.cn/synthetic-${sdk.calls.register}`, expireIn: 0 }); return new Promise((_resolve, fail) => { reject = fail; }); });
+  const f = await fixture(t, { sdk }); const first = f.action('register');
+  await until(() => !!reject); assert.equal(f.settings.status().authorization, undefined);
+  reject(new FeishuSdkError('registration_expired')); await assert.rejects(first);
+  assert.equal((await f.state()).registrationUnknown, false);
+  sdk.setRegister(async options => { options.onQRCode({ url: 'https://accounts.feishu.cn/new-synthetic', expireIn: 60 }); throw new FeishuSdkError('registration_denied'); });
+  await assert.rejects(f.action('refresh_authorization')); assert.equal(sdk.calls.register, 2);
+  assert.equal(f.settings.status().authorization, undefined);
+});
+test('unknown registration blocks refresh across restart; saved manual credentials recover an existing app', async t => {
+  const sdk = fakeSdk(); sdk.setRegister(async () => { throw new Error('synthetic unknown network outcome'); });
+  const f = await fixture(t, { sdk }); await assert.rejects(f.action('register'));
+  assert.equal((await f.state()).registrationUnknown, true); await assert.rejects(f.action('refresh_authorization')); assert.equal(sdk.calls.register, 1);
+  await f.close(); const g = await fixture(t, { directory: f.directory, sdk, secrets: f.secrets });
+  await assert.rejects(g.action('register')); assert.equal(sdk.calls.register, 1);
+  await g.action('connect'); assert.equal((await g.state()).app.appId, 'app-test'); assert.equal(sdk.calls.register, 1);
 });

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ExtensionContext, ExtensionEvent, ExtensionWake, ExtensionConnectionStatus, Json } from '@mira/extension-sdk';
 import { FeishuPrivateStore } from './store.ts';
+import { FeishuSdkError } from './sdk.ts';
 import type { FeishuSdk, FeishuCredentials, FeishuIncomingText } from './sdk.ts';
 
 type Owner = { tenantKey: string; senderOpenId: string; chatId: string };
@@ -10,7 +11,7 @@ type Part = { uuid: string; status: 'not_started' | 'unknown' | 'sent'; messageI
 type SendResult = { status: 'sent' | 'unknown' | 'partial' | 'not_sent'; messageIds?: string[]; sentParts?: number; totalParts?: number; reason?: string };
 type Receipt = { digest: string; parts: Part[] };
 interface Stored {
-  version: 1; connectionId: string; app: { appId: string; domain: 'feishu' | 'lark' } | null;
+  version: 1; registrationUnknown?: boolean; connectionId: string; app: { appId: string; domain: 'feishu' | 'lark' } | null;
   owner: Owner | null; tested: boolean; inbox: ExtensionWake[]; recentMessages: string[]; sends: Record<string, Receipt>;
 }
 interface Pairing { code: string; expiresAt: string; candidate: (Owner & { messageId: string }) | null }
@@ -23,7 +24,7 @@ function stored(value: unknown): Stored {
   if (!object(value) || value.version !== 1 || !validId(value.connectionId) || !('app' in value) || !('owner' in value)
     || (value.app !== null && (!object(value.app) || !validId(value.app.appId) || !['feishu', 'lark'].includes(String(value.app.domain))))
     || (value.owner !== null && (!object(value.owner) || !validId(value.owner.tenantKey) || !validId(value.owner.senderOpenId) || !validId(value.owner.chatId)))
-    || typeof value.tested !== 'boolean' || !Array.isArray(value.inbox) || !Array.isArray(value.recentMessages) || !value.recentMessages.every(validId) || !object(value.sends)) throw new Error('Private Feishu state is invalid; it was not replaced');
+    || (value.registrationUnknown !== undefined && typeof value.registrationUnknown !== 'boolean') || typeof value.tested !== 'boolean' || !Array.isArray(value.inbox) || !Array.isArray(value.recentMessages) || !value.recentMessages.every(validId) || !object(value.sends)) throw new Error('Private Feishu state is invalid; it was not replaced');
   for (const item of value.inbox) if (!object(item) || !validId(item.id) || !object(item.event) || !validId(item.event.id) || item.event.type !== 'feishu.owner_message' || typeof item.event.occurredAt !== 'string' || !Number.isFinite(Date.parse(item.event.occurredAt))) throw new Error('Private Feishu state is invalid');
   for (const receipt of Object.values(value.sends)) if (!object(receipt) || typeof receipt.digest !== 'string' || !/^[a-f0-9]{64}$/u.test(receipt.digest) || !Array.isArray(receipt.parts) || receipt.parts.some(part => !object(part) || !validId(part.uuid) || !['not_started', 'unknown', 'sent'].includes(String(part.status)))) throw new Error('Private Feishu state is invalid');
   return value as unknown as Stored;
@@ -61,6 +62,7 @@ export class FeishuChannel {
         { key: 'appId', label: '手动配置 App ID（扫码连接可留空）', type: 'text' }, { key: 'appSecret', label: '手动配置 App Secret', type: 'secret' } ],
       actions: [
         { id: 'register', label: '扫码连接（创建应用）', execute: ({ signal }) => this.#register(signal) },
+        { id: 'refresh_authorization', label: '授权过期后重新申请二维码', execute: ({ signal }) => this.#register(signal) },
         { id: 'connect', label: '验证手动配置并连接', execute: ({ signal }) => this.#queue(() => this.#manual(signal)) },
         { id: 'pair', label: '生成本人配对码', execute: async () => this.#queue(async () => {
           if (!this.#ready || this.#data.owner) throw new Error('先连接未绑定的机器人');
@@ -102,13 +104,16 @@ export class FeishuChannel {
         if (pairing.candidate) details.push({ label: '待确认身份（确认前不会作为主人接收）', value: `${pairing.candidate.tenantKey} / ${pairing.candidate.senderOpenId} / ${pairing.candidate.chatId}` });
       }
     }
+    if (this.#data.registrationUnknown && !this.#data.app && this.#state !== 'connecting' && this.#state !== 'pending') details.push({ label: '注册结果待核对', value: '上次注册可能已创建应用。请先到官方后台核对，已有应用用手动配置恢复；确认未创建后才可解绑清除本地记录并重新申请。' });
+    const authorization = this.#authorization && Date.parse(this.#authorization.expiresAt) > Date.now() ? this.#authorization : null;
+    if (this.#authorization && !authorization) details.push({ label: '授权', value: '二维码已过期。等待本次操作结束后点击“授权过期后重新申请二维码”；仍在处理时可先取消。' });
     if (this.#authorization) details.push({ label: '授权链接有效期', value: this.#authorization.expiresAt });
     return { state: this.#state, ...(this.#error ? { code: 'unknown' as const } : {}), details,
-      ...(this.#authorization ? { authorization: { url: this.#authorization.url, label: `在${this.#config.domain === 'feishu' ? '飞书' : 'Lark'}官方页面扫码确认应用与最小权限`, qr: true } } : {}) };
+      ...(authorization ? { authorization: { url: authorization.url, label: `在${this.#config.domain === 'feishu' ? '飞书' : 'Lark'}官方页面扫码确认应用与最小权限`, qr: true } } : {}) };
   }
   async initialize(): Promise<void> {
     if (!this.#store) { this.#state = 'error'; this.#error = '需要持久扩展安装身份和私有目录，尚未连接或读取凭据。'; return; }
-    try { await this.#queue(async () => { this.#data = stored(await this.#store!.load()); this.#storageReady = true; if (this.#data.app) await this.#connect(this.#abort.signal); }); }
+    try { await this.#queue(async () => { this.#data = stored(await this.#store!.load()); this.#storageReady = true; if (this.#data.registrationUnknown && !this.#data.app) this.#state = 'error'; if (this.#data.app) await this.#connect(this.#abort.signal); }); }
     catch { this.#state = 'error'; this.#error = '私有状态或连接不可用，原状态未被清空。请检查本地存储及应用设置。'; }
   }
   #queue<T>(action: () => Promise<T>): Promise<T> {
@@ -131,13 +136,15 @@ export class FeishuChannel {
     await this.#save({ ...initial(), app: { appId: credentials.appId, domain: credentials.domain } }); await this.#connect(signal);
   }
   async #register(signal: AbortSignal): Promise<void> {
-    if (!this.#store || !this.#storageReady || this.#closed || this.#data.app || this.#authorization) throw new Error('请先解绑或取消现有应用连接');
+    if (!this.#store || !this.#storageReady || this.#closed || this.#data.app || this.#data.registrationUnknown || this.#authorization) throw new Error('请先解绑或取消现有应用连接');
     const combined = AbortSignal.any([signal, this.#abort.signal]); const epoch = this.#epoch;
     this.#state = 'connecting'; this.#error = null;
     try {
+      await this.#queue(async () => { combined.throwIfAborted(); if (this.#data.registrationUnknown || this.#data.app) throw new Error('Registration already attempted'); await this.#save({ ...structuredClone(this.#data), registrationUnknown: true }); });
       const credentials = await this.#sdk.register({ domain: this.#config.domain, signal: combined,
         onQRCode: ({ url, expireIn }) => {
           if (combined.aborted || this.#closed || epoch !== this.#epoch) return;
+          if (!Number.isFinite(expireIn) || expireIn < 0 || expireIn > 86_400) throw new Error('Invalid authorization lifetime');
           const parsed = new URL(url); const suffix = this.#config.domain === 'feishu' ? 'feishu.cn' : 'larksuite.com';
           if (parsed.protocol !== 'https:' || !(parsed.hostname === suffix || parsed.hostname.endsWith(`.${suffix}`)) || parsed.username || parsed.password) throw new Error('Unexpected authorization domain');
           this.#authorization = { url, expiresAt: new Date(Date.now() + Math.max(0, expireIn) * 1000).toISOString() }; this.#state = 'pending';
@@ -149,7 +156,8 @@ export class FeishuChannel {
         await this.#connect(combined);
       });
     } catch (error) {
-      if (!this.#closed) { this.#state = combined.aborted ? (this.#data.app ? 'disconnected' : 'unconfigured') : 'error'; this.#error = combined.aborted ? null : '扫码注册、应用权限或连接验证未完成。请检查租户审批，也可使用手动配置。'; }
+      if (!this.#closed && error instanceof FeishuSdkError && (error.code === 'registration_expired' || error.code === 'registration_denied') && !combined.aborted) await this.#queue(async () => { await this.#save({ ...structuredClone(this.#data), registrationUnknown: false }); });
+      if (!this.#closed) { this.#state = this.#data.registrationUnknown && !this.#data.app ? 'error' : combined.aborted ? (this.#data.app ? 'disconnected' : 'unconfigured') : 'error'; this.#error = error instanceof FeishuSdkError && error.code === 'registration_expired' ? '授权已过期，旧二维码不可再用。点击“授权过期后重新申请二维码”获取新的授权请求；如已创建应用，请先用手动配置恢复。' : error instanceof FeishuSdkError && error.code === 'registration_denied' ? '授权被拒绝。本次操作已结束，可确认权限后重新申请。' : this.#data.registrationUnknown && !this.#data.app ? '注册结果未知或已取消。请先核对官方后台，避免重复创建应用；取消本地操作不撤销已创建的远端应用。' : combined.aborted ? null : '扫码注册、应用权限或连接验证未完成。请检查租户审批，也可使用手动配置。'; }
       throw new Error(combined.aborted ? 'Feishu registration cancelled' : 'Feishu registration was not verified');
     } finally { this.#authorization = null; }
   }

@@ -126,3 +126,15 @@ outside that queue, so a pending send does not delay durable reception. Unbind/r
 stop not-started tail pieces and drain the current request before changing the binding.
 Cleanup retains unknown evidence for a request whose result arrives after retirement;
 SDK HTTP requests have a 15-second timeout each, rather than holding cleanup indefinitely.
+
+
+Authorization expiry comes from the official registration response (seconds). The
+plugin hides an expired URL even before the SDK polling promise settles. After an
+expired/denied operation ends, the plugin-declared “授权过期后重新申请二维码” action
+requests a new provider authorization; it never merely redraws the previous URL.
+While an operation is pending, use the existing settings cancellation first. Cancellation
+or network failure may leave a remotely created app: a durable unknown-attempt marker
+blocks another registration, including after restart. Check the official app console and
+recover existing App ID/Secret with manual configuration. Only after confirming that no
+app was created should the user explicitly unbind/reset and register again. A saved app
+always uses reconnect, never registration. Local cancellation does not revoke remote apps.
