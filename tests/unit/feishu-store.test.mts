@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { chmod, link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, link, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
@@ -9,7 +9,7 @@ import path from 'node:path';
 import { FeishuPrivateStore, FeishuStoreError } from '../../packages/feishu-channel/src/store.ts';
 
 async function fixture(t: test.TestContext) {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'mira-feishu-store-'));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-feishu-store-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const source = path.join(root, 'source'); await mkdir(source);
   const file = path.join(root, 'private', 'state.json');
