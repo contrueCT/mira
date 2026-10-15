@@ -240,3 +240,25 @@ test('native PTY dependency is allowed only at server composition', async () => 
     assert.ok((await checkBoundaries(root)).some(error => error.includes('external import not allowed node-pty')));
   });
 });
+
+test('local QR rendering stays a Web dependency and is not available to core packages', async () => {
+  await fixture(async root => {
+    await writeFile(path.join(root,'packages/life/qr.ts'),"import qrcode from 'qrcode-generator'; void qrcode;");
+    assert.ok((await checkBoundaries(root)).some(error=>error.includes('external import not allowed qrcode-generator')));
+    await rm(path.join(root,'packages/life/qr.ts'));
+    await writeFile(path.join(root,'apps/web/src/qr-check.ts'),"import qrcode from 'qrcode-generator'; void qrcode;");
+    assert.deepEqual(await checkBoundaries(root),[]);
+  });
+});
+
+test('Feishu is an ordinary SDK consumer; core cannot import its vendor SDK', async () => {
+  await fixture(async root => {
+    await mkdir(path.join(root, 'packages/feishu-channel/src'), { recursive: true });
+    await writeFile(path.join(root, 'packages/feishu-channel/src/check.ts'), "import '@mira/extension-sdk'; import '@larksuite/channel'; import '@larksuiteoapi/node-sdk';\n");
+    assert.deepEqual(await checkBoundaries(root), []);
+    await writeFile(path.join(root, 'packages/feishu-channel/src/bad.ts'), "import '@mira/life'; import '@mira/server';\n");
+    await writeFile(path.join(root, 'packages/life/feishu-bad.ts'), "import '@larksuite/channel';\n");
+    const errors = await checkBoundaries(root);
+    for (const expected of ['forbidden import @mira/life', 'forbidden import @mira/server', 'external import not allowed @larksuite/channel']) assert.ok(errors.some(error => error.includes(expected)), expected);
+  });
+});

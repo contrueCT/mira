@@ -1051,3 +1051,24 @@ for (const action of ['disable', 'configure']) test(`actual HMR overlapping conf
   assert.equal(child.status, 0, `${child.stdout}\n${child.stderr}`);
   assert.match(child.stdout, new RegExp(`HMR_MANAGEMENT_RACE_COMPLETE:${action}`));
 });
+
+test('ordinary extension message projection is copied and validated under the configured identity', async () => {
+  await withDirectory(async directory => {
+    const entry = await fixture<{ send: (event: unknown) => Promise<unknown> }>(directory, 'messages', `
+      export const state = {};
+      export default defineExtension({ name: 'claimed-other-name', apply(ctx) { state.send = event => ctx.emitEvent(event); } });
+    `);
+    const received: Array<{ id: string; event: ExtensionEvent }> = [];
+    const host = new ExtensionHost({ entries: [{ id: 'actual-weather', path: entry.path }], receive: async (id, event) => { received.push({ id, event }); return 'inserted'; } });
+    try {
+      await host.start();
+      const event = { id: 'message', type: 'weather.message', occurredAt: '2026-10-15T00:00:00Z', payload: { sender: 'sensor' }, message: { direction: 'inbound', text: 'Rain', sourceLabel: 'Weather', raw: 'not-public' } };
+      await entry.state.send(event); event.message.text = 'changed after reception';
+      assert.equal(received[0]!.id, 'actual-weather');
+      assert.deepEqual(received[0]!.event.message, { direction: 'inbound', text: 'Rain', sourceLabel: 'Weather' });
+      await assert.rejects(entry.state.send({ ...event, message: { ...event.message, senderVerified: true } }), /Invalid extension message/);
+      assert.equal(received.length, 1);
+      await host.close(); await assert.rejects(entry.state.send(event));
+    } finally { await host.close(); }
+  });
+});

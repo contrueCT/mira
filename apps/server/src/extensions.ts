@@ -8,7 +8,7 @@ import type { DurableWriter } from '@mira/life';
 export function extensionReceiver(writer: DurableWriter): ExtensionHostOptions['receive'] {
   return async (extensionId, event, wake) => writer.receive({
     id: JSON.stringify(['extension', extensionId, event.id]), type: event.type, source: 'extension', occurredAt: event.occurredAt,
-    payload: { extensionId, eventId: event.id, data: event.payload },
+    payload: { extensionId, eventId: event.id, data: event.payload, ...(event.message === undefined ? {} : { message: { ...event.message } }) },
   }, wake ? { id: JSON.stringify(['extension', extensionId, wake.id]), reason: wake.reason } : undefined);
 }
 export function extensionTools(registry: RegisteredTool[]): AgentTool[] {
@@ -19,7 +19,9 @@ export function extensionTools(registry: RegisteredTool[]): AgentTool[] {
     description: `${tool.description}\nExtension ${JSON.stringify(extensionId)}, activation ${activation}.${digest ? ` Content SHA-256 ${digest}.` : ''}`,
     parameters: Type.Unsafe(structuredClone(tool.parameters)),
     execute: async (callId, args, signal) => {
-      const result = await tool.execute(args as Json, { callId, signal: signal ?? new AbortController().signal });
+      let result;
+      try { result = await tool.execute(args as Json, { callId, signal: signal ?? new AbortController().signal }); }
+      catch { throw new Error('Extension execution did not return a known outcome. Verify external effects before retrying. Raw diagnostics are hidden.'); }
       const stale = result.details !== null && typeof result.details === 'object' && !Array.isArray(result.details)
         && result.details?.['status'] === 'stale' && result.details?.['executed'] === false;
       return { content: [{ type: 'text' as const, text: result.text }], details: result.details ?? null, ...(stale ? { isError: true } : {}) };
@@ -28,13 +30,15 @@ export function extensionTools(registry: RegisteredTool[]): AgentTool[] {
 }
 /** Ordinary model-selected tools use the same durable Pi intent/outcome path. */
 export function extensionManagementTools(host: ExtensionHost, inspectSchedules?: () => Promise<unknown>): AgentTool[] {
+  const safeState = (entry: ReturnType<ExtensionHost['inspect']>[number]) => ({ ...entry, diagnostic: entry.diagnostic === null ? null : 'Extension reported a problem. Raw diagnostics are hidden.' });
+  const safeReceipt = (entry: Awaited<ReturnType<ExtensionHost['requestChange']>>) => ({ ...entry, ...(entry.error ? { error: 'Extension change failed. Raw diagnostics are hidden.' } : {}), runtime: entry.runtime ? safeState(entry.runtime) : null });
   const result = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value) }], details: null });
   return [
     { name: 'extension_inspect', label: 'Inspect trusted extensions', description: 'Read current installed extensions, staged releases and completed management receipts. Call with {} to inspect durable schedules (including paused records belonging to removed installations), or discover an existing extension ID or rollback revision, inspect a failure, or verify current runtime state. extensions[].id is the management target (not a tool name, activation ID or digest); generated.history[].id is a rollback revision. changes[].id matches a management receipt; check status=applied/failed and persistence separately. extensions[].status=active plus tools shows a live capability; disabled means stopped, and waiting means a missing service, not success. releases contain digest/directory/entry; releases.error and diagnostics report failures. This read does not activate anything. For writing code, read the mira-extension-authoring skill.' ,
       parameters: Type.Object({}), execute: async () => {
         let releases: unknown;
         try { releases = await host.releases(); } catch (error) { releases = { error: error instanceof Error ? error.message : String(error) }; }
-        return result({ extensions: host.inspect(), releases, changes: host.changeStatus(), diagnostics: host.diagnosticsLog(), ...(inspectSchedules ? { schedules: await inspectSchedules() } : {}) });
+        return result({ extensions: host.inspect().map(safeState), releases, changes: host.changeStatus().map(safeReceipt), diagnostics: host.diagnosticsLog().map(() => 'Extension host reported a problem. Raw diagnostics are hidden.'), ...(inspectSchedules ? { schedules: await inspectSchedules() } : {}) });
       } },
     { name: 'extension_stage', label: 'Stage extension files', description: 'Copy/hash a complete ordinary extension workspace plus its explicit local dependencies without importing code, running scripts or installing packages. Example: {"sourceRoot":"/absolute/my-extension","entryRelative":"src/index.ts"}. Returns digest (SHA-256), directory (immutable release workspace), entry and entryRelative, or status=rejected with error. Use the returned digest for content-bound tests and extension_manage install/update; do not guess one. Staging alone neither tests nor activates code. The mira-extension-authoring skill explains workspace creation and the normal artifact test CLI; the runtime Extensions Workspace is the configured artifact store.' ,
       parameters: Type.Object({
@@ -47,7 +51,7 @@ export function extensionManagementTools(host: ExtensionHost, inspectSchedules?:
         try { return result(await host.stage(args.sourceRoot, args.entryRelative, args.expectedDigest)); }
         catch (error) { return result({ status: 'rejected', error: error instanceof Error ? error.message : String(error) }); }
       } },
-    { name: 'extension_manage', label: 'Manage extensions', description: 'Apply a lifecycle/configuration change and wait for its actual result. Returns status=applied/failed, persistence, and runtime (current extension state, or null after removal); status=rejected means invalid request, not success. Check all three: saved configuration alone does not prove activation; runtime.status=waiting is not active. Continue the requested workflow in the same user request without another user message or Wake. Install adds a NEW generated extension disabled using the actual staged digest; activate enables it. After activation, use tools from the next model request; a same-batch call to a removed or replaced activation returns an explicit stale/not-executed error, never silently uses new code. Example: {"id":"weather-watch","action":"activate"}. update selects another staged digest and keeps enabled state; rollback selects an actual saved revision from inspect (not a digest). configure replaces the entire config; remove unregisters/removes desired config but retains source/releases. No automatic registry installs. Changes execute code with host OS permissions; no sandbox or atomic rollback of external effects. Failed application may leave desired config saved. A test receipt is evidence, not safety approval. Read the extension-authoring skill for the full workflow.' ,
+    { name: 'extension_manage', label: 'Manage extensions', description: 'Apply a lifecycle/configuration change and wait for its actual result. Returns status=applied/failed, persistence, and runtime (current extension state, or null after removal); status=rejected means invalid request, not success. Check all three: saved configuration alone does not prove activation; runtime.status=waiting is not active. Continue the requested workflow in the same user request without another user message or Wake. Install adds a NEW generated extension disabled using the actual staged digest; activate enables it. After activation, use tools from the next model request; a same-batch call to a removed or replaced activation returns an explicit stale/not-executed error, never silently uses new code. Example: {"id":"weather-watch","action":"activate"}. update selects another staged digest and keeps enabled state; rollback selects an actual saved revision from inspect (not a digest). configure replaces the entire config; remove unregisters/removes desired config and deletes this installation’s private credentials, but retains source/releases and plugin data files. No automatic registry installs. Changes execute code with host OS permissions; no sandbox or atomic rollback of external effects. Failed application may leave desired config saved. A test receipt is evidence, not safety approval. Read the extension-authoring skill for the full workflow.' ,
       parameters: Type.Object({
         id: Type.String({ minLength: 1, description: 'Configured extension ID from extension_inspect, or a new unique ID for install. Starts with an ASCII letter, followed by letters/digits/underscores/hyphens. Not a tool name, digest, activation or change receipt ID.' }),
         action: Type.Union([
@@ -59,7 +63,7 @@ export function extensionManagementTools(host: ExtensionHost, inspectSchedules?:
           Type.Literal('configure', { description: 'Replace the complete config; requires config, including null if intended.' }),
           Type.Literal('update', { description: 'Select staged generated code, retaining enabled state; requires digest, optional complete config.' }),
           Type.Literal('rollback', { description: 'Select a saved generated revision and its config, preserving enabled state; requires revision from inspect.' }),
-          Type.Literal('remove', { description: 'Unregister and remove desired configuration; retain source/release files.' }),
+          Type.Literal('remove', { description: 'Unregister and remove desired configuration and private credentials; retain source/releases and plugin data files.' }),
         ], { description: 'Choose the intended lifecycle operation; supply only the fields needed by that operation.' }),
         config: Type.Optional(Type.Any({ description: 'Complete JSON configuration passed to extension apply. Required for configure; optional for install/update (omission preserves update config). No executable expressions; use the extension documentation for its fields.' })),
         digest: Type.Optional(Type.String({ description: 'Required for install/update: exact staged SHA-256 returned by extension_stage, after appropriate content-bound tests. Not a path or revision ID.' })),
@@ -79,7 +83,7 @@ export function extensionManagementTools(host: ExtensionHost, inspectSchedules?:
             if (!args.revision) throw new Error('rollback requires a saved revision');
             change = { action: args.action, revision: args.revision };
           } else change = { action: args.action };
-          return result(await host.requestChange(args.id, change));
+          return result(safeReceipt(await host.requestChange(args.id, change)));
         } catch (error) { return result({ status: 'rejected', error: error instanceof Error ? error.message : String(error) }); }
       } },
   ];

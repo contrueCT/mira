@@ -190,3 +190,11 @@ read after the current single tool settles before old siblings. Final-first and
 idle sends retain queued turns. The tool reports durable receipt state, not proof
 of action; cancellation never rolls back effects. Child summaries remain task-only
 and consume pending input after the frozen checkpoint. No main chat UI is added.
+### Extension connection settings
+
+`GET/POST /api/extensions/:id/settings`, `POST .../settings/actions` and
+`POST .../settings/cancel` use the same protected Web API boundary. They expose only
+validated declarative fields, configured booleans and explicitly public status.
+No secret read endpoint or model credential-write tool exists. Actions return pending
+receipts and are checked with exact settings revisions; polling observes completion.
+Existing extension lifecycle/configuration remains authoritative. See ADR 0035.

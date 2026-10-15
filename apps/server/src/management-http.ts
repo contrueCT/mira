@@ -1,3 +1,4 @@
+import type { ExtensionSettingsView, ExtensionSettingsWrite } from '@mira/extension-host';
 import type { FastifyInstance } from 'fastify';
 import { WebHttpError } from './http.ts';
 import type { AssistantReplyView, ExtensionMutation, ExtensionView, ManagementBackend, MemoryReceiptView, RunSummaryView, ChildActivityView, ChildSummaryView } from './management.ts';
@@ -19,6 +20,17 @@ const extensionView = (entry: ExtensionView): ExtensionView => ({
   generated: entry.generated ? { digest: entry.generated.digest, revision: entry.generated.revision,
     history: entry.generated.history.map(revision => ({ id: revision.id, digest: revision.digest })) } : null,
 });
+const settingsView = (view: ExtensionSettingsView | null): ExtensionSettingsView | null => view ? {
+  revision: view.revision,
+  fields: view.fields.map(field => ({ key: field.key, label: field.label, type: field.type,
+    ...(field.type === 'select' ? { options: field.options.map(option => ({ value: option.value, label: option.label })) } : {}),
+    ...(field.type === 'secret' ? { configured: field.configured === true } : typeof field.value === 'string' || typeof field.value === 'boolean' ? { value: field.value } : {}) })) as ExtensionSettingsView['fields'],
+  actions: view.actions.map(action => ({ id: action.id, label: action.label, ...(action.group === undefined ? {} : { group: action.group }) })),
+  status: { state: view.status.state, ...(view.status.code ? { code: view.status.code } : {}),
+    ...(view.status.details ? { details: view.status.details.map(item => ({ label: item.label, value: item.value })) } : {}),
+    ...(view.status.authorization ? { authorization: { url: view.status.authorization.url, label: view.status.authorization.label, qr: view.status.authorization.qr === true } } : {}) },
+  operation: view.operation ? { id: view.operation.id, action: view.operation.action, state: view.operation.state } : null,
+} : null;
 const activityView = (item: ChildActivityView): ChildActivityView => ({ sequence: item.sequence, occurredAt: item.occurredAt,
   source: item.source, kind: item.kind, phase: item.phase, name: item.name, status: item.status, text: item.text });
 const childSummaryView = (child: ChildSummaryView): ChildSummaryView => ({ id: child.id, runId: child.runId, title: child.title,
@@ -58,6 +70,20 @@ export function registerManagementHttp(app: FastifyInstance, backend: Partial<Ma
     return { id: result.id, eventId: result.eventId, runId: result.runId, state: result.state,
       assistant: replyView(result.assistant), memory: memoryView(result.memory), error: result.error === null ? null : privateError };
   });
+  const extensionParams = object({ id: { type: 'string', minLength: 1, maxLength: 128, pattern: '^[a-zA-Z][a-zA-Z0-9_-]*$' } }, ['id']);
+  app.get<{ Params: { id: string } }>('/api/extensions/:id/settings', { schema: { querystring: noQuery, params: extensionParams } }, async request => ({ settings: settingsView(await requireMethod('extensionSettings')(request.params.id)) }));
+  app.post<{ Params: { id: string }; Body: ExtensionSettingsWrite }>('/api/extensions/:id/settings', {
+    schema: { querystring: noQuery, params: extensionParams, body: object({ expectedRevision: digest,
+      values: { type: 'object', maxProperties: 24, additionalProperties: { anyOf: [{ type: 'string', maxLength: 4096 }, { type: 'boolean' }] } },
+      secrets: { type: 'object', maxProperties: 24, additionalProperties: { anyOf: [{ type: 'string', minLength: 1, maxLength: 16384 }, { type: 'null' }] } },
+    }, ['expectedRevision', 'values', 'secrets']) },
+  }, async request => { await requireMethod('saveExtensionSettings')(request.params.id, request.body); return { saved: true }; });
+  app.post<{ Params: { id: string }; Body: { expectedRevision: string; action: string } }>('/api/extensions/:id/settings/actions', {
+    schema: { querystring: noQuery, params: extensionParams, body: object({ expectedRevision: digest, action: { type: 'string', pattern: '^[A-Za-z][A-Za-z0-9_-]{0,63}$' } }, ['expectedRevision', 'action']) },
+  }, async request => ({ settings: settingsView(await requireMethod('startExtensionSettingsAction')(request.params.id, request.body.action, request.body.expectedRevision)) }));
+  app.post<{ Params: { id: string }; Body: { operationId: string } }>('/api/extensions/:id/settings/cancel', {
+    schema: { querystring: noQuery, params: extensionParams, body: object({ operationId: uuid }, ['operationId']) },
+  }, async request => { await requireMethod('cancelExtensionSettingsAction')(request.params.id, request.body.operationId); return { requested: true }; });
   app.get('/api/extensions', { schema: { querystring: noQuery } }, async () => {
     const result = await requireMethod('extensions')();
     return { available: result.available, extensions: result.extensions.map(extensionView), releases: result.releases.map(release => ({ digest: release.digest })),

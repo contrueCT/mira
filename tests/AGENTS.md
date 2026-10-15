@@ -43,3 +43,4 @@ ADR 0007 回归直接工具调用与模型普通澄清，保留 schema/参数、
 - 终端：`unit/terminals.test.mts`真实spawn/PTY/进程树与owner崩溃；`recovery/terminals.test.mts`真实PG/service跨轮次与插话边界。执行前显式 `pnpm terminal:prepare`，Mac/Linux CI不可用mock替代真实PTY。
 
 - ADR 0039: task-live-input offline Pi and task-live-runtime/task-live-persistence real PG gates cover ordered parent input, single-tool/model yield, final admission, lost acknowledgements, terminal receipts and task ownership. Existing task summary cancellation tests remain mandatory; mocks cannot establish cross-connection lock correctness.
+- 扩展私有设置：extension-settings.test.mts验证真实Cordis/文件生命周期；management-real.spec.ts增加真实PG/HTTP/浏览器设置和二维码截图。离线通过不代表真实外部认证。

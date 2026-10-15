@@ -1,0 +1,14 @@
+{
+  "name": "@mira/feishu-channel",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@mira/extension-sdk": "workspace:*",
+    "@larksuite/channel": "0.7.1",
+    "@larksuiteoapi/node-sdk": "1.75.0"
+  }
+}

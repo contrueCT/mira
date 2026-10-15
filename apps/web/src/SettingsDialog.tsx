@@ -262,7 +262,7 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
     } finally { saveBusyRef.current = false; if (aliveRef.current) setSaving(false); }
   };
 
-  return <dialog ref={dialogRef} className="settings-dialog" aria-labelledby="settings-title" onClick={event => { if (event.target === event.currentTarget) { const rect = event.currentTarget.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onClose(); } }}>
+  return <dialog ref={dialogRef} className="settings-dialog" aria-labelledby="settings-title">
     <div className="settings-topbar"><div><span className="eyebrow">MIRA · PREFERENCES</span><h2 id="settings-title">设置</h2></div><button ref={closeRef} className="icon-button" type="button" aria-label="关闭设置" onClick={onClose}><CloseIcon /></button></div>
     <div className="settings-tabs" role="tablist" aria-label="设置分类">{tabs.map((item, index) => <button key={item.id} id={`settings-tab-${item.id}`} type="button" role="tab" aria-selected={tab === item.id} aria-controls={`settings-panel-${item.id}`} tabIndex={tab === item.id ? 0 : -1} onClick={() => setTab(item.id)} onKeyDown={event => {
       const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : null;

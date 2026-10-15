@@ -292,10 +292,13 @@ export function App() {
               const date = dateLabel(item.occurredAt); const showDate = date !== lastDate; lastDate = date;
               return <div key={item.id}>
                 {showDate && <p className="date-divider">{date}</p>}
-                <article data-message-id={item.id} className={`message-row ${item.role}`} aria-label={item.role === 'user' ? '你的消息' : item.role === 'assistant' ? 'Mira 的消息' : '服务通知'}>
+                <article data-message-id={item.id} className={`message-row ${item.role}`} aria-label={item.source ? `${item.source.label} 扩展消息` : item.role === 'user' ? '你的消息' : item.role === 'assistant' ? 'Mira 的消息' : '服务通知'}>
                   {item.text && <div className="message-bubble">{item.text}</div>}
                   {!!item.attachments?.length && <AttachmentList attachments={item.attachments} onPreview={openPreview} />}
+                  <div className="message-meta">
+                  {item.source && <span className="message-source" title={`扩展 ${item.source.extensionId}${item.source.senderId ? ` · 来源身份 ${item.source.senderId}${item.source.senderVerified ? '（由扩展验证）' : ''}` : ''}`}>{item.source.label} · {item.source.extensionId} · {item.source.direction === 'inbound' ? '收到' : '已发送'}</span>}
                   <time className="message-time" dateTime={item.occurredAt}>{timeLabel(item.occurredAt)}</time>
+                  </div>
                 </article>
               </div>;
             })}
