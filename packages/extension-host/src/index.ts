@@ -319,6 +319,20 @@ export class ExtensionHost {
         // Abort before draining leases, including automatic Cordis/HMR retirement.
         ctx.effect(() => () => { settings.cancel(); }, 'Cancel extension settings actions');
         resourceDrains.push(releaseResource(async () => { await settings.drain(); if (this.settings.get(id) === settings) this.settings.delete(id); }));
+        // A plugin tool already holds an execution lease. Do not queue behind
+        // lifecycle serialization, which may itself be draining that tool.
+        // The same runner reserves local admission before its async checks.
+        return Object.freeze({
+          start: async (actionId: string) => {
+            canRegister();
+            const view = await settings.start(actionId, (await settings.view()).revision);
+            canRegister();
+            const operation = view.operation!;
+            return { id: operation.id, action: operation.action, state: operation.state };
+          },
+          current: async () => { canRegister(); return settings.current(); },
+          cancel: async (operationId: string) => { canRegister(); settings.cancelOperation(operationId); },
+        });
       },
       schedules: this.scopedSchedules(id, () => { canRegister(); }),
       registerTool: tool => {
@@ -505,23 +519,23 @@ export class ExtensionHost {
   }
   async cancelSettingsAction(id: string, operationId: string): Promise<void> {
     this.assertOpen(); const settings = this.settings.get(id); if (!settings) throw new ExtensionSettingsError('unavailable');
-    if ((await settings.view()).operation?.id !== operationId) throw new ExtensionSettingsError('conflict');
-    settings.cancel();
+    settings.cancelOperation(operationId);
   }
   async saveExtensionSettings(id: string, input: ExtensionSettingsWrite): Promise<void> {
     this.assertOpen();
     await this.serialize(async () => {
       const settings = this.settings.get(id); if (!settings) throw new ExtensionSettingsError('unavailable');
-      const { config, credentialsChanged } = await settings.write(input);
-      const configChanged = !isDeepStrictEqual(this.entries.get(id)?.config ?? null, config);
-      if (!configChanged && !credentialsChanged) return;
-      // Cordis skips equal-config updates. A changed UI credential still needs
-      // one forced reapply so clients initialized during apply see the new value.
-      const change: ExtensionChange = configChanged ? { action: 'configure', config } : { action: 'reload' };
-      const receipt: ChangeStatus = { id: randomUUID(), extensionId: id, action: change.action, status: 'failed', runtime: null, persistence: this.configuration && configChanged ? 'not-attempted' : 'not-required' };
-      try { await this.applyChange(receipt, change); } finally { this.cleanupScope = undefined; }
-      receipt.runtime = this.snapshot().find(entry => entry.id === id) ?? null; this.receipts.push(receipt);
-      if (receipt.status !== 'applied') throw new ExtensionSettingsError('unavailable');
+      await settings.write(input, async ({ config, credentialsChanged }) => {
+        const configChanged = !isDeepStrictEqual(this.entries.get(id)?.config ?? null, config);
+        if (!configChanged && !credentialsChanged) return;
+        // Cordis skips equal-config updates. A changed UI credential still needs
+        // one forced reapply so clients initialized during apply see the new value.
+        const change: ExtensionChange = configChanged ? { action: 'configure', config } : { action: 'reload' };
+        const receipt: ChangeStatus = { id: randomUUID(), extensionId: id, action: change.action, status: 'failed', runtime: null, persistence: this.configuration && configChanged ? 'not-attempted' : 'not-required' };
+        try { await this.applyChange(receipt, change); } finally { this.cleanupScope = undefined; }
+        receipt.runtime = this.snapshot().find(entry => entry.id === id) ?? null; this.receipts.push(receipt);
+        if (receipt.status !== 'applied') throw new ExtensionSettingsError('unavailable');
+      });
     });
   }
   /** Opaque revision of private desired/runtime state, never raw config data. */

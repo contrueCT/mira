@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { ExtensionConnectionStatus, ExtensionSettingField, ExtensionSettingsDefinition, Json } from '@mira/extension-sdk';
+import type { ExtensionConnectionStatus, ExtensionSettingField, ExtensionSettingsDefinition, ExtensionSettingsOperation, Json } from '@mira/extension-sdk';
 import { credentialKey, credentialRevision, CredentialConflictError, ExtensionPrivateStorage } from './private-storage.ts';
 
 export interface ExtensionSettingsView {
@@ -7,7 +7,7 @@ export interface ExtensionSettingsView {
   fields: Array<ExtensionSettingField & { value?: string | boolean; configured?: boolean }>;
   actions: Array<{ id: string; label: string }>;
   status: ExtensionConnectionStatus;
-  operation: { id: string; action: string; state: 'pending' | 'succeeded' | 'failed' | 'cancelled' } | null;
+  operation: ExtensionSettingsOperation | null;
 }
 export interface ExtensionSettingsWrite { expectedRevision: string; values: Record<string, string | boolean>; secrets: Record<string, string | null> }
 export class ExtensionSettingsError extends Error {
@@ -54,6 +54,7 @@ function publicStatus(value: ExtensionConnectionStatus): ExtensionConnectionStat
 }
 export class RegisteredSettings {
   private operation: ExtensionSettingsView['operation'] = null;
+  private admitting = false;
   private controller: AbortController | null = null;
   private task: Promise<void> | null = null;
   readonly definition: ExtensionSettingsDefinition;
@@ -103,39 +104,59 @@ export class RegisteredSettings {
     if (this.project(credentials).revision !== revision) throw new ExtensionSettingsError('conflict');
     return credentialRevision(credentials);
   }
-  async start(actionId: string, revision: string): Promise<ExtensionSettingsView> {
-    await this.check(revision);
-    if (this.task) throw new ExtensionSettingsError('conflict');
-    const action = this.definition.actions.find(item => item.id === actionId); if (!action) invalid();
+  private admit(): void {
     this.assertActive();
-    const controller = new AbortController(), id = randomUUID(); this.controller = controller;
-    this.operation = { id, action: actionId, state: 'pending' };
-    const task = Promise.resolve().then(async () => {
-      try { controller.signal.throwIfAborted(); this.assertActive(); await action!.execute({ signal: controller.signal }); this.operation = { id, action: actionId, state: controller.signal.aborted ? 'cancelled' : 'succeeded' }; }
-      catch { this.operation = { id, action: actionId, state: controller.signal.aborted ? 'cancelled' : 'failed' }; }
-      finally { this.task = null; this.controller = null; }
-    });
-    this.task = task; this.lease(task);
-    return this.view();
+    if (this.admitting || this.task) throw new ExtensionSettingsError('conflict');
+    this.admitting = true;
+  }
+  async start(actionId: string, revision: string): Promise<ExtensionSettingsView> {
+    this.admit();
+    try {
+      await this.check(revision);
+      const action = this.definition.actions.find(item => item.id === actionId); if (!action) invalid();
+      this.assertActive();
+      const controller = new AbortController(), id = randomUUID(); this.controller = controller;
+      this.operation = { id, action: actionId, state: 'pending' };
+      const task = Promise.resolve().then(async () => {
+        try { controller.signal.throwIfAborted(); this.assertActive(); await action!.execute({ signal: controller.signal }); this.operation = { id, action: actionId, state: controller.signal.aborted ? 'cancelled' : 'succeeded' }; }
+        catch { this.operation = { id, action: actionId, state: controller.signal.aborted ? 'cancelled' : 'failed' }; }
+        finally { this.task = null; this.controller = null; }
+      });
+      this.task = task; this.lease(task);
+      return await this.view();
+    } finally { this.admitting = false; }
+  }
+  current(): ExtensionSettingsOperation | null {
+    this.assertActive();
+    return this.operation ? { id: this.operation.id, action: this.operation.action, state: this.operation.state } : null;
+  }
+  cancelOperation(operationId: string): void {
+    this.assertActive();
+    if (!this.operation || this.operation.id !== operationId) throw new ExtensionSettingsError('conflict');
+    this.cancel();
   }
   cancel(): void { this.controller?.abort(); }
   async drain(): Promise<void> { this.cancel(); await this.task; }
-  async write(input: ExtensionSettingsWrite): Promise<{ config: Json; credentialsChanged: boolean }> {
-    const expectedCredentials = await this.check(input.expectedRevision);
-    if (this.task) throw new ExtensionSettingsError('conflict');
-    const config = this.config();
-    const changesConfig = Object.keys(input.values).length > 0;
-    if (changesConfig && config !== null && (typeof config !== 'object' || Array.isArray(config))) invalid();
-    const next = { ...(config as Record<string, Json> | null) };
-    for (const [key, value] of Object.entries(input.values)) {
-      const field = this.definition.fields.find(item => item.key === key);
-      if (!field || field.type === 'secret' || (field.type === 'boolean' ? typeof value !== 'boolean' : typeof value !== 'string' || value.length > 4096) || (field.type === 'select' && !field.options.some(item => item.value === value))) invalid();
-      Object.defineProperty(next, key, { value, enumerable: true, configurable: true, writable: true });
-    }
-    for (const key of Object.keys(input.secrets)) if (!this.definition.fields.some(field => field.key === key && field.type === 'secret')) invalid();
-    let credentialsChanged: boolean;
-    try { credentialsChanged = await this.storage.update(this.owner, input.secrets, this.assertActive, expectedCredentials); }
-    catch (error) { if (error instanceof CredentialConflictError) throw new ExtensionSettingsError('conflict'); throw error; }
-    return { config: changesConfig ? next : structuredClone(config), credentialsChanged };
+  async write(input: ExtensionSettingsWrite, apply?: (result: { config: Json; credentialsChanged: boolean }) => Promise<void>): Promise<{ config: Json; credentialsChanged: boolean }> {
+    this.admit();
+    try {
+      const expectedCredentials = await this.check(input.expectedRevision);
+      const config = this.config();
+      const changesConfig = Object.keys(input.values).length > 0;
+      if (changesConfig && config !== null && (typeof config !== 'object' || Array.isArray(config))) invalid();
+      const next = { ...(config as Record<string, Json> | null) };
+      for (const [key, value] of Object.entries(input.values)) {
+        const field = this.definition.fields.find(item => item.key === key);
+        if (!field || field.type === 'secret' || (field.type === 'boolean' ? typeof value !== 'boolean' : typeof value !== 'string' || value.length > 4096) || (field.type === 'select' && !field.options.some(item => item.value === value))) invalid();
+        Object.defineProperty(next, key, { value, enumerable: true, configurable: true, writable: true });
+      }
+      for (const key of Object.keys(input.secrets)) if (!this.definition.fields.some(field => field.key === key && field.type === 'secret')) invalid();
+      let credentialsChanged: boolean;
+      try { credentialsChanged = await this.storage.update(this.owner, input.secrets, this.assertActive, expectedCredentials); }
+      catch (error) { if (error instanceof CredentialConflictError) throw new ExtensionSettingsError('conflict'); throw error; }
+      const result = { config: changesConfig ? next : structuredClone(config), credentialsChanged };
+      await apply?.(result);
+      return result;
+    } finally { this.admitting = false; }
   }
 }

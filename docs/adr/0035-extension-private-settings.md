@@ -45,3 +45,16 @@ URL；二维码完全在本地生成，不向第三方传输链接。无任意 H
 `tests/e2e/management-real.spec.ts` 增加真实浏览器→HTTP→PG/service→Cordis 的设置链路、
 取消、二维码、桌面/窄屏截图和凭据不进入 config/模型上下文/历史的断言。
 真实数据库和浏览器门禁必须在支持本地监听的执行环境运行，不以离线测试代替。
+
+## 插件自选的对话发起
+
+`registerSettings` 返回绑定本安装、当前 activation 的 `start/current/cancel` handle。
+插件可自行在普通工具中调用已声明动作；框架不新增 connect 工具或授权协议。
+handle 只返回 `{id, action, state}` operation receipt，不返回设置 view、状态明细或
+provider URL。设置页和插件工具共用同一 single-flight runner、取消信号与执行租约；
+旧 activation 的 handle 全部拒绝。插件工具自身持有 lease，handle 不排入可能正等待
+该 lease 的全局生命周期队列，避免重载排空时死锁。插件自行处理过期、刷新与用户引导。
+
+同一 runner 在异步 revision/凭据读取前同步保留局部准入；start 与设置保存互斥。
+保存的准入覆盖原子凭据写入和随后的 reapply，避免动作在保存中途启动并产生未确认的
+外部效果。竞争方明确返回 conflict，不排队重放；不引入全局生命周期锁反向依赖。

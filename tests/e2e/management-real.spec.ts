@@ -365,9 +365,10 @@ test('extension private settings traverse real browser, HTTP, Cordis and Postgre
     await writeFile(source, `import {defineExtension} from ${JSON.stringify(import.meta.resolve('@mira/extension-sdk'))};
       export default defineExtension({name:'settings-fixture',apply(ctx,config){
         let status={state:'disconnected'}; let authorizationRequests=0;
-        ctx.registerSettings({fields:[{key:'appId',label:'Application ID',type:'text'},{key:'token',label:'Private token',type:'secret'},...['constructor','toString','valueOf'].map(key=>({key,label:'Private '+key,type:'secret'}))],
+        const settingsActions = ctx.registerSettings({fields:[{key:'appId',label:'Application ID',type:'text'},{key:'token',label:'Private token',type:'secret'},...['constructor','toString','valueOf'].map(key=>({key,label:'Private '+key,type:'secret'}))],
           actions:[{id:'connect',label:'Connect fixture',async execute({signal}){ if(!await ctx.credentials.has('token'))throw Error('missing'); for(const key of ['constructor','toString','valueOf'])if(await ctx.credentials.get(key)!=='synthetic-'+key)throw Error('prototype credential missing'); status={state:'connected'};}},
           {id:'authorize',label:'Authorize fixture',async execute({signal}){status={state:'pending',authorization:{url:'https://example.com/authorize?challenge=synthetic-public-'+(++authorizationRequests),label:'Official authorization',qr:true}}; await new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true})); status={state:'disconnected'};}}],status:()=>status});
+        ctx.registerTool({name:'start_fixture',description:'Start plugin authorization',parameters:{type:'object'},async execute(){return {text:JSON.stringify(await settingsActions.start('authorize'))}}});
         ctx.registerTool({name:'check_fixture',description:'Check connection',parameters:{type:'object'},async execute(){return {text:status.state}}});
         ctx.onCleanup(()=>{status={state:'disconnected'}});
       }});`);
@@ -376,7 +377,7 @@ test('extension private settings traverse real browser, HTTP, Cordis and Postgre
     service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'extension-settings-real', sourceDirectory,
       workingDirectory: root, miraHome: root, spoolDirectory: path.join(root,'spool'), settingsFile:path.join(root,'models.json'),
       synthetic:true, dreaming:{enabled:false}, autoCompaction:{enabled:false}, extensions:{entries,configurationFile},
-      syntheticStream: (_model,context)=>{ contexts.push(structuredClone(context)); return streamOf(assistant('Synthetic settings checked.')); },
+      syntheticStream: (_model,context)=>{ contexts.push(structuredClone(context)); return streamOf(contexts.length === 1 ? call('settings-tool-start', 'start_fixture', {}) : assistant('Synthetic settings checked.')); },
     });
     app = createLocalHttp({backend:service,port,assetsDirectory:path.join(sourceDirectory,'apps/web/dist')});
     await app.listen({port,host:'127.0.0.1'});
@@ -459,10 +460,23 @@ test('extension private settings traverse real browser, HTTP, Cordis and Postgre
     await page.getByRole('button',{name:'关闭设置',exact:true}).click();
     await page.getByLabel('给 Mira 发消息',{exact:true}).fill('Check synthetic settings.');
     await page.getByRole('button',{name:'发送消息',exact:true}).click();
-    await expect.poll(()=>contexts.length).toBe(1);
+    await expect.poll(()=>contexts.length).toBe(2);
     expect(JSON.stringify(contexts)).not.toContain(secret);
+    expect(JSON.stringify(contexts)).not.toContain('https://example.com/authorize');
+    await page.getByRole('button',{name:'模型设置',exact:true}).click();
+    await page.getByRole('tab',{name:'扩展',exact:true}).click();
+    await page.getByRole('button',{name:'连接设置',exact:true}).click();
+    await expect(page.getByLabel('settings-fixture 连接设置')).toContainText('操作仍在进行');
+    await expect(page.getByRole('link',{name:'Official authorization',exact:true})).toHaveAttribute('href', 'https://example.com/authorize?challenge=synthetic-public-3');
+    const pendingOperation = await page.evaluate(async()=> (await (await fetch('/api/extensions/settings-fixture/settings',{headers:{'X-Mira-Client':'web'}})).json()).settings.operation);
+    expect(pendingOperation.state).toBe('pending');
+    expect(JSON.stringify(contexts)).toContain(pendingOperation.id);
+    await page.getByRole('button',{name:'取消当前操作',exact:true}).click();
+    await expect(page.getByLabel('settings-fixture 连接设置')).toContainText('操作已取消');
     const history = await db.admin.query('SELECT intent, outcome FROM tool_executions');
     expect(JSON.stringify(history.rows)).not.toContain(secret);
+    expect(JSON.stringify(history.rows)).not.toContain('https://example.com/authorize');
+    expect(history.rows).toHaveLength(1);
     expect(await page.evaluate(()=>JSON.stringify([localStorage,sessionStorage]))).not.toContain(secret);
   } finally { delayedParentPoll.resolve(); await app?.close(); await service?.close(); await db?.close(); await rm(root,{recursive:true,force:true}); }
 });

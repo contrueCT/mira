@@ -96,3 +96,7 @@ status returns a fixed connection state, optional safe code, bounded public deta
 and an optional HTTPS authorization link with `qr: true` for local rendering.
 See [ADR 0035](../../docs/adr/0035-extension-private-settings.md). These APIs organize
 trusted code under the same OS account; they provide no security sandbox.
+
+`registerSettings` 返回当前安装/激活专属的 `ExtensionSettingsActions`。
+插件可以在自己的普通工具中选择调用 start/current/cancel；只返回安全 operation
+receipt，不返回受保护的 settings view 或 provider URL，详见 ADR0035。

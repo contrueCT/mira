@@ -12,14 +12,16 @@ async function fixture(run: (host: ExtensionHost, state: any, directory: string,
   const directory = await mkdtemp(path.join(tmpdir(), 'mira-extension-settings-'));
   const file = path.join(directory, 'plugin.mjs');
   await writeFile(file, `import { defineExtension } from ${JSON.stringify(sdk)};
-    export const state = { contexts: [], status: {state:'disconnected'}, cleanups:0, starts:0, failCleanup:false, failApply:false, observed:[] };
+    export const state = { contexts: [], status: {state:'disconnected'}, cleanups:0, starts:0, failCleanup:false, failApply:false, observed:[], handles:[], toolStarted:false, holdTool:null };
     export default defineExtension({ name: 'settings', async apply(ctx,config) {
       state.contexts.push(ctx);
       state.observed.push(await ctx.credentials.get('secret'));
       if (state.failApply) throw Error('synthetic-private-apply-error');
-      ctx.registerSettings({fields:[{key:'appId',label:'App ID',type:'text'},{key:'secret',label:'Secret',type:'secret'}],
+      const actions = ctx.registerSettings({fields:[{key:'appId',label:'App ID',type:'text'},{key:'secret',label:'Secret',type:'secret'}],
         actions:[{id:'connect',label:'Connect',async execute({signal}) {state.starts++; state.status={state:'connecting'}; await new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true})); state.status={state:'disconnected'};}}],
         status:()=>state.status});
+      state.handles.push(actions);
+      ctx.registerTool({name:'start_settings',description:'Start this plugin action',parameters:{type:'object'},async execute(){state.toolStarted=true; if(state.holdTool)await state.holdTool; return {text:JSON.stringify(await actions.start('connect'))};}});
       ctx.onCleanup(()=>{state.cleanups++; if(state.failCleanup) throw Error('synthetic-cleanup-error')});
     }});`);
   const { state } = await import(pathToFileURL(file).href);
@@ -285,5 +287,116 @@ test('credential save with failed reapply preserves new credential and reports f
     assert.equal(recovered.status, 'applied');
     assert.deepEqual(state.observed, [null, 'synthetic-recovery-token', 'synthetic-recovery-token']);
     assert.equal((await host.extensionSettings('plugin'))?.fields.find(field => field.key === 'secret')?.configured, true);
+  });
+});
+
+
+test('bound settings handle shares pending state, single-flight and cancellation with host HTTP-facing methods', async () => {
+  await fixture(async (host, state) => {
+    const actions = state.handles[0];
+    state.status = {state:'pending', details:[{label:'Private hint',value:'synthetic-pairing-code'}], authorization:{url:'https://example.com/authorize?token=synthetic-provider-code',label:'Authorize'}};
+    await state.contexts[0].credentials.set('secret','synthetic-credential');
+    const results = await Promise.allSettled([actions.start('connect'), actions.start('connect')]);
+    assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+    assert.equal(state.starts, 1);
+    const operation = await actions.current(); assert.ok(operation);
+    assert.deepEqual(Object.keys(operation).sort(), ['action','id','state']);
+    assert.deepEqual((await host.extensionSettings('plugin'))?.operation, operation);
+    assert.ok(!JSON.stringify(operation).includes('synthetic'));
+    await assert.rejects(() => actions.cancel('different-operation'), ExtensionSettingsError);
+    await host.cancelSettingsAction('plugin', operation.id);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal((await actions.current()).state, 'cancelled');
+    const next = await actions.start('connect');
+    await assert.rejects(() => actions.cancel(operation.id), ExtensionSettingsError);
+    await actions.cancel(next.id);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    await assert.rejects(() => actions.start('not-declared'), ExtensionSettingsError);
+    await host.requestChange('plugin', {action:'reload'});
+    await assert.rejects(() => actions.start('connect'));
+    await assert.rejects(() => actions.current());
+    await assert.rejects(() => actions.cancel(next.id));
+    assert.equal(await state.handles.at(-1).current(), null);
+  });
+});
+
+test('plugin tool starts the same action and late tool handle calls do not deadlock lifecycle drains', async () => {
+  await fixture(async (host, state) => {
+    const tool = (await host.prepareCapabilities()).tools.find(item => item.tool.name === 'start_settings')!.tool;
+    const result = await tool.execute({}, {callId:'synthetic-settings-start', signal:new AbortController().signal});
+    const operation = JSON.parse(result.text);
+    assert.deepEqual((await host.extensionSettings('plugin'))?.operation, operation);
+    await host.cancelSettingsAction('plugin', operation.id);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    const hold = Promise.withResolvers<void>(); state.holdTool = hold.promise; state.toolStarted = false;
+    const running = tool.execute({}, {callId:'synthetic-settings-start', signal:new AbortController().signal});
+    while (!state.toolStarted) await new Promise(resolve => setTimeout(resolve, 1));
+    const reloading = host.requestChange('plugin', {action:'reload'});
+    await new Promise(resolve => setTimeout(resolve, 10));
+    hold.resolve();
+    const settled = await Promise.allSettled([running, reloading]);
+    assert.equal(settled[0].status, 'rejected');
+    assert.equal(settled[1].status, 'fulfilled');
+    assert.equal(state.starts, 1);
+  });
+});
+
+test('local admission rejects writes during an asynchronously starting action and covers storage plus reapply', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'mira-settings-admission-'));
+  const store = new ExtensionPrivateStorage(path.join(directory, 'private'));
+  let starts = 0;
+  const settings = new RegisteredSettings({fields:[{key:'token',label:'Token',type:'secret'}],
+    actions:[{id:'work',label:'Work',async execute({signal}) { starts++; await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), {once:true})); }}],
+    status:()=>({state:'disconnected'})}, 'activation', 'owner', store, () => null, () => {}, () => {});
+  const originalValues = store.values.bind(store), originalUpdate = store.update.bind(store);
+  const checked = Promise.withResolvers<void>(), continueCheck = Promise.withResolvers<void>();
+  const writing = Promise.withResolvers<void>(), continueWrite = Promise.withResolvers<void>();
+  const applying = Promise.withResolvers<void>(), continueApply = Promise.withResolvers<void>();
+  try {
+    const first = await settings.view();
+    store.values = async owner => { checked.resolve(); await continueCheck.promise; return originalValues(owner); };
+    const starting = settings.start('work', first.revision);
+    await checked.promise;
+    await assert.rejects(() => settings.write({expectedRevision:first.revision, values:{}, secrets:{token:'must-not-save'}}), ExtensionSettingsError);
+    continueCheck.resolve();
+    const active = await starting; assert.equal(starts, 1);
+    store.values = originalValues;
+    assert.equal((await store.values('owner')).token, undefined);
+    settings.cancelOperation(active.operation!.id); await settings.drain();
+
+    const next = await settings.view();
+    store.update = async (...args) => { writing.resolve(); await continueWrite.promise; return originalUpdate(...args); };
+    const saving = settings.write({expectedRevision:next.revision, values:{}, secrets:{token:'synthetic-admitted-write'}}, async () => {
+      applying.resolve(); await continueApply.promise;
+    });
+    await writing.promise;
+    await assert.rejects(() => settings.start('work', next.revision), ExtensionSettingsError);
+    continueWrite.resolve(); await applying.promise;
+    // Even after the atomic file write, the same admission remains held until reapply settles.
+    const persisted = await settings.view();
+    await assert.rejects(() => settings.start('work', persisted.revision), ExtensionSettingsError);
+    assert.equal(starts, 1);
+    continueApply.resolve(); await saving;
+    await settings.start('work', persisted.revision); assert.equal(starts, 2);
+  } finally {
+    continueCheck.resolve(); continueWrite.resolve(); continueApply.resolve();
+    await settings.drain(); await rm(directory, {recursive:true, force:true});
+  }
+});
+
+test('concurrent public Host save and plugin start never execute a losing action', async () => {
+  await fixture(async (host, state) => {
+    for (let index = 0; index < 4; index++) {
+      const handle = state.handles.at(-1), view = await host.extensionSettings('plugin'); assert.ok(view);
+      const before = state.starts;
+      const start = () => handle.start('connect');
+      const save = () => host.saveExtensionSettings('plugin', {expectedRevision:view.revision, values:{}, secrets:{secret:'synthetic-race-' + index}});
+      const calls = index % 2 ? [save(), start()] : [start(), save()];
+      const results = await Promise.allSettled(calls);
+      const action = results[index % 2 ? 1 : 0]; assert.ok(action);
+      assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+      assert.equal(state.starts - before, action.status === 'fulfilled' ? 1 : 0);
+      if (action.status === 'fulfilled') { await handle.cancel(action.value.id); await new Promise(resolve => setTimeout(resolve, 10)); }
+    }
   });
 });

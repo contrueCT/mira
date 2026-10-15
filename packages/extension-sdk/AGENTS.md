@@ -19,3 +19,4 @@
 
 从仓库根运行 `pnpm check`。依赖或 exports 改动必须同时检查 `scripts/boundaries.json`，并添加允许/拒绝反例。离线验证见 `tests/unit/extension-host.test.mts` 和 `tests/unit/official-hmr.test.mts`；实际 HMR 子进程使用 `--expose-internals`，不调用真实模型。
 - ADR0035：credentials/privateDirectory/registerSettings 为通用私有设置能力；无框架类型、OAuth引擎或沙箱承诺，secret仅设置输入，普通字段继续config重载。
+- registerSettings返回本安装/activation专属动作handle，只含安全operation receipt，不把protected status/providerURL变成模型能力；由插件选择对话工具。
