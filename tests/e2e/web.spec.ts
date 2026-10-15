@@ -66,6 +66,55 @@ test('settings close, Escape and Back/Forward leave the timeline usable', async 
   await expect(page.getByLabel('给 Mira 发消息', { exact: true })).toBeEditable();
 });
 
+test('settings retain drafts across backdrop clicks and inside-to-outside drags on desktop and narrow screens', async ({ page }, testInfo) => {
+  await mockSettings(page);
+  await page.route('**/api/memory', route => route.fulfill({ json: { configured: false } }));
+  await openSettings(page);
+  await page.getByRole('tab', { name: 'Memory', exact: true }).click();
+  const draft = page.getByLabel('修改记忆', { exact: true });
+  await draft.fill('An unsaved fixture draft');
+  for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    await page.mouse.click(5, 5);
+    await expect(page.getByRole('dialog', { name: '设置', exact: true })).toBeVisible();
+    const input = await draft.boundingBox(); const dialog = await page.locator('dialog.settings-dialog').boundingBox();
+    if (!input || !dialog) throw Error('Settings draft must be visible');
+    await page.mouse.move(input.x + 50, input.y + 20); await page.mouse.down();
+    await page.mouse.move(dialog.x - 5, input.y + 20, { steps: 10 }); await page.mouse.up();
+    await expect(page.getByRole('dialog', { name: '设置', exact: true })).toBeVisible();
+    await expect(draft).toHaveValue('An unsaved fixture draft');
+    await expect(page).toHaveURL(/#settings$/);
+    await page.screenshot({ path: testInfo.outputPath(`settings-backdrop-${viewport.width}.png`) });
+  }
+  await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByLabel('给 Mira 发消息', { exact: true })).toBeEditable();
+});
+
+test('opening settings twice or waiting for slow reads never dismisses the modal', async ({ page }) => {
+  await mockSettings(page);
+  await page.route('**/api/settings', async route => {
+    await new Promise(resolve => setTimeout(resolve, 750));
+    await route.fulfill({ json: settingsFixture() });
+  });
+  await page.goto('/');
+  const gear = page.getByRole('button', { name: '模型设置', exact: true });
+  await expect(gear).toBeVisible();
+  const box = await gear.boundingBox(); if (!box) throw Error('Settings button must be visible');
+  // Native second click lands at the opener's coordinates, now behind the modal.
+  await page.mouse.dblclick(box.x + box.width / 2, box.y + box.height / 2, { delay: 100 });
+  await expect(page.getByRole('dialog', { name: '设置', exact: true })).toBeVisible();
+  await expect(page.getByLabel('服务商', { exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/#settings$/);
+  await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
+  await gear.click();
+  await expect(page.getByText('正在读取配置…', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('服务商', { exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: '设置', exact: true })).toBeVisible();
+  await page.goBack(); await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.goForward(); await expect(page.getByRole('dialog', { name: '设置', exact: true })).toBeVisible();
+});
+
 test('uncertain send is never automatically resent after reload or reconnect', async ({ page }) => {
   let sends = 0;
   await page.route('**/api/messages', async route => { sends++; await route.abort('failed'); });
