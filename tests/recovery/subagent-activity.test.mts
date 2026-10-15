@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import type { SubagentActivityInput, SubagentSpec } from '@mira/life';
-import { SubagentError } from '@mira/life';
+import { SubagentError, prepareWakeTurn } from '@mira/life';
 import { getCurrentSystemMessage, getSystemMessageText } from '@earendil-works/pi-ai';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { PiDurableRuntime, encodeEntry, messageEntry } from '@mira/runtime-pi';
@@ -108,12 +108,22 @@ test('independent PostgreSQL child/run ownership and pages survive parent histor
       const child = await writer.createSubagent(callId, spec(`Check ${index}`), 8); ids.push(child.id);
       await writer.finishSubagentTurn(child.turns[0]!.id, 'completed', { text: 'Public result', truncated: false, fullResultPath: null, finalRecordId: null });
     }
+    // Terminal results now belong to this run. Consume their sourced input
+    // through the same append-only API before publishing its final record.
+    const live = await writer.loadLiveInputs(run.id); assert.equal(live.length, 55);
+    for (const item of live) {
+      const rendered = await prepareWakeTurn({ ...run, id: item.request.eventId, claimedAt: item.request.event.occurredAt, requests: [item.request] }, async () => { throw Error('Unexpected overflow'); }, 65_536);
+      const state = await writer.load();
+      await writer.appendLiveInput(run.id, item.request.wake.id, state.version, encodeEntry(messageEntry({ role: 'user', content: rendered.input, timestamp: Date.parse(rendered.occurredAt) }, state.records.at(-1)!.id)));
+    }
     let state = await writer.load();
     await writer.appendWakeFinal(run.id, state.version, encodeEntry(messageEntry(assistant('Done'), state.records.at(-1)!.id))); await writer.completeWakeRun(run.id);
-    // Completion receipts create a separate next run; it must not own old children.
+    assert.equal(await writer.claimWakeBatch(), null, 'consumed child results cannot create a duplicate Wake');
+    // A genuinely new request creates the next run; it must not own old children.
+    await writer.receive({ id: 'next-request', type: 'web.message', source: 'user', occurredAt: now(), payload: {} }, { id: 'next-request', reason: 'New request' });
     const next = await writer.claimWakeBatch(); assert(next); assert.notEqual(next.id, run.id);
     state = await writer.load();
-    await writer.appendWakeInput(next.id, state.version, encodeEntry(messageEntry(input('Review child results'), state.records.at(-1)!.id)));
+    await writer.appendWakeInput(next.id, state.version, encodeEntry(messageEntry(input('New request'), state.records.at(-1)!.id)));
     const history = await db.store.history(writer.miraId).readRun({ id: run.id, limit: 1 }); assert(history); assert.equal(history.records[0]!.kind, 'context');
     const reader = db.store.subagents(writer.miraId);
     const page = await reader.readSubagentsForRun(run.id); assert.equal(page.children.length, 50); assert(page.nextCursor);

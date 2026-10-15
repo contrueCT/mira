@@ -247,3 +247,5 @@ these values remain exactly preserved inside the paged JSON. Only fixed-size
 id/kind/revision and numeric lengths/offsets accompany bounded text, so a long
 writer-valid timestamp cannot make all pages exceed the response budget. Fixed
 Mira scope is enforced by the query, never a model-supplied parameter.
+
+ADR 0037: child terminal results join the active non-final main run as sourced supplemental input and yield at the current single-tool boundary. Idle/finalized runs retain ordinary queued delivery; a failed parent is not retried or cleared. Public live ingress stays user-only. `subagent_wait` reports `live_input` for an early supplemental-input release.

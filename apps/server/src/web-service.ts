@@ -91,7 +91,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   readonly #writer: DreamingWriter & LiveInputWriter & SubagentWriter;
   readonly #subagents: SubagentManager;
   readonly #terminals: TerminalManager;
-  readonly #unsubscribeUserInput: () => void;
+  readonly #unsubscribeLiveInput: () => void;
   readonly #history: RunHistoryReader;
   readonly #subagentReader: SubagentReader;
   readonly #settings: WebSettingsStore;
@@ -113,7 +113,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   private constructor(options: WebServiceOptions, writer: DreamingWriter & SchedulingWriter & LiveInputWriter & SubagentWriter, history: RunHistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, attachments: AttachmentStore, subagents: SubagentManager, subagentReader: SubagentReader, terminals: TerminalManager, host?: ExtensionHost) {
     this.#terminals = terminals; this.#subagentReader = subagentReader; this.#subagents = subagents; this.#attachments = attachments; this.#options = options; this.#writer = writer; this.#history = history; this.#settings = settings;
     this.#settingsValue = settingsValue; this.#loop = loop; this.#host = host;
-    this.#unsubscribeUserInput = writer.onLiveInput(() => subagents.onUserInput());
+    this.#unsubscribeLiveInput = writer.onLiveInput(() => subagents.onLiveInput());
     this.external = createExternalIngress(writer, () => this.#kick());
     if (host) this.#deliveries = new DeliveryTimer(async () => {
       if (this.#closed || writer.signal.aborted) return null;
@@ -184,7 +184,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
           if (!options.synthetic && !hasSelectedWebApiKey(current)) throw Error('Choose a model with a saved API key first');
           const transport = options.synthetic ? { ...(current.configuration.defaultThinkingLevel === undefined ? {} : { thinkingLevel: current.configuration.defaultThinkingLevel }), model: options.syntheticModel ?? demoModel, streamFn: options.syntheticStream ?? syntheticStream } : settings.transport(current, { ...(options.modelFetch ? { fetch: options.modelFetch } : {}), onFailure: failure => { service!.#modelFailure = failure; }, onRetry: status => { service!.#modelRetry = status; } });
           const childTransport = options.synthetic ? transport : settings.transport(current, options.modelFetch ? { fetch: options.modelFetch } : {});
-          const childTools = createSubagentTools(children, childTransport, { hasPendingUserInput: async () => (await writer.loadLiveInputs(run.id)).some(input => input.inputRecordId === null) });
+          const childTools = createSubagentTools(children, childTransport, { hasPendingLiveInput: async () => (await writer.loadLiveInputs(run.id)).some(input => input.inputRecordId === null) });
           let contextProviders: RegisteredContextProvider[] = [];
           return new PiDurableRuntime({ ...(options.autoCompaction ? { autoCompaction: options.autoCompaction } : {}), writer, ...transport, writeOverflowInput, resolveAttachment: reference => attachments.hydrate(reference), tools: [...baseTools, ...childTools], loadSkills,
             ...(extensionHost ? { prepareTools: async () => {
@@ -417,7 +417,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   }
   async close(): Promise<void> {
     if (this.#closed) return;
-    this.#closed = true; this.#unsubscribeUserInput(); this.#abort.abort(new Error('Mira is stopping'));
+    this.#closed = true; this.#unsubscribeLiveInput(); this.#abort.abort(new Error('Mira is stopping'));
     await this.#deliveries?.close();
     await this.#dreaming?.close();
     await this.#terminals.close();

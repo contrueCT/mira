@@ -91,6 +91,8 @@ pnpm check
 - [ADR 0022](docs/adr/0022-durable-single-shot-delivery.md)：持久单次UTC投递与版本CAS；Event/Wake和入队状态同一fenced事务，扩展负责提醒/时区/DST/过期政策。owner使用持久安装身份，disable/remove保留pending暂停；不改Dreaming、不加通用job引擎。
 - [ADR 0029](docs/adr/0029-bounded-model-request-retries.md)：显式transport只在完整assistant发布前对确定瞬时请求错误做最多三次尝试，partial不落库；取消停止退避，不重放Wake/工具/unknown。SDK maxRetries仍为0，主Web状态与child隔离。
 
+- [ADR 0037](docs/adr/0037-live-subagent-results.md)：child 终态与内部补充输入同事务提交，忙时当前单工具后读结果，闲时普通 Wake；保留来源、单写者、终态仲裁和父错误，不自动展示结果。
+
 - [ADR 0033](docs/adr/0033-web-password-access.md)：可选网页密码在现有设置，统一 API/附件鉴权；明确 public origin 支持 0.0.0.0 绑定，仍保留 Host/Origin/CSRF 防护和 External SDK 回环限制。
 
 - [ADR 0035](docs/adr/0035-extension-private-settings.md)：通用扩展私有凭据/安装数据目录与声明式设置，现有扩展管理内使用；运行时凭据不入config/模型，动作按代取消/排空，同OS可信边界不变。

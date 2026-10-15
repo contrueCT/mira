@@ -137,8 +137,8 @@ test('wait is bounded and new user input releases it without cancelling child; c
   const t = transport(() => streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'side-effect', name: 'effect', arguments: {} }] }));
   try {
     const c = await f.manager.spawn('cancel-1', 'Work', 'none', t); await entered.promise;
-    const waiting = f.manager.wait(c.id, 10_000); f.manager.onUserInput();
-    assert.equal((await waiting).reason, 'user_input'); assert.equal(f.parent.children[0]!.turns[0]!.status, 'running');
+    const waiting = f.manager.wait(c.id, 10_000); f.manager.onLiveInput();
+    assert.equal((await waiting).reason, 'live_input'); assert.equal(f.parent.children[0]!.turns[0]!.status, 'running');
     assert.equal((await f.manager.wait(c.id, 0)).reason, 'timeout');
     await f.manager.cancel(c.id); await until(() => [...f.writers.values()][0]?.signal.aborted ?? false);
     assert.equal(f.parent.children[0]!.turns[0]!.status, 'cancelled');
@@ -403,12 +403,12 @@ test('wait observes committed input before execution and while its admission rea
     const child = await f.manager.spawn('wait-admission', 'Independent work', 'none', t);
     await until(() => f.parent.children[0]?.turns[0]?.status === 'running');
     // The commit notification can precede tool execute, after its durable intent.
-    f.manager.onUserInput();
-    assert.equal((await f.manager.wait(child.id, 10_000, undefined, async () => true)).reason, 'user_input');
+    f.manager.onLiveInput();
+    assert.equal((await f.manager.wait(child.id, 10_000, undefined, async () => true)).reason, 'live_input');
     assert.equal(f.parent.children[0]!.turns[0]!.status, 'running');
     const waiting = f.manager.wait(child.id, 10_000, undefined, async () => { queryEntered.resolve(); await queryRelease.promise; return false; });
-    await queryEntered.promise; f.manager.onUserInput(); queryRelease.resolve();
-    assert.equal((await waiting).reason, 'user_input');
+    await queryEntered.promise; f.manager.onLiveInput(); queryRelease.resolve();
+    assert.equal((await waiting).reason, 'live_input');
     assert.equal((await f.manager.wait(child.id, 0, undefined, async () => false)).reason, 'timeout', 'already consumed input cannot poison later waits');
   } finally { release.resolve(); queryRelease.resolve(); await f.manager.close(); }
 });

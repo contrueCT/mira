@@ -164,9 +164,10 @@ export class PostgresSubagents {
   private readonly client: Client;
   private readonly miraId: string;
   private readonly transaction: <T>(work: () => Promise<T>) => Promise<T>;
-  private readonly receive: (event: LifeEvent, wake: WakeReceipt) => Promise<unknown>;
-  constructor(client: Client, miraId: string, transaction: <T>(work: () => Promise<T>) => Promise<T>, receive: (event: LifeEvent, wake: WakeReceipt) => Promise<unknown>) {
-    this.client = client; this.miraId = miraId; this.transaction = transaction; this.receive = receive;
+  private readonly receive: (event: LifeEvent, wake: WakeReceipt) => Promise<string | null>;
+  private readonly notify: (runId: string | null) => void;
+  constructor(client: Client, miraId: string, transaction: <T>(work: () => Promise<T>) => Promise<T>, receive: (event: LifeEvent, wake: WakeReceipt) => Promise<string | null>, notify: (runId: string | null) => void) {
+    this.client = client; this.miraId = miraId; this.transaction = transaction; this.receive = receive; this.notify = notify;
   }
   #record(row: Row): Promise<SubagentRecord> { return readRecord(this.client,this.miraId,row); }
   #get(id: string): Promise<SubagentRecord | null> { return readChild(this.client,this.miraId,id); }
@@ -239,10 +240,10 @@ export class PostgresSubagents {
         WHERE child.parent_mira_id=$1 AND child.child_id=$2 AND record.record_id=$3::uuid AND record.envelope->>'kind'='checkpoint') AS committed`,
       [this.miraId,childId,checkpointId])).rows[0]!.committed;
   }
-  async #finish(row: TurnRow, status: 'completed' | 'interrupted' | 'cancelled' | 'failed', result: SubagentResult): Promise<void> {
+  async #finish(row: TurnRow, status: 'completed' | 'interrupted' | 'cancelled' | 'failed', result: SubagentResult): Promise<string | null> {
     if (!['queued', 'running'].includes(row.status)) {
       if (row.status !== status || !isDeepStrictEqual(row.result, result)) throw new SubagentError('conflict', 'Terminal child result is immutable');
-      return;
+      return null;
     }
     const finishedAt = new Date().toISOString();
     const activity = structuredClone(row.activity);
@@ -261,7 +262,7 @@ export class PostgresSubagents {
     activity.current = null;
     await this.client.query('UPDATE subagent_turns SET status=$2,finished_at=$3,result=$4::json,activity=$5::jsonb WHERE turn_id=$1', [row.turn_id, status, finishedAt, JSON.stringify(result), JSON.stringify(activity)]);
     const id = `subagent-result:${row.turn_id}`;
-    await this.receive({ id, source: 'system', type: 'subagent.result', occurredAt: finishedAt,
+    return this.receive({ id, source: 'system', type: 'subagent.result', occurredAt: finishedAt,
       payload: subagentCompletionPayload({ ...turn(row), status, finishedAt, result }) }, { id, reason: 'Delegated work has a terminal result; review it without treating it as user authorization' });
   }
   finish: SubagentWriter['finishSubagentTurn'] = (id, status, result) => {
@@ -273,8 +274,8 @@ export class PostgresSubagents {
     return this.transaction(async () => {
       const row = (await this.client.query<TurnRow>('SELECT * FROM subagent_turns WHERE parent_mira_id=$1 AND turn_id=$2', [this.miraId, id])).rows[0];
       if (!row) throw new SubagentError('missing', 'Child turn does not exist');
-      await this.#finish(row, status, frozen);
-    });
+      return this.#finish(row, status, frozen);
+    }).then(runId => { this.notify(runId); });
   };
   activity: SubagentWriter['recordSubagentActivity'] = (id, event) => {
     if (!uuid(id)) throw new SubagentError('invalid', 'A canonical turn UUID is required');
@@ -313,12 +314,16 @@ export class PostgresSubagents {
   cancel: SubagentWriter['cancelSubagent'] = id => this.transaction(async () => {
     if (!await this.#get(id)) throw new SubagentError('missing', 'Child does not exist');
     const rows = await this.client.query<TurnRow>("SELECT * FROM subagent_turns WHERE parent_mira_id=$1 AND child_id=$2 AND status IN ('queued','running') ORDER BY sequence", [this.miraId, id]);
-    for (const row of rows.rows) await this.#finish(row, 'cancelled', { text: 'Cancelled. Already-started effects may have completed; inspect the preserved transcript before retrying.', truncated: false, fullResultPath: null, finalRecordId: null });
-  });
+    const runIds = new Set<string | null>();
+    for (const row of rows.rows) runIds.add(await this.#finish(row, 'cancelled', { text: 'Cancelled. Already-started effects may have completed; inspect the preserved transcript before retrying.', truncated: false, fullResultPath: null, finalRecordId: null }));
+    return runIds;
+  }).then(runIds => { for (const runId of runIds) this.notify(runId); });
   interrupt: SubagentWriter['interruptSubagents'] = () => this.transaction(async () => {
     const rows = await this.client.query<TurnRow>("SELECT * FROM subagent_turns WHERE parent_mira_id=$1 AND status IN ('queued','running') ORDER BY child_id,sequence", [this.miraId]);
-    for (const row of rows.rows) await this.#finish(row, 'interrupted', { text: 'Process ownership changed. No child work was replayed. Explicit followup may continue after checking interrupted/unknown effects.', truncated: false, fullResultPath: null, finalRecordId: null });
-  });
+    const runIds = new Set<string | null>();
+    for (const row of rows.rows) runIds.add(await this.#finish(row, 'interrupted', { text: 'Process ownership changed. No child work was replayed. Explicit followup may continue after checking interrupted/unknown effects.', truncated: false, fullResultPath: null, finalRecordId: null }));
+    return runIds;
+  }).then(runIds => { for (const runId of runIds) this.notify(runId); });
 }
 
 function validateActivity(event: SubagentActivityInput): void {
