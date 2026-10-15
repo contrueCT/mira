@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
@@ -41,11 +42,12 @@ async function fixture() {
         state.cancelled++; return {text:'remote outcome was not durably committed'};
       } });
     } });`);
-  await writeFile(configurationFile, JSON.stringify({ entries:[{id:'owned',path:plugin}] }));
+  const entries = [{id:'owned',path:plugin,installationId:randomUUID()}];
+  await writeFile(configurationFile, JSON.stringify({ entries }));
   const { state } = await import(pathToFileURL(plugin).href);
   const options = { connectionString:db.connectionString, schema:db.schema, miraId:'ownership-service', sourceDirectory:process.cwd(),
     spoolDirectory:path.join(root,'spool'), settingsFile:path.join(root,'settings.json'), workingDirectory:root, miraHome:root,
-    synthetic:true, extensions:{ entries:[{id:'owned',path:plugin}], configurationFile } };
+    synthetic:true, extensions:{ entries, configurationFile } };
   return { db, root, state, options, async close() { await db.close(); await rm(root,{recursive:true,force:true}); } };
 }
 
