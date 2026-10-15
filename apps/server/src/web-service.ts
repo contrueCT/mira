@@ -1,5 +1,6 @@
 import { BrowserManager } from './browser-manager.ts';
 import { createBrowserTools } from './browser-tools.ts';
+import { extensionMessage } from './extension-messages.ts';
 import { TerminalManager, createTerminalTools } from './terminals.ts';
 import { SubagentManager, createSubagentTools } from './subagents.ts';
 import type { SubagentWriter, SubagentReader } from '@mira/life';
@@ -11,7 +12,7 @@ import { assertJson } from '@mira/context';
 import { realpath, stat } from 'node:fs/promises';
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Api } from '@earendil-works/pi-ai';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
-import { ExtensionHost, ExtensionRevisionConflictError, type LocalExtensionEntry, type RegisteredContextProvider, type ExtensionChange } from '@mira/extension-host';
+import { ExtensionHost, ExtensionRevisionConflictError, ExtensionSettingsError, type ExtensionSettingsWrite, type LocalExtensionEntry, type RegisteredContextProvider, type ExtensionChange } from '@mira/extension-host';
 import { HistoryError, SubagentError, WakeLoop, type HistoryEntry, type RunHistoryReader, type DreamingWriter, type SchedulingWriter, type LiveInputWriter } from '@mira/life';
 import { migrate, PostgresPersistence, PersistenceError } from '@mira/persistence';
 import { PiDurableRuntime, type AutoCompactionOptions, createHistoryTools, decodeRecords } from '@mira/runtime-pi';
@@ -65,6 +66,7 @@ const publicFailure = '运行中断，请检查终端与配置。已保存的消
 type Timeline = Awaited<ReturnType<WebBackend['timeline']>>;
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
 function visible(entry: HistoryEntry): Timeline['items'][number] | null {
+  const sourced = extensionMessage(entry); if (sourced) return sourced;
   if (entry.kind === 'event') {
     const payload = entry.event.payload;
     if (entry.event.source === 'external' && entry.event.type === 'external.notification' && object(payload)
@@ -92,7 +94,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   readonly #subagents: SubagentManager;
   readonly #terminals: TerminalManager;
   readonly browser: BrowserManager;
-  readonly #unsubscribeUserInput: () => void;
+  readonly #unsubscribeLiveInput: () => void;
   readonly #history: RunHistoryReader;
   readonly #subagentReader: SubagentReader;
   readonly #settings: WebSettingsStore;
@@ -114,7 +116,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   private constructor(options: WebServiceOptions, writer: DreamingWriter & SchedulingWriter & LiveInputWriter & SubagentWriter, history: RunHistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, attachments: AttachmentStore, subagents: SubagentManager, subagentReader: SubagentReader, terminals: TerminalManager, browser: BrowserManager, host?: ExtensionHost) {
     this.browser = browser; this.#terminals = terminals; this.#subagentReader = subagentReader; this.#subagents = subagents; this.#attachments = attachments; this.#options = options; this.#writer = writer; this.#history = history; this.#settings = settings;
     this.#settingsValue = settingsValue; this.#loop = loop; this.#host = host;
-    this.#unsubscribeUserInput = writer.onLiveInput(() => subagents.onUserInput());
+    this.#unsubscribeLiveInput = writer.onLiveInput(() => subagents.onLiveInput());
     this.external = createExternalIngress(writer, () => this.#kick());
     if (host) this.#deliveries = new DeliveryTimer(async () => {
       if (this.#closed || writer.signal.aborted) return null;
@@ -163,7 +165,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       writer.signal.addEventListener('abort', () => { void terminalManager.close(); }, { once: true });
       const baseTools = [...createBrowserTools(browserManager, writer.miraId), ...createTerminalTools(terminalManager, writer.miraId), createAttachmentTool(attachments, cwd), ...createWorkspaceTools(cwd).map(tool => withVideoRead(tool, attachments, cwd)), ...createHistoryTools(persistence.history(writer.miraId))];
       if (options.extensions) {
-        host = new ExtensionHost({ ...options.extensions, schedules: extensionScheduling(writer), onSchedulesChanged: () => { if (service) service.#deliveries?.schedule(); }, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage', 'subagent_spawn', 'subagent_status', 'subagent_send', 'subagent_wait', 'subagent_cancel'], receive: async (extensionId, event, wake) => {
+        host = new ExtensionHost({ ...options.extensions, privateStorageExcludedDirectories: [options.sourceDirectory, ...options.memoryRoot ? [options.memoryRoot] : []], schedules: extensionScheduling(writer), onSchedulesChanged: () => { if (service) service.#deliveries?.schedule(); }, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage', 'subagent_spawn', 'subagent_status', 'subagent_send', 'subagent_wait', 'subagent_cancel'], receive: async (extensionId, event, wake) => {
           const receipt = await extensionReceiver(writer)(extensionId, event, wake);
           if (wake && receipt === 'inserted' && service) service.#kick();
           return receipt;
@@ -189,7 +191,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
           if (!options.synthetic && !hasSelectedWebApiKey(current)) throw Error('Choose a model with a saved API key first');
           const transport = options.synthetic ? { ...(current.configuration.defaultThinkingLevel === undefined ? {} : { thinkingLevel: current.configuration.defaultThinkingLevel }), model: options.syntheticModel ?? demoModel, streamFn: options.syntheticStream ?? syntheticStream } : settings.transport(current, { ...(options.modelFetch ? { fetch: options.modelFetch } : {}), onFailure: failure => { service!.#modelFailure = failure; }, onRetry: status => { service!.#modelRetry = status; } });
           const childTransport = options.synthetic ? transport : settings.transport(current, options.modelFetch ? { fetch: options.modelFetch } : {});
-          const childTools = createSubagentTools(children, childTransport, { hasPendingUserInput: async () => (await writer.loadLiveInputs(run.id)).some(input => input.inputRecordId === null) });
+          const childTools = createSubagentTools(children, childTransport, { hasPendingLiveInput: async () => (await writer.loadLiveInputs(run.id)).some(input => input.inputRecordId === null) });
           let contextProviders: RegisteredContextProvider[] = [];
           return new PiDurableRuntime({ ...(options.autoCompaction ? { autoCompaction: options.autoCompaction } : {}), writer, ...transport, writeOverflowInput, resolveAttachment: reference => attachments.hydrate(reference), tools: [...baseTools, ...childTools], loadSkills,
             ...(extensionHost ? { prepareTools: async () => {
@@ -342,6 +344,20 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     catch { error = 'Staged releases could not be read. Raw diagnostics are hidden.'; }
     return { available: true, extensions: this.#host.inspect().map(entry => extensionView(entry, this.#host!)), releases, error };
   }
+  async #extensionSettingsCall<T>(run: (host: ExtensionHost) => Promise<T>, mutate = false): Promise<T> {
+    if (!this.#host || this.#closed || this.#writer.signal.aborted) throw new WebHttpError('unavailable');
+    if (mutate && (this.#drain || this.#configurationWrite)) throw new WebHttpError('busy');
+    if (mutate) this.#configurationWrite = true;
+    try { return await run(this.#host); }
+    catch (error) {
+      if (error instanceof ExtensionSettingsError) throw new WebHttpError(error.code === 'invalid' ? 'invalid_input' : error.code === 'conflict' ? 'conflict' : 'unavailable');
+      throw new WebHttpError('unavailable');
+    } finally { if (mutate) { this.#configurationWrite = false; if (this.#kickRequested && !this.#error) this.#kick(); else this.#dreaming?.schedule(); } }
+  }
+  async extensionSettings(id: string) { return this.#extensionSettingsCall(host => host.extensionSettings(id)); }
+  async saveExtensionSettings(id: string, input: ExtensionSettingsWrite) { await this.#extensionSettingsCall(host => host.saveExtensionSettings(id, input), true); }
+  async startExtensionSettingsAction(id: string, action: string, expectedRevision: string) { return this.#extensionSettingsCall(host => host.startSettingsAction(id, action, expectedRevision), true); }
+  async cancelExtensionSettingsAction(id: string, operationId: string) { await this.#extensionSettingsCall(host => host.cancelSettingsAction(id, operationId)); }
   async changeExtension(id: string, mutation: ExtensionMutation): Promise<ExtensionMutationView> {
     if (!this.#host || this.#closed || this.#writer.signal.aborted) throw new WebHttpError('unavailable');
     if (this.#drain || this.#configurationWrite) throw new WebHttpError('busy');
@@ -408,7 +424,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   }
   async close(): Promise<void> {
     if (this.#closed) return;
-    this.#closed = true; this.#unsubscribeUserInput(); this.#abort.abort(new Error('Mira is stopping'));
+    this.#closed = true; this.#unsubscribeLiveInput(); this.#abort.abort(new Error('Mira is stopping'));
     await this.#deliveries?.close();
     await this.#dreaming?.close();
     await this.browser.close();

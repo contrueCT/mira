@@ -56,7 +56,8 @@
     "tests/unit/web-auth.test.mts",
     "tests/unit/terminals.test.mts",
     "tests/unit/browser-manager.test.mts",
-    "tests/unit/browser-http.test.mts"
+    "tests/unit/browser-http.test.mts",
+    "tests/unit/task-live-input.test.mts"
   ],
   "exclude": [
     "node_modules",

@@ -129,11 +129,14 @@ limits and the distinction from a sandbox or persistent job platform.
 
 ### Combined scheduling, live input and children
 
-Only committed Web live-input notifications release an active child wait. Each
-wait also checks pending input for its already-claimed parent run, including input
-committed between the tool intent and execute call. This never cancels the child.
-Child completion and scheduled deadlines remain ordinary queued Event/Wakes;
-background completion does not clear an errored main run or implicitly retry it.
+Committed supplemental input (Web user messages or another child result) can
+release an active child wait with reason `live_input`. Each wait also checks pending
+input for its already-claimed parent run, including input committed between the
+tool intent and execute call. This never cancels the child. ADR 0037 delivers child
+terminal results into a non-final active main run at its current single-tool
+boundary; idle/finalized runs and scheduled deadlines retain ordinary queued
+Event/Wakes. Background completion does not clear an errored main run or
+implicitly retry it. Public live ingress stays user-only.
 Children refresh the same file-skill metadata at natural requests through their
 own transcript, without main persona/Memory bootstrap or checkpoint ownership.
 
@@ -178,3 +181,20 @@ groups; restart returns unavailable old handles and never replays effects.
 Native setup: `pnpm terminal:prepare` after script-disabled install. Mac/Linux only.
 See [ADR 0032](../../docs/adr/0032-persistent-terminal-processes.md) for bounds,
 cancellation, child isolation and supervision limits.
+
+### Parent-to-child live followups
+
+ADR 0039 keeps `subagent_send` on the same child/task. Running instructions enter
+the durable child inbox, yield an active model request when possible, and are
+read after the current single tool settles before old siblings. Final-first and
+idle sends retain queued turns. The tool reports durable receipt state, not proof
+of action; cancellation never rolls back effects. Child summaries remain task-only
+and consume pending input after the frozen checkpoint. No main chat UI is added.
+### Extension connection settings
+
+`GET/POST /api/extensions/:id/settings`, `POST .../settings/actions` and
+`POST .../settings/cancel` use the same protected Web API boundary. They expose only
+validated declarative fields, configured booleans and explicitly public status.
+No secret read endpoint or model credential-write tool exists. Actions return pending
+receipts and are checked with exact settings revisions; polling observes completion.
+Existing extension lifecycle/configuration remains authoritative. See ADR 0035.

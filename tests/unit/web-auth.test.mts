@@ -34,9 +34,10 @@ test('optional auth persists only salted password hash and protects every privat
   const stored = await readFile(path.join(root, 'web-access.json'), 'utf8');
   assert.ok(!stored.includes(password)); assert.ok(!stored.includes(session.split('=')[1]!));
   assert.equal((await stat(path.join(root, 'web-access.json'))).mode & 0o777, 0o600);
-  for (const url of ['/api/status', '/api/timeline', '/api/settings', '/api/models/catalog', '/api/auth/settings', '/api/memory', '/api/extensions', '/api/runs', '/api/attachments/8bfffd63-8659-4d1f-8516-3ee9c591a8fd', '/api/unknown']) {
+  for (const url of ['/api/status', '/api/timeline', '/api/settings', '/api/models/catalog', '/api/auth/settings', '/api/memory', '/api/extensions', '/api/extensions/example/settings', '/api/runs', '/api/attachments/8bfffd63-8659-4d1f-8516-3ee9c591a8fd', '/api/unknown']) {
     assert.equal((await app.inject({ url, headers })).statusCode, 401, url);
   }
+  for (const suffix of ['actions','cancel']) assert.equal((await app.inject({method:'POST',url:`/api/extensions/example/settings/${suffix}`,headers,payload:{}})).statusCode,401);
   assert.equal((await app.inject({ method: 'POST', url: '/api/messages', headers, payload: { id: 'x', text: 'secret', occurredAt: new Date().toISOString() } })).statusCode, 401);
   assert.equal((await app.inject({ url: '/api/status', headers: { ...headers, cookie: session } })).statusCode, 200);
   assert.equal((await app.inject({ url: '/api/status', headers: { ...headers, cookie: `${session}; ${session}` } })).statusCode, 401);

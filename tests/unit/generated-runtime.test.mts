@@ -281,6 +281,9 @@ test('generated tools stage, install disabled, activate, update and roll back wi
       assertStale(context, 'restored-sibling', restoredActivation);
       return streamOf(assistant('Generated lifecycle completed in the same turn'));
     }, {
+      // This scripted lifecycle test does not implement a compaction provider.
+      // Management metadata/path length must not accidentally enter that separate gate.
+      autoCompaction: { enabled: false },
       prepareTools: async () => prepared = [builtin, ...management, ...extensionTools(await host.prepare())], finishTools: () => host.finish(),
     }).run(input('Stage, install, activate, update, roll back and disable the synthetic extension'));
     assert.equal(requests, 8);

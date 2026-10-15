@@ -5,10 +5,17 @@ import type { SystemMessage } from '@earendil-works/pi-ai';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 
 export const MIRA_PROMPT_SECTION = 'mira.system.v0.2';
-export const MIRA_PROMPT_SHA256 = '3e0e1ea9a70f134d158ce77c6e242c909aedb5a871b299d2065dac51aec2d7e0';
+export const MIRA_PROMPT_SHA256 = 'a3ea5a98735089138296892ee0c30f47439c044b44a6e9bde0409724cbf22fe1';
 const bytes = readFileSync(new URL('../prompts/mira-system-v0.2.md', import.meta.url));
 if (createHash('sha256').update(bytes).digest('hex') !== MIRA_PROMPT_SHA256) throw new Error('Mira system template hash mismatch');
 export const MIRA_SYSTEM_TEMPLATE = bytes.toString('utf8');
+// The only pre-identity snapshot revision shipped before delegation guidance.
+// Keep its immutable bytes so recovery validates history, never today's template.
+const PRE_DELEGATION_SHA256 = '3e0e1ea9a70f134d158ce77c6e242c909aedb5a871b299d2065dac51aec2d7e0';
+const priorBytes = readFileSync(new URL('../prompts/mira-system-v0.2-pre-delegation.md', import.meta.url));
+if (createHash('sha256').update(priorBytes).digest('hex') !== PRE_DELEGATION_SHA256) throw new Error('Prior Mira system template hash mismatch');
+const templates = new Map([[PRE_DELEGATION_SHA256, priorBytes.toString('utf8')], [MIRA_PROMPT_SHA256, MIRA_SYSTEM_TEMPLATE]]);
+
 export const MIRA_PLACEHOLDERS = ['MEMORY_ROOT', 'MEMORY_STATE', 'CURRENT_TIME', 'EXTENSIONS_ROOT', 'OTHER_ENVIRONMENT_CONTEXT', 'DYNAMIC_TOOL_AND_EXTENSION_GUIDANCE', 'CURRENT_AUTHORIZATION_CONTEXT'] as const;
 export type MiraPromptValues = Record<typeof MIRA_PLACEHOLDERS[number], string>;
 /** One pass only: runtime data cannot create XML-like boundaries or another substitution. */
@@ -35,7 +42,13 @@ export interface MiraPromptOptions {
 }
 /** Raw-only rendering inputs make the sanctioned Memory replacement verifiable.
  * The skills suffix is already escaped by Pi and must not be rendered again. */
-export interface MiraPromptSnapshot { values: MiraPromptValues; skills: string; }
+export interface MiraPromptSnapshot { values: MiraPromptValues; skills: string; templateSha256?: string; }
+/** Missing identity denotes exactly the published pre-delegation revision. */
+export function renderMiraPromptSnapshot(snapshot: MiraPromptSnapshot): string {
+  const template = templates.get(snapshot.templateSha256 ?? PRE_DELEGATION_SHA256);
+  if (!template) throw new Error('Unknown Mira prompt template identity');
+  return renderMiraPrompt(snapshot.values, template) + snapshot.skills;
+}
 export interface MiraMemoryCheckpoint {
   miraMemory: string;
   miraMemoryConfigured: boolean;
@@ -48,10 +61,11 @@ type MiraCheckpoint = Extract<SessionEntry, { type: 'compaction' }> & Partial<Mi
 export function validateMiraPromptSnapshot(value: unknown, system: SystemMessage | undefined): asserts value is MiraPromptSnapshot {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid Mira prompt snapshot');
   const snapshot = value as MiraPromptSnapshot;
-  if (Object.keys(snapshot).length !== 2 || typeof snapshot.skills !== 'string' || !snapshot.values || typeof snapshot.values !== 'object' || Array.isArray(snapshot.values) ||
+  if (Object.keys(snapshot).some(key => !['values', 'skills', 'templateSha256'].includes(key)) ||
+      (Object.hasOwn(snapshot, 'templateSha256') && typeof snapshot.templateSha256 !== 'string') || typeof snapshot.skills !== 'string' || !snapshot.values || typeof snapshot.values !== 'object' || Array.isArray(snapshot.values) ||
       Object.keys(snapshot.values).length !== MIRA_PLACEHOLDERS.length || MIRA_PLACEHOLDERS.some(key => typeof snapshot.values[key] !== 'string'))
     throw new Error('Invalid Mira prompt snapshot');
-  if (system?.sections?.[MIRA_PROMPT_SECTION] !== renderMiraPrompt(snapshot.values) + snapshot.skills) throw new Error('Mira prompt snapshot differs from system section');
+  if (system?.sections?.[MIRA_PROMPT_SECTION] !== renderMiraPromptSnapshot(snapshot)) throw new Error('Mira prompt snapshot differs from system section');
 }
 
 function snapshots(entries: readonly SessionEntry[]): { memory: string | undefined; configured: boolean | undefined; prompt: MiraPromptSnapshot | undefined } {
@@ -110,9 +124,9 @@ export function refreshMiraMemory(systemMessage: SystemMessage | undefined, entr
   const system = systemMessage ? structuredClone(systemMessage) : undefined;
   const prompt = prior.prompt ? { ...prior.prompt, values: { ...prior.prompt.values, MEMORY_STATE: memory } } : undefined;
   if (prompt) {
-    if (!system?.sections || system.sections[MIRA_PROMPT_SECTION] !== renderMiraPrompt(prior.prompt!.values) + prior.prompt!.skills)
+    if (!system?.sections || system.sections[MIRA_PROMPT_SECTION] !== renderMiraPromptSnapshot(prior.prompt!))
       throw new Error('Checkpoint system state differs from preceding prompt');
-    system.sections[MIRA_PROMPT_SECTION] = renderMiraPrompt(prompt.values) + prompt.skills;
+    system.sections[MIRA_PROMPT_SECTION] = renderMiraPromptSnapshot(prompt);
   } else if (system?.sections && Object.hasOwn(system.sections, MIRA_PROMPT_SECTION)) {
     throw new Error('Missing Mira prompt snapshot');
   }

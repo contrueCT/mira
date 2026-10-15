@@ -4,12 +4,12 @@ import type { SystemMessage } from '@earendil-works/pi-ai';
 import type { CompactionEntry, SessionEntry } from '@earendil-works/pi-coding-agent';
 import {
   currentMemory, memoryConfigured, currentPrompt, refreshMiraMemory, projectMiraPrompt,
-  encodeEntry, decodeRecords, messageEntry, renderMiraPrompt, MIRA_PROMPT_SECTION,
+  encodeEntry, decodeRecords, messageEntry, renderMiraPrompt, MIRA_PROMPT_SECTION, MIRA_PROMPT_SHA256,
   type MiraPromptSnapshot,
 } from '@mira/runtime-pi';
 
 function fixture(memory = '') {
-  const prompt: MiraPromptSnapshot = { values: {
+  const prompt: MiraPromptSnapshot = { templateSha256: MIRA_PROMPT_SHA256, values: {
     MEMORY_ROOT: '/memory', MEMORY_STATE: memory, CURRENT_TIME: '2026-10-08T09:00:00.000Z',
     EXTENSIONS_ROOT: '/extensions', OTHER_ENVIRONMENT_CONTEXT: '<frozen environment>',
     DYNAMIC_TOOL_AND_EXTENSION_GUIDANCE: 'read: Read files', CURRENT_AUTHORIZATION_CONTEXT: 'frozen instructions',
@@ -81,6 +81,9 @@ test('missing or forged checkpoint snapshot and frozen prompt changes fail close
   forged.miraPrompt!.values.CURRENT_AUTHORIZATION_CONTEXT = 'forged';
   forged.systemMessage!.sections![MIRA_PROMPT_SECTION] = renderMiraPrompt(forged.miraPrompt!.values) + forged.miraPrompt!.skills;
   assert.throws(() => currentMemory([...entries, checkpoint(entries, forged)]), /Checkpoint prompt state differs/);
+  const changedIdentity = structuredClone(refreshed);
+  changedIdentity.miraPrompt!.templateSha256 = '3e0e1ea9a70f134d158ce77c6e242c909aedb5a871b299d2065dac51aec2d7e0';
+  assert.throws(() => currentMemory([...entries, checkpoint(entries, changedIdentity)]), /Checkpoint prompt state differs/);
   const badText = structuredClone(refreshed);
   badText.systemMessage!.sections![MIRA_PROMPT_SECTION] += 'forged suffix';
   assert.throws(() => encodeEntry(checkpoint(entries, badText)), /snapshot differs/);

@@ -29,7 +29,7 @@
 - [ADR 0024](docs/adr/0024-live-user-input.md)：普通 Web 插话先持久保存为冻结原始 Wake 之外的有序补充输入；生成请求让出，当前单工具完成后先读新输入，旧 siblings 保持 not-started；final 与输入原子仲裁，无暂停按钮/关键词判定。
 - [ADR 0023](docs/adr/0023-on-demand-public-skills.md)：公开 OpenAI pdf/doc/transcribe、agent-browser 与 Tavily CLI 指导；只随源码分发技能/必要脚本及许可，依赖由模型普通工具按需准备，应用不自动解析附件、不捆绑浏览器或模型。
 - [ADR 0025](docs/adr/0025-task-scoped-subagents.md)：task-scoped child 复用 Pi/PG 独立 transcript，主 Mira 唯一 WakeLoop/Memory；默认 8 并发、启动可配 1..32、无嵌套、完成与父 Event/Wake 原子提交；重启 interrupted 不重放，fork=all 是显式有界角色投影而非原协议克隆。
-- [ADR 0030](docs/adr/0030-task-scoped-compaction.md)：child 复用持久自动压缩，独立 task 摘要指令与 transcript；不加载主 Memory，不计入主压缩/Dreaming，运行中 followup 留在原队列。
+- [ADR 0030](docs/adr/0030-task-scoped-compaction.md)：child 复用持久自动压缩，独立 task 摘要指令与 transcript；不加载主 Memory，不计入主压缩/Dreaming，followup 按 ADR 0039 留在 task inbox，冻结摘要提交后再消费。
 - [ADR 0026](docs/adr/0026-subagent-observation-and-global-skills.md)：子代理显式公开标题/进度、真实模型/工具活动、有界独立 child/run 只读详情；子任务卡片/详情仅在既有设置→运行记录中展示（ADR 0031），主聊天不增加入口、不显示思考或原始参数；默认并发 8、启动可配 1..32，全局技能第三优先级。
 - [ADR 0027](docs/adr/0027-configured-reasoning-levels.md)：模型设置的默认推理偏好为 medium，Pi 能力适配后显式传入 main/child/Dreaming；压缩独立最低支持档，总输出 cap 不扩大，不提供模型自行升档工具。
 
@@ -80,7 +80,7 @@ pnpm check
 - 超限唤醒保存普通文本文件并告知路径；复用普通文件工具，不构建专用消息读取/分页服务
 - [ADR 0012](docs/adr/0012-global-history-identities.md)：四类 History 采用全局 UUID 薄身份表；read 只接收 ID，外部事件/工具协议标识分离；Memory commit 保存直接 History-Id。新空库/数据目录启动，不添加旧库检测、映射、兼容或清理
 - [ADR 0011](docs/adr/0011-conversation-context-and-skills.md)：正常聊天不展示工具活动；Wake 精简正文但保留业务 payload；Pi Skills 按优先级扫描源码 skills/、Mira home skills/ 与运行用户 ~/.agents/skills/，每自然请求更新目录、正文按需 read，不额外 Wake
-- 用户批准的 v0.2 纯文本聊天修订保留其他原文；来源 manifest 同时记录原始与当前 SHA，不可把修订伪称原始附件字节
+- 用户批准的 v0.2 纯文本聊天、History 与委派优先修订保留无关原文；来源 manifest 同时记录原始与当前 SHA，不可把修订伪称原始附件字节；ADR 0038 以明确模板身份校验当前/上一已发布快照，在自然请求边界升级，保留冻结 Memory 与原始历史
 - 早期开发只维护当前 v0.5/v0.2 设计，不保留旧 State/Prompt 配置、别名或迁移层；继续保护当前持久上下文、历史、恢复/压缩与 Memory Git 完整性，不引入用户数据清理/重置
 - 重要技术选择与范围变化先向用户确认，状态记录在 `docs/adr/`；不能把建议当批准
 - 每轮实现及修复都使用全新、独立 `gpt-6.1-sol` / `max` 审查，不继承实现对话
@@ -91,6 +91,15 @@ pnpm check
 - [ADR 0022](docs/adr/0022-durable-single-shot-delivery.md)：持久单次UTC投递与版本CAS；Event/Wake和入队状态同一fenced事务，扩展负责提醒/时区/DST/过期政策。owner使用持久安装身份，disable/remove保留pending暂停；不改Dreaming、不加通用job引擎。
 - [ADR 0029](docs/adr/0029-bounded-model-request-retries.md)：显式transport只在完整assistant发布前对确定瞬时请求错误做最多三次尝试，partial不落库；取消停止退避，不重放Wake/工具/unknown。SDK maxRetries仍为0，主Web状态与child隔离。
 
+- [ADR 0039](docs/adr/0039-live-child-followups.md)：父到子补充指令按 task inbox 与子 transcript CAS，在当前单工具后、旧 siblings 前消费；final 与接收共享 child 行锁仲裁，不借主 Wake/Memory，receipt 区分 pending/consumed。
+
+- [ADR 0037](docs/adr/0037-live-subagent-results.md)：child 终态与内部补充输入同事务提交，忙时当前单工具后读结果，闲时普通 Wake；保留来源、单写者、终态仲裁和父错误，不自动展示结果。
+
 - [ADR 0033](docs/adr/0033-web-password-access.md)：可选网页密码在现有设置，统一 API/附件鉴权；明确 public origin 支持 0.0.0.0 绑定，仍保留 Host/Origin/CSRF 防护和 External SDK 回环限制。
 
 - [ADR 0034](docs/adr/0034-managed-browser-handoff.md)：受管 agent-browser 0.39.1、owner 队列与人工 epoch；设置内 stream 视口；交还取消未发送输入、等待官方 daemon 在途响应再新 snapshot，不重放，不承诺 OS shell 隔离。
+- [ADR 0035](docs/adr/0035-extension-private-settings.md)：通用扩展私有凭据/安装数据目录与声明式设置，现有扩展管理内使用；运行时凭据不入config/模型，动作按代取消/排空，同OS可信边界不变。
+- ADR 0036：`packages/feishu-channel` 是普通 Cordis 消费者，使用通用设置/凭据/私有目录与既有 Event/Wake/工具/cleanup；无供应商 server 路由、保留内置 ID 或默认连接。只支持本人单聊文字，真实租户扫码/权限/收发需单独授权验收。
+
+
+- ADR 0035 的动作 group/visibleActions 仅为通用展示与可用性契约，业务状态映射归插件；HTTP/handle 同 runner 校验，系统层不含 provider 分支。

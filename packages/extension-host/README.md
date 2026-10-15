@@ -215,3 +215,30 @@ installationId through the existing configuration writer. Without a configuratio
 file, the caller must supply it. `withScheduledOwners` serializes dispatch with
 explicit lifecycle changes and includes only enabled active installations.
 Disable/remove retain pending records. See [ADR 0022](../../docs/adr/0022-durable-single-shot-delivery.md).
+
+## Private credentials and declarative settings
+
+See [ADR 0035](../../docs/adr/0035-extension-private-settings.md). Persistent configuration
+assigns a stable installation identity before exposing the private SDK. The default
+private root is `extension-private/` beside the configuration file. Keep it outside
+source, Memory and artifacts. An explicit host `privateDirectory` may override it.
+
+Reload/update/rollback/disable retain credentials; remove deletes that installation's
+credential file even if cleanup reports failure, while preserving plugin-owned `data/`.
+Reinstall does not adopt old data. The host rejects symlink roots, non-private modes,
+invalid names and bounded-file overflow. Ordinary plaintext files are protected by OS
+permissions, not encryption or an in-process security boundary.
+
+Settings actions are single-flight, revision-bound and cancellable. Trusted extension
+code must honor the signal and join its background work during cleanup. Closing a UI
+window does not cancel an already accepted action. Retiring an activation cancels it
+and drains its execution lease. UI writes may save credentials before a config apply
+fails; reread actual state rather than retrying an unknown outcome automatically.
+
+声明式设置的返回 handle 与受保护 HTTP 共用一个动作 runner；工具可自行启动动作，
+无框架 connect 工具。handle 只投影 operation receipt，并拒绝旧 activation。
+工具持有的 execution lease 与生命周期排空之间不加入反向全局队列依赖。
+
+设置动作支持 SDK 的可选静态 group 与状态 visibleActions。Host 仅校验/投影已声明
+ID 子集并加入 revision，HTTP/handle 共用 runner 拒绝当前隐藏或过期动作；不解释
+任何插件业务状态。状态投影无效时隐藏动作，既有 operation 查询/取消仍可使用。

@@ -348,3 +348,14 @@ test('retry status exposes only bounded request observations and clears without 
   assert.equal((await app.inject({ url: '/api/status', headers: readHeaders })).json().modelRetry, undefined);
   assert.equal((await app.inject({ url: '/api/timeline', headers: readHeaders })).json().items.length, 1);
 });
+
+test('both timeline routes retain generic extension source identity without raw fields', async t => {
+  const source = { kind: 'extension' as const, extensionId: 'ordinary', label: '普通插件', direction: 'inbound' as const, senderId: 'sender-1', senderVerified: true, raw: 'DO_NOT_PROJECT_SOURCE_RAW' };
+  const app = createLocalHttp({ backend: backend({ timeline: async () => ({ items: [{ id: 'source-event', role: 'user', text: 'sourced', occurredAt: message.occurredAt, source }], nextCursor: null }) }), port });
+  t.after(() => app.close());
+  for (const options of [{ url: '/api/timeline', headers: readHeaders }, { method: 'POST' as const, url: '/api/timeline', headers: writeHeaders, payload: { before: 'cursor_1' } }]) {
+    const response = await app.inject(options); assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json().items[0].source, { kind: 'extension', extensionId: 'ordinary', label: '普通插件', direction: 'inbound', senderId: 'sender-1', senderVerified: true });
+    assert.ok(!response.body.includes('DO_NOT_PROJECT_SOURCE_RAW')); assert.equal(response.json().items[0].externalEventId, undefined);
+  }
+});

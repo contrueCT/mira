@@ -30,7 +30,8 @@
       "react-dom",
       "@types/react",
       "@types/react-dom",
-      "vite"
+      "vite",
+      "qrcode-generator"
     ]
   },
   "@mira/cognition": {
@@ -106,6 +107,16 @@
       "pg",
       "node-pg-migrate",
       "@types/pg"
+    ]
+  },
+  "@mira/feishu-channel": {
+    "path": "packages/feishu-channel",
+    "allow": [
+      "@mira/extension-sdk"
+    ],
+    "external": [
+      "@larksuite/channel",
+      "@larksuiteoapi/node-sdk"
     ]
   }
 }

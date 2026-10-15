@@ -45,3 +45,4 @@
 - ADR 0032：`terminals.ts` service级registry、`terminal-process.mts`随主进程IPC生命周期监督；工具闭包按stream绑定owner，不给模型owner参数。普通bash不变，关闭服务须清理终端；取消等待不等于杀进程，异常不重放。
 
 - ADR 0034：browser-manager/driver/tools 负责受管 daemon、owner 与命令队列；显式路径优先，其次发现服务 miraHome/tools 标准安装，无自动下载；browser-http 只代理登记的 loopback stream，独立严格 WebSocket 鉴权与一次票据。人工输入/帧不进历史；注销/改密/关闭撤销。
+- ADR0035：扩展私有设置路由复用全部Web鉴权，secret仅写入；模型工具不暴露settings status/授权链接/凭据。异常文字脱敏但保留unknown-outcome恢复语义。

@@ -38,12 +38,20 @@ export interface SubagentRecord {
   /** Latest eight turns plus any pending turns (at most seventeen). */
   turns: SubagentTurn[];
   turnCount: number;
+  /** Latest sixteen live-instruction receipts, in receipt order, without instruction bodies. */
+  followups?: SubagentFollowupView[];
 }
 export interface SubagentSummary {
   id: string; title?: string; createdAt: string; status: SubagentStatus; model: SubagentSpec['model'];
 }
 export interface SubagentPage { children: SubagentSummary[]; nextCursor: string | null }
 export interface SubagentCallView { callId: string; runId: string | null; childId: string; streamId: string; turnId: string; createdAt: string; status: SubagentStatus }
+/** Durable receipt for a parent instruction admitted into an existing child turn. */
+export interface SubagentFollowupReceipt {
+  callId: string; instruction: string; createdAt: string; inputRecordId: string | null;
+  status: 'pending' | 'consumed' | 'interrupted' | 'cancelled' | 'failed';
+}
+export type SubagentFollowupView = Omit<SubagentFollowupReceipt, 'instruction'> & { turnId: string };
 export interface SubagentReader {
   /** SQL-bounded metadata only; latest fifty children, no task/context/result bodies. */
   listSubagents(before?: string): Promise<SubagentPage>;
@@ -51,7 +59,7 @@ export interface SubagentReader {
   /** Independent indexed run ownership, not tied to the parent's current history page. */
   getSubagentForRun(id: string, runId: string): Promise<SubagentRecord | null>;
   readSubagentsForRun(runId: string, before?: string): Promise<SubagentPage>;
-  findSubagentCall(callId: string): Promise<{ child: SubagentRecord; turn: SubagentTurn } | null>;
+  findSubagentCall(callId: string): Promise<{ child: SubagentRecord; turn: SubagentTurn; followup?: SubagentFollowupReceipt } | null>;
   /** Fixed management projection, scoped to at most fifty parent call IDs. */
   readSubagentCalls(callIds: string[]): Promise<SubagentCallView[]>;
 }
