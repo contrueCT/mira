@@ -58,7 +58,8 @@
     "tests/unit/browser-manager.test.mts",
     "tests/unit/browser-http.test.mts",
     "tests/unit/task-live-input.test.mts",
-    "tests/unit/mcp-runtime.test.mts"
+    "tests/unit/mcp-runtime.test.mts",
+    "tests/unit/mcp-oauth-host.test.mts"
   ],
   "exclude": [
     "node_modules",

@@ -1,3 +1,4 @@
+import { validateToolSchema } from './tool-schema.ts';
 import { randomUUID } from 'node:crypto';
 import type { ExtensionTool, ExtensionToolset } from '@mira/extension-sdk';
 
@@ -47,5 +48,7 @@ export function snapshotTool(tool: ExtensionTool): ExtensionTool {
     seen.delete(value);
   };
   visit(parameters, new Set());
-  return { name, description, parameters: structuredClone(parameters), execute: execute.bind(tool) };
+  const snapshot = structuredClone(parameters);
+  validateToolSchema(snapshot);
+  return { name, description, parameters: snapshot, execute: execute.bind(tool) };
 }

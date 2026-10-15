@@ -16,8 +16,9 @@ export function toolName(installation: string, remote: string): string {
 export function resultProjection(result: CallToolResult): Awaited<ReturnType<ExtensionTool['execute']>> {
   const unsupported = result.content.filter(item => item.type !== 'text').map(item => item.type);
   const text = result.content.filter(item => item.type === 'text').map(item => item.text).join('\n');
+  const structured = result.structuredContent === undefined ? undefined : JSON.stringify(result.structuredContent);
   return {
-    text: [...(text ? [text] : []), ...(unsupported.length ? [`MCP returned unsupported content types: ${[...new Set(unsupported)].join(', ')}. These contents were not delivered; the remote call may have completed.`] : []), ...(!text && result.structuredContent !== undefined ? [JSON.stringify(result.structuredContent)] : [])].join('\n'),
+    text: [...(text ? [text] : []), ...(unsupported.length ? [`MCP returned unsupported content types: ${[...new Set(unsupported)].join(', ')}. These contents were not delivered; the remote call may have completed.`] : []), ...(structured !== undefined && structured !== text ? [structured] : [])].join('\n'),
     details: { ...(result.structuredContent !== undefined ? { structuredContent: result.structuredContent as Json } : {}), ...(unsupported.length ? { unsupportedContentTypes: unsupported } : {}) },
     isError: result.isError === true || unsupported.length > 0,
   };

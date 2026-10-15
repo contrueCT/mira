@@ -48,7 +48,9 @@
       "cordis",
       "@cordisjs/plugin-loader",
       "@cordisjs/plugin-hmr",
-      "@cordisjs/plugin-timer"
+      "@cordisjs/plugin-timer",
+      "ajv",
+      "typebox"
     ]
   },
   "@mira/external-sdk": {

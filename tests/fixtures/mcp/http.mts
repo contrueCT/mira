@@ -13,6 +13,7 @@ export async function httpFixture() {
       effects++; return { content: [{ type: 'text', text: JSON.stringify({ revision: captured, ...args }) }] };
     });
     server.registerTool('structured', { inputSchema: fromJsonSchema<{ value: 0 | false | null | '' }>({ type: 'object', properties: { value: { enum: [0, false, null, ''] } }, required: ['value'] }) }, async args => ({ content: [], structuredContent: args.value }));
+    server.registerTool('summary', {}, async () => ({ content: [{ type: 'text', text: 'Found one account' }], structuredContent: { accounts: [{ id: 'acct-123', balance: 42 }] } }));
     return server;
   }, { legacy: 'stateless' });
   let origin = '';

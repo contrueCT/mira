@@ -126,3 +126,9 @@ activations cannot replace a toolset. Replacement does not request a Wake.
 Tool results may set `isError: true` for a known failed outcome. Throwing still
 means the external result is unknown; it must not be used for a known business
 failure. Complete schema JSON is preserved for the ordinary runtime validator.
+Toolset publication preflights schemas with JSON Schema draft 2020-12 by default;
+explicit draft-07 and 2019-09 are also supported. Candidates must compile with
+the pinned runtime TypeBox compiler as well. Invalid keywords/regular expressions,
+unresolved references and unsupported dialects reject the whole candidate without
+replacing the current set. No remote schema is fetched; unknown formats remain
+annotations. Validation does not coerce arguments or log schema contents.

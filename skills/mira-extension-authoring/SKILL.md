@@ -1,6 +1,6 @@
 ---
 name: mira-extension-authoring
-description: Build, test, install, inspect, and maintain a Mira extension or software watcher using the public extension SDK and ordinary local files.
+description: Build, test, install, inspect, and maintain a Mira extension, MCP server connection, or software watcher using the public extension SDK and ordinary local files.
 ---
 
 # Mira extension authoring
@@ -17,6 +17,17 @@ Read the applicable references below and inspect the proposed or existing extens
 against current APIs. Report design choices or findings instead of following the
 installation workflow. Do not write files, install extensions, or change runtime
 configuration unless the user requests implementation.
+
+## Reuse the shipped MCP connection
+
+For MCP, read the [ordinary MCP plugin](../../packages/mcp-plugin/README.md)
+before creating a new extension. Prepare that existing package, then use the same
+stage/content-test/install/activate workflow below. Each server gets its own
+ordinary installation; configure, refresh, disable, update and rollback reuse
+existing tools/settings. Install local server software at a pinned version first.
+Credentials and OAuth links belong only in protected connection settings, never
+source, config, arguments or model-facing operation receipts. Follow the README’s
+same-computer callback or explicitly configured existing HTTPS route requirements.
 
 ## Deliver a working extension first
 

@@ -73,3 +73,39 @@ export default { name:'owned-dynamic', apply({mira:ctx}) {
     await host.close();
   } finally { owner.abort(); await host.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test('schema preflight rejects malformed or unresolved candidates without replacing the working set', () => {
+  const registry = new Map<string, { tool: ExtensionTool }>();
+  const set = createToolset({ registry, reserved: new Set(), assertActive() {}, wrap: tool => ({ tool }), cleanup() {} }, [tool('working')]);
+  const old = registry.get('working');
+  const invalid = [
+    { properties: { text: { type: 'string', pattern: '[' } } },
+    { properties: { text: { type: 'string', minLength: 'bad' } } },
+    { properties: { text: { type: 'invalid' } } },
+    { properties: { text: null } }, { properties: { text: 42 } },
+    { properties: { text: { $ref: '#/$defs/missing' } } },
+    { properties: { text: { $ref: 'https://synthetic.invalid/schema' } } },
+    { patternProperties: { '[': { type: 'string' } } },
+    { $schema: 'https://synthetic.invalid/dialect' },
+  ];
+  for (const schema of invalid) {
+    assert.throws(() => set.replace([tool('candidate'), { ...tool('bad'), parameters: { type: 'object', ...schema } as ExtensionTool['parameters'] }]), /schema/);
+    assert.equal(registry.size, 1); assert.equal(registry.get('working'), old);
+  }
+});
+
+test('schema preflight preserves supported dialects, references, tuples and schema-valued additional properties', () => {
+  const schemas = [
+    { type: 'object', properties: { text: { type: 'string', format: 'synthetic-annotation' } }, additionalProperties: { type: 'number' } },
+    { $schema: 'http://json-schema.org/draft-07/schema#', type: 'object', properties: { tuple: { type: 'array', items: [{ type: 'string' }, { type: 'number' }], additionalItems: false } } },
+    { $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'object', properties: { tuple: { type: 'array', prefixItems: [{ type: 'string' }], items: false } } },
+    { $schema: 'https://json-schema.org/draft/2019-09/schema', type: 'object', $defs: { text: { type: 'string' } }, properties: { value: { $ref: '#/$defs/text' } } },
+    { type: 'object', $defs: { node: { type: 'object', properties: { next: { $ref: '#/$defs/node' } } } }, properties: { value: { $ref: '#/$defs/node' } } },
+  ];
+  const registry = new Map<string, { tool: ExtensionTool }>();
+  const set = createToolset({ registry, reserved: new Set(), assertActive() {}, wrap: tool => ({ tool }), cleanup() {} }, []);
+  for (const parameters of schemas) {
+    set.replace([{ ...tool('valid'), parameters: parameters as ExtensionTool['parameters'] }]);
+    assert.deepEqual(registry.get('valid')!.tool.parameters, parameters);
+  }
+});

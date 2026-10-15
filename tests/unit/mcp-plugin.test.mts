@@ -28,6 +28,7 @@ test('MCP config validates transport, explicit local version, names and output p
     assert.deepEqual(result.details, { structuredContent });
     assert.equal(result.isError, false);
   }
+  assert.equal(resultProjection({ content: [{ type: 'text', text: '{"value":1}' }], structuredContent: { value: 1 } }).text, '{"value":1}');
   const unsupported = resultProjection({ content: [{ type: 'image', mimeType: 'image/png', data: 'hidden' }] });
   assert.equal(unsupported.isError, true); assert.match(unsupported.text, /not delivered/); assert.ok(!JSON.stringify(unsupported).includes('hidden'));
 });
@@ -45,7 +46,7 @@ for (const protocol of ['legacy', '2026-07-28']) test(`real official SDK ${proto
     assert.equal((await host.extensionSettings('two'))?.status.state, 'connected');
     assert.equal((await readFile(marker, 'utf8')).trim().split('\n').length, 2, 'one process per instance, no disposable probe launches');
     const echo = prepared.find(item => item.tool.name === toolName('one', 'echo'))!.tool;
-    assert.equal((await echo.execute({ text: 'hello' }, { callId: 'a', signal: signal() })).text, 'hello');
+    assert.equal((await echo.execute({ text: 'hello' }, { callId: 'a', signal: signal() })).text, 'hello\n{"text":"hello"}');
     const known = prepared.find(item => item.tool.name === toolName('one', 'known_error'))!.tool;
     assert.equal((await known.execute({}, { callId: 'b', signal: signal() })).isError, true);
     const child = prepared.find(item => item.tool.name === toolName('one', 'child'))!.tool;
