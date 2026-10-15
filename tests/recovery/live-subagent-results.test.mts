@@ -1,15 +1,29 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createAssistantMessageEventStream } from '@earendil-works/pi-ai';
-import type { SubagentSpec, WakeRun } from '@mira/life';
+import type { SubagentSpec, SubagentWriter, WakeRun } from '@mira/life';
 import { prepareWakeTurn } from '@mira/life';
-import { PiDurableRuntime, encodeEntry, messageEntry } from '@mira/runtime-pi';
+import { PiDurableRuntime, encodeEntry, messageEntry, jsonValue } from '@mira/runtime-pi';
 import { createTestDatabase } from '../integration/database.mts';
-import { assistant, deferred, effectTool, model, result, streamOf, toolCalls } from './fixtures.mts';
+import { assistant, deferred, effectTool, model, result, streamOf, toolCalls, seed } from './fixtures.mts';
 import { noOverflow, userEvent, userWake } from './live-input-fixture.mts';
 const spec: SubagentSpec = { task: 'Return bounded test findings', fork: { mode: 'none', parentVersion: 0, parentHead: null, text: '', bytes: 0 }, model: { provider: 'offline', id: 'offline', api: 'openai-responses', configurationHash: 'a'.repeat(64) } };
 const childResult = { text: 'CHILD_RESULT', truncated: false, fullResultPath: null, finalRecordId: null };
 const turnFor = (run: WakeRun) => prepareWakeTurn(run, noOverflow, 65_536);
+
+/** Preserve the real parent-call FK and a fully paired tool transcript. */
+async function spawn(writer: SubagentWriter, callId: string) {
+  const args = { task: spec.task };
+  await seed(writer, [{ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: callId, name: 'subagent_spawn', arguments: args }] }]);
+  const state = await writer.load(); const parent = state.records.at(-1)!.id;
+  await writer.beginTool(state.version, { callId, assistantRecordId: parent, toolName: 'subagent_spawn', arguments: args, requestedArguments: args, occurredAt: new Date().toISOString() });
+  const child = await writer.createSubagent(callId, { ...spec, fork: { ...spec.fork, parentVersion: state.version, parentHead: parent } }, 8);
+  const receipt = { role: 'toolResult' as const, toolCallId: callId, toolName: 'subagent_spawn', content: [{ type: 'text' as const, text: JSON.stringify({ childId: child.id }) }], isError: false, timestamp: Date.now() };
+  await writer.finishTool({ callId, occurredAt: new Date(receipt.timestamp).toISOString(), payload: jsonValue(receipt) });
+  await writer.append(state.version, encodeEntry(messageEntry(receipt, parent)));
+  return child;
+}
+
 
 for (const status of ['completed', 'failed', 'cancelled', 'interrupted'] as const) {
   test(`PG ${status} child result is atomic supplemental input, source-preserving and idempotent`, async () => {
@@ -18,7 +32,7 @@ for (const status of ['completed', 'failed', 'cancelled', 'interrupted'] as cons
       const writer = await db.acquire();
       await writer.receiveLiveInput(userEvent('initial'), userWake('initial'));
       const run = (await writer.claimWakeBatch())!; const original = await turnFor(run);
-      const child = await writer.createSubagent('spawn', spec, 8);
+      const child = await spawn(writer, 'spawn');
       await writer.claimSubagentTurn(child.id);
       let hints = 0; const commits: Promise<void>[] = [];
       writer.onLiveInput(id => {
@@ -53,7 +67,7 @@ test('PG child and user inputs share receipt order at the current single-tool bo
   const db = await createTestDatabase(); const entered = deferred(), release = deferred();
   try {
     const writer = await db.acquire(); await writer.receiveLiveInput(userEvent('initial'), userWake('initial'));
-    const run = (await writer.claimWakeBatch())!; const child = await writer.createSubagent('spawn', spec, 8);
+    const run = (await writer.claimWakeBatch())!; const child = await spawn(writer, 'spawn');
     let requests = 0; const effects: string[] = [];
     const work = new PiDurableRuntime({ writer, model, tools: [effectTool(async (id, _args, signal) => {
       effects.push(id); entered.resolve(); await release.promise; assert.equal(signal?.aborted, false); return result;
@@ -79,14 +93,16 @@ test('PG child and user inputs share receipt order at the current single-tool bo
 test('PG child result loses final arbitration into next Wake and idle delivery stays queued', async () => {
   const db = await createTestDatabase();
   try {
-    const writer = await db.acquire(); const idle = await writer.createSubagent('idle', spec, 8);
+    const writer = await db.acquire(); const idle = await spawn(writer, 'idle');
+    const later = await spawn(writer, 'later');
     await writer.finishSubagentTurn(idle.turns[0]!.id, 'completed', childResult);
     const run = (await writer.claimWakeBatch())!; assert.equal(run.requests[0]!.event.source, 'system');
-    const input = await turnFor(run); const initial = encodeEntry(messageEntry({ role: 'user', content: input.input, timestamp: Date.parse(input.occurredAt) }, null));
-    const version = await writer.appendWakeInput(run.id, 0, initial);
+    const input = await turnFor(run); const state = await writer.load();
+    const initial = encodeEntry(messageEntry({ role: 'user', content: input.input, timestamp: Date.parse(input.occurredAt) }, state.records.at(-1)!.id));
+    const version = await writer.appendWakeInput(run.id, state.version, initial);
     const final = encodeEntry(messageEntry(assistant(), initial.id));
     assert.equal(await writer.tryAppendWakeFinal(run.id, version, final), version + 1);
-    const later = await writer.createSubagent('later', spec, 8); let hints = 0; writer.onLiveInput(() => { hints++; });
+    let hints = 0; writer.onLiveInput(() => { hints++; });
     await writer.finishSubagentTurn(later.turns[0]!.id, 'completed', childResult);
     assert.equal(hints, 0); assert.deepEqual(await writer.loadLiveInputs(run.id), []);
     await writer.completeWakeRun(run.id); const next = (await writer.claimWakeBatch())!;
@@ -99,7 +115,7 @@ test('PG child completion aborts only stale model generation and is reviewed in 
   const db = await createTestDatabase(); const entered = deferred();
   try {
     const writer = await db.acquire(); await writer.receiveLiveInput(userEvent('initial'), userWake('initial'));
-    const run = (await writer.claimWakeBatch())!; const child = await writer.createSubagent('spawn', spec, 8);
+    const run = (await writer.claimWakeBatch())!; const child = await spawn(writer, 'spawn');
     let calls = 0; let aborted = false;
     const work = new PiDurableRuntime({ writer, model, streamFn: (_model, context, options) => {
       if (++calls === 1) {
@@ -123,7 +139,7 @@ test('PG receipt failure rolls back child terminal state and emits no live hint'
   const db = await createTestDatabase();
   try {
     let writer = await db.acquire(); await writer.receiveLiveInput(userEvent('initial'), userWake('initial'));
-    const run = (await writer.claimWakeBatch())!; const child = await writer.createSubagent('spawn', spec, 8); let hints = 0;
+    const run = (await writer.claimWakeBatch())!; const child = await spawn(writer, 'spawn'); let hints = 0;
     writer.onLiveInput(() => { hints++; });
     await db.admin.query(`CREATE FUNCTION reject_test_result() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic receipt failure'; END $$`);
     await db.admin.query('CREATE TRIGGER reject_test_result BEFORE INSERT ON wake_live_inputs FOR EACH ROW EXECUTE FUNCTION reject_test_result()');
