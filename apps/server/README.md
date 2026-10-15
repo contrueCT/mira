@@ -129,11 +129,14 @@ limits and the distinction from a sandbox or persistent job platform.
 
 ### Combined scheduling, live input and children
 
-Only committed Web live-input notifications release an active child wait. Each
-wait also checks pending input for its already-claimed parent run, including input
-committed between the tool intent and execute call. This never cancels the child.
-Child completion and scheduled deadlines remain ordinary queued Event/Wakes;
-background completion does not clear an errored main run or implicitly retry it.
+Committed supplemental input (Web user messages or another child result) can
+release an active child wait with reason `live_input`. Each wait also checks pending
+input for its already-claimed parent run, including input committed between the
+tool intent and execute call. This never cancels the child. ADR 0037 delivers child
+terminal results into a non-final active main run at its current single-tool
+boundary; idle/finalized runs and scheduled deadlines retain ordinary queued
+Event/Wakes. Background completion does not clear an errored main run or
+implicitly retry it. Public live ingress stays user-only.
 Children refresh the same file-skill metadata at natural requests through their
 own transcript, without main persona/Memory bootstrap or checkpoint ownership.
 
@@ -178,5 +181,3 @@ groups; restart returns unavailable old handles and never replays effects.
 Native setup: `pnpm terminal:prepare` after script-disabled install. Mac/Linux only.
 See [ADR 0032](../../docs/adr/0032-persistent-terminal-processes.md) for bounds,
 cancellation, child isolation and supervision limits.
-
-ADR 0037: child terminal results join the active non-final main run as sourced supplemental input and yield at the current single-tool boundary. Idle/finalized runs retain ordinary queued delivery; a failed parent is not retried or cleared. Public live ingress stays user-only. `subagent_wait` reports `live_input` for an early supplemental-input release.
