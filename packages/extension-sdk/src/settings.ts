@@ -11,6 +11,8 @@ export type ExtensionSettingField = { key: string; label: string } & (
 );
 export interface ExtensionConnectionStatus {
   state: 'unconfigured' | 'disconnected' | 'connecting' | 'pending' | 'connected' | 'error';
+  /** Declared action IDs available now; omitted exposes all, [] exposes none. */
+  visibleActions?: string[];
   code?: 'authentication' | 'network' | 'configuration' | 'unknown';
   /** Explicitly public to the protected settings screen, never model metadata. */
   details?: Array<{ label: string; value: string }>;
@@ -18,7 +20,7 @@ export interface ExtensionConnectionStatus {
 }
 export interface ExtensionSettingsDefinition {
   fields: ExtensionSettingField[];
-  actions: Array<{ id: string; label: string; execute(context: { signal: AbortSignal }): Promise<void> }>;
+  actions: Array<{ id: string; label: string; group?: 'primary' | 'secondary'; execute(context: { signal: AbortSignal }): Promise<void> }>;
   /** Synchronous, bounded projection. Never return exceptions or credentials. */
   status(): ExtensionConnectionStatus;
 }

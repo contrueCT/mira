@@ -238,3 +238,7 @@ fails; reread actual state rather than retrying an unknown outcome automatically
 声明式设置的返回 handle 与受保护 HTTP 共用一个动作 runner；工具可自行启动动作，
 无框架 connect 工具。handle 只投影 operation receipt，并拒绝旧 activation。
 工具持有的 execution lease 与生命周期排空之间不加入反向全局队列依赖。
+
+设置动作支持 SDK 的可选静态 group 与状态 visibleActions。Host 仅校验/投影已声明
+ID 子集并加入 revision，HTTP/handle 共用 runner 拒绝当前隐藏或过期动作；不解释
+任何插件业务状态。状态投影无效时隐藏动作，既有 operation 查询/取消仍可使用。

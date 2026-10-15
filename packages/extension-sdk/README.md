@@ -103,3 +103,12 @@ receipt，不返回受保护的 settings view 或 provider URL，详见 ADR0035�
 ### Immutable sourced messages
 
 `emitEvent` / `requestWake` events may include `message: { direction: 'inbound' | 'outbound', text, sourceLabel, senderId?, senderVerified? }`. The same immutable event identity/content deduplication applies. The host keeps the configured extension ID; the Web Timeline renders text with a small source label and direction. The sender and verification are assertions by that trusted extension, never host authentication, a Web-user identity, or permission to execute an action. Projection does not wake by itself. Publish outbound only after confirmed delivery; uncertain delivery must not be displayed as sent. Raw event data remains outside this display DTO. Ordinary model finals are unchanged, so an extension/tool should advise the model not to repeat already-sent text; this is not a hard mirror/deduplication guarantee.
+
+
+设置动作可声明 `group: 'primary' | 'secondary'`（省略为 primary）。状态投影可提供
+`visibleActions: string[]`，仅包含已声明且当前可用的动作 ID；省略显示全部，空数组
+隐藏全部。数组顺序不改变声明顺序，重复或未声明 ID 视为无效状态并隐藏动作。
+插件自行决定业务状态对应哪些动作，Host/Web 不解释 provider 状态。可见集合纳入
+revision，页面与插件 handle 共用的 runner 拒绝过期 revision 或当前隐藏的动作。
+已有 operation 的查询/取消不受可见性影响。Web 将 secondary 与设置编辑收在默认
+折叠的“更多操作”中，primary、当前操作取消和编辑取消保持可见。

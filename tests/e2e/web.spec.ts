@@ -805,3 +805,109 @@ test('ordinary plugin messages use subtle source labels without impersonating We
   await page.screenshot({ path: testInfo.outputPath('extension-source-narrow.png'), fullPage: true });
   await page.reload(); await expect(page.locator('.message-source')).toHaveCount(2);
 });
+
+// The host owns visibility. This generic fixture supplies only its current public
+// actions; the browser groups them without provider IDs or state-specific rules.
+test('generic extension actions default to primary, collapse secondary controls and keep cancellation reachable', async ({ page }, testInfo) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  const initialActions = [
+    { id: 'connect', label: 'Connect generic' },
+    { id: 'authorize', label: 'Authorize generic', group: 'primary' },
+    { id: 'reset', label: 'Reset generic', group: 'secondary' },
+  ];
+  const view = {
+    revision: '1'.repeat(64), fields: [{ key: 'token', label: 'Generic private token', type: 'secret', configured: true }],
+    actions: initialActions, status: { state: 'disconnected' },
+    operation: null as null | { id: string; action: string; state: string },
+  };
+  let starts = 0, cancellations = 0, failNext = false;
+  await page.route('**/api/extensions', route => route.fulfill({ json: {
+    available: true, releases: [], error: null, extensions: [{
+      id: 'generic-fixture', revision: '1'.repeat(64), enabled: true, status: 'active', activation: 'generic-activation',
+      tools: [], contextProviders: [], generated: null, error: null,
+    }],
+  } }));
+  await page.route('**/api/extensions/generic-fixture/settings', route => route.fulfill({ json: { settings: view } }));
+  await page.route('**/api/extensions/generic-fixture/settings/actions', async route => {
+    starts++;
+    const body = route.request().postDataJSON() as { action: string; expectedRevision: string };
+    expect(body.expectedRevision).toBe(view.revision);
+    if (failNext) { failNext = false; await route.abort('failed'); return; }
+    view.revision = '2'.repeat(64); view.actions = []; view.status = { state: 'pending' };
+    view.operation = { id: 'generic-operation', action: body.action, state: 'pending' };
+    await route.fulfill({ json: { operation: view.operation } });
+  });
+  await page.route('**/api/extensions/generic-fixture/settings/cancel', async route => {
+    cancellations++;
+    expect(route.request().postDataJSON()).toEqual({ operationId: 'generic-operation' });
+    view.revision = '3'.repeat(64); view.actions = initialActions; view.status = { state: 'disconnected' };
+    view.operation = { id: 'generic-operation', action: 'connect', state: 'cancelled' };
+    await route.fulfill({ json: { operation: view.operation } });
+  });
+  const openSettings = async () => {
+    await page.getByRole('button', { name: '模型设置', exact: true }).click();
+    await page.getByRole('tab', { name: '扩展', exact: true }).click();
+    await page.getByRole('button', { name: '连接设置', exact: true }).click();
+  };
+  await page.goto('/'); await openSettings();
+  const settings = page.getByLabel('generic-fixture 连接设置');
+  const more = settings.locator('summary', { hasText: '更多操作' });
+  const details = settings.locator('details');
+  const connect = settings.getByRole('button', { name: 'Connect generic', exact: true });
+  const authorize = settings.getByRole('button', { name: 'Authorize generic', exact: true });
+  const reset = settings.getByRole('button', { name: 'Reset generic', exact: true });
+  const edit = settings.getByRole('button', { name: '编辑连接设置', exact: true });
+  const token = settings.getByLabel('Generic private token', { exact: true });
+  await expect(connect).toBeVisible(); await expect(authorize).toBeVisible();
+  await expect(reset).not.toBeVisible(); await expect(edit).not.toBeVisible();
+  await expect(details).not.toHaveAttribute('open');
+  await page.screenshot({ path: testInfo.outputPath('generic-extension-actions-collapsed-desktop.png'), fullPage: true });
+  // Native disclosure supports keyboard interaction without any settings write.
+  await more.focus(); await page.keyboard.press('Enter');
+  await expect(reset).toBeVisible(); await expect(edit).toBeVisible();
+  await edit.click(); await token.fill('discarded-generic-draft');
+  await more.click();
+  await expect(token).toHaveValue('discarded-generic-draft');
+  await expect(connect).toBeDisabled();
+  await settings.getByRole('button', { name: '取消设置编辑', exact: true }).click();
+  await expect(token).toHaveCount(0); await expect(details).not.toHaveAttribute('open');
+  await more.click(); await edit.click(); await expect(token).toHaveValue('');
+  await token.fill('closed-generic-draft'); await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await openSettings(); await expect(details).not.toHaveAttribute('open');
+  await more.click(); await edit.click(); await expect(token).toHaveValue('');
+  await token.fill('history-generic-draft'); await page.goBack();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.goForward(); await page.getByRole('tab', { name: '扩展', exact: true }).click();
+  await page.getByRole('button', { name: '连接设置', exact: true }).click();
+  await expect(details).not.toHaveAttribute('open');
+  await more.click(); await edit.click(); await expect(token).toHaveValue('');
+  await settings.getByRole('button', { name: '取消设置编辑', exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await reset.scrollIntoViewIfNeeded();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('generic-extension-actions-expanded-narrow.png'), fullPage: true });
+  await more.click();
+  // Synchronous admission suppresses duplicate clicks, even before React rerenders.
+  await connect.evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
+  await expect(settings).toContainText('操作仍在进行');
+  expect(starts).toBe(1);
+  await expect(connect).toHaveCount(0); await expect(authorize).toHaveCount(0);
+  await expect(details).not.toHaveAttribute('open');
+  await expect(settings.getByRole('button', { name: '取消当前操作', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+  await openSettings();
+  await expect(details).not.toHaveAttribute('open');
+  await settings.getByRole('button', { name: '取消当前操作', exact: true }).click();
+  await expect(settings).toContainText('操作已取消'); expect(cancellations).toBe(1);
+  await expect(connect).toBeVisible();
+  // An unknown action response keeps its existing reconciliation control outside
+  // the collapsed group and never starts another action on its own.
+  failNext = true; await more.click(); await reset.click();
+  await expect(settings.getByRole('alert')).toContainText('操作结果尚未确认');
+  await more.click(); await expect(connect).toBeDisabled();
+  await settings.getByRole('button', { name: '重新读取并核对设置', exact: true }).click();
+  await expect(connect).toBeEnabled(); expect(starts).toBe(2);
+  expect(await page.evaluate(() => JSON.stringify([localStorage, sessionStorage]))).not.toContain('generic-draft');
+  expect(errors).toEqual([]);
+});

@@ -381,6 +381,9 @@ button:disabled { opacity: .48; }
 
 .extension-settings { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
 .extension-settings .extension-config input:not([type="checkbox"]), .extension-settings .extension-config select { box-sizing: border-box; width: 100%; min-width: 0; }
+.extension-more-actions { margin-top: 12px; }
+.extension-more-actions > summary { width: fit-content; cursor: pointer; color: var(--blue-dark); font-size: 12px; line-height: 1.6; }
+.extension-more-actions > .management-actions { margin-top: 10px; }
 .extension-authorization-qr { display: block; max-width: 100%; height: auto; border-radius: 8px; }
 
 .extension-authorization-link { color: var(--blue-dark); text-decoration: none; text-underline-offset: 3px; border-radius: 3px; }

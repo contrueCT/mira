@@ -25,7 +25,7 @@ const settingsView = (view: ExtensionSettingsView | null): ExtensionSettingsView
   fields: view.fields.map(field => ({ key: field.key, label: field.label, type: field.type,
     ...(field.type === 'select' ? { options: field.options.map(option => ({ value: option.value, label: option.label })) } : {}),
     ...(field.type === 'secret' ? { configured: field.configured === true } : typeof field.value === 'string' || typeof field.value === 'boolean' ? { value: field.value } : {}) })) as ExtensionSettingsView['fields'],
-  actions: view.actions.map(action => ({ id: action.id, label: action.label })),
+  actions: view.actions.map(action => ({ id: action.id, label: action.label, ...(action.group === undefined ? {} : { group: action.group }) })),
   status: { state: view.status.state, ...(view.status.code ? { code: view.status.code } : {}),
     ...(view.status.details ? { details: view.status.details.map(item => ({ label: item.label, value: item.value })) } : {}),
     ...(view.status.authorization ? { authorization: { url: view.status.authorization.url, label: view.status.authorization.label, qr: view.status.authorization.qr === true } } : {}) },

@@ -64,7 +64,11 @@ React + Vite + 原生 CSS 的本地浏览器界面。只有一个持续 Mira 和
 - 确定性验证覆盖状态/设置 DTO、密码边界、所有 API 与附件 401、非 JSON 401、迟到旧响应及凭据不落存储。实际浏览器还应覆盖首次加载失败重试、错误密码/限速、启停/修改、退出、关闭/返回、重复点击、冲突/不明结果、会话失效和窄屏。
 
 Extension cards render declarative connection fields/actions/status within the existing
-settings dialog. Secret drafts remain transient, blank preserves the saved value, and
+settings dialog. The host supplies the visible action list; actions with no group or
+`primary` remain visible, while `secondary` actions and the existing editor entry
+share a default-collapsed “更多操作” section. Collapsing it does not hide the open
+editor or its cancellation button. Pending-action cancellation also remains visible.
+Secret drafts remain transient, blank preserves the saved value, and
 clear is explicit. Cancel/close clears drafts. Pending actions survive closing the
 window and can be cancelled after reopening. Unknown writes require rereading before
 another attempt. HTTPS authorization QR codes use pinned `qrcode-generator` locally;
