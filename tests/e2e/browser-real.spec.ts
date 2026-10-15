@@ -1,3 +1,4 @@
+import { probeNativeBrowserLaunch, startupProbePassed } from './browser-native-probe.mts';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { AgentBrowserDriver } from '../../apps/server/src/browser-driver.ts';
@@ -30,6 +31,16 @@ async function reconnect(page: Page) {
   await expect(button).toBeVisible(); await button.click();
   await expect(page.locator('.browser-viewport canvas')).not.toHaveClass(/browser-canvas-empty/);
 }
+
+test('official native startup diagnostic uses an empty isolated profile', async ({}, testInfo) => {
+  const result = await probeNativeBrowserLaunch();
+  await testInfo.attach('native-startup-diagnostic', { body: Buffer.from(JSON.stringify(result, null, 2)), contentType: 'application/json' });
+  expect(startupProbePassed(result), JSON.stringify(result)).toBe(true);
+  expect(result['probeError']).toBeUndefined();
+  expect((result['launch'] as { success?: boolean } | undefined)?.success, JSON.stringify(result)).toBe(true);
+  expect(result['ownedBrowserCaptured'], JSON.stringify(result)).toBe(true);
+  expect(result['cleanup'], JSON.stringify(result)).toBe('confirmed');
+});
 
 test('real managed browser preserves page/cookie across handoff; rendered input, held disconnect, revocation and restart are fenced', async ({ page, context }, testInfo) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mira-browser-real-'));

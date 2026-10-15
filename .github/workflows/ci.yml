@@ -13,6 +13,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  browser-startup-probe:
+    # Temporary bounded startup diagnostic; the full acceptance gate remains below.
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .node-version
+      - run: npm install --global pnpm@11.28.4
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/mira-playwright" >> "$GITHUB_ENV"
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Install pinned official native daemon
+        run: |
+          npm install --ignore-scripts --prefix "$RUNNER_TEMP/mira-agent-browser" agent-browser@0.39.1
+          BINARY="$RUNNER_TEMP/mira-agent-browser/node_modules/agent-browser/bin/agent-browser-linux-x64"
+          chmod u+x "$BINARY"
+          echo "MIRA_AGENT_BROWSER_EXECUTABLE=$BINARY" >> "$GITHUB_ENV"
+      - name: Record synthetic native startup result
+        run: |
+          export MIRA_BROWSER_EXECUTABLE_PATH="$(node --input-type=module -e 'import { chromium } from "@playwright/test"; console.log(chromium.executablePath())')"
+          node --input-type=module -e 'import { mkdir, writeFile } from "node:fs/promises"; import { probeNativeBrowserLaunch, startupProbePassed } from "./tests/e2e/browser-native-probe.mts"; const result = await probeNativeBrowserLaunch(); await mkdir("test-results", {recursive:true}); await writeFile("test-results/native-startup-diagnostic.json", JSON.stringify(result,null,2)); if (!startupProbePassed(result)) process.exitCode=1;'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: mira-native-startup-diagnostic
+          path: test-results/native-startup-diagnostic.json
+          retention-days: 7
   verify:
     runs-on: ubuntu-latest
     # Retain all existing gates plus the real managed-browser daemon chain.

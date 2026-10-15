@@ -47,3 +47,7 @@ CDP composition 事件检查不是操作系统原生 IME 全平台认证。下�
 此前 P1 修复已完成源码复核；第三轮仅新增 P2 captured pointer 拖出画布导致非法坐标断连，以及 P2 closed tombstone 累积导致终身容量耗尽。第四批将捕获拖动坐标 clamp 到当前画面边缘，补四边拖出/释放 fixture 与 real spec；已成功关闭的 tombstone 有界淘汰，closing/live 不淘汰，补 70 次 open/close 后继续打开回归。focused 21 passed，1 socket EPERM blocked；真实UI仍等待CI。
 
 第四轮全新独立 gpt-6.1-sol/max 审查：无 actionable P1/P2。审查额外验证 8 active、pending-close 保留、容量恢复和 live handle 不淘汰。UI 仅源码复核，真实 Chromium/daemon CI 尚未验收；不得将 review 通过写为真实链路通过。
+
+## 首次真实 CI 失败（保留记录）
+
+PR39 head01e83b4 / run38729341707 的真实 browser gate 2/2 失败：runtime browser_open 后为 error；直接 driver.open 的启动失败又被 cleanup unknown 掩盖。尚未进入接管或 kill-daemon 断言，截图不计成功验收。其他已执行 gates 与 macOS 通过。增加无URL/账户/输入的隔离原生启动probe，保留受限startup响应与stderr用于取证，不改变生产日志、浏览器安全参数或cleanup判据。

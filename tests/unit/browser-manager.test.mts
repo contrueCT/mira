@@ -1,3 +1,4 @@
+import { diagnosticText, startupEvidence, startupProbePassed } from '../e2e/browser-native-probe.mts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawn } from 'node:child_process';
@@ -311,4 +312,21 @@ test('completed browser tombstones are bounded and do not exhaust active capacit
   await assert.rejects(owner.command(first, ['snapshot']), BrowserControlError);
   const live = await owner.open('https://example.test'); assert.equal(live.state, 'agent');
   await manager.close();
+});
+
+
+test('synthetic startup evidence is byte bounded and projects only diagnostic fields', () => {
+  for (const text of ['x'.repeat(100000), '文'.repeat(100000), '\0'.repeat(100000), '😀'.repeat(100000)]) {
+    const result = diagnosticText(text); assert.ok(Buffer.byteLength(JSON.stringify(result.text)) <= 4096); assert.equal(result.truncated, true);
+    const evidence = startupEvidence({ success: false, error: text, unneeded: text });
+    assert.ok(Buffer.byteLength(JSON.stringify(evidence)) < 4200); assert.equal('unneeded' in evidence, false);
+  }
+  assert.deepEqual(diagnosticText('short'), { text: 'short', truncated: false });
+});
+
+
+test('startup probe verdict rejects native close rejection and uncertain command cleanup', () => {
+  const good = { launch: { success: true }, close: { success: true }, ownedBrowserCaptured: true, cleanup: 'confirmed' };
+  assert.equal(startupProbePassed(good), true);
+  for (const patch of [{ close: { success: false } }, { close: undefined }, { probeError: { text: 'lost reply' } }, { cleanup: 'unknown' }]) assert.equal(startupProbePassed({ ...good, ...patch }), false);
 });
