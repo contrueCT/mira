@@ -141,6 +141,7 @@ test('actual Pi parent continues while isolated child runs; asynchronous result 
   const f = fixture(); const release = deferred(); let childCalls = 0; let mainCalls = 0;
   const stream: StreamFn = (_m, context) => {
     if (isChild(context.messages)) {
+      assert.ok(!getSystemMessageText(getCurrentSystemMessage(context.messages)!).includes('<delegation>'));
       childCalls++;
       assert.ok(!getCurrentTools(context.messages).some(t => t.name.startsWith('subagent_') || t.name === 'send_attachment'));
       if (childCalls === 1) return (async () => { await release.promise; return streamOf(assistant('worker result')); })();

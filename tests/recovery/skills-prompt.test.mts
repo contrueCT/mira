@@ -6,7 +6,9 @@ import { test, type TestContext } from 'node:test';
 import { getCurrentSystemMessage, getCurrentSystemPrompt } from '@earendil-works/pi-ai';
 import { createSkillLoader, LocalWebService, runDemo } from '@mira/server';
 import { createTestDatabase } from '../integration/database.mts';
-import { assistant, input, runtime, streamOf } from './fixtures.mts';
+import { assistant, input, model, runtime, streamOf } from './fixtures.mts';
+
+import { estimateRequestTokens } from '../../packages/runtime-pi/src/budget.ts';
 
 async function files(t: TestContext) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mira-skills-pg-'));
@@ -29,7 +31,9 @@ test('real PostgreSQL skill revisions preserve raw history and exact compaction 
     await skill(sourceDirectory, 'builtin', 'BUILTIN_METADATA'); await skill(miraHome, 'user-skill', 'FIRST_USER_METADATA');
     await skill(globalRoot, 'global-skill', 'FIRST_GLOBAL_METADATA');
     const loader = createSkillLoader({ sourceDirectory, miraHome }); let loads = 0; let memoryLoads = 0;
-    const configured = { autoCompaction: { enabled: false }, loadSkills: async (signal: AbortSignal) => { loads++; return loader(signal); }, miraPrompt: { ...prompt, loadMemory: async () => { memoryLoads++; return 'FROZEN_MEMORY'; } } };
+    // Full persona + three skill metadata entries + source history must fit the summary request.
+    const continuityModel = { ...model, contextWindow: 16_384 };
+    const configured = { model: continuityModel, autoCompaction: { enabled: false }, loadSkills: async (signal: AbortSignal) => { loads++; return loader(signal); }, miraPrompt: { ...prompt, loadMemory: async () => { memoryLoads++; return 'FROZEN_MEMORY'; } } };
     const first = await db.acquire('skill-continuity');
     await runtime(first, (_model, context) => {
       assert.match(getCurrentSystemPrompt(context.messages), /BUILTIN_METADATA/); assert.match(getCurrentSystemPrompt(context.messages), /FIRST_USER_METADATA/);
@@ -45,7 +49,19 @@ test('real PostgreSQL skill revisions preserve raw history and exact compaction 
     assert.match(getCurrentSystemPrompt(saved.messages), /FIRST_USER_METADATA/);
     assert.match(getCurrentSystemPrompt(saved.messages), /FIRST_GLOBAL_METADATA/); assert.equal(loads, 1);
     const system = getCurrentSystemMessage(saved.messages);
-    const compacted = await runtime(restarted, () => streamOf(assistant('Synthetic durable skill summary')), configured).compact({ keepRecentTokens: 1 });
+    let summaries = 0;
+    const compacted = await runtime(restarted, (_model, context, options) => {
+      summaries++;
+      assert.ok(estimateRequestTokens(context.messages) + options!.maxTokens! <= continuityModel.contextWindow);
+      const source = JSON.parse(context.messages.findLast(message => message.role === 'user')!.content as string);
+      assert.match(source.persona_context, /<delegation>/);
+      assert.match(source.persona_context, /FIRST_USER_METADATA/);
+      assert.match(source.persona_context, /FIRST_GLOBAL_METADATA/);
+      assert.doesNotMatch(source.persona_context, /SECOND_USER_METADATA|SECOND_GLOBAL_METADATA|BODY_NOT_IN_PROMPT/);
+      assert.match(JSON.stringify(source.source_messages), /Earlier discussion/);
+      return streamOf(assistant('Synthetic durable skill summary'));
+    }, configured).compact({ keepRecentTokens: 1 });
+    assert.equal(summaries, 1);
     const checkpoint = compacted.entries.findLast(entry => entry.type === 'compaction'); assert.ok(checkpoint?.type === 'compaction');
     assert.deepEqual(checkpoint.systemMessage, { ...system, timestamp: Date.parse(checkpoint.timestamp) }); assert.equal(loads, 1);
     await runtime(restarted, (_model, context) => {
