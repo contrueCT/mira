@@ -3,13 +3,22 @@ name: agent-browser
 description: Browser automation CLI for AI agents. Use when the user needs to interact with websites, including navigating pages, filling forms, clicking buttons, taking screenshots, extracting data, testing web apps, or automating any browser task. Triggers include requests to "open a website", "fill out a form", "click a button", "take a screenshot", "scrape data from a page", "test this web app", "login to a site", "automate browser actions", or any task requiring programmatic web interaction. Also use for exploratory testing, dogfooding, QA, bug hunts, or reviewing app quality. Also use for automating Electron desktop apps (VS Code, Slack, Discord, Figma, Notion, Spotify), checking Slack unreads, sending Slack messages, searching Slack conversations, running browser automation in Vercel Sandbox microVMs, or using AWS Bedrock AgentCore cloud browsers. Use lightweight URL reading first; start a browser only for interaction or rendering.
 ---
 
+## Mira managed browser integration
+
+When Mira exposes browser_open, browser_command, browser_list, and browser_close, use those tools for all browser work. Do not invoke agent-browser through bash or terminal: that bypasses the user's Settings → Browser control lease. This is resource coordination, not an action approval system or OS sandbox. Main and child handles are isolated.
+
+Start with browser_open, then browser_command args ["snapshot", "-i"]. Pass the returned observation number for the next command; obtain a new snapshot after each command and after human return. During requesting/human/held/returning, wait for the user to explicitly return control. Never replay unknown clicks/submissions or recreate a browser automatically after restart. Use browser_list to inspect existing handles.
+
+The managed adapter supports a bounded subset of the commands below; it rejects shell/config/remote-engine/stream flags, eval and filesystem commands. Human frames and typed secrets stay outside tool history. Handback cancels queued unsent input and awaits already-dispatched official daemon input commands; it does not prove the website operation succeeded. Upload chooser/download delivery are not embedded viewport capabilities.
+
+
 # agent-browser
 
 Fast browser automation CLI for AI agents. Chrome/Chromium via CDP with accessibility-tree snapshots and compact `@eN` element refs.
 
 ## Mira runtime setup
 
-Mira adaptation: Read [runtime setup](../../docs/development/runtime-tools.md) first. Use the official CLI through ordinary bash, not a Playwright CLI, MCP server, or `agent-browser chat` second model.
+Mira adaptation: Read [runtime setup](../../docs/development/runtime-tools.md) first. Use the managed browser tools when available. Only a runtime without those tools uses the official CLI through ordinary bash; do not substitute a Playwright CLI, MCP server, or `agent-browser chat` second model.
 
 Check `command -v agent-browser` and its version. If missing and the download fits the user’s authorized scope, install just the pinned CLI in a user-owned directory. The v0.39.1 npm package is about 114 MiB unpacked even without Chrome, so do not classify it as a tiny Python dependency or silently assume permission for a large download:
 
@@ -19,7 +28,7 @@ npm install --ignore-scripts --prefix "$TOOLS" agent-browser@0.39.1
 node "$TOOLS/node_modules/agent-browser/bin/agent-browser.js" --version
 ```
 
-Use this `node` plus absolute launcher path in place of `agent-browser` below if the CLI is not already available. Keep lifecycle scripts disabled: v0.39.1 postinstall can rewrite an existing global CLI symlink even for a local prefix install. The official launcher checks the packaged native executable and repairs its executable bit inside this package if necessary; a missing binary is an error to report, not permission to download another build. Do not automatically run `agent-browser install`: it downloads Chrome. First reuse an appropriate existing executable via `--executable-path` for interaction; if a browser download/system dependency is needed, explain that separate requirement and obtain any missing authorization. Do not install a second browser stack or attach to the user's personal browser/profile by default.
+For Mira Web managed tools, set `MIRA_AGENT_BROWSER_EXECUTABLE` to the installed official native binary (for example `$TOOLS/node_modules/agent-browser/bin/agent-browser-linux-x64`) before starting Mira. For CLI-only runtimes, use this `node` plus absolute launcher path in place of `agent-browser` below if the CLI is not already available. Keep lifecycle scripts disabled: v0.39.1 postinstall can rewrite an existing global CLI symlink even for a local prefix install. The official launcher checks the packaged native executable and repairs its executable bit inside this package if necessary; a missing binary is an error to report, not permission to download another build. Do not automatically run `agent-browser install`: it downloads Chrome. First reuse an appropriate existing executable via `--executable-path` for interaction; if a browser download/system dependency is needed, explain that separate requirement and obtain any missing authorization. Do not install a second browser stack or attach to the user's personal browser/profile by default.
 
 After loading the CLI's core instructions, prefer `agent-browser read URL --json` for ordinary public URL content; this does not require Chrome. Use `open`/`snapshot`/`click` only for tasks needing a browser. Give each task a distinct `--session`, use `--json`, re-snapshot after navigation or page changes, and use current refs. Close the task's browser when finished. For an uncertain submit/click outcome, inspect the state before any repeat; never blindly resubmit.
 

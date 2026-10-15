@@ -240,3 +240,12 @@ test('native PTY dependency is allowed only at server composition', async () => 
     assert.ok((await checkBoundaries(root)).some(error => error.includes('external import not allowed node-pty')));
   });
 });
+
+test('browser WebSocket transport remains at server composition only', async () => {
+  await fixture(async root => {
+    await writeFile(path.join(root, 'apps/server/src/ws-allowed.ts'), "import { WebSocketServer } from 'ws'; export { WebSocketServer };\n");
+    assert.deepEqual(await checkBoundaries(root), []);
+    await writeFile(path.join(root, 'packages/runtime-pi/src/ws-forbidden.ts'), "import 'ws';\n");
+    assert.ok((await checkBoundaries(root)).some(error => error.includes('external import not allowed ws')));
+  });
+});

@@ -8,7 +8,7 @@ import { testDatabaseUrl } from '../tests/integration/database.mts';
 
 // Fail, rather than skip, when the isolated real-database gate is unconfigured.
 const suite = process.argv[2];
-if (suite !== 'auth' && suite !== 'external' && suite !== 'management' && suite !== 'attachments' && suite !== 'live-input' && suite !== 'agent-capabilities') throw Error('Choose auth, external, management, attachments, live-input or agent-capabilities real-browser suite');
+if (suite !== 'browser' && suite !== 'auth' && suite !== 'external' && suite !== 'management' && suite !== 'attachments' && suite !== 'live-input' && suite !== 'agent-capabilities') throw Error('Choose browser, auth, external, management, attachments, live-input or agent-capabilities real-browser suite');
 const connectionString = testDatabaseUrl();
 // Resolve the installed browser before replacing HOME. CI always uses the
 // official Playwright installation, never a developer executable override.
@@ -19,6 +19,7 @@ try {
   const env: NodeJS.ProcessEnv = {
     PATH: process.env['PATH'], HOME: home, TMPDIR: home, TMP: home, TEMP: home, XDG_CACHE_HOME: home,
     MIRA_TEST_DATABASE_URL: connectionString, PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH: executablePath,
+    ...(suite === 'browser' ? { MIRA_AGENT_BROWSER_EXECUTABLE: process.env['MIRA_AGENT_BROWSER_EXECUTABLE'], MIRA_BROWSER_EXECUTABLE_PATH: executablePath } : {}),
   };
   const child = spawn(process.execPath, [
     'node_modules/@playwright/test/cli.js', 'test', '--config', `tests/e2e/${suite}-real.config.ts`, ...process.argv.slice(3),

@@ -54,7 +54,9 @@
     "tests/unit/tool-output.test.mts",
     "tests/unit/tool-output-wire.test.mts",
     "tests/unit/web-auth.test.mts",
-    "tests/unit/terminals.test.mts"
+    "tests/unit/terminals.test.mts",
+    "tests/unit/browser-manager.test.mts",
+    "tests/unit/browser-http.test.mts"
   ],
   "exclude": [
     "node_modules",

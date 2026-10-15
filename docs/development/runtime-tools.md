@@ -28,3 +28,12 @@ python3 -m venv "$TOOLS_HOME/documents-venv"
 普通 URL 优先轻量读取，只有需要交互、页面脚本或渲染时才启动 agent-browser。浏览器只有一套；不要同时安装第二套运行时。遇到登录、额度、封锁或依赖限制，保留实际错误并解释，不自动 OAuth、配置密钥、换账号或绕过同一服务/目标的限制。单个搜索服务额度用尽不等于全部公开研究被禁止；若已知独立的官方公开页面，可用现有 curl/Python 普通 GET 继续读取，无需新建搜索服务或安装浏览器。目标页面本身拒绝访问时不得换身份、代理或其他路线绕过；不要在尚有合法可用步骤时提前结束整个任务。
 
 文本提取不等于版式审查。PDF/DOCX 输出需要视觉检查时，使用已具备的渲染工具并通过普通 read 检查 PNG；缺少渲染能力时说明未验证部分。录音转写必须区分本地文件检查、无网络 dry-run 与真实云端转写。测试或模型文字模拟不代表真实工具联通。
+
+
+## 受管浏览器
+
+`browser_open`、`browser_command`、`browser_list`、`browser_close` 由 Web service 按 main/child 身份注入。需预先安装官方 agent-browser 0.39.1 及 Chrome/Chromium；应用不安装依赖。使用 snapshot 返回的 observation 进行下一条命令，之后重新 snapshot。设置→浏览器提供同页面人工接管；断线保持等待，交还取消未发送输入、等待在途命令并失效旧 refs。见 [ADR 0034](../adr/0034-managed-browser-handoff.md)。
+
+可用 `MIRA_AGENT_BROWSER_EXECUTABLE` 指向已安装的官方平台 native binary；PATH 中官方 launcher 可解析到同包 native binary。该配置属于启动环境，不是模型参数。保持依赖安装脚本关闭，首次启动前核对 `--version` 为 0.39.1。
+
+`MIRA_BROWSER_EXECUTABLE_PATH` 可显式指定已安装 Chromium 的可执行文件；CI 使用已固定安装的 Chromium，并在隔离 HOME 下运行。`pnpm test:browser:e2e` 要求隔离 PostgreSQL、官方 agent-browser native binary 与 Chromium，不以 UI fixture 代替。

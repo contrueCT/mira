@@ -92,3 +92,5 @@ pnpm check
 - [ADR 0029](docs/adr/0029-bounded-model-request-retries.md)：显式transport只在完整assistant发布前对确定瞬时请求错误做最多三次尝试，partial不落库；取消停止退避，不重放Wake/工具/unknown。SDK maxRetries仍为0，主Web状态与child隔离。
 
 - [ADR 0033](docs/adr/0033-web-password-access.md)：可选网页密码在现有设置，统一 API/附件鉴权；明确 public origin 支持 0.0.0.0 绑定，仍保留 Host/Origin/CSRF 防护和 External SDK 回环限制。
+
+- [ADR 0034](docs/adr/0034-managed-browser-handoff.md)：受管 agent-browser 0.39.1、owner 队列与人工 epoch；设置内 stream 视口；交还取消未发送输入、等待官方 daemon 在途响应再新 snapshot，不重放，不承诺 OS shell 隔离。

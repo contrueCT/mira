@@ -75,3 +75,5 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 - [0033 可选网页访问密码](0033-web-password-access.md)：已授权实现，独立草稿 PR 验证；不含正式部署。
 - [0032 — Persistent terminal processes](0032-persistent-terminal-processes.md): approved cross-turn processes, service-scoped lifecycle, explicit PTY/input/close, no restart replay or UI.
+
+- [0034：受管浏览器与界面内接管](0034-managed-browser-handoff.md) — 已批准，实现/验收中。
