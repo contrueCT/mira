@@ -42,7 +42,7 @@ function publicStatus(value: ExtensionConnectionStatus, actions: ExtensionSettin
   if (!value || !['unconfigured', 'disconnected', 'connecting', 'pending', 'connected', 'error'].includes(value.state)) return invalid();
   const status: ExtensionConnectionStatus = { state: value.state };
   if (value.visibleActions !== undefined) {
-    if (!Array.isArray(value.visibleActions) || value.visibleActions.length > actions.length || new Set(value.visibleActions).size !== value.visibleActions.length || value.visibleActions.some(id => !actions.some(action => action.id === id))) invalid();
+    if (!Array.isArray(value.visibleActions) || value.visibleActions.length > actions.length || new Set(value.visibleActions).size !== value.visibleActions.length || Array.from(value.visibleActions).some(id => !actions.some(action => action.id === id))) invalid();
     // Declaration order is stable; provider array order is not a UI ordering API.
     status.visibleActions = actions.filter(action => value.visibleActions!.includes(action.id)).map(action => action.id);
   }

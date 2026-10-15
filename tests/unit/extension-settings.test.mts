@@ -433,7 +433,7 @@ test('generic status visibility fences Host and actual plugin tool starts withou
 
 test('invalid visibility fails closed and never executes undeclared or hidden actions', async () => {
   await fixture(async (host, state) => {
-    for (const visibleActions of [['undeclared'], ['connect', 'connect'], 'connect', [null]]) {
+    for (const visibleActions of [['undeclared'], ['connect', 'connect'], 'connect', [null], new Array(1)]) {
       state.status = {state:'disconnected', visibleActions};
       const view = await host.extensionSettings('plugin'); assert.ok(view);
       assert.deepEqual(view.status, {state:'error', code:'unknown', visibleActions:[]});
@@ -460,6 +460,11 @@ test('generic action groups validate and visibility order follows declaration wi
     assert.deepEqual(first.actions, [{id:'repair', label:'Repair'}, {id:'inspect', label:'Inspect', group:'secondary'}]);
     visibleActions = ['repair', 'inspect'];
     assert.equal((await settings.view()).revision, first.revision);
+    visibleActions = new Array(2); visibleActions[0] = 'repair';
+    const invalid = await settings.view();
+    assert.deepEqual(invalid.status, {state:'error', code:'unknown', visibleActions:[]});
+    assert.deepEqual(invalid.actions, []);
+    await assert.rejects(() => settings.start('repair', invalid.revision), {code:'unavailable'});
     assert.throws(() => validateSettings({...definition, actions:[{...definition.actions[0]!, group:'custom' as any}]}), ExtensionSettingsError);
   } finally { await settings.drain(); await rm(directory, {recursive:true, force:true}); }
 });
