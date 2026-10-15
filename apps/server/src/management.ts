@@ -1,3 +1,4 @@
+import type { ExtensionSettingsView, ExtensionSettingsWrite } from '@mira/extension-host';
 /** Public management views are deliberately separate from raw History/host data.
  * No raw configuration, tool payload, hidden thinking, system prompt, or exception
  * is part of this contract. Memory content is the one explicitly requested file. */
@@ -76,6 +77,10 @@ export interface ManagementBackend {
   memory(): Promise<MemoryView>;
   messageStatus(id: string): Promise<MessageStatusView>;
   extensions(): Promise<ExtensionsView>;
+  extensionSettings(id: string): Promise<ExtensionSettingsView | null>;
+  saveExtensionSettings(id: string, input: ExtensionSettingsWrite): Promise<void>;
+  startExtensionSettingsAction(id: string, action: string, expectedRevision: string): Promise<ExtensionSettingsView>;
+  cancelExtensionSettingsAction(id: string, operationId: string): Promise<void>;
   changeExtension(id: string, mutation: ExtensionMutation): Promise<ExtensionMutationView>;
   runs(before?: string): Promise<RunsView>;
   run(id: string, before?: string): Promise<RunDetailView | null>;

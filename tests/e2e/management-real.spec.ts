@@ -348,3 +348,70 @@ test('a real Wake paginates original and supplemental requests separately from e
     expect((await db.admin.query('SELECT count(*)::int AS n FROM life_events')).rows[0].n).toBe(56);
   } finally { hold.resolve(); await app?.close(); await service?.close(); await db?.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test('extension private settings traverse real browser, HTTP, Cordis and PostgreSQL without exposing credentials', async ({ page }, testInfo) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mira-extension-settings-real-'));
+  let db: Awaited<ReturnType<typeof createTestDatabase>> | undefined;
+  let service: LocalWebService | undefined;
+  let app: ReturnType<typeof createLocalHttp> | undefined;
+  const secret = 'synthetic-extension-secret-e2e';
+  const source = path.join(root, 'settings-extension.mjs');
+  const configurationFile = path.join(root, 'extensions.json');
+  const contexts: TranscriptContext[] = [];
+  try {
+    db = await createTestDatabase();
+    await writeFile(source, `import {defineExtension} from ${JSON.stringify(import.meta.resolve('@mira/extension-sdk'))};
+      export default defineExtension({name:'settings-fixture',apply(ctx,config){
+        let status={state:'disconnected'};
+        ctx.registerSettings({fields:[{key:'appId',label:'Application ID',type:'text'},{key:'token',label:'Private token',type:'secret'}],
+          actions:[{id:'connect',label:'Connect fixture',async execute({signal}){ if(!await ctx.credentials.has('token'))throw Error('missing'); status={state:'connected'};}},
+          {id:'authorize',label:'Authorize fixture',async execute({signal}){status={state:'pending',authorization:{url:'https://example.com/authorize?challenge=synthetic-public',label:'Official authorization',qr:true}}; await new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true})); status={state:'disconnected'};}}],status:()=>status});
+        ctx.registerTool({name:'check_fixture',description:'Check connection',parameters:{type:'object'},async execute(){return {text:status.state}}});
+        ctx.onCleanup(()=>{status={state:'disconnected'}});
+      }});`);
+    const entries = [{ id: 'settings-fixture', path: source, config: { appId: 'initial' } }];
+    await writeFile(configurationFile, JSON.stringify({ entries }));
+    service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'extension-settings-real', sourceDirectory,
+      workingDirectory: root, miraHome: root, spoolDirectory: path.join(root,'spool'), settingsFile:path.join(root,'models.json'),
+      synthetic:true, dreaming:{enabled:false}, autoCompaction:{enabled:false}, extensions:{entries,configurationFile},
+      syntheticStream: (_model,context)=>{ contexts.push(structuredClone(context)); return streamOf(assistant('Synthetic settings checked.')); },
+    });
+    app = createLocalHttp({backend:service,port,assetsDirectory:path.join(sourceDirectory,'apps/web/dist')});
+    await app.listen({port,host:'127.0.0.1'});
+    await page.goto(origin);
+    await page.getByRole('button',{name:'模型设置',exact:true}).click();
+    await page.getByRole('tab',{name:'扩展',exact:true}).click();
+    await page.getByRole('button',{name:'连接设置',exact:true}).click();
+    await page.getByRole('button',{name:'编辑连接设置',exact:true}).click();
+    await page.getByLabel('Private token',{exact:true}).fill('discarded-draft');
+    await page.getByRole('button',{name:'取消设置编辑',exact:true}).click();
+    await page.getByRole('button',{name:'编辑连接设置',exact:true}).click();
+    await expect(page.getByLabel('Private token',{exact:true})).toHaveValue('');
+    await page.getByLabel('Application ID',{exact:true}).fill('saved-id');
+    await page.getByLabel('Private token',{exact:true}).fill(secret);
+    await page.getByRole('button',{name:'保存连接设置',exact:true}).click();
+    await expect(page.getByRole('button',{name:'编辑连接设置',exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'Connect fixture',exact:true}).click();
+    await expect(page.getByLabel('settings-fixture 连接设置')).toContainText('已连接');
+    expect(await readFile(configurationFile,'utf8')).not.toContain(secret);
+    const protectedView = await page.evaluate(async()=>await (await fetch('/api/extensions/settings-fixture/settings',{headers:{'X-Mira-Client':'web'}})).text());
+    expect(protectedView).not.toContain(secret); expect(protectedView).toContain('configured');
+    await page.getByRole('button',{name:'Authorize fixture',exact:true}).click();
+    await expect(page.getByRole('img',{name:'授权二维码'})).toBeVisible();
+    await page.screenshot({path:testInfo.outputPath('extension-settings-desktop.png'),fullPage:true});
+    await page.setViewportSize({width:390,height:844});
+    await page.getByRole('img',{name:'授权二维码'}).scrollIntoViewIfNeeded();
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+    await page.screenshot({path:testInfo.outputPath('extension-settings-narrow.png'),fullPage:true});
+    await page.getByRole('button',{name:'取消当前操作',exact:true}).click();
+    await expect(page.getByLabel('settings-fixture 连接设置')).toContainText('操作已取消');
+    await page.getByRole('button',{name:'关闭设置',exact:true}).click();
+    await page.getByLabel('给 Mira 发消息',{exact:true}).fill('Check synthetic settings.');
+    await page.getByRole('button',{name:'发送消息',exact:true}).click();
+    await expect.poll(()=>contexts.length).toBe(1);
+    expect(JSON.stringify(contexts)).not.toContain(secret);
+    const history = await db.admin.query('SELECT intent, outcome FROM tool_executions');
+    expect(JSON.stringify(history.rows)).not.toContain(secret);
+    expect(await page.evaluate(()=>JSON.stringify([localStorage,sessionStorage]))).not.toContain(secret);
+  } finally { await app?.close(); await service?.close(); await db?.close(); await rm(root,{recursive:true,force:true}); }
+});

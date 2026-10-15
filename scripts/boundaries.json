@@ -28,7 +28,8 @@
       "react-dom",
       "@types/react",
       "@types/react-dom",
-      "vite"
+      "vite",
+      "qrcode-generator"
     ]
   },
   "@mira/cognition": {

@@ -83,3 +83,16 @@ status `enqueued` cannot be retracted. Duplicate create requires identical compl
 data, including occurredAt. The host binds ownership to a persistent installation.
 Calendar/recurrence/missed-reminder policy belong to extensions. See
 [ADR 0022](../../docs/adr/0022-durable-single-shot-delivery.md).
+
+## Private settings
+
+`context.credentials.get/has/set/delete` reads/writes private installation-scoped strings.
+Never put credentials in config, tools, events, context providers or logs. `has` means
+stored, not authenticated. `context.privateDirectory` is a private installation data
+folder for extension-owned ordinary files; it is null without persistent identity.
+`context.registerSettings({ fields, actions, status })` declares the protected settings
+screen. Field types are text, boolean, select, secret. Actions receive AbortSignal;
+status returns a fixed connection state, optional safe code, bounded public details,
+and an optional HTTPS authorization link with `qr: true` for local rendering.
+See [ADR 0035](../../docs/adr/0035-extension-private-settings.md). These APIs organize
+trusted code under the same OS account; they provide no security sandbox.

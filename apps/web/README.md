@@ -62,3 +62,10 @@ React + Vite + 原生 CSS 的本地浏览器界面。只有一个持续 Mira 和
 - 任意普通 API 或附件 fetch 收到 401 时，在解析响应前撤下整个私有界面；请求、附件 Blob URL 和未保存字段随组件卸载清理。旧登录发出的迟到 401 不会覆盖后来的登录状态；若轮换密码时并发旧请求先收到 401，私有界面仍立即撤下，并等待当前认证写操作独立完成，新登录/退出操作会使旧结果失效。已有待确认消息信封保持原来的 sessionStorage 恢复语义，重新登录前不读取或展示，不会自动重发
 - 页面明确说明关闭时任何能连接服务的人均可访问；访问密码不会加密 HTTP 上的密码或内容，跨网络使用前应配置 HTTPS
 - 确定性验证覆盖状态/设置 DTO、密码边界、所有 API 与附件 401、非 JSON 401、迟到旧响应及凭据不落存储。实际浏览器还应覆盖首次加载失败重试、错误密码/限速、启停/修改、退出、关闭/返回、重复点击、冲突/不明结果、会话失效和窄屏。
+
+Extension cards render declarative connection fields/actions/status within the existing
+settings dialog. Secret drafts remain transient, blank preserves the saved value, and
+clear is explicit. Cancel/close clears drafts. Pending actions survive closing the
+window and can be cancelled after reopening. Unknown writes require rereading before
+another attempt. HTTPS authorization QR codes use pinned `qrcode-generator` locally;
+no external QR service receives the link.

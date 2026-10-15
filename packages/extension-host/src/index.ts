@@ -1,3 +1,7 @@
+import { ExtensionPrivateStorage, credentialKey } from './private-storage.ts';
+import { RegisteredSettings, validateSettings, ExtensionSettingsError, type ExtensionSettingsView, type ExtensionSettingsWrite } from './settings.ts';
+export { ExtensionSettingsError } from './settings.ts';
+export type { ExtensionSettingsView, ExtensionSettingsWrite } from './settings.ts';
 import { ArtifactStore, type ArtifactManifest } from './artifacts.ts';
 export { ArtifactStore } from './artifacts.ts';
 export type { ArtifactManifest, ArtifactTestCommand, ArtifactTestResult } from './artifacts.ts';
@@ -7,7 +11,7 @@ export type { ExtensionConfiguration } from './configuration.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { Context, type Fiber, type Disposable } from 'cordis';
 import Loader, { type EntryOptions } from '@cordisjs/plugin-loader';
@@ -32,6 +36,10 @@ export interface ExtensionHostOptions {
   reservedToolNames?: string[];
   /** Identity is bound by the host; extension-supplied source fields are ignored. */
   receive(source: string, event: ExtensionEvent, wake?: { id: string; reason: string }): Promise<'inserted' | 'duplicate'>;
+  /** Private credential and plugin-state root, outside source/Memory/artifacts. */
+  privateDirectory?: string;
+  /** Composition-provided source and Memory roots that private files must not overlap. */
+  privateStorageExcludedDirectories?: string[];
   schedules?: (owner: string, extensionId: string) => ExtensionSchedules;
   onSchedulesChanged?: () => void;
   hmr?: boolean;
@@ -97,6 +105,8 @@ export class ExtensionHost {
   private artifactWatchRoot: string | undefined;
   readonly hmrEnabled: boolean;
 
+  private readonly privateStorage: ExtensionPrivateStorage | undefined;
+  private readonly settings = new Map<string, RegisteredSettings>();
   private readonly options: ExtensionHostOptions;
   constructor(options: ExtensionHostOptions) {
     if (options.artifactsDirectory && !path.isAbsolute(options.artifactsDirectory)) throw new Error('artifactsDirectory must be absolute');
@@ -117,16 +127,18 @@ export class ExtensionHost {
       }
       this.entries.set(entry.id, { ...structuredClone(entry), config: structuredClone(entry.config ?? null) });
     }
+    this.privateStorage = options.privateDirectory || options.configurationFile ? new ExtensionPrivateStorage(options.privateDirectory ?? path.join(path.dirname(options.configurationFile!), 'extension-private'), [fileURLToPath(new URL('../../../', import.meta.url)), ...options.privateStorageExcludedDirectories ?? [], ...options.artifactsDirectory ? [options.artifactsDirectory] : []]) : undefined;
     this.options = { ...options, entries: structuredClone(options.entries) };
   }
 
   async start(): Promise<void> {
     if (this.started || this.closed) throw new Error('Extension host cannot be started twice');
     this.started = true;
+    await this.privateStorage?.validateLocation();
     if (this.options.configurationFile) this.configuration = await ConfigurationWriter.open(this.options.configurationFile, this.options.entries, this.hmrEnabled, this.options.artifactsDirectory);
     // Existing generated revision history already owns an installation identity.
     // Manual entries get one only when it can survive process restart.
-    if (this.options.schedules && this.configuration) {
+    if ((this.options.schedules || this.privateStorage) && this.configuration) {
       for (const entry of this.entries.values()) {
         if (entry.generated || entry.installationId) continue;
         const saved = { ...entry, installationId: randomUUID() };
@@ -134,6 +146,7 @@ export class ExtensionHost {
         this.entries.set(entry.id, saved);
       }
     }
+    if (this.privateStorage) for (const entry of this.entries.values()) { const owner = this.scheduleOwner(entry.id); if (owner) { const directory = await this.privateStorage.prepare(owner); await mkdir(path.join(directory, 'data'), { recursive: true, mode: 0o700 }); } }
     this.ctx.baseUrl = pathToFileURL(`${process.cwd()}${path.sep}`).href;
     this.ctx.logger.exporter({ export: message => {
       if (message.type !== 'error' && message.type !== 'warn') return;
@@ -186,7 +199,9 @@ export class ExtensionHost {
     // Cordis fences the fiber as unloading before invoking its disposers. Tool
     // admission checks that state and acquires synchronously, so this snapshot
     // cannot miss a newly admitted call on the retiring activation.
-    await Promise.all(this.instances.get(ctx.fiber)?.executions ?? []);
+    const instance = this.instances.get(ctx.fiber);
+    if (instance && this.settings.get(instance.id)?.activation === instance.activation) this.settings.get(instance.id)?.cancel();
+    await Promise.all(instance?.executions ?? []);
   }
   private serialize<T>(action: () => Promise<T>): Promise<T> {
     const task = this.lifecycle.then(action);
@@ -287,6 +302,24 @@ export class ExtensionHost {
     };
     const context: ExtensionContext = {
       id,
+      privateDirectory: this.privateStorage && this.scheduleOwner(id) ? path.join(this.privateStorage.directory(this.scheduleOwner(id)!), 'data') : null,
+      credentials: {
+        get: async key => { canRegister(); credentialKey(key); const owner = this.scheduleOwner(id); if (!owner || !this.privateStorage) throw new ExtensionSettingsError('unavailable'); const values = await this.privateStorage.values(owner); canRegister(); return Object.hasOwn(values, key) ? values[key]! : null; },
+        has: async key => (await context.credentials.get(key)) !== null,
+        set: async (key, value) => { canRegister(); const owner = this.scheduleOwner(id); if (!owner || !this.privateStorage) throw new ExtensionSettingsError('unavailable'); await this.privateStorage.update(owner, { [key]: value }, canRegister); },
+        delete: async key => { canRegister(); const owner = this.scheduleOwner(id); if (!owner || !this.privateStorage) throw new ExtensionSettingsError('unavailable'); await this.privateStorage.update(owner, { [key]: null }, canRegister); },
+      },
+      registerSettings: definition => {
+        canRegister(); const owner = this.scheduleOwner(id);
+        if (!owner || !this.privateStorage) throw new ExtensionSettingsError('unavailable');
+        if (this.settings.has(id)) throw new Error('Duplicate extension settings');
+        const settings = new RegisteredSettings(validateSettings(definition), activation, owner, this.privateStorage,
+          () => this.entries.get(id)?.config ?? null, canRegister, task => { executions.add(task); void task.finally(() => executions.delete(task)); });
+        this.settings.set(id, settings);
+        // Abort before draining leases, including automatic Cordis/HMR retirement.
+        ctx.effect(() => () => { settings.cancel(); }, 'Cancel extension settings actions');
+        resourceDrains.push(releaseResource(async () => { await settings.drain(); if (this.settings.get(id) === settings) this.settings.delete(id); }));
+      },
       schedules: this.scopedSchedules(id, () => { canRegister(); }),
       registerTool: tool => {
         canRegister();
@@ -461,6 +494,31 @@ export class ExtensionHost {
       return structuredClone(receipt);
     });
   }
+  async extensionSettings(id: string): Promise<ExtensionSettingsView | null> {
+    this.assertOpen(); const settings = this.settings.get(id);
+    if (!settings || this.snapshot().find(entry => entry.id === id)?.status !== 'active') return null;
+    return settings.view();
+  }
+  async startSettingsAction(id: string, action: string, expectedRevision: string): Promise<ExtensionSettingsView> {
+    this.assertOpen();
+    return this.serialize(async () => { const settings = this.settings.get(id); if (!settings) throw new ExtensionSettingsError('unavailable'); return settings.start(action, expectedRevision); });
+  }
+  async cancelSettingsAction(id: string, operationId: string): Promise<void> {
+    this.assertOpen(); const settings = this.settings.get(id); if (!settings) throw new ExtensionSettingsError('unavailable');
+    if ((await settings.view()).operation?.id !== operationId) throw new ExtensionSettingsError('conflict');
+    settings.cancel();
+  }
+  async saveExtensionSettings(id: string, input: ExtensionSettingsWrite): Promise<void> {
+    this.assertOpen();
+    await this.serialize(async () => {
+      const settings = this.settings.get(id); if (!settings) throw new ExtensionSettingsError('unavailable');
+      const config = await settings.write(input);
+      const receipt: ChangeStatus = { id: randomUUID(), extensionId: id, action: 'configure', status: 'failed', runtime: null, persistence: this.configuration ? 'not-attempted' : 'not-required' };
+      try { await this.applyChange(receipt, { action: 'configure', config }); } finally { this.cleanupScope = undefined; }
+      receipt.runtime = this.snapshot().find(entry => entry.id === id) ?? null; this.receipts.push(receipt);
+      if (receipt.status !== 'applied') throw new ExtensionSettingsError('unavailable');
+    });
+  }
   /** Opaque revision of private desired/runtime state, never raw config data. */
   managementRevision(id: string): string {
     this.assertOpen();
@@ -525,6 +583,8 @@ export class ExtensionHost {
       if (receipt) { receipt.artifact = 'failed'; receipt.test = 'invalidated'; }
       throw error;
     }
+    const owner = this.scheduleOwner(entry.id);
+    if (owner && this.privateStorage) { const directory = await this.privateStorage.prepare(owner); await mkdir(path.join(directory, 'data'), { recursive: true, mode: 0o700 }); }
     const options: EntryOptions = { id: entry.id, name: pathToFileURL(fresh.entry).href, config: entry.config, disabled: entry.enabled === false, inject: ['timer'] };
     await this.ctx.loader.create(options);
   }
@@ -568,6 +628,8 @@ export class ExtensionHost {
     try {
       await this.ctx.loader.await();
       const id = receipt.extensionId;
+      this.settings.get(id)?.cancel();
+      const previousOwner = this.scheduleOwner(id);
       this.cleanupFailures.delete(id);
       this.beginCleanupScope(id);
       const desired = await this.desiredEntry(id, change, receipt);
@@ -583,7 +645,7 @@ export class ExtensionHost {
       this.diagnostics.delete(id);
       if (desired === null) {
         try { await this.removeRuntime(id); }
-        finally { this.entries.delete(id); this.latest.delete(id); }
+        finally { this.entries.delete(id); this.latest.delete(id); if (previousOwner) await this.privateStorage?.removeCredentials(previousOwner); }
       } else {
         this.entries.set(id, desired);
         if (desired.generated) {
