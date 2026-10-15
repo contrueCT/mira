@@ -178,6 +178,9 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus }: { browser: B
   const releasePointer = (event: PointerEvent<HTMLCanvasElement>) => {
     if (!pressedRef.current) return; pressedRef.current = false; mouse(event, 'mouseReleased');
   };
+  // Cancellation/capture loss does not mean the user released the button.
+  // Keep the remote press intact so return stays held until an explicit release.
+  const abandonPointer = () => { pressedRef.current = false; };
   const key = (event: KeyboardEvent<HTMLTextAreaElement>, eventType: string) => {
     if (event.nativeEvent.isComposing || composingRef.current || event.key === 'Process') return;
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); clearInput(); bridgeRef.current?.blur(); return; }
@@ -205,7 +208,7 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus }: { browser: B
     {!!browser.pressedButtons?.length && <p className="browser-note" role="status">鼠标仍处于按下状态，暂不能交还。请继续接手，看到当前画面后显式松开鼠标。</p>}
     {browser.message && <p className="browser-note">{browser.message}</p>}
     <div className="browser-viewport">
-      <canvas ref={canvasRef} aria-label="远程浏览器画面" className={hasFrame ? '' : 'browser-canvas-empty'} onPointerDown={event => { event.preventDefault(); if (browserRef.current.state !== 'human' || !readyRef.current) return; pressedRef.current = true; pressedButtonRef.current = event.button; event.currentTarget.setPointerCapture(event.pointerId); mouse(event, 'mousePressed'); }} onPointerMove={event => mouse(event, 'mouseMoved')} onPointerUp={event => { releasePointer(event); if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }} onPointerCancel={releasePointer} onLostPointerCapture={releasePointer} onContextMenu={event => event.preventDefault()} />
+      <canvas ref={canvasRef} aria-label="远程浏览器画面" className={hasFrame ? '' : 'browser-canvas-empty'} onPointerDown={event => { event.preventDefault(); if (browserRef.current.state !== 'human' || !readyRef.current) return; pressedRef.current = true; pressedButtonRef.current = event.button; event.currentTarget.setPointerCapture(event.pointerId); mouse(event, 'mousePressed'); }} onPointerMove={event => mouse(event, 'mouseMoved')} onPointerUp={event => { releasePointer(event); if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }} onPointerCancel={abandonPointer} onLostPointerCapture={abandonPointer} onContextMenu={event => event.preventDefault()} />
       {!hasFrame && <span className="browser-placeholder">{connected ? '等待当前页面画面…' : '画面尚未连接'}</span>}
       <textarea ref={bridgeRef} className="browser-input-bridge" aria-label="浏览器键盘输入，按 Escape 离开" autoComplete="off" autoCapitalize="off" spellCheck={false} disabled={browser.state !== 'human' || !connected || !hasFrame} onKeyDown={event => key(event, 'keyDown')} onKeyUp={event => key(event, 'keyUp')} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={event => { composingRef.current = false; text(event.data); compositionCommitRef.current = event.data; setTimeout(() => { compositionCommitRef.current = null; }, 0); }} onInput={event => {
         if (composingRef.current) return;

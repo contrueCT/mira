@@ -88,6 +88,86 @@ test('browser settings: read-only, takeover, rendered-frame fence, input bridge,
   expect(returns).toBe(1);
 });
 
+for (const interruption of ['pointercancel', 'lostpointercapture', 'return'] as const) {
+  test(`browser ${interruption} while pressed preserves the remote button until explicit release`, async ({ page }) => {
+    let status = { id: 'pressed-browser', state: 'human', epoch: 1, ownerLabel: 'Mira', domain: 'example.test', pressedButtons: [] as string[] };
+    const received: Record<string, unknown>[] = [];
+    let socket: WebSocketRoute | undefined;
+    let returns = 0;
+    await page.route('**/api/browser', route => route.fulfill({ json: { browsers: [status] } }));
+    await page.route('**/api/browser/pressed-browser/ticket', route => route.fulfill({ json: { ticket: 'pressed-ticket', epoch: status.epoch } }));
+    await page.route('**/api/browser/pressed-browser/return', async route => {
+      expect(route.request().postDataJSON()).toEqual({ epoch: status.epoch }); returns++;
+      status = { ...status, state: status.pressedButtons.length ? 'held' : 'agent', epoch: status.epoch + 1 };
+      await route.fulfill({ json: status }); socket!.close();
+    });
+    await page.route('**/api/browser/pressed-browser/takeover', async route => {
+      status = { ...status, state: 'human', epoch: status.epoch + 1 }; await route.fulfill({ json: status });
+    });
+    await page.routeWebSocket('**/api/browser/stream', ws => {
+      socket = ws;
+      ws.onMessage(message => {
+        const input = JSON.parse(String(message)) as Record<string, unknown>; received.push(input);
+        if (input.eventType === 'mousePressed') status = { ...status, pressedButtons: ['left'] };
+        else if (input.eventType === 'mouseReleased' || input.type === 'input_release') status = { ...status, pressedButtons: [] };
+        else return;
+        // Reflect production's status update after each accepted mouse command.
+        ws.send(JSON.stringify({ type: 'mira_state', browser: status }));
+      });
+      ws.send(JSON.stringify({ type: 'mira_state', browser: status }));
+    });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto('/'); await page.getByRole('button', { name: '模型设置', exact: true }).click();
+    await page.getByRole('tab', { name: '浏览器', exact: true }).click();
+    await expect.poll(() => !!socket).toBe(true);
+    const data = await page.evaluate(() => { const canvas = document.createElement('canvas'); canvas.width = 1000; canvas.height = 600; return canvas.toDataURL('image/jpeg').split(',')[1]!; });
+    const frame = async (seq: number) => {
+      socket!.send(JSON.stringify({ type: 'frame', seq, generation: 1, epoch: status.epoch, data, metadata: { deviceWidth: 1000, deviceHeight: 600 } }));
+      await expect.poll(() => received.some(input => input.type === 'ack' && input.seq === seq)).toBe(true);
+    };
+    await frame(1);
+    const canvas = page.locator('.browser-viewport canvas');
+    await canvas.evaluate(element => {
+      element.addEventListener('pointerdown', event => { element.dataset['pointerId'] = String((event as PointerEvent).pointerId); }, { once: true });
+      for (const type of ['pointercancel', 'lostpointercapture']) element.addEventListener(type, () => { element.dataset[type] = 'seen'; });
+    });
+    const bounds = await canvas.boundingBox(); if (!bounds) throw Error('Missing canvas');
+    const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+    await page.mouse.move(center.x, center.y); await page.mouse.down();
+    await expect.poll(() => status.pressedButtons).toEqual(['left']);
+    await expect(page.getByRole('button', { name: '松开左键', exact: true })).toBeVisible();
+    if (interruption !== 'return') {
+      await page.mouse.move(center.x + 1, center.y);
+      expect(await canvas.evaluate(element => element.hasPointerCapture(Number(element.dataset['pointerId'])))).toBe(true);
+      await canvas.evaluate((element, type) => {
+        const pointerId = Number(element.dataset['pointerId']);
+        if (type === 'lostpointercapture') element.releasePointerCapture(pointerId);
+        else element.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId, button: 0, buttons: 1 }));
+      }, interruption);
+      // A real pointer event flushes pending native capture loss in Chromium.
+      await page.mouse.move(center.x + 2, center.y);
+      await expect(canvas).toHaveAttribute(`data-${interruption}`, 'seen');
+    }
+    await frame(2); // Flush preceding socket input before checking that no release was invented.
+    expect(received.filter(input => input.eventType === 'mouseReleased' || input.type === 'input_release')).toEqual([]);
+    await page.getByRole('button', { name: '交还 Mira', exact: true }).evaluate(element => (element as HTMLElement).click());
+    await expect.poll(() => status.state).toBe('held');
+    await page.mouse.up();
+    await expect(page.getByText('连接中断 · 已保留你的控制权', { exact: true })).toBeVisible();
+    expect(status.pressedButtons).toEqual(['left']); expect(returns).toBe(1);
+    expect(received.filter(input => input.eventType === 'mouseReleased' || input.type === 'input_release')).toEqual([]);
+    await page.getByRole('button', { name: '继续接手', exact: true }).click();
+    const previousSocket = socket;
+    await page.getByRole('button', { name: '重新连接', exact: true }).click();
+    await expect.poll(() => socket !== previousSocket).toBe(true); await frame(3);
+    await page.getByRole('button', { name: '松开左键', exact: true }).click();
+    await expect.poll(() => status.pressedButtons).toEqual([]);
+    expect(received.filter(input => input.type === 'input_release')).toHaveLength(1);
+    await page.getByRole('button', { name: '交还 Mira', exact: true }).click();
+    await expect.poll(() => status.state).toBe('agent'); expect(returns).toBe(2);
+  });
+}
+
 test('browser settings empty/error states and canceled late ticket cannot open a socket', async ({ page }) => {
   await page.route('**/api/browser', route => route.fulfill({ json: { browsers: [] } }));
   await page.goto('/'); await page.getByRole('button', { name: '模型设置', exact: true }).click();
