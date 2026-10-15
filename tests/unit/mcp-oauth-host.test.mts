@@ -306,6 +306,7 @@ test('Host OAuth recovers effect-only 401/403 through explicit authorization wit
   const oauthRequests: string[] = [];
   const tokenGrants: string[] = [];
   const verifiers: string[] = [];
+  const authorizationUrls: URL[] = [];
   const effectHeaders: Array<string | undefined> = [];
   const challenges: number[] = [];
   const exchangeStarted = Promise.withResolvers<AbortSignal>();
@@ -476,6 +477,7 @@ test('Host OAuth recovers effect-only 401/403 through explicit authorization wit
       });
       assert.equal(pending.operation?.state, 'pending');
       const authorization = new URL(pending.status.authorization!.url);
+      authorizationUrls.push(authorization);
       assert.equal(authorization.origin, issuer);
       assert.deepEqual(new Set(authorization.searchParams.get('scope')?.split(' ')), new Set(scope.split(' ')));
       assert.equal(authorization.searchParams.get('code_challenge_method'), 'S256');
@@ -556,7 +558,9 @@ test('Host OAuth recovers effect-only 401/403 through explicit authorization wit
     assert.equal(privateDirectories.length, 1);
     const credentialFile = path.join(privateRoot, privateDirectories[0]!, 'credentials.json');
     const credentialsBeforeCancel = await readFile(credentialFile, 'utf8');
-    assert.ok(!credentialsBeforeCancel.includes('access_token') && !credentialsBeforeCancel.includes('refresh_token":"'));
+    for (const secret of [readAccess, writeAccess, cancelledAccess, refresh]) {
+      assert.ok(!credentialsBeforeCancel.includes(secret), 'Forget authorization removed all previously granted token material');
+    }
     assert.ok(cancelled.pending.operation);
     await host.cancelSettingsAction('remote', cancelled.pending.operation.id);
     assert.equal(exchangeSignal.aborted, true, 'Cancellation reaches the held official-SDK token exchange');
@@ -575,10 +579,14 @@ test('Host OAuth recovers effect-only 401/403 through explicit authorization wit
     assert.deepEqual(challenges, [401, 403, 401, 401]);
     const publicOutput = JSON.stringify({ visible, modelOutput, inspect: host.inspect(), diagnostics: host.diagnosticsLog(),
       config: await readFile(configurationFile, 'utf8'), logs });
-    for (const secret of [readAccess, writeAccess, cancelledAccess, refresh, clientSecret, diagnostic, metadataPath,
-      'insufficient_scope', 'invalid_token', 'resource_metadata', 'SYNTHETIC_EFFECT_CODE', ...verifiers]) {
+    for (const secret of [readAccess, writeAccess, cancelledAccess, refresh, clientSecret, diagnostic, issuer, metadataPath,
+      'insufficient_scope', 'invalid_token', 'resource_metadata', 'SYNTHETIC_EFFECT_CODE', ...verifiers,
+      ...authorizationUrls.map(url => url.searchParams.get('state')!)]) {
       assert.ok(secret.length > 0);
       assert.ok(!publicOutput.includes(secret), 'Model/control/settings/configuration/diagnostics must not disclose private challenge or OAuth material');
+    }
+    for (const secret of [readAccess, writeAccess, cancelledAccess, refresh, clientSecret, diagnostic, 'SYNTHETIC_EFFECT_CODE', ...verifiers]) {
+      assert.ok(!JSON.stringify(authorizationUrls).includes(secret), 'Protected authorization URLs must not disclose credentials or private provider diagnostics');
     }
   } finally {
     releaseExchange.resolve();
