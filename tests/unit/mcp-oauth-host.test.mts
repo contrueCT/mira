@@ -46,7 +46,8 @@ async function freeCallbackPort(): Promise<number> {
   }
 }
 
-test('Host OAuth composes official SDK PKCE, unknown effect errors, redaction and invalid_grant cancellation', { timeout: 20_000 }, async t => {
+for (const protection of ['handshake', 'tools/list'] as const)
+test(`Host OAuth protects ${protection}: official SDK PKCE, explicit scope upgrade, effect isolation and cancellation`, { timeout: 20_000 }, async t => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-mcp-oauth-host-')));
   const originalFetch = globalThis.fetch;
   const logs: Array<{ method: string; text: string }> = [];
@@ -57,7 +58,10 @@ test('Host OAuth composes official SDK PKCE, unknown effect errors, redaction an
     });
   }
   let origin = '';
-  let effectMode: 'ok' | 'error' | 'scope' = 'ok';
+  let effectMode: 'ok' | 'error' | 'scope' | 'unauthorized' = 'ok';
+  let requiredScope = 'read';
+  let grantedScope = 'read';
+  let listChallenges = 0;
   let rejectRefresh = false;
   let forceUnauthorized = false;
   let effectCalls = 0;
@@ -76,17 +80,26 @@ test('Host OAuth composes official SDK PKCE, unknown effect errors, redaction an
       for await (const chunk of req) chunks.push(Buffer.from(chunk));
       const body = Buffer.concat(chunks).toString();
       const message: unknown = body ? JSON.parse(body) : null;
-      if (req.headers.authorization !== `Bearer ${access}` || forceUnauthorized) {
+      const method = message && typeof message === 'object' && 'method' in message ? message.method : undefined;
+      if (method === 'tools/call') effectCalls++;
+      const protectedRequest = protection === 'handshake' || method === 'tools/list' || method === 'tools/call';
+      if (protectedRequest && (req.headers.authorization !== `Bearer ${access}` || forceUnauthorized)) {
+        if (method === 'tools/list') listChallenges++;
         res.writeHead(401, { 'WWW-Authenticate': `Bearer resource_metadata="${issuer}/resource", error_description="${diagnostic}"` });
         res.end(diagnostic);
         return;
       }
-      if (message && typeof message === 'object' && 'method' in message && message.method === 'tools/call') {
-        effectCalls++;
+      if (method === 'tools/list' && grantedScope !== requiredScope) {
+        listChallenges++;
+        res.writeHead(403, { 'WWW-Authenticate': `Bearer error="insufficient_scope", scope="${requiredScope}", resource_metadata="${issuer}/resource"` });
+        res.end(diagnostic);
+        return;
+      }
+      if (method === 'tools/call') {
         if (effectMode !== 'ok') {
-          res.writeHead(effectMode === 'error' ? 500 : 403, effectMode === 'error'
+          res.writeHead(effectMode === 'error' ? 500 : effectMode === 'scope' ? 403 : 401, effectMode === 'error'
             ? { 'Content-Type': 'text/plain' }
-            : { 'WWW-Authenticate': `Bearer error="insufficient_scope", error_description="${diagnostic}"` });
+            : { 'WWW-Authenticate': `Bearer error="${effectMode === 'scope' ? 'insufficient_scope' : 'invalid_token'}", scope="read write admin", resource_metadata="${issuer}/resource", error_description="${diagnostic}"` });
           res.end(`${access} ${refresh} ${clientSecret} ${diagnostic}`);
           return;
         }
@@ -124,7 +137,7 @@ test('Host OAuth composes official SDK PKCE, unknown effect errors, redaction an
     const fixtureFetch: typeof fetch = async (input, init) => {
       const target = new URL(input instanceof Request ? input.url : String(input));
       if (target.origin !== issuer) return originalFetch(input, init);
-      if (target.pathname === '/resource') return Response.json({ resource: url, authorization_servers: [issuer] });
+      if (target.pathname === '/resource') return Response.json({ resource: url, authorization_servers: [issuer], scopes_supported: ['read'] });
       if (target.pathname.includes('.well-known')) return Response.json({
         issuer, authorization_endpoint: `${issuer}/authorize`, token_endpoint: `${issuer}/token`,
         registration_endpoint: `${issuer}/register`, response_types_supported: ['code'],
@@ -144,10 +157,15 @@ test('Host OAuth composes official SDK PKCE, unknown effect errors, redaction an
           rejectedRefreshes++;
           return Response.json({ error: 'invalid_grant', error_description: diagnostic }, { status: 400 });
         }
+        if (params.get('grant_type') === 'refresh_token') {
+          assert.equal(params.get('refresh_token'), refresh);
+          return Response.json({ access_token: access, refresh_token: refresh, token_type: 'Bearer', scope: grantedScope, expires_in: 3600 });
+        }
         assert.equal(params.get('grant_type'), 'authorization_code');
         assert.equal(params.get('code'), 'SYNTHETIC_CODE');
         verifier = params.get('code_verifier') ?? '';
-        return Response.json({ access_token: access, refresh_token: refresh, token_type: 'Bearer', expires_in: 3600 });
+        grantedScope = requiredScope;
+        return Response.json({ access_token: access, refresh_token: refresh, token_type: 'Bearer', scope: grantedScope, expires_in: 3600 });
       }
       throw new Error('Unexpected synthetic OAuth endpoint');
     };
@@ -201,15 +219,40 @@ test('Host OAuth composes official SDK PKCE, unknown effect errors, redaction an
     assert.equal(createHash('sha256').update(verifier).digest('base64url'), authUrl.searchParams.get('code_challenge'));
     assert.equal(tokenExchanges, 1);
 
+    if (protection === 'tools/list') {
+      assert.ok(listChallenges >= 2, 'Startup and explicit authorization must reach the protected list after public discovery');
+      view = await settings();
+      await host.startSettingsAction('remote', 'disconnect', view.revision);
+      assert.equal((await completed()).operation?.state, 'succeeded');
+      requiredScope = 'read write';
+      const beforeChallenges = listChallenges;
+      view = await settings();
+      await host.startSettingsAction('remote', 'authorize', view.revision);
+      view = await authorization();
+      assert.ok(listChallenges > beforeChallenges, 'Cached read token must encounter the list scope challenge');
+      const stepUp = new URL(view.status.authorization!.url);
+      assert.deepEqual(new Set(stepUp.searchParams.get('scope')?.split(' ')), new Set(['read', 'write']));
+      const stepUpCallback = new URL(stepUp.searchParams.get('redirect_uri')!);
+      stepUpCallback.search = new URLSearchParams({ state: stepUp.searchParams.get('state')!, code: 'SYNTHETIC_CODE', iss: issuer }).toString();
+      const revokeStepUp = allowLocalTestHttp(stepUpCallback.origin);
+      try { assert.equal((await originalFetch(stepUpCallback)).status, 200); } finally { revokeStepUp(); }
+      view = await completed();
+      assert.equal(view.operation?.state, 'succeeded');
+      assert.equal(view.status.state, 'connected');
+      assert.equal(grantedScope, 'read write');
+    }
+
     const echo = extensionTools(await host.prepare()).find(tool => tool.name === toolName('remote', 'echo'));
     assert.ok(echo);
-    for (const mode of ['error', 'scope'] as const) {
+    assert.match(JSON.stringify(await echo.execute('known-success', {}, new AbortController().signal)), /Safe known content/);
+    const exchangesBeforeEffects = tokenExchanges;
+    for (const mode of ['error', 'scope', 'unauthorized'] as const) {
       effectMode = mode;
       const before = effectCalls;
       await assert.rejects(echo.execute(`effect-${mode}`, {}, new AbortController().signal), { message: unknownOutcome });
       assert.equal(effectCalls, before + 1, `${mode} must not replay an uncertain effect`);
-      assert.equal(tokenExchanges, 1, 'Effect failures must not initiate OAuth');
-      await settings();
+      assert.equal(tokenExchanges, exchangesBeforeEffects, 'Effect failures must not initiate OAuth');
+      assert.equal((await settings()).status.authorization, undefined, 'Effect failures must not open an authorization flow');
     }
     effectMode = 'ok';
     view = await settings();
@@ -231,7 +274,7 @@ test('Host OAuth composes official SDK PKCE, unknown effect errors, redaction an
     assert.equal(view.status.authorization, undefined);
     const revokeCancelled = allowLocalTestHttp(pendingCallback.origin);
     try { await assert.rejects(originalFetch(pendingCallback), /fetch failed/); } finally { revokeCancelled(); }
-    assert.equal(effectCalls, 2);
+    assert.equal(effectCalls, 4);
     const publicOutput = JSON.stringify({ visible, inspect: host.inspect(), diagnostics: host.diagnosticsLog(),
       config: await readFile(configurationFile, 'utf8'), logs });
     for (const secret of [access, refresh, clientSecret, diagnostic, verifier, 'SYNTHETIC_CODE']) {

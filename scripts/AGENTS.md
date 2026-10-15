@@ -30,4 +30,4 @@
 - 准备器仅支持根运行时依赖声明；拒绝嵌套安装/运行时声明、源码与依赖或目标闭包重叠、排除树入口和入口URL元字符。普通根node_modules及仅type/imports/exports子作用域必须保留正例。
 - Declared dependency pnpm .bin shims require an existing declared bin name, captured target, and byte-exact pinned pnpm 11.28.4 Node shim template with validated path substitutions; arbitrary names, external links and nested folders remain rejected. Preparation never executes a shim.
 
-- Exact pnpm Node shims are relocated by the existing ArtifactStore capture: NODE_PATH names only captured relative namespaces and does not inherit ambient paths. Preserve original symlink/shebang/PATH branch behavior; no source dependency is modified.
+- Exact pnpm Node shims are relocated by the existing ArtifactStore capture: redundant NODE_PATH is cleared; ordinary Node ancestor lookup uses the captured sparse topology without ambient paths. Preserve original symlink/shebang/PATH branch behavior; no source dependency is modified.

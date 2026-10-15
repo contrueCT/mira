@@ -407,3 +407,19 @@ test('MCP OAuth persistent issuer index is bounded before new credentials are wr
   await session.forget();
   assert.equal(store.values.size, 0);
 });
+
+test('OAuth resource and fetch loopback URLs match transport configuration without widening HTTP callbacks', async () => {
+  const { parseConfig } = await import('../../packages/mcp-plugin/src/config.ts');
+  for (const host of ['127.0.0.1', 'localhost', '[::1]']) {
+    const url = `http://${host}:4567/mcp`;
+    assert.equal(parseConfig({ transport: 'http', url, auth: 'oauth' }).url, url);
+    const session = new OAuthSession(storage().credentials, url);
+    assert.equal(session.redirectUrl.hostname, '127.0.0.1');
+    let fetched = false;
+    const response = await safeOAuthFetch(async target => { assert.equal(String(target), url); fetched = true; return Response.json({ synthetic: true }); })(url);
+    assert.equal(response.status, 200); assert.equal(fetched, true);
+  }
+  for (const host of ['localhost', '[::1]', 'example.invalid']) {
+    assert.throws(() => new OAuthSession(storage().credentials, resource, { redirectUrl: `http://${host}:4567/callback` }), /authorization failed/);
+  }
+});

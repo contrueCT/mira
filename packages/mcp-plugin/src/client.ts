@@ -48,7 +48,7 @@ export function resultProjection(result: CallToolResult): Awaited<ReturnType<Ext
   };
 }
 export async function createConnection(context: ExtensionContext, config: McpConfig, options: {
-  changed(error: Error | null, tools: Tool[] | null): void;
+  changed(): void;
   closed(): void;
   oauth?: OAuthClientProvider;
   interactive?: boolean;
@@ -57,7 +57,7 @@ export async function createConnection(context: ExtensionContext, config: McpCon
   const client = new PrivateClient({ name: 'mira-mcp-plugin', version: '0.0.0' }, {
     capabilities: {}, inputRequired: { autoFulfill: false }, jsonSchemaValidator: createOutputSchemaValidator(),
     versionNegotiation: { mode: config.protocol === '2026-07-28' ? { pin: config.protocol } : config.protocol, probe: { timeoutMs: 10_000, maxRetries: 0 } },
-    listChanged: { tools: { onChanged: options.changed } },
+    ...(!options.interactive ? { listChanged: { tools: { autoRefresh: false, onChanged: options.changed } } } : {}),
     listMaxPages: 16,
   });
   client.onerror = () => {}; // SDK/provider diagnostics may contain credentials.
@@ -79,7 +79,7 @@ export async function createConnection(context: ExtensionContext, config: McpCon
       : config.auth === 'bearer' ? { token: async () => (await context.credentials.get('bearerToken')) ?? undefined } : undefined;
     transport = new StreamableHTTPClientTransport(new URL(config.url), {
       ...(authProvider ? { authProvider } : {}), ...(options.fetch ? { fetch: options.fetch } : {}),
-      requestInit: { redirect: 'error' }, redirectPolicy: 'same-origin', onInsufficientScope: 'throw',
+      requestInit: { redirect: 'error' }, redirectPolicy: 'same-origin', onInsufficientScope: options.interactive ? 'reauthorize' : 'throw',
       reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 0, initialReconnectionDelay: 0, reconnectionDelayGrowFactor: 1 },
     });
   }

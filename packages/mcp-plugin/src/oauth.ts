@@ -63,7 +63,7 @@ export class OAuthSession implements OAuthClientProvider {
     this.serverUrl = server.href;
     this.onAuthorization = onAuthorization;
     const explicitRedirect = config.redirectUrl ? secureUrl(config.redirectUrl, true) : undefined;
-    if (explicitRedirect?.search || explicitRedirect?.hash) throw failure();
+    if (explicitRedirect?.search || explicitRedirect?.hash || (explicitRedirect?.protocol === 'http:' && explicitRedirect.hostname !== '127.0.0.1')) throw failure();
     const port = config.callbackPort ?? (explicitRedirect?.protocol === 'http:' ? Number(explicitRedirect.port || 80) : DEFAULT_CALLBACK_PORT);
     if (!Number.isInteger(port) || port < 0 || port > 65535) throw failure();
     if (explicitRedirect?.protocol === 'https:' && !port) throw failure();
@@ -371,7 +371,7 @@ export class OAuthSession implements OAuthClientProvider {
 function secureUrl(value: string, allowLoopback: boolean): URL {
   let url: URL;
   try { url = new URL(value); } catch { throw failure(); }
-  if (url.username || url.password || url.hash || (url.protocol !== 'https:' && !(allowLoopback && url.protocol === 'http:' && url.hostname === '127.0.0.1'))) throw failure();
+  if (url.username || url.password || url.hash || (url.protocol !== 'https:' && !(allowLoopback && url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)))) throw failure();
   return url;
 }
 

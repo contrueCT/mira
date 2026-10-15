@@ -266,8 +266,8 @@ also cover set replacement and every captured declaration. Cleanup withdraws
 only this set's registrations. The host contains no MCP protocol or OAuth code.
 
 Captured pinned pnpm Node bin shims retain their executable target, arguments and
-symlink/PATH behavior, while NODE_PATH is relocated into the sparse captured
-topology without inheriting ambient NODE_PATH. Unknown scripts are not rewritten;
+symlink/PATH behavior, while redundant NODE_PATH entries are cleared. Ordinary Node ancestor lookup uses
+the sparse captured topology without inheriting ambient NODE_PATH. Unknown scripts are not rewritten;
 the package preparation gate still rejects unknown shims. This relocator supports
 the pinned POSIX Node shim, not arbitrary shell, Windows cmd/PowerShell or other
 package-manager launcher formats. Stage never executes launchers.

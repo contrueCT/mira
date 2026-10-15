@@ -276,7 +276,7 @@ test('MCP consumer imports only its public SDK while core cannot import the MCP 
   await fixture(async root => {
     const policyPath = path.join(root, 'scripts/boundaries.json');
     const policy = JSON.parse(await readFile(policyPath, 'utf8'));
-    policy['@mira/mcp-plugin'] = { path: 'packages/mcp-plugin', allow: ['@mira/extension-sdk'], external: ['@modelcontextprotocol/client'] };
+    policy['@mira/mcp-plugin'] = { path: 'packages/mcp-plugin', allow: ['@mira/extension-sdk'], external: ['@modelcontextprotocol/client', 'ajv'] };
     await writeFile(policyPath, JSON.stringify(policy));
     await mkdir(path.join(root, 'packages/mcp-plugin'), { recursive: true });
 

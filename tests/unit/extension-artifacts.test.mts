@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ArtifactStore } from '@mira/extension-host';
 
 async function withWorkspace(run: (source: string, store: ArtifactStore, root: string) => Promise<void>): Promise<void> {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'mira-extension-artifacts-'));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-extension-artifacts-')));
   try {
     const source = path.join(root, 'external-workspace');
     await mkdir(source);
@@ -668,5 +668,27 @@ test('native artifact CLI stages, reports status, and tests only its explicit co
     await assert.rejects(execute(process.execPath, [script, 'test', store.root, staged.digest, '--', process.execPath, '-e', 'process.exit(5)']), { code: 1 });
     assert.equal((await store.testResult(await store.read(staged.digest)))!.exitCode, 5);
     await assert.rejects(execute(process.execPath, [script, 'test', store.root, staged.digest]), /Usage:/);
+  });
+});
+
+test('optional bin relocation leaves unrelated scripts and unbuilt declarations stageable', async () => {
+  await withWorkspace(async (source, store) => {
+    await entry(source);
+    await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'artifact-fixture', bin: { actual: 'run.cjs', unbuilt: 'dist/cli.js' } }));
+    await writeFile(path.join(source, 'run.cjs'), "console.log('captured declared executable');");
+    const bin = path.join(source, 'node_modules', '.bin'); await mkdir(bin, { recursive: true });
+    const ordinary = '#!/bin/sh\nprintf ordinary\\n\n'; await writeFile(path.join(bin, 'ordinary-script'), ordinary);
+    const nested = path.join(source, 'test', 'unbuilt-package'); await mkdir(nested, { recursive: true });
+    await writeFile(path.join(nested, 'package.json'), JSON.stringify({ name: 'unbuilt-package', bin: 'dist/cli.js' }));
+    const { pnpmNodeShim } = await import('@mira/extension-host/package-bin-shims');
+    const target = path.join(source, 'run.cjs');
+    const shim = pnpmNodeShim.replaceAll('@@TARGET@@', target).replaceAll('@@RELATIVE@@', '../../run.cjs').replaceAll('@@NODE_PATH@@', path.join(source, 'node_modules'));
+    await writeFile(path.join(bin, 'actual'), shim);
+    const artifact = await store.stage(source, 'entry.mjs');
+    assert.equal(await readFile(path.join(artifact.directory, 'node_modules/.bin/ordinary-script'), 'utf8'), ordinary);
+    assert.ok(!(await readFile(path.join(artifact.directory, 'node_modules/.bin/actual'), 'utf8')).includes(target));
+    const executed = await store.test(artifact, { command: '/bin/sh', args: ['node_modules/.bin/actual'] });
+    assert.equal(executed.passed, true, executed.stderr); assert.equal(executed.unchanged, true);
+    assert.match(executed.stdout, /captured declared executable/);
   });
 });

@@ -18,7 +18,8 @@
     "tests/unit/mcp-plugin.test.mts",
     "tests/unit/extension-toolsets.test.mts",
     "tests/unit/mcp-http.test.mts",
-    "tests/unit/mcp-generated-install.test.mts"
+    "tests/unit/mcp-generated-install.test.mts",
+    "tests/unit/mcp-catalog.test.mts"
   ],
   "exclude": [
     "node_modules",

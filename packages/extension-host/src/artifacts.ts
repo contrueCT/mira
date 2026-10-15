@@ -1,4 +1,4 @@
-import { capturedPackageBinShim, declaredPackageBins, matchPackageBinShim } from './package-bin-shims.ts';
+import { capturedPackageBinShim, findPackageBinShim } from './package-bin-shims.ts';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, copyFile, lstat, mkdir, readFile, readdir, realpath, rename, rm, symlink, readlink, writeFile } from 'node:fs/promises';
@@ -254,7 +254,6 @@ async function snapshot(source: string, destination: string, store: string): Pro
   const tree = path.join(destination, 'dependencies', 'tree');
   const mirrored = (file: string): string => path.join(tree, path.relative(base, file));
   const materialized = new Map([...roots].map(original => [original, mirrored(original)]));
-  let bins: Awaited<ReturnType<typeof declaredPackageBins>> | undefined;
   // Only selected roots are copied. Empty sparse ancestors preserve their
   // relative topology without capturing unrelated files from the common parent.
   await writeFile(path.join(destination, 'package.json'), '{}\n', { flag: 'wx' });
@@ -280,9 +279,8 @@ async function snapshot(source: string, destination: string, store: string): Pro
     } else if (info.isFile()) {
       if (path.basename(path.dirname(input)) === '.bin') {
         const bytes = await readFile(input, 'utf8');
-        bins ??= await declaredPackageBins(packages);
-        const shim = matchPackageBinShim(input, bytes, bins);
-        if (shim) await writeFile(output, capturedPackageBinShim(shim, input, base));
+        const shim = await findPackageBinShim(input, bytes, packages);
+        if (shim) await writeFile(output, capturedPackageBinShim(shim));
         else await copyFile(input, output);
       } else await copyFile(input, output);
       await chmod(output, info.mode & 0o777);

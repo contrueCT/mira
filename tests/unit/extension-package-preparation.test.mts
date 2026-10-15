@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { ArtifactStore } from '@mira/extension-host';
 import { prepareExtensionPackage } from '../../scripts/prepare-extension-package.mts';
-async function fixture(run: (root: string) => Promise<void>) { const root = await mkdtemp(path.join(os.tmpdir(), 'mira-package-prep-')); try { await run(root); } finally { await rm(root, { recursive: true, force: true }); } }
+async function fixture(run: (root: string) => Promise<void>) { const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-package-prep-'))); try { await run(root); } finally { await rm(root, { recursive: true, force: true }); } }
 async function pkg(directory: string, manifest: object, body = 'export default {};') { await mkdir(directory, { recursive: true }); await writeFile(path.join(directory, 'package.json'), JSON.stringify({ type: 'module', main: 'index.mjs', ...manifest })); await writeFile(path.join(directory, 'index.mjs'), body); }
 async function link(directory: string, name: string, target: string) { const destination = path.join(directory, 'node_modules', name); await mkdir(path.dirname(destination), { recursive: true }); await symlink(target, destination, 'dir'); }
 
@@ -271,7 +271,11 @@ test('executable captured pnpm shims resolve only the captured closure after sou
       ambient: 'ambient undeclared value', args,
     });
     const prepared = await prepareExtensionPackage(source, path.join(sourceRoot, 'prepared with spaces'), 'index.mjs');
-    const store = new ArtifactStore(path.join(storeRoot, 'artifacts with spaces'));
+    // A POSIX colon in the runtime base must not become a NODE_PATH delimiter.
+    const colonEscape = path.join(storeRoot, 'ambient', 'outside');
+    await pkg(colonEscape, { main: 'index.cjs' });
+    await writeFile(path.join(colonEscape, 'index.cjs'), "module.exports = 'unhashed colon escape';");
+    const store = new ArtifactStore(path.join(storeRoot, 'ambient:suffix', 'artifacts with spaces'));
     const artifact = await store.stage(prepared.directory, prepared.entryRelative);
     const stagedShim: string = (await import(pathToFileURL(artifact.entry).href)).default;
     const invocation = path.join(runtimeRoot, 'linked executable with spaces');
@@ -281,6 +285,7 @@ test('executable captured pnpm shims resolve only the captured closure after sou
     assert.deepEqual(run(invocation), expected);
     await writeFile(path.join(declared, 'index.cjs'), "module.exports = 'mutated declared value';");
     await writeFile(path.join(outside, 'index.cjs'), "module.exports = 'mutated undeclared value';");
+    await writeFile(path.join(colonEscape, 'index.cjs'), "module.exports = 'mutated unhashed colon escape';");
     assert.deepEqual(run(invocation), expected);
     await rm(sourceRoot, { recursive: true, force: true });
     assert.deepEqual(run(invocation), expected);
@@ -290,3 +295,15 @@ test('executable captured pnpm shims resolve only the captured closure after sou
     assert.deepEqual(run(freshShim), expected);
     await store.verify(artifact);
   }))));
+
+for (const bin of [null, ['run.js'], { 'c++': 'run.js' }, { unused: 'missing/unbuilt.js' }]) {
+  test(`unused bin metadata remains compatible without actual launchers: ${JSON.stringify(bin)}`, async () => fixture(async root => {
+    const source = path.join(root, 'source'), dependency = path.join(root, 'dependency');
+    await pkg(source, { dependencies: { dependency: '1' } });
+    await pkg(dependency, { name: 'dependency', bin });
+    await link(source, 'dependency', dependency);
+    const prepared = await prepareExtensionPackage(source, path.join(root, 'prepared'), 'index.mjs');
+    const store = new ArtifactStore(path.join(root, 'artifacts'));
+    await store.verify(await store.stage(prepared.directory, prepared.entryRelative));
+  }));
+}

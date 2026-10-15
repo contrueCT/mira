@@ -18,6 +18,9 @@ class McpInstallation {
   private code: ExtensionConnectionStatus['code'];
   private authorization: string | null = null;
   private stopped = false;
+  private catalog: Promise<void> = Promise.resolve();
+  private catalogRefresh: Promise<void> | undefined;
+  private catalogDirty = false;
   private readonly calls = new Set<Promise<unknown>>();
   constructor(context: ExtensionContext, raw: Json) {
     this.context = context; this.config = parseConfig(raw); this.toolset = context.registerToolset([]);
@@ -99,11 +102,7 @@ class McpInstallation {
     const generation = ++this.generation;
     const connection = await createConnection(this.context, this.config, {
       ...(this.oauth ? { oauth: this.oauth.provider } : {}), interactive, ...(fetch ? { fetch } : {}),
-      changed: (error, tools) => {
-        if (generation !== this.generation || this.stopped) return;
-        try { if (error || !tools) throw new Error('Tool refresh failed'); this.publish(connection, generation, tools); }
-        catch { this.withdraw(); this.state = 'error'; this.code = 'configuration'; }
-      },
+      changed: () => { if (!interactive) this.scheduleCatalog(connection, generation); },
       closed: () => { if (generation === this.generation && !this.stopped) { this.withdraw(); this.state = 'disconnected'; } },
     });
     this.connection = connection;
@@ -117,7 +116,12 @@ class McpInstallation {
       if (interactive) {
         if (!this.oauth) throw new Error('OAuth is not configured');
         await this.oauth.run(signal, async (_provider, waitForCallback, attemptSignal) => {
-          try { await this.open(attemptSignal, true, safeOAuthFetch(globalThis.fetch, attemptSignal)); }
+          try {
+            const connection = await this.open(attemptSignal, true, safeOAuthFetch(globalThis.fetch, attemptSignal));
+            // A server may expose discovery publicly but protect tools/list.
+            // This explicit authorization attempt performs only non-effect reads.
+            await connection.client.listTools(undefined, { signal: attemptSignal, timeout: 15_000 });
+          }
           catch {
             if (!this.authorization || !this.connection || !(this.connection.transport instanceof StreamableHTTPClientTransport)) throw new Error('MCP authorization unavailable');
             const callback = await waitForCallback();
@@ -128,7 +132,7 @@ class McpInstallation {
         await this.disconnect();
       }
       const connection = await this.open(signal, false);
-      this.publish(connection, this.generation, (await connection.client.listTools(undefined, { signal, timeout: 15_000 })).tools);
+      await this.queueCatalog(connection, this.generation, signal);
       signal.throwIfAborted(); this.state = 'connected';
     } catch (error) {
       await this.disconnect(); this.state = 'error'; this.code = error instanceof SdkError && error.code === SdkErrorCode.EraNegotiationFailed ? 'configuration' : this.config.auth === 'none' ? 'network' : 'authentication';
@@ -138,11 +142,38 @@ class McpInstallation {
   private async refresh(signal: AbortSignal): Promise<void> {
     const connection = this.connection, generation = this.generation;
     if (!connection || this.state !== 'connected') throw new Error('MCP is disconnected');
-    try { this.publish(connection, generation, (await connection.client.listTools(undefined, { signal, timeout: 15_000, cacheMode: 'refresh' })).tools); }
+    try { await this.queueCatalog(connection, generation, signal); }
     catch { if (generation === this.generation) { this.withdraw(); this.state = 'error'; this.code = 'network'; } throw new Error('MCP tools could not be refreshed'); }
   }
+  private queueCatalog(connection: Connection, generation: number, signal: AbortSignal): Promise<void> {
+    const task = this.catalog.then(async () => {
+      signal.throwIfAborted();
+      if (this.stopped || generation !== this.generation || this.connection !== connection) throw new Error('MCP connection retired');
+      const result = await connection.client.listTools(undefined, { signal, timeout: 15_000, cacheMode: 'refresh' });
+      signal.throwIfAborted(); this.publish(connection, generation, result.tools);
+    });
+    this.catalog = task.catch(() => {});
+    return task;
+  }
+  private scheduleCatalog(connection: Connection, generation: number): void {
+    if (this.stopped || generation !== this.generation || this.connection !== connection) return;
+    this.catalogDirty = true;
+    if (this.catalogRefresh) return;
+    const task = (async () => {
+      // At most one queued automatic refresh plus a dirty bit, not one promise
+      // per notification. Initial/manual/automatic reads share publication order.
+      while (this.catalogDirty && generation === this.generation && !this.stopped) {
+        this.catalogDirty = false;
+        await this.queueCatalog(connection, generation, new AbortController().signal);
+      }
+    })();
+    this.catalogRefresh = task;
+    void task.catch(() => {
+      if (generation === this.generation && !this.stopped) { this.withdraw(); this.state = 'error'; this.code = 'network'; }
+    }).finally(() => { if (this.catalogRefresh === task) this.catalogRefresh = undefined; });
+  }
   private async disconnect(): Promise<void> {
-    ++this.generation; this.withdraw();
+    ++this.generation; this.catalogDirty = false; this.catalogRefresh = undefined; this.withdraw();
     const connection = this.connection; this.connection = undefined;
     await Promise.allSettled([...this.calls]);
     await connection?.client.close(); this.authorization = null; this.state = 'disconnected';
