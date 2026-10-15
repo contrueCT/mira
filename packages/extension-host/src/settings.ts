@@ -105,12 +105,15 @@ export class RegisteredSettings {
     for (const action of view.actions) if (containsSecret(action.label)) action.label = '';
     return { revision: createHash('sha256').update(JSON.stringify([this.activation, view, credentials])).digest('hex'), ...structuredClone(view) };
   }
-  async check(revision: string, actionId?: string): Promise<string> {
-    const credentials = await this.storage.values(this.owner); this.assertActive();
+  private checkRevision(credentials: Record<string, string>, revision: string, actionId?: string): string {
+    this.assertActive();
     const view = this.project(credentials);
     if (view.revision !== revision) throw new ExtensionSettingsError('conflict');
     if (actionId !== undefined && !view.actions.some(action => action.id === actionId)) throw new ExtensionSettingsError('unavailable');
     return credentialRevision(credentials);
+  }
+  async check(revision: string): Promise<string> {
+    return this.checkRevision(await this.storage.values(this.owner), revision);
   }
   private admit(): void {
     this.assertActive();
@@ -120,7 +123,9 @@ export class RegisteredSettings {
   async start(actionId: string, revision: string): Promise<ExtensionSettingsView> {
     this.admit();
     try {
-      await this.check(revision, actionId);
+      const credentials = await this.storage.values(this.owner);
+      // Validate and admit in one synchronous turn after the last async read.
+      this.checkRevision(credentials, revision, actionId);
       const action = this.definition.actions.find(item => item.id === actionId); if (!action) invalid();
       this.assertActive();
       const controller = new AbortController(), id = randomUUID(); this.controller = controller;

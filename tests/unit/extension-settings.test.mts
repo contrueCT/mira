@@ -484,3 +484,26 @@ test('visibility is rechecked after asynchronous credential reads before action 
     assert.equal(settings.current(), null);
   } finally { resume.resolve(); await settings.drain(); await rm(directory, {recursive:true, force:true}); }
 });
+
+test('visibility validation and operation admission have no intervening microtask', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'mira-settings-admit-turn-'));
+  const storage = new ExtensionPrivateStorage(path.join(directory, 'private'));
+  let visibleActions = ['work'], starts = 0;
+  const settings = new RegisteredSettings({fields:[], actions:[{id:'work',label:'Work',async execute() { starts++; }}],
+    status:() => ({state:'disconnected', visibleActions})}, 'activation', 'owner', storage, () => null, () => {}, () => {});
+  const reading = Promise.withResolvers<void>(), resume = Promise.withResolvers<Record<string, string>>();
+  try {
+    const view = await settings.view(), credentials = await storage.values('owner');
+    storage.values = () => { reading.resolve(); return resume.promise; };
+    const starting = settings.start('work', view.revision);
+    await reading.promise;
+    let admittedBeforeHide = false;
+    resume.resolve(credentials);
+    queueMicrotask(() => { admittedBeforeHide = settings.current()?.state === 'pending'; visibleActions = []; });
+    await starting;
+    // Hiding after admission does not retroactively cancel an operation. The
+    // earlier test hides before the read resolves and proves refusal instead.
+    assert.equal(admittedBeforeHide, true);
+    assert.equal(starts, 1);
+  } finally { resume.resolve({}); await settings.drain(); await rm(directory, {recursive:true, force:true}); }
+});
