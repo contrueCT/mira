@@ -68,7 +68,8 @@ prerequisites still require an authorized real-tenant check; denial fails closed
   Full source IDs, original timestamp, text and quote IDs are preserved. Other senders,
   bots and groups do not wake Mira. Unsupported media is an explicit text notice;
   this version does not fetch media or implement voice.
-- A private inbox is saved before the normal durable Event/Wake receive. Stable identity
+- Startup replay and newly arriving messages share the same state-write queue.
+  A private inbox is saved before the normal durable Event/Wake receive. Stable identity
   includes the binding/app/domain and platform message ID. Restart flushes only that
   inbox into the existing deduplicating writer. It never replays model work itself.
 - Outbound: `feishu_send_message` explicitly sends to the paired owner. Ordinary Web

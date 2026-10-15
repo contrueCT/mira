@@ -108,7 +108,7 @@ export class FeishuChannel {
   }
   async initialize(): Promise<void> {
     if (!this.#store) { this.#state = 'error'; this.#error = '需要持久扩展安装身份和私有目录，尚未连接或读取凭据。'; return; }
-    try { this.#data = stored(await this.#store.load()); this.#storageReady = true; if (this.#data.app) await this.#connect(this.#abort.signal); }
+    try { await this.#queue(async () => { this.#data = stored(await this.#store!.load()); this.#storageReady = true; if (this.#data.app) await this.#connect(this.#abort.signal); }); }
     catch { this.#state = 'error'; this.#error = '私有状态或连接不可用，原状态未被清空。请检查本地存储及应用设置。'; }
   }
   #queue<T>(action: () => Promise<T>): Promise<T> {

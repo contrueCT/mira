@@ -23,7 +23,9 @@ async function candidates(directory: string, name: string): Promise<string[]> {
   }
 }
 async function dependencies(directory: string): Promise<Map<string, boolean>> {
-  const manifest: unknown = JSON.parse(await readFile(path.join(directory, 'package.json'), 'utf8'));
+  const manifestPath = path.join(directory, 'package.json');
+  if (!(await lstat(manifestPath)).isFile()) throw new Error('Package manifest must be an ordinary file, not a link');
+  const manifest: unknown = JSON.parse(await readFile(manifestPath, 'utf8'));
   if (!object(manifest)) throw new Error('A package.json object is required');
   const names = new Map<string, boolean>();
   for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
@@ -48,6 +50,24 @@ async function validateSourceTree(root: string, directory: string, ancestors = n
   const next = new Set(ancestors).add(actual);
   for (const name of await readdir(actual)) if (name !== 'node_modules' && name !== '.git') await validateSourceTree(root, path.join(actual, name), next);
 }
+/** ArtifactStore follows all authored links. Validate every dependency tree before
+ * exposing it to staging, including nested package folders and non-imported links.
+ * Only declared closure roots and their sparse namespace ancestors are eligible. */
+async function validateDependencyTrees(closure: Set<string>): Promise<void> {
+  const roots = [...closure]; const visited = new Set<string>();
+  const visit = async (input: string): Promise<void> => {
+    const actual = await realpath(input);
+    const contained = roots.some(root => inside(root, actual) && !path.relative(root, actual).split(path.sep).some(part => part === 'node_modules' || part === '.git'));
+    const namespace = roots.some(root => /^node_modules(?:\/@[^/]+)?$/u.test(path.relative(root, actual).split(path.sep).join('/')));
+    if (!contained && !namespace) throw new Error('Runtime dependency link or directory escapes the declared closure');
+    if (visited.has(actual)) return; visited.add(actual);
+    const info = await lstat(actual);
+    if (info.isFile()) return;
+    if (!info.isDirectory()) throw new Error('Runtime dependency contains a non-ordinary file');
+    for (const name of await readdir(actual)) await visit(path.join(actual, name));
+  };
+  for (const root of roots) await visit(root);
+}
 /** Prepare an external authoring workspace using only already-installed runtime
  * dependencies. Stage/test/install/activate remains the existing separate workflow. */
 export async function prepareExtensionPackage(sourceRoot: string, destination: string, entryRelative = 'src/index.ts'): Promise<{ directory: string; entryRelative: 'entry.mjs'; packages: number }> {
@@ -67,8 +87,9 @@ export async function prepareExtensionPackage(sourceRoot: string, destination: s
       for (const dependency of installed) { if (dependency === source) throw new Error('A runtime dependency points back into the source package'); closure.add(dependency); await visit(dependency); }
     }
   };
-  await visit(source);
   await validateSourceTree(source, source);
+  await visit(source);
+  await validateDependencyTrees(closure);
   // No writes until the complete declared closure is known. The destination must be new.
   await mkdir(target);
   try {

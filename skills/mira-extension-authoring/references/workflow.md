@@ -232,7 +232,7 @@ not install packages, run scripts, fetch a registry or grant account access. Req
 missing dependencies and ambiguous root package resolutions are errors; absent
 optional dependencies/optional peers are allowed, and transitive versions retain
 separate original paths. Dependency graph cycles terminate; source backlinks or
-external source symlinks are rejected rather than capturing unrelated files.
+external source symlinks are rejected rather than capturing unrelated files. Every runtime dependency tree is also checked: links may resolve only inside the explicitly declared closure; undeclared nested packages, external links and linked package manifests are rejected before preparation writes. Keep these installed sources unchanged until staging; this helper is not an OS sandbox.
 
 Stage the returned workspace, run content-bound tests, then install and activate via
 the same tools described above. Do not replace the normal digest-bound workflow with

@@ -56,3 +56,36 @@ test('source aliases cannot promote excluded node_modules or Git trees into the 
     await assert.rejects(realpath(path.join(root, 'prepared')), /ENOENT/); await rm(path.join(source, 'alias'));
   }
 }));
+
+test('runtime dependency trees reject undeclared external file/directory links before staging or copying', async () => fixture(async root => {
+  const source = path.join(root, 'source'), dep = path.join(root, 'dep'), unrelated = path.join(root, 'unrelated-private');
+  await pkg(source, { dependencies: { dep: '1' } }); await pkg(dep, {}); await link(source, 'dep', dep);
+  await mkdir(unrelated); await writeFile(path.join(unrelated, 'credentials.json'), 'synthetic-private-sentinel');
+  for (const target of [unrelated, path.join(unrelated, 'credentials.json'), root]) {
+    await symlink(target, path.join(dep, 'undeclared-link'));
+    await assert.rejects(prepareExtensionPackage(source, path.join(root, 'prepared'), 'index.mjs'), /escapes the declared closure/);
+    await assert.rejects(realpath(path.join(root, 'prepared')), /ENOENT/); await rm(path.join(dep, 'undeclared-link'));
+  }
+  await mkdir(path.join(dep, 'node_modules', 'undeclared'), { recursive: true });
+  await assert.rejects(prepareExtensionPackage(source, path.join(root, 'prepared'), 'index.mjs'), /escapes the declared closure/);
+}));
+
+test('runtime dependency internal aliases and links into an explicitly declared closure remain stageable', async () => fixture(async root => {
+  const source = path.join(root, 'source'), a = path.join(root, 'a'), b = path.join(root, 'b');
+  await pkg(source, { dependencies: { a: '1' } }); await pkg(a, { dependencies: { b: '1' } }); await pkg(b, {});
+  await link(source, 'a', a); await link(a, 'b', b);
+  await symlink(path.join(a, 'index.mjs'), path.join(a, 'internal-alias.mjs'));
+  await symlink(b, path.join(a, 'declared-alias'));
+  const prepared = await prepareExtensionPackage(source, path.join(root, 'prepared'), 'index.mjs');
+  const store = new ArtifactStore(path.join(root, 'artifacts'));
+  await store.stage(prepared.directory, prepared.entryRelative);
+}));
+
+test('dependency manifests cannot follow a link outside the selected package before closure validation', async () => fixture(async root => {
+  const source = path.join(root, 'source'), dep = path.join(root, 'dep');
+  await pkg(source, { dependencies: { dep: '1' } }); await pkg(dep, {}); await link(source, 'dep', dep);
+  await writeFile(path.join(root, 'unrelated.json'), '{"private":"synthetic"}');
+  await rm(path.join(dep, 'package.json')); await symlink(path.join(root, 'unrelated.json'), path.join(dep, 'package.json'));
+  await assert.rejects(prepareExtensionPackage(source, path.join(root, 'prepared'), 'index.mjs'), /manifest must be an ordinary file/);
+  await assert.rejects(realpath(path.join(root, 'prepared')), /ENOENT/);
+}));

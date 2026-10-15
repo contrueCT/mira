@@ -255,3 +255,25 @@ test('invalid private state blocks new app registration before any provider requ
   assert.equal(f.settings.status().state, 'error'); await assert.rejects(f.action('register'));
   assert.deepEqual(f.sdk.calls, { register: 0, connect: 0, verify: 0 });
 });
+
+test('startup inbox replay and newly arriving owner messages use the same state queue', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mira-feishu-startup-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const oldWake: ExtensionWake = { id: 'old-id', reason: 'saved before restart', event: { id: 'old-id', type: 'feishu.owner_message', occurredAt: '2026-01-01T00:00:00Z', payload: { text: 'old' } } };
+  await writeFile(path.join(root, 'feishu-state.json'), JSON.stringify({ version: 1, connectionId: 'restart-binding', app: { appId: 'app-test', domain: 'feishu' }, owner: { tenantKey: 'tenant-owner', senderOpenId: 'user-owner', chatId: 'chat-owner' }, tested: true, inbox: [oldWake], recentMessages: [], sends: {} }), { mode: 0o600 });
+  const sdk = fakeSdk(), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const received: ExtensionWake[] = []; let closed: (() => Promise<void> | void) | undefined;
+  const context = { id: 'restart', privateDirectory: root, credentials: { get: async () => secret },
+    registerSettings() {}, registerTool() {}, registerContextProvider() {}, onCleanup(value: () => Promise<void> | void) { closed = value; },
+    async requestWake(wake: ExtensionWake) { received.push(structuredClone(wake)); if (received.length === 1) { entered.resolve(); await release.promise; } return 'inserted'; }, async emitEvent() { return 'inserted'; } };
+  const initializing = createFeishuExtension(sdk.sdk).apply({ mira: context as unknown as ExtensionContext }, {});
+  await entered.promise; let acknowledged = false;
+  const delivery = sdk.receive(incoming({ messageId: 'arrived-during-startup', text: 'new after restart' })).then(() => { acknowledged = true; });
+  try {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(acknowledged, false, 'new receive must wait behind startup state mutation, never ACK a lost message');
+    assert.equal(received.length, 1, 'startup must not have a concurrent inbox flusher');
+  } finally { release.resolve(); await initializing; await delivery; await closed?.(); }
+  assert.deepEqual(received.map(wake => (wake.event.payload as { text: string }).text), ['old', 'new after restart']);
+  const saved = JSON.parse(await readFile(path.join(root, 'feishu-state.json'), 'utf8'));
+  assert.equal(saved.inbox.length, 0); assert.ok(saved.recentMessages.includes('arrived-during-startup'));
+});
