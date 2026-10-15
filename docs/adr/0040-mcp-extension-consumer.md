@@ -15,3 +15,5 @@ Protected settings reuse safe action handles and generic action groups. OAuth fo
 Local launch uses a pinned installed executable with a minimal environment. The official transport owns MCP framing; a small POSIX supervisor owns only the server's spawned process group and joins/escalates shutdown. It is not a sandbox and cannot prevent deliberate reparenting/detaching by trusted code.
 
 Tasks, Apps, sampling, automatic resources, prompts-to-skills and marketplace are out of scope. Synthetic protocol/auth fixtures are not live-account validation. See the package README and `test:mcp:e2e` for verification boundaries.
+
+SDK 2.3.1 has direct raw-console warnings outside `client.onerror`. The plugin uses a quiet public output-schema validator and the public Client.request boundary to exclude header-mirroring (`x-mcp-header`) tools before high-level listing, with a fixed settings notice. No global console interception or private SDK method is used; this extra HTTP mapping capability is outside the first version.

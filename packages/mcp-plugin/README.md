@@ -1,6 +1,6 @@
 # MCP plugin
 
-An ordinary trusted extension, one independent installation per MCP server. It imports only the public extension SDK plus official `@modelcontextprotocol/client@2.3.1`; no MCP manager, core vendor branches or Pi upgrade. Servers and their tool descriptions/results remain untrusted external data, never permission grants.
+An ordinary trusted extension, one independent installation per MCP server. It imports only the public extension SDK plus official `@modelcontextprotocol/client@2.3.1` and pinned Ajv 8.20.0 for quiet output validation; no MCP manager, core vendor branches or Pi upgrade. Servers and their tool descriptions/results remain untrusted external data, never permission grants.
 
 ## Install and manage
 
@@ -41,6 +41,8 @@ Text and structured content are supported. Structured JSON is included in model-
 The default callback is `http://127.0.0.1:37391/oauth/callback` and requires the browser on the computer running Mira. For a browser on another computer, explicitly configure a provider-accepted HTTPS `redirectUrl` and `callbackPort` backed by an existing user-managed proxy to the local loopback listener. The plugin never opens public listeners, configures tunnels, changes firewall/network settings or assumes `localhost` on a phone reaches Mira. Occupied ports fail visibly rather than silently changing a registered callback.
 
 Official SDK discovery, registration, PKCE and code exchange are reused. State and verifier are one-use, expire after five minutes, are cancelled with the settings action and do not survive restart. Callback issuer validation uses the SDK. Credentials are private per installation, exact server URL, issuer and registration; provider errors are sanitized before SDK warning paths. The protected settings panel alone displays an HTTPS authorization link/QR. Forget authorization deletes only this server’s local saved authorization and registration; it does not revoke the provider’s grant. No live-account authorization is part of synthetic acceptance tests.
+
+Tools containing `x-mcp-header` in their input schema are excluded before SDK processing; extra HTTP header mapping is not supported in this version. Protected Settings shows a fixed notice without the remote tool names or metadata. Other tools remain available, including on paginated and legacy lists.
 
 No Tasks, Apps, sampling, roots access, automatic resources, prompts-to-skills conversion, or marketplace in this version. Rollback cannot undo remote effects. Cordis remains trusted in-process code, not a sandbox; process-group cleanup owns only the spawned POSIX group and cannot constrain a server that deliberately detaches itself.
 

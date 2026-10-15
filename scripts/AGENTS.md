@@ -24,8 +24,10 @@
 - 包管理器/TypeScript 升级要验证 API、锁文件格式、真实干净安装、测试和工具构建
 
 - `external-sdk-usability.mts` 使用真实本机 HTTP、生产认证与 ingress、隔离临时 home，持久化明确为内存 fixture；输出/evidence 不含 token。独立作者使用正常 CLI/SDK，不读取实现；不能以此代替 PostgreSQL gate。
-- `prepare-extension-package.mts` 只准备选定源码与已安装的声明运行时依赖闭包；无安装、市场或供应商特例。原有 snapshot/hash/test/install 不变；依赖版本/路径、pnpm、optional/peer 和循环图须有反例验证。
+- `prepare-extension-package.mts` 只准备选定源码与已安装的声明运行时依赖闭包；无安装、市场或供应商特例。复用原有 snapshot/hash/test/install；依赖版本/路径、pnpm、optional/peer 和循环图须有反例验证。
 
 - 准备helper在写目标之前拒绝源码树内部符号链接，避免展平后改变Node相对导入；声明runtime闭包中的受控依赖/pnpm链接仍支持。
 - 准备器仅支持根运行时依赖声明；拒绝嵌套安装/运行时声明、源码与依赖或目标闭包重叠、排除树入口和入口URL元字符。普通根node_modules及仅type/imports/exports子作用域必须保留正例。
 - Declared dependency pnpm .bin shims require an existing declared bin name, captured target, and byte-exact pinned pnpm 11.28.4 Node shim template with validated path substitutions; arbitrary names, external links and nested folders remain rejected. Preparation never executes a shim.
+
+- Exact pnpm Node shims are relocated by the existing ArtifactStore capture: NODE_PATH names only captured relative namespaces and does not inherit ambient paths. Preserve original symlink/shebang/PATH branch behavior; no source dependency is modified.

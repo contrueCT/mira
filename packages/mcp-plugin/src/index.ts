@@ -54,6 +54,7 @@ class McpInstallation {
   private status(): ExtensionConnectionStatus {
     return { state: this.state, ...(this.code ? { code: this.code } : {}), visibleActions: !this.configured() ? [] : this.state === 'connected' ? ['refresh', 'disconnect', ...(this.oauth ? ['forgetAuthorization'] : [])] : this.state === 'connecting' || this.state === 'pending' ? [] : ['connect', ...(this.oauth ? ['authorize', 'forgetAuthorization'] : [])],
       ...(this.code === 'configuration' ? { details: [{ label: 'Protocol', value: 'Check the server protocol choice. Local servers default to legacy; modern-only servers require 2026-07-28.' }] } : {}),
+      ...(this.connection?.client.unsupportedHeaderTools ? { details: [{ label: 'Unsupported tools', value: 'Some tools require HTTP header mapping, which is not supported by this plugin.' }] } : {}),
       ...(this.authorization ? { authorization: { url: this.authorization, label: 'Authorize MCP access', qr: true } } : {}) };
   }
   private registerControl(actions: ExtensionSettingsActions): void {

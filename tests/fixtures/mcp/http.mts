@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { McpServer, createMcpHandler, fromJsonSchema } from '@modelcontextprotocol/server';
 import { allowLocalTestHttp } from '../../deny-model-network.mts';
-export async function httpFixture() {
+export async function httpFixture(options: { headerTools?: boolean } = {}) {
   let revision = 1;
   let effects = 0;
   let mode: 'normal' | 'lost' | 'unauthorized' | 'header-mismatch' | 'input-required' = 'normal';
@@ -22,6 +22,14 @@ export async function httpFixture() {
       const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
       const body = Buffer.concat(chunks).toString();
       const message = body ? JSON.parse(body) : null;
+      if (options.headerTools && message?.method === 'tools/list') {
+        const tools = message.params?.cursor
+          ? [{ name: 'SYNTHETIC_PRIVATE_HEADER_TOOL', inputSchema: { type: 'object', properties: { value: { type: 'string', 'x-mcp-header': 'PRIVATE DIAGNOSTIC IN HEADER' } } } }, { name: 'summary', inputSchema: { type: 'object' } }]
+          : [{ name: 'echo', inputSchema: { type: 'object', properties: { text: { type: 'string' } } } }, { name: 'valid_but_unsupported_header', inputSchema: { type: 'object', properties: { value: { type: 'string', 'x-mcp-header': 'X-Example' } } } }];
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { resultType: 'complete', ttlMs: 0, cacheScope: 'private', tools, ...(!message.params?.cursor ? { nextCursor: 'page-two' } : {}) } }));
+        return;
+      }
       if (message?.method === 'tools/call') {
         calls.push(message);
         if (mode === 'lost') { effects++; res.destroy(); return; }

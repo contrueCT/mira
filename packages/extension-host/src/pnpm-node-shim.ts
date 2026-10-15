@@ -1,4 +1,4 @@
-// Exact pnpm 11.28.4 POSIX Node shim. MIT license: LICENSE.pnpm.
+// Exact pnpm 11.28.4 POSIX Node shim. MIT license: ../LICENSE.pnpm.
 // Only these three data placeholders may vary; never execute this template.
 export default [
   "#!/bin/sh",

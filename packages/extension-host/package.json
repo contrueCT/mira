@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./artifacts": "./src/artifacts.ts"
+    "./artifacts": "./src/artifacts.ts",
+    "./package-bin-shims": "./src/package-bin-shims.ts"
   },
   "dependencies": {
     "@cordisjs/plugin-hmr": "1.1.0",

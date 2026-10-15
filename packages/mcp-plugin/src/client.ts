@@ -1,3 +1,4 @@
+import { createOutputSchemaValidator } from './output-schema.ts';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport, type OAuthClientProvider, type Tool, type CallToolResult } from '@modelcontextprotocol/client';
@@ -8,6 +9,29 @@ import type { McpConfig } from './config.ts';
 // Official documented subclass behavior probes this owned instance in place,
 // avoiding an extra server launch even for pinned modern negotiation.
 class OwnedStdioTransport extends StdioClientTransport {}
+// Use only the public request boundary. SDK 2.3.1's high-level list validator
+// prints raw header annotations to console and offers no per-client logger.
+// Header mirroring is outside this plugin's first-version capability set.
+class PrivateClient extends Client {
+  unsupportedHeaderTools = false;
+  override request: Client['request'] = (async (...args: Parameters<Client['request']>) => {
+    const result = await super.request(...args);
+    if (args[0].method === 'tools/list' && result && typeof result === 'object' && 'tools' in result && Array.isArray(result.tools)) {
+      result.tools = result.tools.filter((tool: Tool) => {
+        const pending: unknown[] = [tool.inputSchema];
+        while (pending.length) {
+          const value = pending.pop();
+          if (!value || typeof value !== 'object') continue;
+          if (Object.hasOwn(value, 'x-mcp-header')) { this.unsupportedHeaderTools = true; return false; }
+          pending.push(...Object.values(value));
+        }
+        return true;
+      });
+    }
+    return result;
+  }) as Client['request'];
+}
+
 export function toolName(installation: string, remote: string): string {
   const part = (value: string, size: number) => value.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, size);
   const hash = (value: string, size: number) => createHash('sha256').update(value).digest('hex').slice(0, size);
@@ -30,8 +54,8 @@ export async function createConnection(context: ExtensionContext, config: McpCon
   interactive?: boolean;
   fetch?: typeof globalThis.fetch;
 }) {
-  const client = new Client({ name: 'mira-mcp-plugin', version: '0.0.0' }, {
-    capabilities: {}, inputRequired: { autoFulfill: false },
+  const client = new PrivateClient({ name: 'mira-mcp-plugin', version: '0.0.0' }, {
+    capabilities: {}, inputRequired: { autoFulfill: false }, jsonSchemaValidator: createOutputSchemaValidator(),
     versionNegotiation: { mode: config.protocol === '2026-07-28' ? { pin: config.protocol } : config.protocol, probe: { timeoutMs: 10_000, maxRetries: 0 } },
     listChanged: { tools: { onChanged: options.changed } },
     listMaxPages: 16,

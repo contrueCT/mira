@@ -127,7 +127,8 @@
       "@mira/extension-sdk"
     ],
     "external": [
-      "@modelcontextprotocol/client"
+      "@modelcontextprotocol/client",
+      "ajv"
     ]
   }
 }
