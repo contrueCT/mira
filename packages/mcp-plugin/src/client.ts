@@ -1,7 +1,7 @@
 import { createOutputSchemaValidator } from './output-schema.ts';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { Client, StreamableHTTPClientTransport, type OAuthClientProvider, type Tool, type CallToolResult } from '@modelcontextprotocol/client';
+import { Client, StreamableHTTPClientTransport, extractWWWAuthenticateParams, type OAuthClientProvider, type Tool, type CallToolResult } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import type { ExtensionContext, ExtensionTool, Json } from '@mira/extension-sdk';
 import type { McpConfig } from './config.ts';
@@ -50,6 +50,7 @@ export function resultProjection(result: CallToolResult): Awaited<ReturnType<Ext
 export async function createConnection(context: ExtensionContext, config: McpConfig, options: {
   changed(): void;
   closed(): void;
+  challenged?(challenge: { scope?: string; resourceMetadataUrl?: URL }): void;
   oauth?: OAuthClientProvider;
   interactive?: boolean;
   fetch?: typeof globalThis.fetch;
@@ -77,8 +78,21 @@ export async function createConnection(context: ExtensionContext, config: McpCon
     const authProvider = config.auth === 'oauth' && options.oauth
       ? (options.interactive ? options.oauth : { token: async () => (await options.oauth!.tokens())?.access_token })
       : config.auth === 'bearer' ? { token: async () => (await context.credentials.get('bearerToken')) ?? undefined } : undefined;
+    const fetch = options.fetch ?? globalThis.fetch;
+    const transportFetch: typeof globalThis.fetch = async (input, init) => {
+      const response = await fetch(input, init);
+      if (!options.interactive && config.auth === 'oauth' && (response.status === 401 || response.status === 403)) {
+        const challenge = extractWWWAuthenticateParams(response);
+        if (response.status === 401 || challenge.error === 'insufficient_scope') {
+          // Retain only bounded private routing/scope hints, never raw descriptions.
+          options.challenged?.({ ...(challenge.scope && challenge.scope.length <= 8192 ? { scope: challenge.scope } : {}),
+            ...(challenge.resourceMetadataUrl && challenge.resourceMetadataUrl.href.length <= 8192 ? { resourceMetadataUrl: challenge.resourceMetadataUrl } : {}) });
+        }
+      }
+      return response;
+    };
     transport = new StreamableHTTPClientTransport(new URL(config.url), {
-      ...(authProvider ? { authProvider } : {}), ...(options.fetch ? { fetch: options.fetch } : {}),
+      ...(authProvider ? { authProvider } : {}), fetch: transportFetch,
       requestInit: { redirect: 'error' }, redirectPolicy: 'same-origin', onInsufficientScope: options.interactive ? 'reauthorize' : 'throw',
       reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 0, initialReconnectionDelay: 0, reconnectionDelayGrowFactor: 1 },
     });

@@ -41,7 +41,7 @@ async function catalogFixture() {
       maximum = Math.max(maximum, ++active);
       res.once('close', () => { active--; if (number === 2) heldClosed = true; });
       const result = { tools: [
-        { name: 'echo', description: `revision ${captured}`, inputSchema: { type: 'object', properties: { [`revision${captured}`]: { type: 'string' } } } },
+        { name: 'echo', description: `revision ${captured}`, inputSchema: { type: 'object', properties: { [`revision${captured}`]: { type: captured === -1 ? 'invalid-type' : 'string' } } } },
         { name: `only_v${captured}`, inputSchema: { type: 'object' } },
       ] };
       if (number === 2) release = () => reply(result);
@@ -122,5 +122,22 @@ for (const retirement of ['disconnect', 'disable'] as const) test(`held catalog 
     fixture.release(); await pause(100);
     assert.ok(!(await host.prepare()).some(item => item.tool.name === toolName('remote', 'echo')));
     assert.equal(fixture.lists(), 2, 'Queued notifications cannot start discovery after retirement');
+  } finally { await close(); }
+});
+
+// A valid notification after a rejected candidate restores both declarations
+// and the same protected connection state, rather than leaving active error UI.
+test('catalog recovery restores connected settings and actions with the new tools', { timeout: 10_000 }, async () => {
+  const { fixture, host, close } = await installation();
+  try {
+    await host.start(); await until(fixture.ready);
+    fixture.change(-1); await until(fixture.held); fixture.release();
+    await until(async () => (await host.extensionSettings('remote'))?.status.state === 'error');
+    assert.ok(!(await host.prepare()).some(item => item.tool.name === toolName('remote', 'echo')));
+    fixture.change(3);
+    await until(async () => (await host.prepare()).some(item => item.tool.description.endsWith('revision 3')));
+    const status = (await host.extensionSettings('remote'))!.status;
+    assert.equal(status.state, 'connected'); assert.equal(status.code, undefined);
+    assert.deepEqual(status.visibleActions, ['refresh', 'disconnect']);
   } finally { await close(); }
 });

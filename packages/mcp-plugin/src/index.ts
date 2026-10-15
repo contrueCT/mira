@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { defineExtension, type ExtensionContext, type ExtensionConnectionStatus, type ExtensionToolset, type Json, type ExtensionSettingsActions } from '@mira/extension-sdk';
-import { SdkError, SdkErrorCode, StreamableHTTPClientTransport, type Tool } from '@modelcontextprotocol/client';
+import { SdkError, SdkErrorCode, StreamableHTTPClientTransport, auth, computeScopeUnion, isStrictScopeSuperset, type Tool } from '@modelcontextprotocol/client';
 import { parseConfig, type McpConfig } from './config.ts';
 import { createConnection, remoteTools, resultProjection } from './client.ts';
 import { OAuthSession, safeOAuthFetch } from './oauth.ts';
@@ -17,6 +17,7 @@ class McpInstallation {
   private state: ExtensionConnectionStatus['state'] = 'disconnected';
   private code: ExtensionConnectionStatus['code'];
   private authorization: string | null = null;
+  private challenge: { scope?: string; resourceMetadataUrl?: URL } | undefined;
   private stopped = false;
   private catalog: Promise<void> = Promise.resolve();
   private catalogRefresh: Promise<void> | undefined;
@@ -48,14 +49,14 @@ class McpInstallation {
         { id: 'authorize', label: 'Authorize', group: 'primary', execute: ({ signal }) => this.connect(signal, true) },
         { id: 'refresh', label: 'Refresh tools', group: 'secondary', execute: ({ signal }) => this.refresh(signal) },
         { id: 'disconnect', label: 'Disconnect', group: 'secondary', execute: () => this.disconnect() },
-        { id: 'forgetAuthorization', label: 'Forget authorization', group: 'secondary', execute: async () => { await this.disconnect(); await this.oauth?.forget(); } },
+        { id: 'forgetAuthorization', label: 'Forget authorization', group: 'secondary', execute: async () => { await this.disconnect(); await this.oauth?.forget(); this.challenge = undefined; } },
       ], status: () => this.status(),
     });
     this.registerControl(actions);
   }
   private configured(): boolean { return Boolean(this.config.transport === 'stdio' ? this.config.command : this.config.url); }
   private status(): ExtensionConnectionStatus {
-    return { state: this.state, ...(this.code ? { code: this.code } : {}), visibleActions: !this.configured() ? [] : this.state === 'connected' ? ['refresh', 'disconnect', ...(this.oauth ? ['forgetAuthorization'] : [])] : this.state === 'connecting' || this.state === 'pending' ? [] : ['connect', ...(this.oauth ? ['authorize', 'forgetAuthorization'] : [])],
+    return { state: this.state, ...(this.code ? { code: this.code } : {}), visibleActions: !this.configured() ? [] : this.state === 'connected' ? ['refresh', 'disconnect', ...(this.oauth ? ['authorize', 'forgetAuthorization'] : [])] : this.state === 'connecting' || this.state === 'pending' ? [] : ['connect', ...(this.oauth ? ['authorize', 'forgetAuthorization'] : [])],
       ...(this.code === 'configuration' ? { details: [{ label: 'Protocol', value: 'Check the server protocol choice. Local servers default to legacy; modern-only servers require 2026-07-28.' }] } : {}),
       ...(this.connection?.client.unsupportedHeaderTools ? { details: [{ label: 'Unsupported tools', value: 'Some tools require HTTP header mapping, which is not supported by this plugin.' }] } : {}),
       ...(this.authorization ? { authorization: { url: this.authorization, label: 'Authorize MCP access', qr: true } } : {}) };
@@ -102,6 +103,7 @@ class McpInstallation {
     const generation = ++this.generation;
     const connection = await createConnection(this.context, this.config, {
       ...(this.oauth ? { oauth: this.oauth.provider } : {}), interactive, ...(fetch ? { fetch } : {}),
+      challenged: challenge => { if (generation === this.generation && !this.stopped) this.challenge = challenge; },
       changed: () => { if (!interactive) this.scheduleCatalog(connection, generation); },
       closed: () => { if (generation === this.generation && !this.stopped) { this.withdraw(); this.state = 'disconnected'; } },
     });
@@ -115,7 +117,23 @@ class McpInstallation {
     try {
       if (interactive) {
         if (!this.oauth) throw new Error('OAuth is not configured');
-        await this.oauth.run(signal, async (_provider, waitForCallback, attemptSignal) => {
+        const challenge = this.challenge;
+        await this.oauth.run(signal, async (provider, waitForCallback, attemptSignal) => {
+          if (challenge) {
+            // The effect is never replayed. Only this explicit action may use
+            // its private challenge to drive the SDK's authorization flow.
+            const tokens = await provider.tokens();
+            const scope = computeScopeUnion(tokens?.scope, challenge.scope);
+            const options = { serverUrl: this.config.url, ...(scope ? { scope } : {}),
+              ...(challenge.resourceMetadataUrl ? { resourceMetadataUrl: challenge.resourceMetadataUrl } : {}),
+              fetchFn: safeOAuthFetch(globalThis.fetch, attemptSignal), forceReauthorization: isStrictScopeSuperset(scope, tokens?.scope) };
+            if (await auth(provider, options) === 'REDIRECT') {
+              const callback = await waitForCallback();
+              if (await auth(provider, { ...options, authorizationCode: callback.get('code')!,
+                ...(callback.has('iss') ? { iss: callback.get('iss')! } : {}) }) !== 'AUTHORIZED') throw new Error('MCP authorization unavailable');
+            }
+            return;
+          }
           try {
             const connection = await this.open(attemptSignal, true, safeOAuthFetch(globalThis.fetch, attemptSignal));
             // A server may expose discovery publicly but protect tools/list.
@@ -128,6 +146,7 @@ class McpInstallation {
             await this.connection.transport.finishAuth(callback);
           }
         });
+        if (this.challenge === challenge) this.challenge = undefined;
         // Interactive authentication never remains attached to effect requests.
         await this.disconnect();
       }
@@ -151,6 +170,7 @@ class McpInstallation {
       if (this.stopped || generation !== this.generation || this.connection !== connection) throw new Error('MCP connection retired');
       const result = await connection.client.listTools(undefined, { signal, timeout: 15_000, cacheMode: 'refresh' });
       signal.throwIfAborted(); this.publish(connection, generation, result.tools);
+      if (!this.stopped && generation === this.generation && this.connection === connection) { this.state = 'connected'; this.code = undefined; }
     });
     this.catalog = task.catch(() => {});
     return task;
