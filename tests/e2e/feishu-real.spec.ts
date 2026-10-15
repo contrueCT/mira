@@ -110,6 +110,10 @@ test('Feishu generic settings QR and explicit pairing reach the same durable Mir
     }
     await page.screenshot({ path: testInfo.outputPath('feishu-connected-desktop.png'), fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
+    for (const meta of await page.locator('.message-meta').filter({ has: page.locator('.message-source') }).all()) {
+      const source = await meta.locator('.message-source').boundingBox(); const time = await meta.locator('time').boundingBox();
+      expect(Math.abs(source!.y - time!.y)).toBeLessThan(3);
+    }
     await page.screenshot({ path: testInfo.outputPath('feishu-inbound-narrow.png'), fullPage: true });
     const outbound = page.getByText('（合成测试）已收到你的飞书消息，任务进度会在这里同步。', { exact: true });
     await outbound.scrollIntoViewIfNeeded(); await expect(outbound).toBeInViewport({ ratio: 1 });
@@ -117,6 +121,8 @@ test('Feishu generic settings QR and explicit pairing reach the same durable Mir
     const durableCounts = (await db.admin.query('SELECT (SELECT count(*) FROM wake_requests)::integer AS wakes, (SELECT count(*) FROM wake_runs)::integer AS runs')).rows[0];
     await app.close(); app = undefined; await service.close(); service = undefined; expect(closed).toBe(true);
     service = await LocalWebService.open({ ...common, extensions: await readExtensionConfiguration(configuration) });
+    await deliver('om_pair', challenge!);
+    await deliver('om_pair_replay', challenge!);
     await deliver('om_user', '（合成测试）请告诉我今天的任务进度。'); expect(effectful).toHaveLength(1);
     expect((await db.admin.query('SELECT (SELECT count(*) FROM wake_requests)::integer AS wakes, (SELECT count(*) FROM wake_runs)::integer AS runs')).rows[0]).toEqual(durableCounts);
     expect((await db.admin.query("SELECT count(*)::integer AS count FROM life_events WHERE event->>'type'='feishu.owner_message'")).rows[0].count).toBe(1);
