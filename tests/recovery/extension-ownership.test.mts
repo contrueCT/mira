@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
@@ -41,11 +42,12 @@ async function fixture() {
         state.cancelled++; return {text:'remote outcome was not durably committed'};
       } });
     } });`);
-  await writeFile(configurationFile, JSON.stringify({ entries:[{id:'owned',path:plugin}] }));
+  const entries = [{id:'owned',path:plugin,installationId:randomUUID()}];
+  await writeFile(configurationFile, JSON.stringify({ entries }));
   const { state } = await import(pathToFileURL(plugin).href);
   const options = { connectionString:db.connectionString, schema:db.schema, miraId:'ownership-service', sourceDirectory:process.cwd(),
     spoolDirectory:path.join(root,'spool'), settingsFile:path.join(root,'settings.json'), workingDirectory:root, miraHome:root,
-    synthetic:true, extensions:{ entries:[{id:'owned',path:plugin}], configurationFile } };
+    synthetic:true, extensions:{ entries, configurationFile } };
   return { db, root, state, options, async close() { await db.close(); await rm(root,{recursive:true,force:true}); } };
 }
 
@@ -121,8 +123,11 @@ test('actual service owner backend loss cancels an active child model and releas
     await until(()=>childStarted);
     await terminateOwner(f.db,f.options.miraId);
     await until(()=>childCancelled && f.state.generations[0].cleaned===1);
-    // Joining automatic cleanup must include the independent child writer.
-    await service.close();
+    // Observe the child writer release before joining/explicitly closing the service.
+    await until(async () => (await f.db.admin.query(`SELECT count(*) FROM pg_locks l JOIN mira_owners o ON l.objid=o.lock_key::oid
+      WHERE l.locktype='advisory' AND l.classid=1296650817::oid AND l.objsubid=2
+      AND l.database=(SELECT oid FROM pg_database WHERE datname=current_database())
+      AND o.mira_id IN (SELECT stream_id FROM subagents)`)).rows[0].count === '0');
     const before=parentRequests;
     replacement=await LocalWebService.open({...f.options,syntheticStream:()=>streamOf(assistant('Recovered without replay'))});
     await until(async()=>(await replacement!.status()).state==='idle');

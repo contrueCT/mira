@@ -799,7 +799,12 @@ export class ExtensionHost {
     for (const settings of this.settings.values()) settings.cancel();
     this.closeTask = (async () => {
       await this.lifecycle;
-      try { await this.ctx.fiber.dispose(); } finally {
+      // Source HMR owns loader tasks outside our explicit mutation queue. Drain
+      // its retiring fibers before disposing the root, so their leases remain
+      // part of the joinable shutdown too.
+      try {
+        try { await this.ctx.loader?.await(); } finally { await this.ctx.fiber.dispose(); }
+      } finally {
         this.closed = true; this.closing = false;
         this.options.ownerSignal?.removeEventListener('abort', this.ownershipLost);
       }
