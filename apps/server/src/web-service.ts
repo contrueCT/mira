@@ -444,7 +444,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   }
   close(): Promise<void> {
     if (this.#closeTask) return this.#closeTask;
-    this.#closed = true; this.#unsubscribeLiveInput(); this.#abort.abort(new Error('Mira is stopping'));
+    this.#closed = true; this.#unsubscribeLiveInput(); this.#abort.abort(this.#writer.signal.aborted ? this.#writer.signal.reason : new Error('Mira is stopping'));
     this.#writer.signal.removeEventListener('abort', this.#ownershipLost);
     // Fence/cancel all independent resources now, before awaiting any lease.
     // In particular a settings action must not wait behind the runtime drain.
