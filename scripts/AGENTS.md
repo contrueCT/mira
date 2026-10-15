@@ -27,3 +27,4 @@
 - `prepare-extension-package.mts` 只准备选定源码与已安装的声明运行时依赖闭包；无安装、市场或供应商特例。原有 snapshot/hash/test/install 不变；依赖版本/路径、pnpm、optional/peer 和循环图须有反例验证。
 
 - 准备helper在写目标之前拒绝源码树内部符号链接，避免展平后改变Node相对导入；声明runtime闭包中的受控依赖/pnpm链接仍支持。
+- 准备器仅支持根运行时依赖声明；拒绝嵌套安装/运行时声明、源码与依赖或目标闭包重叠、排除树入口和入口URL元字符。普通根node_modules及仅type/imports/exports子作用域必须保留正例。

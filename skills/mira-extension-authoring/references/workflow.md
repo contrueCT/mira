@@ -238,3 +238,12 @@ the same tools described above. Do not replace the normal digest-bound workflow 
 a manual JSON edit. The shipped Feishu/Lark consumer is at
 `packages/feishu-channel`; read its README before connecting, and let the user enter
 credentials or scan authorization in its generic protected extension settings.
+
+Supported source layout has one root runtime dependency manifest. Nested authored
+runtime dependency declarations and non-root `node_modules` are rejected before
+writes; type/imports/exports-only nested scopes remain supported. Ordinary physical
+root `node_modules` installations and controlled pnpm links are supported. A runtime
+dependency cannot contain the source or overlap copied authored directories, and the
+new workspace cannot contain or be inside any runtime dependency. The entry must
+reference copied source, outside excluded trees, without `%`, `#`, or `?` URL
+metacharacters. These are explicit preparation limits, not a general Node bundler.

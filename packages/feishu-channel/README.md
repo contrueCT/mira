@@ -166,3 +166,9 @@ and receipts. Old queued calls retain their cancelled generation; neither unknow
 requests nor unstarted message tails are replayed. Once the actual disconnect/reset
 has begun, cancellation does not roll back completed effects; the connection status
 reports the resulting state separately from the operation's cancellation receipt.
+
+If private state cannot be safely loaded, both registration and manual connection
+fail before credential reads or network verification. They cannot silently replace
+owner/inbox/unknown delivery evidence. Explicit unbind/reset deliberately discards a
+readable but unsupported state record and enables recovery; malformed or unsafe
+storage must first be repaired rather than overwritten.

@@ -111,3 +111,52 @@ for (const variant of ['entry-link', 'imported-file-link', 'imported-directory-l
   await assert.rejects(prepareExtensionPackage(source, target, 'index.mjs'), /Source package symlinks are unsupported/);
   await assert.rejects(realpath(target), /ENOENT/);
 }));
+
+test('nested authored installation and runtime declaration scopes fail before writes', async () => fixture(async root => {
+  const source = path.join(root, 'source'), nested = path.join(source, 'src'), target = path.join(root, 'prepared');
+  await pkg(source, { dependencies: { dep: '1' } }); await pkg(path.join(source, 'node_modules/dep'), {}, "export default 'root';");
+  await mkdir(nested); await writeFile(path.join(nested, 'entry.mjs'), "export {default} from 'dep';");
+  await pkg(path.join(nested, 'node_modules/dep'), {}, "export default 'nested';");
+  assert.equal((await import(pathToFileURL(path.join(nested, 'entry.mjs')).href)).default, 'nested');
+  await assert.rejects(prepareExtensionPackage(source, target, 'src/entry.mjs'), /Non-root authored node_modules/);
+  await assert.rejects(realpath(target), /ENOENT/); await rm(path.join(nested, 'node_modules'), { recursive: true });
+  for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+    await writeFile(path.join(nested, 'package.json'), JSON.stringify({ type: 'module', [field]: { dep: '1' } }));
+    await assert.rejects(prepareExtensionPackage(source, target, 'src/entry.mjs'), /Nested authored runtime/);
+    await assert.rejects(realpath(target), /ENOENT/);
+  }
+  // Ordinary physical npm installation and type/import-only nested scopes retain semantics.
+  await writeFile(path.join(nested, 'package.json'), JSON.stringify({ type: 'module', imports: { '#dep': 'dep' } }));
+  await writeFile(path.join(nested, 'entry.mjs'), "export {default} from '#dep';");
+  const prepared = await prepareExtensionPackage(source, target, 'src/entry.mjs');
+  const store = new ArtifactStore(path.join(root, 'artifacts')); const artifact = await store.stage(prepared.directory, prepared.entryRelative);
+  const receipt = await store.test(artifact, { command: process.execPath, args: ['--input-type=module', '-e', "if((await import('./entry.mjs')).default !== 'root') throw Error('changed scope');"] });
+  assert.equal(receipt.passed, true, receipt.stderr);
+}));
+
+test('dependency overlap with copied source and destination is rejected without mutation', async () => fixture(async root => {
+  const source = path.join(root, 'source'), dep = path.join(source, 'dep'), target = path.join(root, 'prepared');
+  await pkg(source, { dependencies: { dep: '1' } }, "import a from './dep/index.mjs'; import b from 'dep'; export default a===b;");
+  await pkg(dep, {}, 'export default {};'); await link(source, 'dep', dep);
+  assert.equal((await import(pathToFileURL(path.join(source, 'index.mjs')).href)).default, true);
+  await assert.rejects(prepareExtensionPackage(source, target, 'index.mjs'), /overlaps copied/); await assert.rejects(realpath(target), /ENOENT/);
+  const external = path.join(root, 'external'); await pkg(external, {}); await rm(path.join(source, 'node_modules/dep')); await link(source, 'dep', external);
+  const original = await readFile(path.join(external, 'index.mjs'), 'utf8');
+  await assert.rejects(prepareExtensionPackage(source, path.join(external, 'prepared'), 'index.mjs'), /runtime dependencies must not contain/);
+  await assert.rejects(realpath(path.join(external, 'prepared')), /ENOENT/); assert.equal(await readFile(path.join(external, 'index.mjs'), 'utf8'), original);
+  const insideDependency = path.join(external, 'source'); await pkg(insideDependency, { dependencies: { dep: '1' } }); await link(insideDependency, 'dep', external);
+  await assert.rejects(prepareExtensionPackage(insideDependency, target, 'index.mjs'), /overlaps copied/); await assert.rejects(realpath(target), /ENOENT/);
+}));
+
+test('entry URL metacharacters and excluded trees are rejected before workspace writes', async () => fixture(async root => {
+  const source = path.join(root, 'source'), target = path.join(root, 'prepared'); await pkg(source, {});
+  for (const filename of ['index%2Emjs', 'index#literal.mjs', 'index?literal.mjs']) {
+    await writeFile(path.join(source, filename), "export default 'literal';");
+    assert.equal((await import(pathToFileURL(path.join(source, filename)).href)).default, 'literal');
+    await assert.rejects(prepareExtensionPackage(source, target, filename), /normalized/); await assert.rejects(realpath(target), /ENOENT/);
+  }
+  for (const directory of ['.git', 'node_modules']) {
+    await mkdir(path.join(source, directory)); await writeFile(path.join(source, directory, 'entry.mjs'), 'export default {};');
+    await assert.rejects(prepareExtensionPackage(source, target, `${directory}/entry.mjs`), /excluded tree/); await assert.rejects(realpath(target), /ENOENT/);
+  }
+}));

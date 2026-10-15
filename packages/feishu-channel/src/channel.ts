@@ -73,7 +73,7 @@ export class FeishuChannel {
         { id: 'reconnect', label: '重新连接', execute: ({ signal }) => this.#changeConnection(signal, async () => { await this.#disconnect(); await this.#connect(signal); }) },
         { id: 'test', label: '发送新的测试消息', execute: ({ signal }) => this.#test(`test:${randomUUID()}`, signal) },
         { id: 'unbind', label: '解绑并清除本地凭据', execute: ({ signal }) => this.#changeConnection(signal, async () => {
-          await this.#disconnect(); await this.#context.credentials.delete('appSecret'); await this.#save(initial()); this.#credentials = undefined; this.#pairing = null; this.#error = null; this.#state = 'unconfigured';
+          await this.#disconnect(); await this.#context.credentials.delete('appSecret'); await this.#save(initial()); this.#storageReady = true; this.#credentials = undefined; this.#pairing = null; this.#error = null; this.#state = 'unconfigured';
         }) },
       ], status: () => this.status(),
     });
@@ -142,6 +142,7 @@ export class FeishuChannel {
   }
   async #manual(signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
+    if (!this.#storageReady) throw new Error('私有状态尚未安全读取，手动连接不能覆盖原记录；请先修复存储或明确解绑重置');
     if (this.#data.app) throw new Error('请先解绑现有应用，再切换应用或手动配置');
     const appSecret = await this.#context.credentials.get('appSecret');
     if (!validId(this.#config.appId) || !appSecret) throw new Error('请先保存 App ID、服务类型和 App Secret');

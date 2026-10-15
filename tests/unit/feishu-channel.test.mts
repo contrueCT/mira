@@ -254,12 +254,17 @@ test('close waits for only the in-flight request and preserves unknown instead o
   assert.equal(f.sdk.sends.filter(send => send.text.startsWith('xxx')).length, 1);
 });
 
-test('invalid private state blocks new app registration before any provider request', async t => {
+test('rejected private state blocks registration and manual connection before effects; explicit reset alone enables recovery', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mira-feishu-invalid-')); t.after(() => rm(root, { recursive: true, force: true }));
-  await writeFile(path.join(root, 'feishu-state.json'), '{"version":99}', { mode: 0o600 });
-  const f = await fixture(t, { directory: root, secrets: new Map() });
-  assert.equal(f.settings.status().state, 'error'); await assert.rejects(f.action('register'));
-  assert.deepEqual(f.sdk.calls, { register: 0, connect: 0, verify: 0 });
+  const file = path.join(root, 'feishu-state.json');
+  const original = JSON.stringify({ version: 99, owner: 'retained-owner', inbox: ['retained-inbound'], sends: { previous: { parts: [{ status: 'unknown' }] } } });
+  await writeFile(file, original, { mode: 0o600 });
+  const f = await fixture(t, { directory: root });
+  assert.equal(f.settings.status().state, 'error'); await assert.rejects(f.action('register')); await assert.rejects(f.action('connect'));
+  assert.deepEqual(f.sdk.calls, { register: 0, connect: 0, verify: 0 }); assert.deepEqual(f.reads, []);
+  assert.equal(await readFile(file, 'utf8'), original); assert.equal(f.secrets.get('appSecret'), secret);
+  await f.action('unbind'); assert.equal(f.settings.status().state, 'unconfigured'); assert.equal((await f.state()).version, 1);
+  f.secrets.set('appSecret', secret); await f.action('connect'); assert.equal(f.sdk.calls.verify, 1); assert.equal(f.sdk.calls.connect, 1);
 });
 
 test('startup inbox replay and newly arriving owner messages use the same state queue', async t => {

@@ -46,10 +46,16 @@ async function validateSourceTree(root: string, directory: string, ancestors = n
   if (!inside(root, actual) || ancestors.has(actual)) throw new Error('Source package contains an external or cyclic link');
   const metadata = await lstat(actual);
   if ((await lstat(directory)).isSymbolicLink()) throw new Error('Source package symlinks are unsupported; use ordinary source files before preparation');
-  if (metadata.isFile()) return;
+  if (metadata.isFile()) {
+    if (path.basename(actual) === 'package.json' && path.dirname(actual) !== root && (await dependencies(path.dirname(actual))).size) throw new Error('Nested authored runtime dependency declarations are unsupported');
+    return;
+  }
   if (!metadata.isDirectory()) throw new Error('Source package contains a non-ordinary file');
   const next = new Set(ancestors).add(actual);
-  for (const name of await readdir(actual)) if (name !== 'node_modules' && name !== '.git') await validateSourceTree(root, path.join(actual, name), next);
+  for (const name of await readdir(actual)) {
+    if (name === 'node_modules') { if (actual !== root) throw new Error('Non-root authored node_modules layouts are unsupported'); continue; }
+    if (name !== '.git') await validateSourceTree(root, path.join(actual, name), next);
+  }
 }
 /** ArtifactStore follows all authored links. Validate every dependency tree before
  * exposing it to staging, including nested package folders and non-imported links.
@@ -72,7 +78,8 @@ async function validateDependencyTrees(closure: Set<string>): Promise<void> {
 /** Prepare an external authoring workspace using only already-installed runtime
  * dependencies. Stage/test/install/activate remains the existing separate workflow. */
 export async function prepareExtensionPackage(sourceRoot: string, destination: string, entryRelative = 'src/index.ts'): Promise<{ directory: string; entryRelative: 'entry.mjs'; packages: number }> {
-  if (!path.isAbsolute(sourceRoot) || !path.isAbsolute(destination) || !entryRelative || path.isAbsolute(entryRelative) || /[\\\0]/u.test(entryRelative) || entryRelative.split('/').some(part => !part || part === '.' || part === '..')) throw new Error('Use absolute directories and a normalized package-relative entry');
+  if (!path.isAbsolute(sourceRoot) || !path.isAbsolute(destination) || !entryRelative || path.isAbsolute(entryRelative) || /[\\\0%#?]/u.test(entryRelative) || entryRelative.split('/').some(part => !part || part === '.' || part === '..')) throw new Error('Use absolute directories and a normalized package-relative entry');
+  if (entryRelative.split('/').some(part => part === 'node_modules' || part === '.git')) throw new Error('Entry must reference copied authored source, not an excluded tree');
   const source = await realpath(sourceRoot); const target = path.join(await realpath(path.dirname(destination)), path.basename(destination));
   if (inside(source, target) || inside(target, source)) throw new Error('Prepared workspace and source must not contain one another');
   const entry = await realpath(path.join(source, entryRelative));
@@ -90,6 +97,12 @@ export async function prepareExtensionPackage(sourceRoot: string, destination: s
   };
   await validateSourceTree(source, source);
   await visit(source);
+  for (const dependency of closure) {
+    // Root node_modules is excluded from the source copy, so ordinary npm installs
+    // remain valid. A dependency in authored source would otherwise be copied twice.
+    if (inside(dependency, source) || (inside(source, dependency) && path.relative(source, dependency).split(path.sep)[0] !== 'node_modules')) throw new Error('Runtime dependency overlaps copied authored source');
+    if (inside(dependency, target) || inside(target, dependency)) throw new Error('Prepared workspace and runtime dependencies must not contain one another');
+  }
   await validateDependencyTrees(closure);
   // No writes until the complete declared closure is known. The destination must be new.
   await mkdir(target);
