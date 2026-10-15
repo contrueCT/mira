@@ -66,6 +66,55 @@ test('settings close, Escape and Back/Forward leave the timeline usable', async 
   await expect(page.getByLabel('给 Mira 发消息', { exact: true })).toBeEditable();
 });
 
+test('settings retain drafts across backdrop clicks and inside-to-outside drags on desktop and narrow screens', async ({ page }, testInfo) => {
+  await mockSettings(page);
+  await page.route('**/api/memory', route => route.fulfill({ json: { configured: false } }));
+  await openSettings(page);
+  await page.getByRole('tab', { name: 'Memory', exact: true }).click();
+  const draft = page.getByLabel('修改记忆', { exact: true });
+  await draft.fill('An unsaved fixture draft');
+  for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    await page.mouse.click(5, 5);
+    await expect(page.getByRole('dialog', { name: '设置', exact: true })).toBeVisible();
+    const input = await draft.boundingBox(); const dialog = await page.locator('dialog.settings-dialog').boundingBox();
+    if (!input || !dialog) throw Error('Settings draft must be visible');
+    await page.mouse.move(input.x + 50, input.y + 20); await page.mouse.down();
+    await page.mouse.move(dialog.x - 5, input.y + 20, { steps: 10 }); await page.mouse.up();
+    await expect(page.getByRole('dialog', { name: '设置', exact: true })).toBeVisible();
+    await expect(draft).toHaveValue('An unsaved fixture draft');
+    await expect(page).toHaveURL(/#settings$/);
+    await page.screenshot({ path: testInfo.outputPath(`settings-backdrop-${viewport.width}.png`) });
+  }
+  await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByLabel('给 Mira 发消息', { exact: true })).toBeEditable();
+});
+
+test('opening settings twice or waiting for slow reads never dismisses the modal', async ({ page }) => {
+  await mockSettings(page);
+  await page.route('**/api/settings', async route => {
+    await new Promise(resolve => setTimeout(resolve, 750));
+    await route.fulfill({ json: settingsFixture() });
+  });
+  await page.goto('/');
+  const gear = page.getByRole('button', { name: '模型设置', exact: true });
+  await expect(gear).toBeVisible();
+  const box = await gear.boundingBox(); if (!box) throw Error('Settings button must be visible');
+  // Native second click lands at the opener's coordinates, now behind the modal.
+  await page.mouse.dblclick(box.x + box.width / 2, box.y + box.height / 2, { delay: 100 });
+  await expect(page.getByRole('dialog', { name: '设置', exact: true })).toBeVisible();
+  await expect(page.getByLabel('服务商', { exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/#settings$/);
+  await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
+  await gear.click();
+  await expect(page.getByText('正在读取配置…', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('服务商', { exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: '设置', exact: true })).toBeVisible();
+  await page.goBack(); await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.goForward(); await expect(page.getByRole('dialog', { name: '设置', exact: true })).toBeVisible();
+});
+
 test('uncertain send is never automatically resent after reload or reconnect', async ({ page }) => {
   let sends = 0;
   await page.route('**/api/messages', async route => { sends++; await route.abort('failed'); });
@@ -783,4 +832,131 @@ test('request retry status survives refresh and disappears on completion without
   await expect(page.getByText('PRIVATE_PROVIDER_SENTINEL')).toHaveCount(0);
   phase = null; await expect(page.locator('.working-indicator')).toHaveCount(0);
   await page.reload(); await expect(page.locator('.working-indicator')).toHaveCount(0);
+});
+
+test('ordinary plugin messages use subtle source labels without impersonating Web input', async ({ page }, testInfo) => {
+  const at = '2026-10-15T01:00:00Z';
+  const items = [
+    { id: 'plugin-in', role: 'user', text: '普通插件收到的消息', occurredAt: at, source: { kind: 'extension', extensionId: 'weather-station', label: '气象站', direction: 'inbound', senderId: 'sensor-1', senderVerified: true } },
+    { id: 'plugin-out', role: 'assistant', text: '已经发出的通知', occurredAt: at, source: { kind: 'extension', extensionId: 'weather-station', label: '气象站', direction: 'outbound' } },
+    { id: 'normal-final', role: 'assistant', text: '已经发出的通知', occurredAt: at },
+  ];
+  await page.route('**/api/timeline', route => route.fulfill({ json: { items, nextCursor: null } }));
+  await page.goto('/');
+  await expect(page.getByLabel('气象站 扩展消息')).toHaveCount(2);
+  await expect(page.getByText('已经发出的通知', { exact: true })).toHaveCount(2);
+  await expect(page.locator('.message-source')).toHaveCount(2);
+  await expect(page.locator('.message-source').first()).toHaveCSS('font-size', '10px');
+  await expect(page.locator('.message-source').first()).toHaveAttribute('title', '扩展 weather-station · 来源身份 sensor-1（由扩展验证）');
+  await page.screenshot({ path: testInfo.outputPath('extension-source-desktop.png'), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('extension-source-narrow.png'), fullPage: true });
+  await page.reload(); await expect(page.locator('.message-source')).toHaveCount(2);
+});
+
+// The host owns visibility. This generic fixture supplies only its current public
+// actions; the browser groups them without provider IDs or state-specific rules.
+test('generic extension actions default to primary, collapse secondary controls and keep cancellation reachable', async ({ page }, testInfo) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  const initialActions = [
+    { id: 'connect', label: 'Connect generic' },
+    { id: 'authorize', label: 'Authorize generic', group: 'primary' },
+    { id: 'reset', label: 'Reset generic', group: 'secondary' },
+  ];
+  const view = {
+    revision: '1'.repeat(64), fields: [{ key: 'token', label: 'Generic private token', type: 'secret', configured: true }],
+    actions: initialActions, status: { state: 'disconnected' },
+    operation: null as null | { id: string; action: string; state: string },
+  };
+  let starts = 0, cancellations = 0, failNext = false;
+  await page.route('**/api/extensions', route => route.fulfill({ json: {
+    available: true, releases: [], error: null, extensions: [{
+      id: 'generic-fixture', revision: '1'.repeat(64), enabled: true, status: 'active', activation: 'generic-activation',
+      tools: [], contextProviders: [], generated: null, error: null,
+    }],
+  } }));
+  await page.route('**/api/extensions/generic-fixture/settings', route => route.fulfill({ json: { settings: view } }));
+  await page.route('**/api/extensions/generic-fixture/settings/actions', async route => {
+    starts++;
+    const body = route.request().postDataJSON() as { action: string; expectedRevision: string };
+    expect(body.expectedRevision).toBe(view.revision);
+    if (failNext) { failNext = false; await route.abort('failed'); return; }
+    view.revision = '2'.repeat(64); view.actions = []; view.status = { state: 'pending' };
+    view.operation = { id: 'generic-operation', action: body.action, state: 'pending' };
+    await route.fulfill({ json: { operation: view.operation } });
+  });
+  await page.route('**/api/extensions/generic-fixture/settings/cancel', async route => {
+    cancellations++;
+    expect(route.request().postDataJSON()).toEqual({ operationId: 'generic-operation' });
+    view.revision = '3'.repeat(64); view.actions = initialActions; view.status = { state: 'disconnected' };
+    view.operation = { id: 'generic-operation', action: 'connect', state: 'cancelled' };
+    await route.fulfill({ json: { operation: view.operation } });
+  });
+  const openSettings = async () => {
+    await page.getByRole('button', { name: '模型设置', exact: true }).click();
+    await page.getByRole('tab', { name: '扩展', exact: true }).click();
+    await page.getByRole('button', { name: '连接设置', exact: true }).click();
+  };
+  await page.goto('/'); await openSettings();
+  const settings = page.getByLabel('generic-fixture 连接设置');
+  const more = settings.locator('summary', { hasText: '更多操作' });
+  const details = settings.locator('details');
+  const connect = settings.getByRole('button', { name: 'Connect generic', exact: true });
+  const authorize = settings.getByRole('button', { name: 'Authorize generic', exact: true });
+  const reset = settings.getByRole('button', { name: 'Reset generic', exact: true });
+  const edit = settings.getByRole('button', { name: '编辑连接设置', exact: true });
+  const token = settings.getByLabel('Generic private token', { exact: true });
+  await expect(connect).toBeVisible(); await expect(authorize).toBeVisible();
+  await expect(reset).not.toBeVisible(); await expect(edit).not.toBeVisible();
+  await expect(details).not.toHaveAttribute('open');
+  await page.screenshot({ path: testInfo.outputPath('generic-extension-actions-collapsed-desktop.png'), fullPage: true });
+  // Native disclosure supports keyboard interaction without any settings write.
+  await more.focus(); await page.keyboard.press('Enter');
+  await expect(reset).toBeVisible(); await expect(edit).toBeVisible();
+  await edit.click(); await token.fill('discarded-generic-draft');
+  await more.click();
+  await expect(token).toHaveValue('discarded-generic-draft');
+  await expect(connect).toBeDisabled();
+  await settings.getByRole('button', { name: '取消设置编辑', exact: true }).click();
+  await expect(token).toHaveCount(0); await expect(details).not.toHaveAttribute('open');
+  await more.click(); await edit.click(); await expect(token).toHaveValue('');
+  await token.fill('closed-generic-draft'); await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await openSettings(); await expect(details).not.toHaveAttribute('open');
+  await more.click(); await edit.click(); await expect(token).toHaveValue('');
+  await token.fill('history-generic-draft'); await page.goBack();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.goForward(); await page.getByRole('tab', { name: '扩展', exact: true }).click();
+  await page.getByRole('button', { name: '连接设置', exact: true }).click();
+  await expect(details).not.toHaveAttribute('open');
+  await more.click(); await edit.click(); await expect(token).toHaveValue('');
+  await settings.getByRole('button', { name: '取消设置编辑', exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await reset.scrollIntoViewIfNeeded();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('generic-extension-actions-expanded-narrow.png'), fullPage: true });
+  await more.click();
+  // Synchronous admission suppresses duplicate clicks, even before React rerenders.
+  await connect.evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
+  await expect(settings).toContainText('操作仍在进行');
+  expect(starts).toBe(1);
+  await expect(connect).toHaveCount(0); await expect(authorize).toHaveCount(0);
+  await expect(details).not.toHaveAttribute('open');
+  await expect(settings.getByRole('button', { name: '取消当前操作', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+  await openSettings();
+  await expect(details).not.toHaveAttribute('open');
+  await settings.getByRole('button', { name: '取消当前操作', exact: true }).click();
+  await expect(settings).toContainText('操作已取消'); expect(cancellations).toBe(1);
+  await expect(connect).toBeVisible();
+  // An unknown action response keeps its existing reconciliation control outside
+  // the collapsed group and never starts another action on its own.
+  failNext = true; await more.click(); await reset.click();
+  await expect(settings.getByRole('alert')).toContainText('操作结果尚未确认');
+  await more.click(); await expect(connect).toBeDisabled();
+  await settings.getByRole('button', { name: '重新读取并核对设置', exact: true }).click();
+  await expect(connect).toBeEnabled(); expect(starts).toBe(2);
+  expect(await page.evaluate(() => JSON.stringify([localStorage, sessionStorage]))).not.toContain('generic-draft');
+  expect(errors).toEqual([]);
 });

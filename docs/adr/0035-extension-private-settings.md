@@ -1,0 +1,74 @@
+# ADR 0035：扩展私有凭据与声明式设置
+
+- 状态：Accepted
+- 日期：2026-10-15
+- 范围：用户批准的通用扩展能力，手工扩展、生成扩展及飞书消费者共用。
+
+## 决定
+
+`ExtensionContext` 提供 `credentials.get/has/set/delete`、`privateDirectory` 和
+`registerSettings`。凭据是同 OS 账户的 0700 目录/0600 原子文件，不是加密保险箱或
+安全沙箱。命名空间绑定配置 ID 和既有持久安装身份，不按插件声明名称或激活版本分配。
+更新、回滚、重载、停用保留凭据。卸载明确删除该安装的凭据，保留独立 `data/` 下的
+扩展自管文件；同 ID 重新安装获得新身份，不继承旧凭据或私有状态。
+
+宿主默认从持久配置文件同级的 `extension-private/` 分配私有根目录。必须把扩展配置
+与用户数据放在源码、Memory 和 artifact 目录之外；组装层传入已知保护根，宿主在创建私有文件前拒绝规范路径重叠，包括符号链接别名。程序化宿主可显式指定
+`privateDirectory`；没有持久安装身份时该能力不可用。扩展自行管理普通文件 ledger，
+宿主不新增通用数据库、作业队列或 OAuth 引擎。
+
+现有设置→扩展内渲染至多 24 个 text、boolean、select、secret 字段及 12 个动作。
+字段标题、状态明细为有界纯文本。授权链接必须为无用户名/密码/fragment 的 HTTPS
+URL；二维码完全在本地生成，不向第三方传输链接。无任意 HTML、脚本、iframe 或自定义路由。
+
+已声明普通字段可回显并合并到现有 config，保存复用 configure/reload；未声明字段不
+在此表单回显。仅凭据实际变化时也强制重新 apply；普通配置与凭据均未变时不重连。
+插件自己的 credentials.set/delete 仅保存，不自动重启注册或刷新动作。secret 只返回 configured 状态，留空不变，清除须显式选择。写入只在
+受现有同源/Host/网页密码保护的管理 API，模型管理工具不提供秘密写入参数。
+扩展运行时可保存服务返回的凭据，必须自行避免把凭据放入工具描述、事件、上下文或普通文件日志。
+状态与授权明细只经受保护的设置 API 投影，不进入模型管理接口或历史。框架隐藏原始
+动作/状态异常，并检查公开投影中的已存凭据字面值，不能以此承诺隔离恶意同 OS 扩展。
+
+动作异步返回 pending，由 settings revision 核对激活、配置、凭据和公开状态。一次只
+运行一个动作，显式取消及生命周期退役发出 AbortSignal，现有 execution lease 等待
+真实结束后清理。取消不能撤销远端已完成的效果；失败和未知 HTTP 结果不自动重试。
+关闭设置清空未保存输入，已启动动作继续，用户重开后核对或显式取消。
+
+凭据和普通配置不是跨文件原子事务。配置保存/应用失败时可能已经写入凭据；界面要求
+重新读取核对，不把 HTTP 不明结果当成功或自动重发。没有额外模型授权判断器。
+扩展工具抛出的异常仍走既有 unknown-outcome 路径，只有错误文字被固定安全文本替换。
+
+## 验证
+
+`tests/unit/extension-settings.test.mts` 真实 Cordis/私有文件验证身份、保存/清除、
+容量、投影、取消与重载；`management.test.mts` 验证 HTTP 来源、schema 和白名单投影。
+`tests/e2e/management-real.spec.ts` 增加真实浏览器→HTTP→PG/service→Cordis 的设置链路、
+取消、二维码、桌面/窄屏截图和凭据不进入 config/模型上下文/历史的断言。
+真实数据库和浏览器门禁必须在支持本地监听的执行环境运行，不以离线测试代替。
+
+## 插件自选的对话发起
+
+`registerSettings` 返回绑定本安装、当前 activation 的 `start/current/cancel` handle。
+插件可自行在普通工具中调用已声明动作；框架不新增 connect 工具或授权协议。
+handle 只返回 `{id, action, state}` operation receipt，不返回设置 view、状态明细或
+provider URL。设置页和插件工具共用同一 single-flight runner、取消信号与执行租约；
+旧 activation 的 handle 全部拒绝。插件工具自身持有 lease，handle 不排入可能正等待
+该 lease 的全局生命周期队列，避免重载排空时死锁。插件自行处理过期、刷新与用户引导。
+
+同一 runner 在异步 revision/凭据读取前同步保留局部准入；start 与设置保存互斥。
+保存的准入覆盖原子凭据写入和随后的 reapply，避免动作在保存中途启动并产生未确认的
+外部效果。竞争方明确返回 conflict，不排队重放；不引入全局生命周期锁反向依赖。
+
+## 通用动作展示
+
+动作静态声明可选 `group: 'primary' | 'secondary'`，省略等价于 primary；
+状态同步投影可选 `visibleActions: string[]`，省略等价于全部已声明动作，空数组
+表示当前无可用动作。宿主校验唯一的已声明 ID 子集，按声明顺序投影，不增加动态
+分组、工作流或 provider 分支。插件业务状态如何映射动作完全由插件自己决定。
+无效/抛错的状态投影隐藏全部动作，仍允许核对或编辑设置。
+
+实际可见动作及 group 属于 revision。HTTP 和插件 handle 使用同一准入检查，
+在异步凭据读取后同步核对 revision 与当前动作可见性，拒绝隐藏动作启动。
+可见性是操作当前可用性的技术约束，不是授权系统；不影响已有操作查询和取消。
+Web 将 secondary 与“编辑连接设置”放进默认折叠的“更多操作”，primary、
+“取消当前操作”和编辑中的取消按钮保持直接可见。没有插件名称、状态或 ID 特判。

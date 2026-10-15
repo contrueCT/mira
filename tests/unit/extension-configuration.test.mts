@@ -76,10 +76,10 @@ async function assertNoTemporaryFiles(directory: string): Promise<void> {
 test('enable, configure, and disable save the same ordinary JSON before apply and survive fresh hosts', async () => {
   await withDirectory(async directory => {
     const entry = await fixture(directory);
-    const unrelatedEntry = { id: 'untouched', path: entry.extensionFile, enabled: false, config: { keep: ['this'] }, note: 'manual entry metadata' };
+    const unrelatedEntry = { id: 'untouched', installationId: '22222222-2222-4222-8222-222222222222', path: entry.extensionFile, enabled: false, config: { keep: ['this'] }, note: 'manual entry metadata' };
     const initial = {
       entries: [
-        { id: 'configured', path: entry.extensionFile, enabled: false, config: { label: 'initial' }, note: 'keep this field' },
+        { id: 'configured', installationId: '11111111-1111-4111-8111-111111111111', path: entry.extensionFile, enabled: false, config: { label: 'initial' }, note: 'keep this field' },
         unrelatedEntry,
       ],
       hmr: false,
@@ -160,7 +160,7 @@ test('enable, configure, and disable save the same ordinary JSON before apply an
 test('failed activation leaves saved desired configuration for restart and never claims rollback', async () => {
   await withDirectory(async directory => {
     const entry = await fixture(directory);
-    await writeDocument(entry.configurationFile, { entries: [{ id: 'configured', path: entry.extensionFile, config: { label: 'working' } }], comment: 'preserved' });
+    await writeDocument(entry.configurationFile, { entries: [{ id: 'configured', installationId: '11111111-1111-4111-8111-111111111111', path: entry.extensionFile, config: { label: 'working' } }], comment: 'preserved' });
     const host = await savedHost(entry.configurationFile);
     const failing = { label: 'saved-but-failing', fail: true };
     try {
@@ -176,7 +176,7 @@ test('failed activation leaves saved desired configuration for restart and never
       assert.equal(host.inspect()[0]!.status, 'failed');
       assert.deepEqual(host.inspect()[0]!.tools, []);
       assert.deepEqual((await document(entry.configurationFile)).entries[0]!['config'], failing);
-      assert.deepEqual(entry.state.saved.at(-1), { id: 'configured', path: entry.extensionFile, config: failing });
+      assert.deepEqual(entry.state.saved.at(-1), { id: 'configured', installationId: '11111111-1111-4111-8111-111111111111', path: entry.extensionFile, config: failing });
       assert.deepEqual(entry.state.cleaned, [{ label: 'working' }, failing]);
       await assertNoTemporaryFiles(directory);
     } finally { await host.close(); }
@@ -195,7 +195,7 @@ test('failed activation leaves saved desired configuration for restart and never
 test('observed external edits reject awaited saves without changing active runtime or clobbering any bytes', async () => {
   await withDirectory(async directory => {
     const entry = await fixture(directory);
-    const initialEntry = { id: 'configured', path: entry.extensionFile, config: { label: 'runtime-original' } };
+    const initialEntry = { id: 'configured', installationId: '11111111-1111-4111-8111-111111111111', path: entry.extensionFile, config: { label: 'runtime-original' } };
     await writeDocument(entry.configurationFile, { entries: [initialEntry], comment: 'original' });
     const host = await savedHost(entry.configurationFile);
     try {
@@ -230,7 +230,7 @@ test('observed external edits reject awaited saves without changing active runti
 test('changed configuration between read and start is rejected before activating any extension', async () => {
   for (const mismatch of ['entries', 'hmr'] as const) await withDirectory(async directory => {
     const entry = await fixture(directory);
-    const original = { entries: [{ id: 'configured', path: entry.extensionFile, config: { label: 'read' } }], hmr: false };
+    const original = { entries: [{ id: 'configured', installationId: '11111111-1111-4111-8111-111111111111', path: entry.extensionFile, config: { label: 'read' } }], hmr: false };
     await writeDocument(entry.configurationFile, original);
     const loaded = await readExtensionConfiguration(entry.configurationFile);
     const external = await writeDocument(entry.configurationFile, mismatch === 'hmr'
@@ -249,7 +249,7 @@ test('changed configuration between read and start is rejected before activating
 test('filesystem failure after preparing a save removes its temporary file and leaves runtime untouched', async () => {
   await withDirectory(async directory => {
     const entry = await fixture(directory);
-    const original = await writeDocument(entry.configurationFile, { entries: [{ id: 'configured', path: entry.extensionFile, config: { label: 'still-running' } }] });
+    const original = await writeDocument(entry.configurationFile, { entries: [{ id: 'configured', installationId: '11111111-1111-4111-8111-111111111111', path: entry.extensionFile, config: { label: 'still-running' } }] });
     const host = await savedHost(entry.configurationFile);
     try {
       await host.start();
@@ -280,7 +280,7 @@ test('filesystem failure after preparing a save removes its temporary file and l
 test('awaited configuration changes while disabled each persist without activating until enabled', async () => {
   await withDirectory(async directory => {
     const entry = await fixture(directory);
-    await writeDocument(entry.configurationFile, { entries: [{ id: 'configured', path: entry.extensionFile, enabled: false, config: { label: 'initial' } }] });
+    await writeDocument(entry.configurationFile, { entries: [{ id: 'configured', installationId: '11111111-1111-4111-8111-111111111111', path: entry.extensionFile, enabled: false, config: { label: 'initial' } }] });
     const host = await savedHost(entry.configurationFile);
     const finalConfig = { label: 'configured-while-disabled', nested: { keep: true } };
     try {
@@ -313,7 +313,7 @@ test('awaited configuration changes while disabled each persist without activati
 test('start adopts unrelated manual keys changed after read without discarding them on the next save', async () => {
   await withDirectory(async directory => {
     const entry = await fixture(directory);
-    const entries = [{ id: 'configured', path: entry.extensionFile, config: { label: 'same-entry' } }];
+    const entries = [{ id: 'configured', installationId: '11111111-1111-4111-8111-111111111111', path: entry.extensionFile, config: { label: 'same-entry' } }];
     await writeDocument(entry.configurationFile, { entries });
     const loaded = await readExtensionConfiguration(entry.configurationFile);
     assert.equal(Object.hasOwn(loaded, 'hmr'), false);
@@ -333,7 +333,7 @@ test('start adopts unrelated manual keys changed after read without discarding t
 test('restart is runtime-only even with a saved configuration and does not rewrite the file', async () => {
   await withDirectory(async directory => {
     const entry = await fixture(directory);
-    const original = await writeDocument(entry.configurationFile, { entries: [{ id: 'configured', path: entry.extensionFile, config: { label: 'reload' } }] });
+    const original = await writeDocument(entry.configurationFile, { entries: [{ id: 'configured', installationId: '11111111-1111-4111-8111-111111111111', path: entry.extensionFile, config: { label: 'reload' } }] });
     const host = await savedHost(entry.configurationFile);
     try {
       await host.start();
@@ -353,7 +353,7 @@ test('restart is runtime-only even with a saved configuration and does not rewri
 test('programmatic hosts remain ephemeral and never infer a configuration file', async () => {
   await withDirectory(async directory => {
     const entry = await fixture(directory);
-    const entries = [{ id: 'configured', path: entry.extensionFile, config: { label: 'on-disk' } }];
+    const entries = [{ id: 'configured', installationId: '11111111-1111-4111-8111-111111111111', path: entry.extensionFile, config: { label: 'on-disk' } }];
     const original = await writeDocument(entry.configurationFile, { entries });
     const host = new ExtensionHost({ entries, receive });
     try {
@@ -381,7 +381,7 @@ test('programmatic hosts remain ephemeral and never infer a configuration file',
 test('omitted configuration is exposed as null and explicit null survives disable, enable, and restart', async () => {
   await withDirectory(async directory => {
     const entry = await fixture(directory);
-    await writeDocument(entry.configurationFile, { entries: [{ id: 'configured', path: entry.extensionFile }] });
+    await writeDocument(entry.configurationFile, { entries: [{ id: 'configured', installationId: '11111111-1111-4111-8111-111111111111', path: entry.extensionFile }] });
     const host = await savedHost(entry.configurationFile);
     try {
       await host.start();

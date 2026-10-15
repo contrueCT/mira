@@ -181,3 +181,12 @@ groups; restart returns unavailable old handles and never replays effects.
 Native setup: `pnpm terminal:prepare` after script-disabled install. Mac/Linux only.
 See [ADR 0032](../../docs/adr/0032-persistent-terminal-processes.md) for bounds,
 cancellation, child isolation and supervision limits.
+
+### Extension connection settings
+
+`GET/POST /api/extensions/:id/settings`, `POST .../settings/actions` and
+`POST .../settings/cancel` use the same protected Web API boundary. They expose only
+validated declarative fields, configured booleans and explicitly public status.
+No secret read endpoint or model credential-write tool exists. Actions return pending
+receipts and are checked with exact settings revisions; polling observes completion.
+Existing extension lifecycle/configuration remains authoritative. See ADR 0035.

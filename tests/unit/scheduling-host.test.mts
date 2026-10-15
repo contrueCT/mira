@@ -200,6 +200,11 @@ test('server schedule projection binds unforgeable owner/source namespaces and p
   assert.deepEqual(await api.get(input.key), enqueued); assert.deepEqual(await api.list(), [enqueued]);
   assert.ok(calls.every(call => call.owner === owner));
   assert.deepEqual(calls.filter(call => call.method === 'replace').map(call => call.version), [99]);
+  const message = { direction: 'outbound' as const, text: 'Scheduled notification', sourceLabel: 'Ordinary plugin' };
+  const projected = await api.create({ ...input, event: { ...input.event, message } });
+  assert.deepEqual(projected.delivery?.event.message, message);
+  const envelope = calls.filter(call => call.method === 'create').at(-1)!.input!.event;
+  assert.deepEqual(envelope.payload, { extensionId: 'configured', eventId: input.event.id, data: input.event.payload, wakeId: input.wake!.id, scheduleOwner: owner, scheduleKey: input.key, message });
 });
 
 test('delivery timer coalesces notifications without overlapping passes and drains cleanly on close', async () => {

@@ -13,14 +13,14 @@ export function extensionScheduling(writer: SchedulingWriter): Factory {
       key: value.key, dueAt: value.dueAt, ...(value.expiresAt === undefined ? {} : { expiresAt: value.expiresAt }),
       event: { id: JSON.stringify(['scheduled', owner, value.key, 'event']), type: value.event.type,
         source: 'extension', occurredAt: value.event.occurredAt,
-        payload: { extensionId, eventId: value.event.id, data: value.event.payload,
+        payload: { extensionId, eventId: value.event.id, data: value.event.payload, ...(value.event.message === undefined ? {} : { scheduleOwner: owner, scheduleKey: value.key, message: { ...value.event.message } }),
           ...(value.wake ? { wakeId: value.wake.id } : {}) } },
       ...(value.wake ? { wake: { id: JSON.stringify(['scheduled', owner, value.key, 'wake']), reason: value.wake.reason } } : {}),
     });
     const delivery = (value: ScheduledDelivery): Delivery => {
-      const payload = value.event.payload as { eventId: string; data: Input['event']['payload']; wakeId?: string };
+      const payload = value.event.payload as unknown as { eventId: string; data: Input['event']['payload']; wakeId?: string; message?: Input['event']['message'] };
       return { key: value.key, dueAt: value.dueAt, ...(value.expiresAt === undefined ? {} : { expiresAt: value.expiresAt }),
-        event: { id: payload.eventId, type: value.event.type, occurredAt: value.event.occurredAt, payload: payload.data },
+        event: { id: payload.eventId, type: value.event.type, occurredAt: value.event.occurredAt, payload: payload.data, ...(payload.message === undefined ? {} : { message: payload.message }) },
         ...(value.wake ? { wake: { id: payload.wakeId!, reason: value.wake.reason } } : {}),
         version: value.version, status: value.status, createdAt: value.createdAt, updatedAt: value.updatedAt };
     };

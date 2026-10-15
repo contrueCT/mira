@@ -1,3 +1,4 @@
+import { extensionMessage } from './extension-messages.ts';
 import { TerminalManager, createTerminalTools } from './terminals.ts';
 import { SubagentManager, createSubagentTools } from './subagents.ts';
 import type { SubagentWriter, SubagentReader } from '@mira/life';
@@ -9,7 +10,7 @@ import { assertJson } from '@mira/context';
 import { realpath, stat } from 'node:fs/promises';
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Api } from '@earendil-works/pi-ai';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
-import { ExtensionHost, ExtensionRevisionConflictError, type LocalExtensionEntry, type RegisteredContextProvider, type ExtensionChange } from '@mira/extension-host';
+import { ExtensionHost, ExtensionRevisionConflictError, ExtensionSettingsError, type ExtensionSettingsWrite, type LocalExtensionEntry, type RegisteredContextProvider, type ExtensionChange } from '@mira/extension-host';
 import { HistoryError, SubagentError, WakeLoop, type HistoryEntry, type RunHistoryReader, type DreamingWriter, type SchedulingWriter, type LiveInputWriter } from '@mira/life';
 import { migrate, PostgresPersistence, PersistenceError } from '@mira/persistence';
 import { PiDurableRuntime, type AutoCompactionOptions, createHistoryTools, decodeRecords } from '@mira/runtime-pi';
@@ -63,6 +64,7 @@ const publicFailure = '运行中断，请检查终端与配置。已保存的消
 type Timeline = Awaited<ReturnType<WebBackend['timeline']>>;
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
 function visible(entry: HistoryEntry): Timeline['items'][number] | null {
+  const sourced = extensionMessage(entry); if (sourced) return sourced;
   if (entry.kind === 'event') {
     const payload = entry.event.payload;
     if (entry.event.source === 'external' && entry.event.type === 'external.notification' && object(payload)
@@ -156,7 +158,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       writer.signal.addEventListener('abort', () => { void terminalManager.close(); }, { once: true });
       const baseTools = [...createTerminalTools(terminalManager, writer.miraId), createAttachmentTool(attachments, cwd), ...createWorkspaceTools(cwd).map(tool => withVideoRead(tool, attachments, cwd)), ...createHistoryTools(persistence.history(writer.miraId))];
       if (options.extensions) {
-        host = new ExtensionHost({ ...options.extensions, schedules: extensionScheduling(writer), onSchedulesChanged: () => { if (service) service.#deliveries?.schedule(); }, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage', 'subagent_spawn', 'subagent_status', 'subagent_send', 'subagent_wait', 'subagent_cancel'], receive: async (extensionId, event, wake) => {
+        host = new ExtensionHost({ ...options.extensions, privateStorageExcludedDirectories: [options.sourceDirectory, ...options.memoryRoot ? [options.memoryRoot] : []], schedules: extensionScheduling(writer), onSchedulesChanged: () => { if (service) service.#deliveries?.schedule(); }, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage', 'subagent_spawn', 'subagent_status', 'subagent_send', 'subagent_wait', 'subagent_cancel'], receive: async (extensionId, event, wake) => {
           const receipt = await extensionReceiver(writer)(extensionId, event, wake);
           if (wake && receipt === 'inserted' && service) service.#kick();
           return receipt;
@@ -335,6 +337,20 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     catch { error = 'Staged releases could not be read. Raw diagnostics are hidden.'; }
     return { available: true, extensions: this.#host.inspect().map(entry => extensionView(entry, this.#host!)), releases, error };
   }
+  async #extensionSettingsCall<T>(run: (host: ExtensionHost) => Promise<T>, mutate = false): Promise<T> {
+    if (!this.#host || this.#closed || this.#writer.signal.aborted) throw new WebHttpError('unavailable');
+    if (mutate && (this.#drain || this.#configurationWrite)) throw new WebHttpError('busy');
+    if (mutate) this.#configurationWrite = true;
+    try { return await run(this.#host); }
+    catch (error) {
+      if (error instanceof ExtensionSettingsError) throw new WebHttpError(error.code === 'invalid' ? 'invalid_input' : error.code === 'conflict' ? 'conflict' : 'unavailable');
+      throw new WebHttpError('unavailable');
+    } finally { if (mutate) { this.#configurationWrite = false; if (this.#kickRequested && !this.#error) this.#kick(); else this.#dreaming?.schedule(); } }
+  }
+  async extensionSettings(id: string) { return this.#extensionSettingsCall(host => host.extensionSettings(id)); }
+  async saveExtensionSettings(id: string, input: ExtensionSettingsWrite) { await this.#extensionSettingsCall(host => host.saveExtensionSettings(id, input), true); }
+  async startExtensionSettingsAction(id: string, action: string, expectedRevision: string) { return this.#extensionSettingsCall(host => host.startSettingsAction(id, action, expectedRevision), true); }
+  async cancelExtensionSettingsAction(id: string, operationId: string) { await this.#extensionSettingsCall(host => host.cancelSettingsAction(id, operationId)); }
   async changeExtension(id: string, mutation: ExtensionMutation): Promise<ExtensionMutationView> {
     if (!this.#host || this.#closed || this.#writer.signal.aborted) throw new WebHttpError('unavailable');
     if (this.#drain || this.#configurationWrite) throw new WebHttpError('busy');

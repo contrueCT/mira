@@ -1,3 +1,4 @@
+import { ExtensionSettings } from './ExtensionSettings.tsx';
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, api, errorText, isAbort } from './api.ts';
 import { parseConfig } from './management.ts';
@@ -8,7 +9,8 @@ const statusLabel: Record<ExtensionView['status'], string> = { disabled: '已停
 const persistenceLabel = { saved: '配置已保存', failed: '配置保存失败', 'not-required': '无需保存配置', 'not-attempted': '未尝试保存配置' } as const;
 type Change = (extension: ExtensionView, mutation: ExtensionMutation) => Promise<boolean>;
 
-function ExtensionCard({ extension, releases, busy, blocked, change }: { extension: ExtensionView; releases: { digest: string }[]; busy: boolean; blocked: boolean; change: Change }) {
+function ExtensionCard({ extension, releases, busy, blocked, active, change }: { extension: ExtensionView; releases: { digest: string }[]; busy: boolean; blocked: boolean; active: boolean; change: Change }) {
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
   const [config, setConfig] = useState('');
   const [configRevision, setConfigRevision] = useState(extension.revision);
@@ -22,6 +24,7 @@ function ExtensionCard({ extension, releases, busy, blocked, change }: { extensi
     <dl className="management-facts"><div><dt>配置</dt><dd>{extension.enabled ? '已启用' : '已停用'}</dd></div><div><dt>版本</dt><dd className="technical-id">{extension.generated?.digest ?? '手工扩展，未记录版本摘要'}</dd></div>{extension.generated && <div><dt>激活修订</dt><dd className="technical-id">{extension.generated.revision}</dd></div>}</dl>
     <div className="capability-section"><h4>Tools</h4>{extension.tools.length ? <ul className="capability-list">{extension.tools.map(name => <li key={name}>{name}</li>)}</ul> : <p>当前没有注册工具</p>}</div>
     <div className="capability-section"><h4>ContextProviders</h4>{extension.contextProviders.length ? <ul className="capability-list">{extension.contextProviders.map(name => <li key={name}>{name}</li>)}</ul> : <p>当前没有注册上下文提供者</p>}</div>
+    {extension.status === 'active' && <><button type="button" className="text-button" disabled={disabled} onClick={() => setSettingsOpen(value => !value)}>{settingsOpen ? '收起连接设置' : '连接设置'}</button>{settingsOpen && <ExtensionSettings id={extension.id} active={active && !busy && !blocked} />}</>}
     {extension.error && <p className="field-notice">最近错误：{extension.error}</p>}
     <div className="management-actions"><button type="button" className="secondary-button" disabled={disabled} onClick={() => invoke(extension.enabled ? 'disable' : 'enable')}>{extension.enabled ? '停用' : '启用'}</button><button type="button" className="secondary-button" disabled={disabled} onClick={() => invoke('reload')}>重载</button><button type="button" className="text-button" disabled={disabled} onClick={() => { if (!configOpen) setConfigRevision(extension.revision); setConfigOpen(value => !value); setConfig(''); setError(null); }}>{configOpen ? '取消配置编辑' : '替换配置'}</button></div>
     {configOpen && <form className="extension-config" onSubmit={event => {
@@ -101,6 +104,6 @@ export function ExtensionsPanel({ active }: { active: boolean }) {
     {busy && <p className="field-hint" role="status">正在等待管理操作的实际结果…</p>}
     {result && <div className={result.status === 'applied' ? 'saved-notice' : 'field-notice'} role="status"><p>{result.extensionId}：{result.status === 'applied' ? '操作已应用' : '操作未成功应用'}。{persistenceLabel[result.persistence]}。</p>{result.runtime && <p>当前运行状态：{statusLabel[result.runtime.status]}</p>}{result.error && <p>{result.error}</p>}</div>}
     {view?.error && <p className="field-notice">{view.error}</p>}
-    {view && !view.available ? <p className="management-empty">此服务未启用扩展管理。</p> : view && !view.extensions.length ? <p className="management-empty">还没有已配置扩展。这里不会自动安装或激活新扩展。</p> : view?.extensions.map(extension => <ExtensionCard key={extension.id} extension={extension} releases={view.releases} busy={busy} blocked={uncertain} change={change} />)}
+    {view && !view.available ? <p className="management-empty">此服务未启用扩展管理。</p> : view && !view.extensions.length ? <p className="management-empty">还没有已配置扩展。这里不会自动安装或激活新扩展。</p> : view?.extensions.map(extension => <ExtensionCard key={extension.id} extension={extension} releases={view.releases} busy={busy} blocked={uncertain} active={active} change={change} />)}
   </div>;
 }

@@ -218,3 +218,40 @@ inspect conflict/settled and returned status. Enqueued means queue publication,
 not a user message, and cannot be retracted. Calendar/time-zone/DST and missed-time
 policy stay in extensions. Adapt repository examples/extensions/reminders.ts.
 There is no core cron API. Do not resample occurredAt on retries.
+
+## Private credentials and connection UI
+
+Register `context.registerSettings({fields, actions, status})` in apply even when credentials
+are missing. Supported field types: `text`, `boolean`, `select` (value/label options),
+`secret`. Non-secret field edits merge into config and reapply the extension; validate
+config normally. A secret field key names `context.credentials.get(key)`. Secret input
+belongs in the protected settings UI, never a model tool argument or ordinary config.
+`credentials.set/delete` lets trusted runtime code save provider-issued tokens without
+returning them to UI/model. `has` is presence only, never proof of a working connection.
+
+Actions are `{id,label,async execute({signal})}`. Keep long registration work awaited,
+honor cancellation, and join sockets/timers in `onCleanup`. Publish only safe status
+`{state: 'unconfigured'|'disconnected'|'connecting'|'pending'|'connected'|'error'}`.
+Optional `code` is authentication/network/configuration/unknown; `details` is an array
+of bounded public `{label,value}`; `authorization` is `{url,label,qr?:boolean}` for HTTPS
+links and locally rendered QR. Status/authorization are protected UI observations,
+not model metadata. Freeze a confirmation candidate until confirm/cancel; host action
+CAS checks the public observation and activation. Never return raw provider errors.
+
+`privateDirectory` is an installation-specific ordinary directory for your own ledger.
+Do not use a global path keyed only by extension name. State survives reload/disable;
+uninstall removes credentials but keeps data files. Reinstall uses a different namespace.
+All extensions share the trusted OS account: this API does not isolate malicious code.
+
+### 插件自选：从普通工具启动已声明设置动作
+
+`const actions = context.registerSettings(definition)` 返回当前 activation 专属 handle：
+`await actions.start(actionId)`、`await actions.current()`、`await actions.cancel(operationId)`。
+start/current 仅返回 `{ id, action, state }`（current 初始为 null），不会返回凭据、
+状态说明、配对码或 provider URL。插件可把安全 receipt 放入自己的普通工具结果；
+是否提供对话发起工具由插件决定，框架不会自动添加 connect 工具。
+
+UI 与工具共享单个 pending 动作。并发 start 只有一个成功；cancel 必须使用对应
+operation.id，旧 activation 的 handle 不可继续使用。start 接受后不要因未知结果
+盲目重试，应先核对 current；操作失败/取消也不代表远端效果被撤销。
+过期判定和重新请求授权的刷新动作仍由插件定义，不能仅重绘旧 URL 当成刷新。
