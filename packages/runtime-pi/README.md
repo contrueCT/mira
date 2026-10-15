@@ -23,6 +23,9 @@ opaque JSON Pi entry in a versioned envelope.
 - `continueTurn(turn, signal?)` implements the core cognition contract using a
   `WakeWriter`; input and terminal response associations are atomic, and persisted
   final responses are never regenerated
+- `continueTaskTurn(options, signal?)` uses the independent `TaskInputWriter`
+  boundary for parent instructions, single-tool input and final arbitration; it
+  does not create a main Wake or load Memory (ADR 0039)
 - `compact(options?)` snapshots the authority, runs full public SDK compaction in
   a disposable in-memory session, and conditionally publishes its exact checkpoint
 - `encodeEntry`, `decodeRecords`, `messageEntry`, and `jsonValue` implement the
@@ -451,7 +454,8 @@ render Mira's persona, or read skill bodies; ordinary read/bash remain explicit.
 `freezeSubagentContext` produces a bounded, role-labelled textual snapshot of the
 current Pi projection (existing summaries retained, hidden reasoning/provider
 metadata excluded). It rejects oversized snapshots instead of silently truncating.
-Worker assembly reuses `PiDurableRuntime.run` with an independent PostgreSQL writer;
+Worker assembly uses `PiDurableRuntime.continueTaskTurn` with an independent
+PostgreSQL task-boundary writer (ADR 0039);
 no parent tool call is inserted into the child's protocol. See ADR 0025.
 
 ## Public task activity observations

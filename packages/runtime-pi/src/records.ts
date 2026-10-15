@@ -150,6 +150,13 @@ export function messageOverflowInput(value: unknown): WakeInputArtifact | undefi
 export function validateMessage(value: unknown): asserts value is AgentMessage {
   if (!object(value) || typeof value['role'] !== 'string' || !['system', 'user', 'assistant', 'toolResult'].includes(value['role']) || typeof value['timestamp'] !== 'number' || !Number.isFinite(value['timestamp'])) throw new Error('Unsupported Pi message');
   const role = value['role'];
+  if (Object.hasOwn(value, 'miraParentInstruction')) {
+    const source = value['miraParentInstruction'];
+    if (role !== 'user' || !object(source) || Object.keys(source).sort().join(',') !== 'callId,turnId'
+      || typeof source['turnId'] !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.test(source['turnId'])
+      || (!nonempty(source['callId']) || new TextEncoder().encode(source['callId']).byteLength > 32768))
+      throw new Error('Invalid parent instruction provenance');
+  }
   messageAttachments(value);
   messageOverflowInput(value);
   if (Object.hasOwn(value, 'miraNativeVideos')) throw new Error('Hydrated media must never be persisted');

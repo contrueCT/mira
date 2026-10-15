@@ -29,7 +29,7 @@
 - [ADR 0024](docs/adr/0024-live-user-input.md)：普通 Web 插话先持久保存为冻结原始 Wake 之外的有序补充输入；生成请求让出，当前单工具完成后先读新输入，旧 siblings 保持 not-started；final 与输入原子仲裁，无暂停按钮/关键词判定。
 - [ADR 0023](docs/adr/0023-on-demand-public-skills.md)：公开 OpenAI pdf/doc/transcribe、agent-browser 与 Tavily CLI 指导；只随源码分发技能/必要脚本及许可，依赖由模型普通工具按需准备，应用不自动解析附件、不捆绑浏览器或模型。
 - [ADR 0025](docs/adr/0025-task-scoped-subagents.md)：task-scoped child 复用 Pi/PG 独立 transcript，主 Mira 唯一 WakeLoop/Memory；默认 8 并发、启动可配 1..32、无嵌套、完成与父 Event/Wake 原子提交；重启 interrupted 不重放，fork=all 是显式有界角色投影而非原协议克隆。
-- [ADR 0030](docs/adr/0030-task-scoped-compaction.md)：child 复用持久自动压缩，独立 task 摘要指令与 transcript；不加载主 Memory，不计入主压缩/Dreaming，运行中 followup 留在原队列。
+- [ADR 0030](docs/adr/0030-task-scoped-compaction.md)：child 复用持久自动压缩，独立 task 摘要指令与 transcript；不加载主 Memory，不计入主压缩/Dreaming，followup 按 ADR 0039 留在 task inbox，冻结摘要提交后再消费。
 - [ADR 0026](docs/adr/0026-subagent-observation-and-global-skills.md)：子代理显式公开标题/进度、真实模型/工具活动、有界独立 child/run 只读详情；子任务卡片/详情仅在既有设置→运行记录中展示（ADR 0031），主聊天不增加入口、不显示思考或原始参数；默认并发 8、启动可配 1..32，全局技能第三优先级。
 - [ADR 0027](docs/adr/0027-configured-reasoning-levels.md)：模型设置的默认推理偏好为 medium，Pi 能力适配后显式传入 main/child/Dreaming；压缩独立最低支持档，总输出 cap 不扩大，不提供模型自行升档工具。
 
@@ -90,6 +90,8 @@ pnpm check
 - 不输出或提交用户秘密；不自动引入付费调用、账户、凭据或权限扩张
 - [ADR 0022](docs/adr/0022-durable-single-shot-delivery.md)：持久单次UTC投递与版本CAS；Event/Wake和入队状态同一fenced事务，扩展负责提醒/时区/DST/过期政策。owner使用持久安装身份，disable/remove保留pending暂停；不改Dreaming、不加通用job引擎。
 - [ADR 0029](docs/adr/0029-bounded-model-request-retries.md)：显式transport只在完整assistant发布前对确定瞬时请求错误做最多三次尝试，partial不落库；取消停止退避，不重放Wake/工具/unknown。SDK maxRetries仍为0，主Web状态与child隔离。
+
+- [ADR 0039](docs/adr/0039-live-child-followups.md)：父到子补充指令按 task inbox 与子 transcript CAS，在当前单工具后、旧 siblings 前消费；final 与接收共享 child 行锁仲裁，不借主 Wake/Memory，receipt 区分 pending/consumed。
 
 - [ADR 0037](docs/adr/0037-live-subagent-results.md)：child 终态与内部补充输入同事务提交，忙时当前单工具后读结果，闲时普通 Wake；保留来源、单写者、终态仲裁和父错误，不自动展示结果。
 

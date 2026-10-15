@@ -77,3 +77,5 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 - [0032 — Persistent terminal processes](0032-persistent-terminal-processes.md): approved cross-turn processes, service-scoped lifecycle, explicit PTY/input/close, no restart replay or UI.
 
 - [0037: Live subagent results](0037-live-subagent-results.md): accepted single-tool boundary delivery, preserving sourced results and the sole main loop.
+
+- [0039 — Parent-to-child live followups](0039-live-child-followups.md): accepted scope; implementation under verification. Separate task inbox and child transcript boundary, no main Wake ownership.

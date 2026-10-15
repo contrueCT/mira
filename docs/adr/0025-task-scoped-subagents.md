@@ -11,7 +11,8 @@ UI entry point.
 ## Reuse and boundaries
 
 Mira already persists Pi 1.0.2 Agent/session entries in PostgreSQL. Child workers
-therefore reuse `PiDurableRuntime.run` with independent durable transcript writers,
+therefore reuse Pi with independent durable transcript writers (`continueTaskTurn`
+adds task input/final boundaries under ADR 0039),
 not a second WakeLoop, Mira persona, global Life, JSONL authority or job platform.
 The database owner row for a child is a technical transcript writer identity.
 There is one main Mira, Memory lifecycle and parent Wake queue.
@@ -29,8 +30,9 @@ No tmux framework, approval engine, new user-facing persona or sandbox is added.
 
 `subagent_spawn` returns a stable child UUID after saving the parent call-to-child
 mapping. Child model/tool execution runs separately, while the main turn continues.
-ADR 0026 raises the default to eight active slots, configurable from 1 to 32 at startup. Followups are persisted, deduplicated by
-parent call ID and consumed after the current child turn. At most sixteen queued
+ADR 0026 raises the default to eight active slots, configurable from 1 to 32 at startup. Followups are persisted and deduplicated by parent call ID. ADR 0039 delivers
+running-child followups at its next single-tool/model boundary; final-won and
+idle delivery keep the queued-turn path. At most sixteen queued
 followups per child are accepted. An idle or terminal child can receive a new turn.
 Each turn retains its immutable terminal result; later work never overwrites it.
 Status listing selects at most fifty metadata rows in SQL, without task/context/result

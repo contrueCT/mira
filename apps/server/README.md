@@ -181,3 +181,12 @@ groups; restart returns unavailable old handles and never replays effects.
 Native setup: `pnpm terminal:prepare` after script-disabled install. Mac/Linux only.
 See [ADR 0032](../../docs/adr/0032-persistent-terminal-processes.md) for bounds,
 cancellation, child isolation and supervision limits.
+
+### Parent-to-child live followups
+
+ADR 0039 keeps `subagent_send` on the same child/task. Running instructions enter
+the durable child inbox, yield an active model request when possible, and are
+read after the current single tool settles before old siblings. Final-first and
+idle sends retain queued turns. The tool reports durable receipt state, not proof
+of action; cancellation never rolls back effects. Child summaries remain task-only
+and consume pending input after the frozen checkpoint. No main chat UI is added.

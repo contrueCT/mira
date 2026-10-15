@@ -1,11 +1,12 @@
 import { formatContextProviders, type ContextProviderSample } from './context-providers.ts';
 export type { ContextProviderSample } from './context-providers.ts';
+import type { RuntimeRecord } from '@mira/context';
 import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type AgentToolCall, type StreamFn } from '@earendil-works/pi-agent-core';
 import { getCurrentSystemMessage, getSystemMessageText, isContextOverflow, type Api, type Model, type ToolResultMessage } from '@earendil-works/pi-ai';
 import { buildSessionProjection, convertToLlm, formatSkillsForPrompt, type SessionEntry, type Skill } from '@earendil-works/pi-coding-agent';
-import type { DurableWriter, RecoverySnapshot, ToolExecution, WakeWriter, LiveInputWriter } from '@mira/life';
+import type { DurableWriter, RecoverySnapshot, ToolExecution, WakeWriter, LiveInputWriter, TaskInputWriter, TaskLiveInput, LiveWakeInput, ToolIntent } from '@mira/life';
 import { DurableOperationError, prepareWakeTurn } from '@mira/life';
 import { validateAttachmentReferences, validateWakeInputArtifact, type WriteOverflowInput, type CognitionRuntime, type CognitionTurn } from '@mira/cognition';
 import { hydrateAttachments, messageAttachments, type ResolveAttachment } from './attachments.ts';
@@ -75,9 +76,30 @@ export interface RecoveredContext {
   projectionEntries: SessionEntry[];
   recovery: { status: 'complete' | 'observed-incomplete'; operations: RecoveryOperation[] };
 }
+/** Caller-owned notification hints; task persistence remains authoritative. */
+export interface TaskTurnOptions {
+  id: string;
+  input: string;
+  onInput: (listener: (turnId: string) => void) => () => void;
+}
+type RuntimeTurn = CognitionTurn & { task?: { writer: TaskInputWriter; onInput: TaskTurnOptions['onInput'] } };
+type SupplementalInput = { id: string; inputRecordId: string | null } &
+  ({ source: 'wake'; value: LiveWakeInput } | { source: 'parent'; value: TaskLiveInput });
+interface InputBoundary {
+  loadInputs(id: string): Promise<SupplementalInput[]>;
+  appendInput(id: string, inputId: string, version: number, record: RuntimeRecord, signal?: AbortSignal): Promise<number>;
+  tryBeginTool(id: string, version: number, intent: ToolIntent): Promise<boolean>;
+  tryAppendFinal(id: string, version: number, record: RuntimeRecord, signal?: AbortSignal): Promise<number | null>;
+  onInput(listener: (id: string) => void): () => void;
+}
+function parentInstruction(turnId: string, callId: string, instruction: string, createdAt: string): AgentMessage {
+  return Object.assign({ role: 'user' as const,
+    content: `Supplemental instruction from Mira for this same delegated task. Source: parent agent, not a new human message or independent user permission.\n${instruction}`,
+    timestamp: Date.parse(createdAt) }, { miraParentInstruction: { turnId, callId } });
+}
 class LiveInputPendingError extends Error {
   override name = 'LiveInputPendingError';
-  constructor() { super('New user input is ready at the next safe boundary'); }
+  constructor() { super('Supplemental input is ready at the next safe boundary'); }
 }
 class ContextOverflowError extends Error {
   override name = 'ContextOverflowError';
@@ -321,40 +343,64 @@ export class PiDurableRuntime implements CognitionRuntime {
     return writer;
   }
 
-  private liveWriter(): LiveInputWriter | undefined {
+  private inputBoundary(turn: RuntimeTurn): InputBoundary | undefined {
+    if (turn.task) {
+      const writer = turn.task.writer;
+      return {
+        loadInputs: async id => (await writer.loadTaskInputs(id)).map(value => ({ id: value.callId, inputRecordId: value.inputRecordId, source: 'parent' as const, value })),
+        appendInput: (...args) => writer.appendTaskLiveInput(...args),
+        tryBeginTool: (...args) => writer.tryBeginTaskTool(...args),
+        tryAppendFinal: (...args) => writer.tryAppendTaskFinal(...args),
+        onInput: turn.task.onInput,
+      };
+    }
     const writer = this.options.writer as LiveInputWriter;
-    return typeof writer.loadLiveInputs === 'function' && typeof writer.onLiveInput === 'function'
+    if (!(typeof writer.loadLiveInputs === 'function' && typeof writer.onLiveInput === 'function'
       && typeof writer.appendLiveInput === 'function' && typeof writer.tryBeginWakeTool === 'function'
-      && typeof writer.tryAppendWakeFinal === 'function' ? writer : undefined;
+      && typeof writer.tryAppendWakeFinal === 'function')) return undefined;
+    return {
+      loadInputs: async id => (await writer.loadLiveInputs(id)).map(value => ({ id: value.request.wake.id, inputRecordId: value.inputRecordId, source: 'wake' as const, value })),
+      appendInput: (...args) => writer.appendLiveInput(...args),
+      tryBeginTool: (...args) => writer.tryBeginWakeTool(...args),
+      tryAppendFinal: (...args) => writer.tryAppendWakeFinal(...args),
+      onInput: listener => writer.onLiveInput(listener),
+    };
   }
 
-  private async consumeLiveInputs(turn: CognitionTurn, finalized = false): Promise<void> {
-    const writer = this.liveWriter();
+  private async consumeLiveInputs(turn: RuntimeTurn, finalized = false): Promise<void> {
+    const writer = this.inputBoundary(turn);
     if (!writer) return;
     let current = await this.recoverInternal();
-    for (const supplemental of await writer.loadLiveInputs(turn.id)) {
-      const { request, inputRecordId } = supplemental;
+    for (const supplemental of await writer.loadInputs(turn.id)) {
+      const { inputRecordId } = supplemental;
       const saved = inputRecordId ? current.entries.find(candidate => candidate.id === inputRecordId) : undefined;
-      const artifact = saved?.type === 'message' ? messageOverflowInput(saved.message) : undefined;
-      // A finalized Wake only validates durable evidence. Its spool is no
-      // longer needed for cognition and must not be recreated during completion.
-      const writeOverflow = finalized ? async (_id: string, content: string) => {
-        if (!artifact || artifact.bytes !== new TextEncoder().encode(content).byteLength)
-          throw new RecoveryBlockedError('Finalized live input overflow evidence differs from its source');
-        return artifact;
-      } : this.options.writeOverflowInput ?? (async () => { throw new Error('Live input overflow requires an ordinary file writer'); });
-      const input = await prepareWakeTurn({ id: request.eventId, claimedAt: request.event.occurredAt,
-        status: 'running', requests: [request], inputRecordId, finalRecordId: null },
-        writeOverflow, 65_536);
-      const message: AgentMessage = Object.assign({ role: 'user' as const, content: input.input, timestamp: Date.parse(input.occurredAt) },
-        input.attachments?.length ? { miraAttachments: structuredClone(input.attachments), miraAttachmentsInInput: true } : {},
-        input.overflowInput ? { miraOverflowInput: structuredClone(input.overflowInput) } : {});
+      let message: AgentMessage;
+      if (supplemental.source === 'parent') {
+        const value = supplemental.value;
+        message = parentInstruction(turn.id, value.callId, value.instruction, value.createdAt);
+      } else {
+        const { request } = supplemental.value;
+        const artifact = saved?.type === 'message' ? messageOverflowInput(saved.message) : undefined;
+        // A finalized Wake only validates durable evidence. Its spool is no
+        // longer needed for cognition and must not be recreated during completion.
+        const writeOverflow = finalized ? async (_id: string, content: string) => {
+          if (!artifact || artifact.bytes !== new TextEncoder().encode(content).byteLength)
+            throw new RecoveryBlockedError('Finalized live input overflow evidence differs from its source');
+          return artifact;
+        } : this.options.writeOverflowInput ?? (async () => { throw new Error('Live input overflow requires an ordinary file writer'); });
+        const input = await prepareWakeTurn({ id: request.eventId, claimedAt: request.event.occurredAt,
+          status: 'running', requests: [request], inputRecordId, finalRecordId: null },
+          writeOverflow, 65_536);
+        message = Object.assign({ role: 'user' as const, content: input.input, timestamp: Date.parse(input.occurredAt) },
+          input.attachments?.length ? { miraAttachments: structuredClone(input.attachments), miraAttachmentsInInput: true } : {},
+          input.overflowInput ? { miraOverflowInput: structuredClone(input.overflowInput) } : {});
+      }
       if (inputRecordId) {
         if (saved?.type !== 'message' || !isDeepStrictEqual(saved.message, message)) throw new RecoveryBlockedError('Live input differs from its persisted message');
       } else {
         if (finalized) throw new RecoveryBlockedError('Finalized Wake has an unread live input');
         const entry = messageEntry(message, current.entries.at(-1)?.id ?? null);
-        await this.publish(() => writer.appendLiveInput(turn.id, request.wake.id, current.snapshot.version, encodeEntry(entry), this.controller.signal));
+        await this.publish(() => writer.appendInput(turn.id, supplemental.id, current.snapshot.version, encodeEntry(entry), this.controller.signal));
         current = await this.recoverInternal();
       }
     }
@@ -393,24 +439,59 @@ export class PiDurableRuntime implements CognitionRuntime {
     }, signal);
   }
 
+  /** Continue one child task under its own durable boundary, never a main Wake. */
+  continueTaskTurn(options: TaskTurnOptions, signal?: AbortSignal): Promise<RecoveredContext> {
+    return this.exclusive(async () => {
+      if (this.options.compactionScope !== 'task') throw new Error('Task turns require task compaction scope');
+      const writer = this.options.writer as TaskInputWriter;
+      for (const name of ['loadTaskTurn', 'appendTaskInput', 'loadTaskInputs', 'appendTaskLiveInput', 'tryBeginTaskTool', 'tryAppendTaskFinal'] as const)
+        if (typeof writer[name] !== 'function') throw new Error('A TaskInputWriter is required');
+      const state = await writer.loadTaskTurn(options.id);
+      const turn: RuntimeTurn = { id: state.id, input: options.input, occurredAt: state.createdAt,
+        inputRecordId: state.inputRecordId, finalRecordId: state.finalRecordId,
+        task: { writer, onInput: options.onInput } };
+      let current = await this.recoverInternal();
+      const input = Object.assign({ role: 'user' as const, content: options.input, timestamp: Date.parse(state.createdAt) },
+        { miraParentInstruction: { turnId: state.id, callId: state.callId } });
+      const saved = state.inputRecordId ? current.entries.find(entry => entry.id === state.inputRecordId) : undefined;
+      if (state.inputRecordId && (saved?.type !== 'message' || !isDeepStrictEqual(saved.message, input)))
+        throw new RecoveryBlockedError('Task assignment differs from its durable input');
+      if (state.finalRecordId) {
+        await this.consumeLiveInputs(turn, true);
+        const final = current.entries.find(entry => entry.id === state.finalRecordId);
+        if (!saved || final?.type !== 'message' || final.message.role !== 'assistant' || final.message.stopReason !== 'stop'
+          || final.message.content.some(block => block.type === 'toolCall') || current.entries.indexOf(final) <= current.entries.indexOf(saved))
+          throw new RecoveryBlockedError('Task final link is not a successful terminal assistant message');
+        return current;
+      }
+      if (state.status !== 'running') throw new RecoveryBlockedError('Task turn is no longer running');
+      current = await this.initializeEmpty(current);
+      if (!state.inputRecordId) {
+        const entry = messageEntry(input, current.entries.at(-1)?.id ?? null);
+        await this.publish(() => writer.appendTaskInput(state.id, current.snapshot.version, encodeEntry(entry), this.controller.signal));
+      }
+      return this.runInternal(undefined, turn);
+    }, signal);
+  }
+
   run(input?: AgentMessage, signal?: AbortSignal): Promise<RecoveredContext> {
     return this.exclusive(() => this.runInternal(input), signal);
   }
 
-  private async runInternal(input?: AgentMessage, turn?: CognitionTurn): Promise<RecoveredContext> {
+  private async runInternal(input?: AgentMessage, turn?: RuntimeTurn): Promise<RecoveredContext> {
     let overflowRecovered = false;
     while (true) {
       try {
         if (turn) await this.consumeLiveInputs(turn);
         const result = await this.runAttempt(input, turn);
         if (!turn) return result;
-        const completed = await this.wakeWriter().loadWakeRun(turn.id);
+        const completed = turn.task ? await turn.task.writer.loadTaskTurn(turn.id) : await this.wakeWriter().loadWakeRun(turn.id);
         if (completed.finalRecordId) return result;
         // Pi may terminate after a known tool result without a final. Read
         // pending input after recovery/link awaits, preserving this run's single
         // overflow-recovery allowance when the newest receipt continues it.
-        const live = this.liveWriter();
-        if (live && (await live.loadLiveInputs(turn.id)).some(item => item.inputRecordId === null)) {
+        const live = this.inputBoundary(turn);
+        if (live && (await live.loadInputs(turn.id)).some(item => item.inputRecordId === null)) {
           input = undefined;
           continue;
         }
@@ -441,7 +522,7 @@ export class PiDurableRuntime implements CognitionRuntime {
     }
   }
 
-  private async runAttempt(input?: AgentMessage, turn?: CognitionTurn): Promise<RecoveredContext> {
+  private async runAttempt(input?: AgentMessage, turn?: RuntimeTurn): Promise<RecoveredContext> {
       if (input && input.role !== 'user' && input.role !== 'system') throw new Error('Only user/system input may be prompted');
       const current = await this.initializeEmpty(await this.recoverInternal());
       let version = current.snapshot.version;
@@ -461,7 +542,7 @@ export class PiDurableRuntime implements CognitionRuntime {
         activity = event.phase === 'started' ? { kind: event.kind, name: event.name, callId: event.callId } : null;
         await this.options.onActivity?.({ ...event, occurredAt: new Date().toISOString() });
       };
-      const live = turn ? this.liveWriter() : undefined;
+      const live = turn ? this.inputBoundary(turn) : undefined;
       let interruption: ToolInterruptionError | ContextOverflowError | LiveInputPendingError | undefined;
       const attemptGate = (): void => { this.gate(); if (interruption) throw interruption; };
       const fail = (error: unknown): Error => interruption && !this.stopped ? interruption : this.stop(error);
@@ -471,13 +552,13 @@ export class PiDurableRuntime implements CognitionRuntime {
         throw interruption;
       };
       const checkLiveInput = async (): Promise<void> => {
-        if (live && (await live.loadLiveInputs(turn!.id)).some(item => item.inputRecordId === null)) yieldToInput();
+        if (live && (await live.loadInputs(turn!.id)).some(item => item.inputRecordId === null)) yieldToInput();
         attemptGate();
       };
       const continuedMessages = (state: RecoveredContext): AgentMessage[] => {
         const messages = structuredClone(state.messages);
         if (turn && messages.at(-1)?.role === 'assistant') messages.push({ role: 'user',
-          content: 'Continue the current persisted Wake. Its preceding assistant response did not complete this Wake.', timestamp: Date.parse(turn.occurredAt) });
+          content: turn.task ? 'Continue the current delegated task. Its preceding assistant response did not complete this task.' : 'Continue the current persisted Wake. Its preceding assistant response did not complete this Wake.', timestamp: Date.parse(turn.occurredAt) });
         return messages;
       };
       const wrapTools = (registry: AgentTool[]): AgentTool[] => {
@@ -667,7 +748,7 @@ export class PiDurableRuntime implements CognitionRuntime {
             const args = jsonValue(context.args);
             const intent = { callId: id, assistantRecordId: issuedCall.recordId, toolName: context.toolCall.name, requestedArguments: jsonValue(context.toolCall.arguments), arguments: args, occurredAt: new Date().toISOString() };
             if (live) {
-              if (!await this.publish(() => live.tryBeginWakeTool(turn!.id, version, intent))) yieldToInput();
+              if (!await this.publish(() => live.tryBeginTool(turn!.id, version, intent))) yieldToInput();
             } else await this.publish(() => this.options.writer.beginTool(version, intent));
             attemptGate();
             executions.set(id, { intent, outcome: null });
@@ -704,7 +785,7 @@ export class PiDurableRuntime implements CognitionRuntime {
       // after construction so Pi's normal loop emits its declaration/change
       // events, and our awaited subscriber durably saves them before projection.
       this.agent = agent;
-      const unsubscribeInput = live?.onLiveInput(runId => {
+      const unsubscribeInput = live?.onInput(runId => {
         // Service close/writer loss uses the lifetime controller. User steering
         // only stops an in-flight model request, never the current tool/summary.
         if (runId === turn!.id && requestActive && !interruption && !this.stopped) {
@@ -760,7 +841,7 @@ export class PiDurableRuntime implements CognitionRuntime {
           const record = encodeEntry(entry);
           if (message.role === 'assistant') modelCompletion = { recordId: entry.id, status: message.stopReason === 'error' ? 'failed' : message.stopReason === 'aborted' ? 'interrupted' : 'completed' };
           const next = await this.publish(() => terminal
-            ? live ? live.tryAppendWakeFinal(turn!.id, version, record, this.controller.signal)
+            ? live ? live.tryAppendFinal(turn!.id, version, record, this.controller.signal)
               : this.wakeWriter().appendWakeFinal(turn!.id, version, record, this.controller.signal)
             : this.options.writer.append(version, record));
           if (next === null) yieldToInput();

@@ -86,6 +86,7 @@
     "tests/unit/tool-output.test.mts",
     "tests/unit/tool-output-wire.test.mts",
     "tests/unit/web-auth.test.mts",
-    "tests/unit/terminals.test.mts"
+    "tests/unit/terminals.test.mts",
+    "tests/unit/task-live-input.test.mts"
   ]
 }
