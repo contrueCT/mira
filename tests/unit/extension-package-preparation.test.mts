@@ -160,3 +160,22 @@ test('entry URL metacharacters and excluded trees are rejected before workspace 
     await assert.rejects(prepareExtensionPackage(source, target, `${directory}/entry.mjs`), /excluded tree/); await assert.rejects(realpath(target), /ENOENT/);
   }
 }));
+
+test('all control characters in entries are rejected before writes', async () => fixture(async root => {
+  const source = path.join(root, 'source'), target = path.join(root, 'prepared'); await pkg(source, {}, "export default 'stripped';");
+  for (const code of [...Array.from({ length: 32 }, (_, index) => index), 127]) {
+    const entry = `index${String.fromCharCode(code)}.mjs`;
+    if (code) await writeFile(path.join(source, entry), "export default 'literal';");
+    await assert.rejects(prepareExtensionPackage(source, target, entry), /normalized/); await assert.rejects(realpath(target), /ENOENT/);
+  }
+}));
+
+test('standard file URL encoding preserves a trailing-space entry through movable artifact staging', async () => fixture(async root => {
+  const source = path.join(root, 'source # with spaces'), target = path.join(root, 'prepared % with spaces');
+  await pkg(source, {}); await writeFile(path.join(source, 'entry'), "export default 'wrong';"); await writeFile(path.join(source, 'entry '), "export default 'literal';");
+  assert.equal((await import(pathToFileURL(path.join(source, 'entry ')).href)).default, 'literal');
+  const prepared = await prepareExtensionPackage(source, target, 'entry ');
+  const store = new ArtifactStore(path.join(root, 'artifacts')); const artifact = await store.stage(prepared.directory, prepared.entryRelative);
+  const receipt = await store.test(artifact, { command: process.execPath, args: ['--input-type=module', '-e', "if((await import('./entry.mjs')).default !== 'literal') throw Error('entry identity changed');"] });
+  assert.equal(receipt.passed, true, receipt.stderr);
+}));

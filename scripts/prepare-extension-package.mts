@@ -78,7 +78,7 @@ async function validateDependencyTrees(closure: Set<string>): Promise<void> {
 /** Prepare an external authoring workspace using only already-installed runtime
  * dependencies. Stage/test/install/activate remains the existing separate workflow. */
 export async function prepareExtensionPackage(sourceRoot: string, destination: string, entryRelative = 'src/index.ts'): Promise<{ directory: string; entryRelative: 'entry.mjs'; packages: number }> {
-  if (!path.isAbsolute(sourceRoot) || !path.isAbsolute(destination) || !entryRelative || path.isAbsolute(entryRelative) || /[\\\0%#?]/u.test(entryRelative) || entryRelative.split('/').some(part => !part || part === '.' || part === '..')) throw new Error('Use absolute directories and a normalized package-relative entry');
+  if (!path.isAbsolute(sourceRoot) || !path.isAbsolute(destination) || !entryRelative || path.isAbsolute(entryRelative) || /[\\\x00-\x1f\x7f%#?]/u.test(entryRelative) || entryRelative.split('/').some(part => !part || part === '.' || part === '..')) throw new Error('Use absolute directories and a normalized package-relative entry');
   if (entryRelative.split('/').some(part => part === 'node_modules' || part === '.git')) throw new Error('Entry must reference copied authored source, not an excluded tree');
   const source = await realpath(sourceRoot); const target = path.join(await realpath(path.dirname(destination)), path.basename(destination));
   if (inside(source, target) || inside(target, source)) throw new Error('Prepared workspace and source must not contain one another');
@@ -104,6 +104,10 @@ export async function prepareExtensionPackage(sourceRoot: string, destination: s
     if (inside(dependency, target) || inside(target, dependency)) throw new Error('Prepared workspace and runtime dependencies must not contain one another');
   }
   await validateDependencyTrees(closure);
+  const workspaceUrl = pathToFileURL(target + path.sep).href;
+  const entryUrl = pathToFileURL(path.join(target, 'package', entryRelative)).href;
+  if (!entryUrl.startsWith(workspaceUrl)) throw new Error('Entry URL must remain inside the prepared workspace');
+  const entrySpecifier = './' + entryUrl.slice(workspaceUrl.length);
   // No writes until the complete declared closure is known. The destination must be new.
   await mkdir(target);
   try {
@@ -116,7 +120,7 @@ export async function prepareExtensionPackage(sourceRoot: string, destination: s
     // Published source packages may declare authoring devDependencies. They are
     // not promoted to runtime dependencies by this small wrapper workspace.
     await writeFile(path.join(target, 'package.json'), '{"type":"module","private":true}\n');
-    await writeFile(path.join(target, 'entry.mjs'), `export { default } from ${JSON.stringify(`./package/${entryRelative}`)};\nexport * from ${JSON.stringify(`./package/${entryRelative}`)};\n`);
+    await writeFile(path.join(target, 'entry.mjs'), `export { default } from ${JSON.stringify(entrySpecifier)};\nexport * from ${JSON.stringify(entrySpecifier)};\n`);
     return { directory: target, entryRelative: 'entry.mjs', packages: closure.size };
   } catch (error) { await rm(target, { recursive: true, force: true }); throw error; }
 }

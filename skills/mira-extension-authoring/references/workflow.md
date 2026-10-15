@@ -246,4 +246,6 @@ root `node_modules` installations and controlled pnpm links are supported. A run
 dependency cannot contain the source or overlap copied authored directories, and the
 new workspace cannot contain or be inside any runtime dependency. The entry must
 reference copied source, outside excluded trees, without `%`, `#`, or `?` URL
-metacharacters. These are explicit preparation limits, not a general Node bundler.
+metacharacters or ASCII control characters. Supported entries use Node file-URL
+encoding to preserve path identity, including trailing spaces, after relocation.
+These are explicit preparation limits, not a general Node bundler.
