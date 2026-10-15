@@ -86,7 +86,8 @@ test('optional password gates real private HTTP and attachments with remote Host
     await other.goto(origin);
     await expect(other.getByLabel('访问密码', { exact: true })).toBeVisible();
     await expect(other.locator('form.composer')).toHaveCount(0);
-    for (const url of ['/api/status', '/api/timeline', '/api/settings', '/api/memory', '/api/extensions', '/api/runs', `/api/attachments/${attachment.id}`]) expect(await status(other, url)).toBe(401);
+    for (const url of ['/api/status', '/api/timeline', '/api/settings', '/api/memory', '/api/extensions', '/api/extensions/example/settings', '/api/runs', `/api/attachments/${attachment.id}`]) expect(await status(other, url)).toBe(401);
+    for (const suffix of ['actions','cancel']) expect(await other.evaluate(async suffix => (await fetch(`/api/extensions/example/settings/${suffix}`,{method:'POST',headers:{'x-mira-client':'web','content-type':'application/json'},body:'{}'})).status,suffix)).toBe(401);
     await login(other, 'synthetic-wrong-password');
     await expect(other.getByRole('alert')).toBeVisible();
     await expect(other.locator('form.composer')).toHaveCount(0);

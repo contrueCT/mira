@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 import { PostgresHistoryReader } from './history.ts';
-import type { LiveInputWriter, LiveWakeInput, RunHistoryReader } from '@mira/life';
+import type { LiveInputWriter, LiveWakeInput, RunHistoryReader, TaskInputWriter, TaskLiveInput, TaskTurnState } from '@mira/life';
 import { DurableOperationError, type DurableFailureCategory } from '@mira/life';
 import { assertJson, assertRecord } from '@mira/context';
 import type { RuntimeRecord } from '@mira/context';
@@ -31,6 +31,7 @@ export interface PostgresOptions {
   applicationName?: string;
 }
 interface OwnerRow { epoch: string; context_version: string; head_record_id: string | null; held: boolean }
+interface TaskTurnRow { turn_id: string; call_id: string; created_at: string; status: TaskTurnState['status']; input_record_id: string | null; final_record_id: string | null }
 interface WakeRunRow {
   run_id: string;
   claimed_at: string;
@@ -148,7 +149,7 @@ export class PostgresPersistence {
 
   subagents(miraId: string): SubagentReader { text(miraId, 'Mira ID'); return new PostgresSubagentReader(this.#options, miraId); }
 
-  async acquire(miraId: string): Promise<DreamingWriter & SchedulingWriter & LiveInputWriter & SubagentWriter> {
+  async acquire(miraId: string): Promise<DreamingWriter & SchedulingWriter & LiveInputWriter & SubagentWriter & TaskInputWriter> {
     text(miraId, 'Mira ID');
     const client = new Client({
       connectionString: this.#options.connectionString,
@@ -207,7 +208,7 @@ const heldExpression = `EXISTS (
 )`;
 const lockQuery = `SELECT ${heldExpression} AS held`;
 
-class PostgresWriter implements DreamingWriter, SchedulingWriter, LiveInputWriter, SubagentWriter {
+class PostgresWriter implements DreamingWriter, SchedulingWriter, LiveInputWriter, SubagentWriter, TaskInputWriter {
   readonly miraId: string;
   readonly epoch: string;
   readonly signal: AbortSignal;
@@ -219,7 +220,7 @@ class PostgresWriter implements DreamingWriter, SchedulingWriter, LiveInputWrite
   #ended: Promise<void> | undefined;
 
   constructor(client: Client, miraId: string, epoch: string, key: number) {
-    this.#subagents = new PostgresSubagents(client, miraId, work => this.#transaction(work), (event, wake) => this.#receive(event, wake));
+    this.#subagents = new PostgresSubagents(client, miraId, work => this.#transaction(work), async (event, wake) => (await this.#receiveSupplemental(event, wake)).runId, runId => this.#notifyLiveInput(runId));
     this.#client = client; this.miraId = miraId; this.epoch = epoch; this.#key = key; this.signal = this.#abort.signal;
     client.on('error', (error: Error) => this.#stop(error));
     client.on('end', () => this.#stop(new PersistenceError('ownership', 'PostgreSQL ownership connection ended')));
@@ -406,6 +407,8 @@ class PostgresWriter implements DreamingWriter, SchedulingWriter, LiveInputWrite
     if (record.parentId !== null) historyId(record.parentId);
     this.#checkVersion(owner, expectedVersion);
     if ((await this.#activeWakeRun())?.final_record_id) fail('invalid', 'Complete the finalized wake run before appending more context');
+    if ((await this.#client.query("SELECT 1 FROM subagent_turns WHERE stream_id=$1 AND status='running' AND final_record_id IS NOT NULL LIMIT 1", [this.miraId])).rowCount)
+      fail('invalid', 'Complete the finalized task turn before appending more context');
     if (record.parentId !== owner.head_record_id) fail('invalid', 'Record parent must be the current history head');
     if (expectedVersion === Number.MAX_SAFE_INTEGER) fail('invalid', 'Context version exhausted');
     const duplicate = await this.#client.query('SELECT 1 FROM context_records WHERE mira_id = $1 AND record_id = $2', [this.miraId, record.id]);
@@ -420,6 +423,117 @@ class PostgresWriter implements DreamingWriter, SchedulingWriter, LiveInputWrite
       [next, record.id, this.miraId, expectedVersion, this.epoch]);
     if (updated.rowCount !== 1) fail('version', 'Context version changed');
     return next;
+  }
+  /** The child owns its transcript; this lookup never consults the parent writer. */
+  async #taskTurn(turnId: string): Promise<TaskTurnRow> {
+    // Only task input/tool-start/final gates share parent admission's lock.
+    // Generic checkpoint publication retains its independent commit boundary;
+    // cancellation can still win before an already-dispatched summary COMMIT.
+    await this.#client.query('SELECT child_id FROM subagents WHERE stream_id=$1 FOR UPDATE', [this.miraId]);
+    const row = (await this.#client.query<TaskTurnRow>('SELECT turn_id,call_id,created_at,status,input_record_id,final_record_id FROM subagent_turns WHERE stream_id=$1 AND turn_id=$2', [this.miraId,turnId])).rows[0];
+    if (!row) fail('invalid', 'Task turn does not belong to this child stream');
+    return row;
+  }
+  loadTaskTurn(turnId: string): Promise<TaskTurnState> {
+    historyId(turnId);
+    return this.#transaction(async owner => {
+      const row = await this.#taskTurn(turnId);
+      const links = (await this.#client.query<{ record_id: string; envelope: RuntimeRecord; version: string }>('SELECT record_id,envelope,version FROM context_records WHERE mira_id=$1 AND record_id=ANY($2::uuid[])', [this.miraId,[row.input_record_id,row.final_record_id].filter(id => id !== null)])).rows;
+      const input = links.find(link => link.record_id === row.input_record_id);
+      const final = links.find(link => link.record_id === row.final_record_id);
+      if ((row.input_record_id && (!input || input.envelope.kind !== 'message' || input.envelope.id !== row.input_record_id || BigInt(input.version) > BigInt(owner.context_version))) ||
+        (row.final_record_id && (!input || !final || final.envelope.kind !== 'message' || final.envelope.id !== row.final_record_id || BigInt(final.version) <= BigInt(input.version) || BigInt(final.version) > BigInt(owner.context_version)))) fail('corrupt', 'Task boundary evidence is inconsistent');
+      return { id: row.turn_id, callId: row.call_id, createdAt: row.created_at, status: row.status, inputRecordId: row.input_record_id, finalRecordId: row.final_record_id };
+    });
+  }
+  async #hasTaskInput(turnId: string): Promise<boolean> {
+    return !!(await this.#client.query("SELECT 1 FROM subagent_live_inputs WHERE stream_id=$1 AND turn_id=$2 AND status='pending' LIMIT 1", [this.miraId,turnId])).rowCount;
+  }
+  async #taskEvidenceRetry(link: string, expectedVersion: number, record: RuntimeRecord): Promise<number> {
+    const saved = (await this.#client.query<{ envelope: RuntimeRecord; version: string }>('SELECT envelope,version FROM context_records WHERE mira_id=$1 AND record_id=$2', [this.miraId,link])).rows[0];
+    if (!saved || link !== record.id || !isDeepStrictEqual(saved.envelope,record)) fail('duplicate', 'Task evidence already links a different record');
+    if (saved.version !== String(expectedVersion + 1)) fail('version', 'Task evidence retry has a different expected version');
+    return Number(saved.version);
+  }
+  appendTaskInput(turnId: string, expectedVersion: number, input: RuntimeRecord, signal?: AbortSignal): Promise<number> {
+    return this.#appendTaskRecord('input_record_id',turnId,expectedVersion,input,signal) as Promise<number>;
+  }
+  tryAppendTaskFinal(turnId: string, expectedVersion: number, input: RuntimeRecord, signal?: AbortSignal): Promise<number | null> {
+    return this.#appendTaskRecord('final_record_id',turnId,expectedVersion,input,signal);
+  }
+  #appendTaskRecord(field: 'input_record_id' | 'final_record_id', turnId: string, expectedVersion: number, input: RuntimeRecord, signal?: AbortSignal): Promise<number | null> {
+    historyId(turnId); version(expectedVersion);
+    const record = copy(input); assertRecord(record);
+    if (record.kind !== 'message') fail('invalid', 'Task evidence must be a message');
+    return this.#transaction(async owner => {
+      const turn = await this.#taskTurn(turnId);
+      const linked = turn[field];
+      if (linked) return this.#taskEvidenceRetry(linked,expectedVersion,record);
+      if (turn.status !== 'running' || turn.final_record_id) fail('invalid', 'Task turn is not active');
+      if (field === 'final_record_id') {
+        if (!turn.input_record_id) fail('invalid', 'Task input must precede its final reply');
+        this.#checkVersion(owner,expectedVersion);
+        if (await this.#hasTaskInput(turnId)) return null;
+      }
+      const next = await this.#appendRecord(owner,expectedVersion,record,signal);
+      const changed = await this.#client.query(`UPDATE subagent_turns SET ${field}=$1 WHERE stream_id=$2 AND turn_id=$3 AND ${field} IS NULL AND status='running'`, [record.id,this.miraId,turnId]);
+      if (changed.rowCount !== 1) fail('corrupt', 'Task evidence association was not persisted');
+      return next;
+    }, signal);
+  }
+  loadTaskInputs(turnId: string): Promise<TaskLiveInput[]> {
+    historyId(turnId);
+    return this.#transaction(async owner => {
+      const turn = await this.#taskTurn(turnId);
+      if (turn.status !== 'running' && !turn.final_record_id) fail('invalid', 'Task turn is not active');
+      const bounds = (await this.#client.query<{ record_id: string; version: string }>('SELECT record_id,version FROM context_records WHERE mira_id=$1 AND record_id=ANY($2::uuid[])', [this.miraId,[turn.input_record_id,turn.final_record_id].filter(id => id !== null)])).rows;
+      const initialVersion = bounds.find(row => row.record_id === turn.input_record_id)?.version;
+      const finalVersion = bounds.find(row => row.record_id === turn.final_record_id)?.version;
+      const rows = (await this.#client.query<{ call_id: string; instruction: string; created_at: string; input_record_id: string | null; record_version: string | null; envelope: RuntimeRecord | null }>(
+        `SELECT i.call_id,i.instruction,i.created_at,i.input_record_id,c.version AS record_version,c.envelope
+         FROM subagent_live_inputs i LEFT JOIN context_records c ON c.mira_id=i.stream_id AND c.record_id=i.input_record_id
+         WHERE i.stream_id=$1 AND i.turn_id=$2 AND i.status IN ('pending','consumed') ORDER BY i.receipt_order`, [this.miraId,turnId])).rows;
+      let pending = false, previousVersion = BigInt(initialVersion ?? 0);
+      return rows.map(row => {
+        if (row.input_record_id) {
+          if (!initialVersion || pending || !row.envelope || row.envelope.kind !== 'message' || row.envelope.id !== row.input_record_id || !row.record_version || BigInt(row.record_version) <= previousVersion || BigInt(row.record_version) > BigInt(owner.context_version) || (finalVersion && BigInt(row.record_version) >= BigInt(finalVersion))) fail('corrupt', 'Task live input evidence is out of order');
+          previousVersion = BigInt(row.record_version);
+        } else {
+          if (turn.final_record_id) fail('corrupt', 'Finalized task has pending input');
+          pending = true;
+        }
+        return { callId: row.call_id, instruction: row.instruction, createdAt: row.created_at, inputRecordId: row.input_record_id };
+      });
+    });
+  }
+  appendTaskLiveInput(turnId: string, callId: string, expectedVersion: number, input: RuntimeRecord, signal?: AbortSignal): Promise<number> {
+    historyId(turnId); text(callId,'parent call ID'); version(expectedVersion);
+    const record = copy(input); assertRecord(record);
+    if (record.kind !== 'message') fail('invalid', 'Task live input must be a message');
+    return this.#transaction(async owner => {
+      const turn = await this.#taskTurn(turnId);
+      const row = (await this.#client.query<{ input_record_id: string | null; status: string }>('SELECT input_record_id,status FROM subagent_live_inputs WHERE stream_id=$1 AND turn_id=$2 AND call_id=$3', [this.miraId,turnId,callId])).rows[0];
+      if (!row) fail('invalid', 'Live input is not associated with this task turn');
+      if (row.input_record_id) return this.#taskEvidenceRetry(row.input_record_id,expectedVersion,record);
+      if (turn.status !== 'running' || turn.final_record_id || !turn.input_record_id || row.status !== 'pending') fail('invalid', 'Task live input requires an active initialized turn');
+      const first = (await this.#client.query<{ call_id: string }>("SELECT call_id FROM subagent_live_inputs WHERE stream_id=$1 AND turn_id=$2 AND status='pending' ORDER BY receipt_order LIMIT 1", [this.miraId,turnId])).rows[0];
+      if (first?.call_id !== callId) fail('invalid', 'Task live inputs must be consumed in receipt order');
+      const next = await this.#appendRecord(owner,expectedVersion,record,signal);
+      const changed = await this.#client.query("UPDATE subagent_live_inputs SET input_record_id=$1,status='consumed' WHERE stream_id=$2 AND turn_id=$3 AND call_id=$4 AND status='pending'", [record.id,this.miraId,turnId,callId]);
+      if (changed.rowCount !== 1) fail('corrupt', 'Task live input association was not persisted');
+      return next;
+    },signal);
+  }
+  tryBeginTaskTool(turnId: string, expectedVersion: number, input: ToolIntent): Promise<boolean> {
+    historyId(turnId); const intent = copy(input); validateIntent(intent);
+    return this.#transaction(async owner => {
+      this.#checkVersion(owner,expectedVersion);
+      const turn = await this.#taskTurn(turnId);
+      if (turn.status !== 'running' || turn.final_record_id || !turn.input_record_id) fail('invalid', 'Task tool requires an active initialized turn');
+      if (await this.#hasTaskInput(turnId)) return false;
+      await this.#beginTool(owner,expectedVersion,intent);
+      return true;
+    });
   }
   appendWakeInput(runId: string, expectedVersion: number, input: RuntimeRecord, signal?: AbortSignal): Promise<number> {
     return this.#appendWakeRecord('input_record_id', runId, expectedVersion, input, signal) as Promise<number>;
@@ -542,22 +656,26 @@ class PostgresWriter implements DreamingWriter, SchedulingWriter, LiveInputWrite
     const event = copy(input); const wake = copy(requestedWake);
     validateEvent(event); validateWake(wake);
     if (event.source !== 'user') fail('invalid', 'Live input must be a user event');
-    const result = await this.#transaction(async () => {
-      const receipt = await this.#receive(event, wake);
-      if (receipt === 'duplicate') return { receipt, runId: null };
-      const active = await this.#activeWakeRun();
-      if (!active || active.final_record_id) return { receipt, runId: null };
-      await this.#client.query('INSERT INTO wake_run_requests(mira_id, wake_id, run_id) VALUES ($1, $2, $3)', [this.miraId, wake.id, active.run_id]);
-      await this.#client.query('INSERT INTO wake_live_inputs(mira_id, wake_id, run_id) VALUES ($1, $2, $3)', [this.miraId, wake.id, active.run_id]);
-      return { receipt, runId: active.run_id };
-    });
-    // Only committed input may interrupt a request. No duplicate notification.
-    if (result.runId) for (const listener of this.#liveInputListeners) {
-      // A notification consumer cannot turn committed acceptance into a failed
-      // receipt or suppress the durable gates used by another consumer.
-      try { listener(result.runId); } catch { /* Notifications are hints only. */ }
-    }
+    const result = await this.#transaction(() => this.#receiveSupplemental(event, wake));
+    this.#notifyLiveInput(result.runId);
     return result.receipt;
+  }
+  /** Internal only: caller holds the owner transaction. Child terminal receipts
+   * originate in PostgresSubagents from its persisted turn, never public ingress. */
+  async #receiveSupplemental(event: LifeEvent, wake: WakeReceipt): Promise<{ receipt: 'inserted' | 'duplicate'; runId: string | null }> {
+    const receipt = await this.#receive(event, wake);
+    if (receipt === 'duplicate') return { receipt, runId: null };
+    const active = await this.#activeWakeRun();
+    if (!active || active.final_record_id) return { receipt, runId: null };
+    await this.#client.query('INSERT INTO wake_run_requests(mira_id, wake_id, run_id) VALUES ($1, $2, $3)', [this.miraId, wake.id, active.run_id]);
+    await this.#client.query('INSERT INTO wake_live_inputs(mira_id, wake_id, run_id) VALUES ($1, $2, $3)', [this.miraId, wake.id, active.run_id]);
+    return { receipt, runId: active.run_id };
+  }
+  #notifyLiveInput(runId: string | null): void {
+    // Call only after COMMIT. Durable gates cover lost hints and restart.
+    if (runId) for (const listener of this.#liveInputListeners) {
+      try { listener(runId); } catch { /* Notifications are hints only. */ }
+    }
   }
   loadLiveInputs(runId: string): Promise<LiveWakeInput[]> {
     historyId(runId);

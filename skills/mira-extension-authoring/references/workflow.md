@@ -215,3 +215,37 @@ On restart, enabled desired entries initialize again and disabled ones do not
 import; extension initialization should handle its own idempotency. Activation UUID
 identifies a generation, SHA identifies content, and revision identifies code/config.
 Unknown outcomes after crashes need inspection/reconciliation, not blind replay.
+
+## An already-installed source package
+
+For a shipped or other explicitly selected local package with already-installed
+runtime dependencies, use the ordinary preparation helper before staging:
+
+```sh
+node scripts/prepare-extension-package.mts /absolute/source-package /absolute/new-workspace [src/index.ts]
+```
+
+Inspect the selected package first: it must contain no credentials or unrelated private files. The helper is not a secret scanner.
+The helper copies the selected source without `.git` or `node_modules`, links only
+its installed declared runtime dependency closure, and returns `entry.mjs`. It does
+not install packages, run scripts, fetch a registry or grant account access. Required
+missing dependencies and ambiguous root package resolutions are errors; absent
+optional dependencies/optional peers are allowed, and transitive versions retain
+separate original paths. Dependency graph cycles terminate. All authored source-tree symlinks, including internal file/directory aliases, are rejected before writing the destination: flattening them can change Node relative-import resolution. Use ordinary source files. Controlled dependency/pnpm links remain supported; source backlinks and external links cannot capture unrelated files. Every runtime dependency tree is also checked: links may resolve only inside the explicitly declared closure; undeclared nested packages, external links and linked package manifests are rejected before preparation writes. Keep these installed sources unchanged until staging; this helper is not an OS sandbox.
+
+Stage the returned workspace, run content-bound tests, then install and activate via
+the same tools described above. Do not replace the normal digest-bound workflow with
+a manual JSON edit. The shipped Feishu/Lark consumer is at
+`packages/feishu-channel`; read its README before connecting, and let the user enter
+credentials or scan authorization in its generic protected extension settings.
+
+Supported source layout has one root runtime dependency manifest. Nested authored
+runtime dependency declarations and non-root `node_modules` are rejected before
+writes; type/imports/exports-only nested scopes remain supported. Ordinary physical
+root `node_modules` installations and controlled pnpm links are supported. A runtime
+dependency cannot contain the source or overlap copied authored directories, and the
+new workspace cannot contain or be inside any runtime dependency. The entry must
+reference copied source, outside excluded trees, without `%`, `#`, or `?` URL
+metacharacters or ASCII control characters. Supported entries use Node file-URL
+encoding to preserve path identity, including trailing spaces, after relocation.
+These are explicit preparation limits, not a general Node bundler.

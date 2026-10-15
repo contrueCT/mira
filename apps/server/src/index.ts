@@ -84,7 +84,7 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
     writer.signal.addEventListener('abort', () => { void terminalManager.close(); }, { once: true });
     const baseTools = [...createWorkspaceTools(workingDirectory), ...createTerminalTools(terminals, writer.miraId), ...createHistoryTools(persistence.history(writer.miraId))];
     if (options.extensions) {
-      extensions = new ExtensionHost({ ...options.extensions, schedules: extensionScheduling(writer), reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage'], receive: extensionReceiver(writer) });
+      extensions = new ExtensionHost({ ...options.extensions, privateStorageExcludedDirectories: [options.sourceDirectory, ...options.memory ? [options.memory.memoryRoot] : []], schedules: extensionScheduling(writer), reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage'], receive: extensionReceiver(writer) });
       await extensions.start();
       await extensions.withScheduledOwners(owners => writer.dispatchScheduledDeliveries(owners));
     }

@@ -29,9 +29,9 @@ summary; the turn becomes failed/interrupted/cancelled under existing lifecycle
 rules. Only explicit followup resumes after failure or restart. Already executed
 tools are never replayed by compaction.
 
-Followups arriving while summary generation is running remain queued in the
-existing child registry. They are consumed in order after the current turn, not
-injected into its frozen summary candidate. Restart interrupts in-progress turns
+Under ADR 0039, followups arriving while summary generation is running remain
+in the task-local durable inbox. They are consumed in order after the checkpoint
+and before the next natural request, without changing its frozen summary candidate. Restart interrupts in-progress turns
 and explicit followup reloads the committed child checkpoint. Child checkpoint
 rows use the child stream ID; main transcript versions, main compaction counts
 and Dreaming's main-stream query remain separate. Child completion still queues

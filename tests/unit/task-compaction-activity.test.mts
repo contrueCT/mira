@@ -59,6 +59,11 @@ function registryFixture(writer: MemoryWriter) {
     created_at: new Date().toISOString(), started_at: new Date().toISOString(), activity: emptySubagentActivity(), finished_at: null as string | null, result: null as SubagentResult | null };
   let receipts = 0;
   const client = { query: async (sql: string, args: unknown[]) => {
+    if (sql.startsWith('SELECT child_id FROM subagent_turns WHERE parent_mira_id=$1 AND turn_id=$2')) return { rows: [{ child_id: row.child_id }] };
+    if (sql.startsWith('SELECT child_id FROM subagents WHERE parent_mira_id=$1 AND child_id=$2 FOR UPDATE')) return { rows: [{ child_id: row.child_id }] };
+    if (sql.startsWith('SELECT turn_id,call_id,created_at,input_record_id,status FROM subagent_live_inputs')) return { rows: [] };
+    if (sql.startsWith('SELECT count(*)::integer AS count FROM subagent_live_inputs')) return { rows: [{ count: 0 }] };
+    if (sql.startsWith('UPDATE subagent_live_inputs SET status=$3')) return { rows: [] };
     if (sql.startsWith('SELECT * FROM subagent_turns WHERE parent_mira_id=$1 AND turn_id=$2')) return { rows: [structuredClone(row)] };
     if (sql.startsWith('SELECT * FROM subagents WHERE parent_mira_id=$1 AND child_id=$2')) return { rows: [{ child_id: row.child_id, stream_id: writer.miraId, spawn_call_id: 'spawn', created_at: row.created_at, spec: {} }] };
     if (sql.startsWith('SELECT coalesce(max(sequence)')) return { rows: [{ count: 1 }] };
@@ -78,7 +83,7 @@ function registryFixture(writer: MemoryWriter) {
     }
     throw Error(`Unexpected fixture SQL: ${sql}`);
   } } as unknown as Client;
-  const registry = new PostgresSubagents(client, 'parent', async work => work(), async () => { receipts++; });
+  const registry = new PostgresSubagents(client, 'parent', async work => work(), async () => { receipts++; return null; }, () => {});
   return { registry, row, receipts: () => receipts };
 }
 for (const boundary of ['before-commit', 'after-commit', 'cancel-wins-parent', 'cancel-wins-parent-no-callback', 'lost-writer', 'lost-writer-no-callback'] as const) {

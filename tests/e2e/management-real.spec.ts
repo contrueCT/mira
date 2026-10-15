@@ -348,3 +348,189 @@ test('a real Wake paginates original and supplemental requests separately from e
     expect((await db.admin.query('SELECT count(*)::int AS n FROM life_events')).rows[0].n).toBe(56);
   } finally { hold.resolve(); await app?.close(); await service?.close(); await db?.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test('extension private settings traverse real browser, HTTP, Cordis and PostgreSQL without exposing credentials', async ({ page }, testInfo) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mira-extension-settings-real-'));
+  let db: Awaited<ReturnType<typeof createTestDatabase>> | undefined;
+  let service: LocalWebService | undefined;
+  let app: ReturnType<typeof createLocalHttp> | undefined;
+  const secret = 'synthetic-extension-secret-e2e';
+  const delayedParentPoll = deferred();
+  let parentPollWaiting = false;
+  const source = path.join(root, 'settings-extension.mjs');
+  const configurationFile = path.join(root, 'extensions.json');
+  const contexts: TranscriptContext[] = [];
+  try {
+    db = await createTestDatabase();
+    await writeFile(source, `import {defineExtension} from ${JSON.stringify(import.meta.resolve('@mira/extension-sdk'))};
+      export default defineExtension({name:'settings-fixture',apply(ctx,config){
+        const disconnected=()=>({state:'disconnected',visibleActions:['connect','authorize']});
+        let status=disconnected(); let authorizationRequests=0;
+        const settingsActions = ctx.registerSettings({fields:[{key:'appId',label:'Application ID',type:'text'},{key:'token',label:'Private token',type:'secret'},...['constructor','toString','valueOf'].map(key=>({key,label:'Private '+key,type:'secret'}))],
+          actions:[{id:'connect',label:'Connect fixture',async execute({signal}){ if(!await ctx.credentials.has('token'))throw Error('missing'); for(const key of ['constructor','toString','valueOf'])if(await ctx.credentials.get(key)!=='synthetic-'+key)throw Error('prototype credential missing'); status={state:'connected',visibleActions:['authorize','disconnect']};}},
+          {id:'disconnect',label:'Disconnect fixture',group:'secondary',async execute(){status=disconnected();}},
+          {id:'authorize',label:'Authorize fixture',group:'primary',async execute({signal}){status={state:'pending',visibleActions:[],authorization:{url:'https://example.com/authorize?challenge=synthetic-public-'+(++authorizationRequests),label:'Official authorization',qr:true}}; await new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true})); status=disconnected();}}],status:()=>status});
+        ctx.registerTool({name:'start_fixture',description:'Start plugin authorization',parameters:{type:'object'},async execute(){return {text:JSON.stringify(await settingsActions.start('authorize'))}}});
+        ctx.registerTool({name:'start_hidden_fixture',description:'Check hidden settings action',parameters:{type:'object'},async execute(){try{await settingsActions.start('disconnect');return {text:'unexpected hidden settings action start'}}catch{return {text:'hidden settings action refused'}}}});
+        ctx.registerTool({name:'check_fixture',description:'Check connection',parameters:{type:'object'},async execute(){return {text:status.state}}});
+        ctx.onCleanup(()=>{status={state:'disconnected'}});
+      }});`);
+    const entries = [{ id: 'settings-fixture', path: source, config: { appId: 'initial' } }];
+    await writeFile(configurationFile, JSON.stringify({ entries }));
+    service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'extension-settings-real', sourceDirectory,
+      workingDirectory: root, miraHome: root, spoolDirectory: path.join(root,'spool'), settingsFile:path.join(root,'models.json'),
+      synthetic:true, dreaming:{enabled:false}, autoCompaction:{enabled:false}, extensions:{entries,configurationFile},
+      syntheticStream: (_model,context)=>{ contexts.push(structuredClone(context)); return streamOf(contexts.length === 1 ? call('settings-tool-hidden', 'start_hidden_fixture', {}) : contexts.length === 2 ? call('settings-tool-start', 'start_fixture', {}) : assistant('Synthetic settings checked.')); },
+    });
+    app = createLocalHttp({backend:service,port,assetsDirectory:path.join(sourceDirectory,'apps/web/dist')});
+    await app.listen({port,host:'127.0.0.1'});
+    await page.goto(origin);
+    await page.getByRole('button',{name:'模型设置',exact:true}).click();
+    await page.getByRole('tab',{name:'扩展',exact:true}).click();
+    await page.getByRole('button',{name:'连接设置',exact:true}).click();
+    const connectionSettings = page.getByLabel('settings-fixture 连接设置');
+    const moreActions = connectionSettings.locator('summary', { hasText: '更多操作' });
+    await expect(page.getByRole('button',{name:'Connect fixture',exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'Authorize fixture',exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'编辑连接设置',exact:true})).not.toBeVisible();
+    await moreActions.click();
+    await page.getByRole('button',{name:'编辑连接设置',exact:true}).click();
+    await page.getByLabel('Private token',{exact:true}).fill('discarded-draft');
+    await moreActions.click();
+    await expect(page.getByLabel('Private token',{exact:true})).toHaveValue('discarded-draft');
+    await page.getByRole('button',{name:'取消设置编辑',exact:true}).click();
+    await moreActions.click();
+    await page.getByRole('button',{name:'编辑连接设置',exact:true}).click();
+    await expect(page.getByLabel('Private token',{exact:true})).toHaveValue('');
+    await page.getByLabel('Application ID',{exact:true}).fill('saved-id');
+    // Keep the parent's slower activation refresh behind a deterministic barrier.
+    await page.route(`${origin}/api/extensions`, async route => {
+      if (route.request().method() === 'GET') { parentPollWaiting = true; await delayedParentPoll.promise; }
+      await route.continue();
+    });
+    await page.getByLabel('Private token',{exact:true}).fill(secret);
+    for (const key of ['constructor', 'toString', 'valueOf']) {
+      const input = page.getByLabel('Private ' + key, {exact:true});
+      await expect(input).toBeEnabled(); await expect(input).toHaveValue('');
+      await input.fill('synthetic-' + key);
+    }
+    await page.getByRole('button',{name:'保存连接设置',exact:true}).click();
+    await expect(page.getByRole('button',{name:'编辑连接设置',exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'编辑连接设置',exact:true}).click();
+    await page.getByLabel('Private token',{exact:true}).fill('transient-next-draft');
+    await expect.poll(() => parentPollWaiting, {timeout:10000}).toBe(true);
+    const refreshedParent = page.waitForResponse(response => response.url() === `${origin}/api/extensions` && response.request().method() === 'GET');
+    delayedParentPoll.resolve(); await (await refreshedParent).finished();
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    // A delayed parent activation A→B refresh must not remount the already
+    // reconciled child and silently discard its new draft.
+    await expect(page.getByLabel('Private token',{exact:true})).toHaveValue('transient-next-draft');
+    await page.getByRole('button',{name:'取消设置编辑',exact:true}).click();
+    await page.unroute(`${origin}/api/extensions`);
+    // An unrelated ordinary edit must leave every blank secret unchanged, even
+    // when its supported schema key is an Object.prototype property name.
+    await page.getByRole('button',{name:'编辑连接设置',exact:true}).click();
+    for (const key of ['constructor', 'toString', 'valueOf']) {
+      const input = page.getByLabel('Private ' + key, {exact:true});
+      await expect(input).toBeEnabled(); await expect(input).toHaveValue('');
+      await expect(input).toHaveAttribute('placeholder', '已保存，留空保持不变');
+    }
+    await page.getByLabel('Application ID',{exact:true}).fill('ordinary-edit-only');
+    await page.getByRole('button',{name:'保存连接设置',exact:true}).click();
+    await expect(page.getByRole('button',{name:'编辑连接设置',exact:true})).toBeVisible();
+    const staleSettingsRevision = await page.evaluate(async () => (await (await fetch('/api/extensions/settings-fixture/settings', { headers: { 'X-Mira-Client': 'web' } })).json()).settings.revision as string);
+    await page.getByRole('button',{name:'Connect fixture',exact:true}).click();
+    await expect(connectionSettings).toContainText('已连接');
+    // The old UI revision and a fresh request for the now-hidden action both
+    // traverse protected HTTP and the actual Host admission path.
+    const rejectedStarts = await page.evaluate(async staleRevision => {
+      const base = '/api/extensions/settings-fixture/settings';
+      const current = (await (await fetch(base, { headers: { 'X-Mira-Client': 'web' } })).json()).settings;
+      const statuses = [];
+      for (const expectedRevision of [staleRevision, current.revision]) {
+        const response = await fetch(base + '/actions', { method: 'POST', headers: { 'X-Mira-Client': 'web', 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'connect', expectedRevision }) });
+        statuses.push(response.status);
+      }
+      const after = (await (await fetch(base, { headers: { 'X-Mira-Client': 'web' } })).json()).settings;
+      return { statuses, beforeOperation: current.operation, afterOperation: after.operation };
+    }, staleSettingsRevision);
+    expect(rejectedStarts.statuses).toEqual([409, 503]);
+    expect(rejectedStarts.afterOperation).toEqual(rejectedStarts.beforeOperation);
+    await expect(page.getByRole('button',{name:'Connect fixture',exact:true})).toHaveCount(0);
+    await expect(page.getByRole('button',{name:'Disconnect fixture',exact:true})).toBeVisible();
+    await moreActions.click();
+    await expect(page.getByRole('button',{name:'Disconnect fixture',exact:true})).not.toBeVisible();
+    await expect(page.getByRole('button',{name:'编辑连接设置',exact:true})).not.toBeVisible();
+    await expect(page.getByRole('button',{name:'Authorize fixture',exact:true})).toBeVisible();
+    await connectionSettings.scrollIntoViewIfNeeded();
+    await page.screenshot({path:testInfo.outputPath('extension-grouped-actions-collapsed-desktop.png'),fullPage:true});
+    await page.setViewportSize({width:390,height:844});
+    await moreActions.click();
+    await page.getByRole('button',{name:'Disconnect fixture',exact:true}).scrollIntoViewIfNeeded();
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+    await page.screenshot({path:testInfo.outputPath('extension-grouped-actions-expanded-narrow.png'),fullPage:true});
+    await page.getByRole('button',{name:'Disconnect fixture',exact:true}).click();
+    await expect(connectionSettings).toContainText('未连接');
+    await expect(page.getByRole('button',{name:'Disconnect fixture',exact:true})).toHaveCount(0);
+    await page.getByRole('button',{name:'Connect fixture',exact:true}).click();
+    await expect(connectionSettings).toContainText('已连接');
+    await moreActions.click();
+    await page.setViewportSize({width:1440,height:1000});
+    expect(await readFile(configurationFile,'utf8')).not.toContain(secret);
+    const protectedView = await page.evaluate(async()=>await (await fetch('/api/extensions/settings-fixture/settings',{headers:{'X-Mira-Client':'web'}})).text());
+    expect(protectedView).not.toContain(secret); expect(protectedView).toContain('configured');
+    await page.getByRole('button',{name:'Authorize fixture',exact:true}).click();
+    await expect(page.getByRole('img',{name:'授权二维码'})).toBeVisible();
+    await expect(page.getByRole('button',{name:'Authorize fixture',exact:true})).toHaveCount(0);
+    await expect(page.getByRole('button',{name:'取消当前操作',exact:true})).toBeVisible();
+    await expect(connectionSettings.locator('details')).not.toHaveAttribute('open');
+    const authorizationLink = page.getByRole('link', {name:'Official authorization', exact:true});
+    await expect(authorizationLink).toHaveCSS('color', 'rgb(84, 121, 165)');
+    await expect(authorizationLink).toHaveCSS('text-decoration-line', 'none');
+    await authorizationLink.hover();
+    await expect(authorizationLink).toHaveCSS('text-decoration-line', 'underline');
+    await page.keyboard.press('Tab'); // Switch to keyboard modality before focusing.
+    await authorizationLink.focus();
+    await expect(authorizationLink).toHaveCSS('outline-style', 'solid');
+    await expect(authorizationLink).toHaveCSS('outline-width', '3px');
+    await expect(authorizationLink).toHaveCSS('outline-color', 'rgb(84, 121, 165)');
+    await authorizationLink.blur();
+    await page.mouse.move(0, 0);
+    await page.screenshot({path:testInfo.outputPath('extension-settings-desktop.png'),fullPage:true});
+    await page.setViewportSize({width:390,height:844});
+    await page.getByRole('img',{name:'授权二维码'}).scrollIntoViewIfNeeded();
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+    await page.screenshot({path:testInfo.outputPath('extension-settings-narrow.png'),fullPage:true});
+    await page.getByRole('button',{name:'取消当前操作',exact:true}).click();
+    await expect(page.getByLabel('settings-fixture 连接设置')).toContainText('操作已取消');
+    // Reusing a declared action calls its handler again; it does not redraw the old URL.
+    await page.getByRole('button',{name:'Authorize fixture',exact:true}).click();
+    await expect(authorizationLink).toHaveAttribute('href', 'https://example.com/authorize?challenge=synthetic-public-2');
+    await page.getByRole('button',{name:'取消当前操作',exact:true}).click();
+    await expect(page.getByLabel('settings-fixture 连接设置')).toContainText('操作已取消');
+    await page.getByRole('button',{name:'关闭设置',exact:true}).click();
+    await page.getByLabel('给 Mira 发消息',{exact:true}).fill('Check synthetic settings.');
+    await page.getByRole('button',{name:'发送消息',exact:true}).click();
+    await expect.poll(()=>contexts.length).toBe(3);
+    expect(JSON.stringify(contexts)).toContain('hidden settings action refused');
+    expect(JSON.stringify(contexts)).not.toContain('unexpected hidden settings action start');
+    expect(JSON.stringify(contexts)).not.toContain(secret);
+    expect(JSON.stringify(contexts)).not.toContain('https://example.com/authorize');
+    await page.getByRole('button',{name:'模型设置',exact:true}).click();
+    await page.getByRole('tab',{name:'扩展',exact:true}).click();
+    await page.getByRole('button',{name:'连接设置',exact:true}).click();
+    await expect(page.getByLabel('settings-fixture 连接设置')).toContainText('操作仍在进行');
+    await expect(page.getByRole('link',{name:'Official authorization',exact:true})).toHaveAttribute('href', 'https://example.com/authorize?challenge=synthetic-public-3');
+    const pendingOperation = await page.evaluate(async()=> (await (await fetch('/api/extensions/settings-fixture/settings',{headers:{'X-Mira-Client':'web'}})).json()).settings.operation);
+    expect(pendingOperation.state).toBe('pending');
+    expect(JSON.stringify(contexts)).toContain(pendingOperation.id);
+    await page.getByRole('button',{name:'取消当前操作',exact:true}).click();
+    await expect(page.getByLabel('settings-fixture 连接设置')).toContainText('操作已取消');
+    const history = await db.admin.query('SELECT intent, outcome FROM tool_executions');
+    expect(JSON.stringify(history.rows)).not.toContain(secret);
+    expect(JSON.stringify(history.rows)).not.toContain('https://example.com/authorize');
+    expect(history.rows).toHaveLength(2);
+    expect(JSON.stringify(history.rows)).toContain('hidden settings action refused');
+    expect(await page.evaluate(()=>JSON.stringify([localStorage,sessionStorage]))).not.toContain(secret);
+  } finally { delayedParentPoll.resolve(); await app?.close(); await service?.close(); await db?.close(); await rm(root,{recursive:true,force:true}); }
+});

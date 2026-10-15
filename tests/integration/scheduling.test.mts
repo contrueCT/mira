@@ -273,6 +273,11 @@ test('scheduling down/up removes only its own slice and preserves ordinary histo
   try {
     const writer = await db.acquire(); const value = input();
     await writer.createScheduledDelivery(owner, value); await writer.dispatchScheduledDeliveries([owner]); await writer.close();
+    // Task live-input ownership is an independent later slice.
+    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
+    assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema=$1 AND table_name IN ('subagent_calls','subagent_live_inputs')", [db.schema])).rows[0].n, 0);
+    assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.columns WHERE table_schema=$1 AND table_name='subagent_turns' AND column_name IN ('stream_id','input_record_id','final_record_id')", [db.schema])).rows[0].n, 0);
+    assert.deepEqual(await counts(db), { events: 1, wakes: 1 });
     // The activity/association migration only adds columns to the child slice.
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.columns WHERE table_schema=$1 AND table_name='subagent_turns' AND column_name IN ('activity','started_at','association_order')", [db.schema])).rows[0].n, 0);

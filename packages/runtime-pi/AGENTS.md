@@ -65,3 +65,5 @@ real PostgreSQL recovery tests under `tests/recovery/`, needs the explicit isola
 real database, and live model validation. See recovery README for exact setup.
 
 - ADR 0027: explicitly initialize Agent thinkingLevel with the configured preference (default medium) adapted by Pi public model capabilities. Main/child/Dreaming share this option; summaries use the lowest supported level independently, never inherit costly conversation settings or autonomously escalate.
+
+- ADR 0039: task-local parent instructions reuse generic per-tool/request boundaries through TaskInputWriter; keep explicit parent provenance, atomic child final admission, frozen summaries and no main Wake ownership.
