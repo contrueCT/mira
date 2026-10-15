@@ -27,7 +27,8 @@
     "test:capabilities:e2e": "node scripts/run-real-web-tests.mts agent-capabilities",
     "test:feishu:e2e": "node scripts/run-real-web-tests.mts feishu",
     "test:auth:e2e": "node scripts/run-real-web-tests.mts auth",
-    "terminal:prepare": "node scripts/prepare-terminal.mts"
+    "terminal:prepare": "node scripts/prepare-terminal.mts",
+    "test:browser:e2e": "node scripts/run-real-web-tests.mts browser"
   },
   "devDependencies": {
     "@types/node": "24.19.1",

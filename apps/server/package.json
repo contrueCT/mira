@@ -7,19 +7,23 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "1.0.2",
+    "@earendil-works/pi-ai": "1.0.2",
+    "@earendil-works/pi-coding-agent": "1.0.2",
+    "@fastify/static": "10.1.5",
     "@mira/cognition": "workspace:*",
     "@mira/context": "workspace:*",
+    "@mira/extension-host": "workspace:*",
+    "@mira/external-sdk": "workspace:*",
     "@mira/life": "workspace:*",
     "@mira/persistence": "workspace:*",
     "@mira/runtime-pi": "workspace:*",
     "@mira/workspace": "workspace:*",
-    "@earendil-works/pi-agent-core": "1.0.2",
-    "@earendil-works/pi-ai": "1.0.2",
-    "@earendil-works/pi-coding-agent": "1.0.2",
-    "@mira/extension-host": "workspace:*",
     "fastify": "5.12.5",
-    "@fastify/static": "10.1.5",
-    "@mira/external-sdk": "workspace:*",
-    "node-pty": "1.1.0"
+    "node-pty": "1.1.0",
+    "ws": "8.22.0"
+  },
+  "devDependencies": {
+    "@types/ws": "8.18.1"
   }
 }
