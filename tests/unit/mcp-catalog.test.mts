@@ -141,3 +141,24 @@ test('catalog recovery restores connected settings and actions with the new tool
     assert.deepEqual(status.visibleActions, ['refresh', 'disconnect']);
   } finally { await close(); }
 });
+
+// The valid notification is delivered before the held invalid response fails.
+test('a failed in-flight catalog does not discard an already received newer notification', { timeout: 10_000 }, async () => {
+  const { fixture, host, close } = await installation();
+  try {
+    await host.start(); await until(fixture.ready);
+    fixture.change(-1); await until(fixture.held);
+    fixture.change(3);
+    // Official SDK notification debounce must run while list #2 is still held.
+    await pause(1200);
+    assert.equal(fixture.lists(), 2);
+    fixture.release();
+    await until(async () => (await host.prepare()).some(item => item.tool.description.endsWith('revision 3')));
+    assert.equal(fixture.lists(), 3);
+    assert.equal(fixture.maximum(), 1);
+    const status = (await host.extensionSettings('remote'))!.status;
+    assert.equal(status.state, 'connected');
+    assert.equal(status.code, undefined);
+    assert.deepEqual(status.visibleActions, ['refresh', 'disconnect']);
+  } finally { await close(); }
+});

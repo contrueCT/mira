@@ -190,7 +190,13 @@ class McpInstallation {
     this.catalogRefresh = task;
     void task.catch(() => {
       if (generation === this.generation && !this.stopped) { this.withdraw(); this.state = 'error'; this.code = 'network'; }
-    }).finally(() => { if (this.catalogRefresh === task) this.catalogRefresh = undefined; });
+    }).finally(() => {
+      if (this.catalogRefresh !== task) return;
+      this.catalogRefresh = undefined;
+      // A failed request must not discard a newer notification received while
+      // it was pending. No dirty bit means no automatic retry of the failure.
+      if (this.catalogDirty) this.scheduleCatalog(connection, generation);
+    });
   }
   private async disconnect(): Promise<void> {
     ++this.generation; this.catalogDirty = false; this.catalogRefresh = undefined; this.withdraw();
