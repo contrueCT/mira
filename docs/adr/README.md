@@ -75,3 +75,5 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 - [0033 可选网页访问密码](0033-web-password-access.md)：已授权实现，独立草稿 PR 验证；不含正式部署。
 - [0032 — Persistent terminal processes](0032-persistent-terminal-processes.md): approved cross-turn processes, service-scoped lifecycle, explicit PTY/input/close, no restart replay or UI.
+
+- [0035 扩展私有凭据与声明式设置](0035-extension-private-settings.md)：Accepted，2026-10-15；手工/生成扩展共用安装命名空间、私有凭据、纯文本字段/动作/状态与本地授权二维码。

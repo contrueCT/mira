@@ -1,3 +1,5 @@
+import type { ExtensionCredentials, ExtensionSettingsDefinition } from './settings.ts';
+export type { ExtensionCredentials, ExtensionSettingField, ExtensionConnectionStatus, ExtensionSettingsDefinition } from './settings.ts';
 /** The only Mira contract trusted local extensions import. No framework/DB types. */
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type Cleanup = () => void | Promise<void>;
@@ -44,6 +46,11 @@ export interface ExtensionSchedules {
 }
 export interface ExtensionContext {
   readonly id: string;
+  /** Installation-scoped private storage, unavailable without persistent host configuration. */
+  readonly credentials: ExtensionCredentials;
+  /** Private installation directory for extension-owned durable state; no sandbox guarantee. */
+  readonly privateDirectory: string | null;
+  registerSettings(definition: ExtensionSettingsDefinition): void;
   /** Host-scoped stable installation identity; retired activations cannot write. */
   readonly schedules: ExtensionSchedules;
   registerTool(tool: ExtensionTool): void;

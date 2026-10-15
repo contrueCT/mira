@@ -215,3 +215,22 @@ installationId through the existing configuration writer. Without a configuratio
 file, the caller must supply it. `withScheduledOwners` serializes dispatch with
 explicit lifecycle changes and includes only enabled active installations.
 Disable/remove retain pending records. See [ADR 0022](../../docs/adr/0022-durable-single-shot-delivery.md).
+
+## Private credentials and declarative settings
+
+See [ADR 0035](../../docs/adr/0035-extension-private-settings.md). Persistent configuration
+assigns a stable installation identity before exposing the private SDK. The default
+private root is `extension-private/` beside the configuration file. Keep it outside
+source, Memory and artifacts. An explicit host `privateDirectory` may override it.
+
+Reload/update/rollback/disable retain credentials; remove deletes that installation's
+credential file even if cleanup reports failure, while preserving plugin-owned `data/`.
+Reinstall does not adopt old data. The host rejects symlink roots, non-private modes,
+invalid names and bounded-file overflow. Ordinary plaintext files are protected by OS
+permissions, not encryption or an in-process security boundary.
+
+Settings actions are single-flight, revision-bound and cancellable. Trusted extension
+code must honor the signal and join its background work during cleanup. Closing a UI
+window does not cancel an already accepted action. Retiring an activation cancels it
+and drains its execution lease. UI writes may save credentials before a config apply
+fails; reread actual state rather than retrying an unknown outcome automatically.

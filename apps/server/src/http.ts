@@ -87,7 +87,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   const methods = new Map<string, readonly string[]>([
     ['/api/auth/status', ['GET']], ['/api/auth/login', ['POST']], ['/api/auth/logout', ['POST']], ['/api/auth/settings', ['GET', 'PUT']],
     ['/api/attachments', ['POST']], ['/api/attachments/:id', ['GET']], ['/api/status', ['GET']], ['/api/timeline', ['GET', 'POST']], ['/api/messages', ['POST']], ['/api/settings', ['GET', 'PUT']],
-    ['/api/memory', ['GET']], ['/api/messages/:id/status', ['GET']], ['/api/extensions', ['GET']], ['/api/extensions/:id', ['POST']], ['/api/runs', ['GET']], ['/api/runs/:id', ['GET']], ['/api/runs/:id/requests', ['GET']],
+    ['/api/memory', ['GET']], ['/api/messages/:id/status', ['GET']], ['/api/extensions', ['GET']], ['/api/extensions/:id', ['POST']], ['/api/extensions/:id/settings', ['GET', 'POST']], ['/api/extensions/:id/settings/actions', ['POST']], ['/api/extensions/:id/settings/cancel', ['POST']], ['/api/runs', ['GET']], ['/api/runs/:id', ['GET']], ['/api/runs/:id/requests', ['GET']],
     ['/api/models/catalog', ['GET']], ['/api/models/discover', ['POST']],
     ['/api/external/events', ['POST']], ['/api/external/wake', ['POST']], ['/api/external/notifications', ['POST']],
   ]);
@@ -149,7 +149,9 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     if (request.headers['x-mira-client'] !== 'web') return reply.code(403).send({ error: 'The local web client header is required' });
     const mode = request.headers['sec-fetch-mode']; const destination = request.headers['sec-fetch-dest'];
     if ((mode !== undefined && mode !== 'cors' && mode !== 'same-origin') || (destination !== undefined && destination !== 'empty')) return reply.code(403).send({ error: 'Only local API fetches are allowed' });
-    const allowed = methods.get(pathname) ?? (typeof route === 'string' ? methods.get(route) : undefined);
+    const extensionSettingsRoute = /^\/api\/extensions\/[A-Za-z][A-Za-z0-9_-]*\/settings(?:\/(actions|cancel))?$/.exec(pathname);
+    const allowed = methods.get(pathname) ?? (typeof route === 'string' ? methods.get(route) : undefined)
+      ?? (extensionSettingsRoute ? (extensionSettingsRoute[1] ? ['POST'] : ['GET', 'POST']) : undefined);
     if (allowed && !allowed.includes(request.method)) return reply.code(405).header('allow', allowed.join(', ')).send({ error: 'Method not allowed' });
     const write = request.method !== 'GET' && request.method !== 'HEAD';
     if (write && requestOrigin !== expectedOrigin) return reply.code(403).send({ error: 'A same-origin write is required' });

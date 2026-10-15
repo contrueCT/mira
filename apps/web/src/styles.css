@@ -376,3 +376,11 @@ button:disabled { opacity: .48; }
 .access-session h4 { margin: 0; font-size: 13px; font-weight: 500; color: #66758a; }
 .access-session .secondary-button { margin-top: 8px; }
 @media (max-width: 600px) { .access-card { padding: 26px 22px; } .settings-tabs button { font-size: 11px; } }
+
+.extension-settings { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.extension-settings .extension-config input:not([type="checkbox"]), .extension-settings .extension-config select { box-sizing: border-box; width: 100%; min-width: 0; }
+.extension-authorization-qr { display: block; max-width: 100%; height: auto; border-radius: 8px; }
+
+.extension-authorization-link { color: var(--blue-dark); text-decoration: none; text-underline-offset: 3px; border-radius: 3px; }
+.extension-authorization-link:hover { text-decoration: underline; }
+.extension-authorization-link:focus-visible { outline: 3px solid var(--blue-dark); outline-offset: 3px; }

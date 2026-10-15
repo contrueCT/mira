@@ -24,3 +24,4 @@
 从仓库根运行 `pnpm check`。依赖或 exports 改动必须同时检查 `scripts/boundaries.json`，并添加允许/拒绝反例。离线验证见 `tests/unit/extension-host.test.mts` 和 `tests/unit/official-hmr.test.mts`；实际 HMR 子进程使用 `--expose-internals`，不调用真实模型。
 
 - 持久调度owner绑定配置ID和安装身份：generated首revision、manual持久installationId。disable/remove暂停保留pending，重装不可继承；显式生命周期与投递扫描串行，见ADR 0022。
+- ADR0035：私有命名空间复用持久安装身份；重载/更新/停用保留，卸载清凭据但留data。动作先取消再等待execution lease，不把异常或凭据放入公共设置投影。

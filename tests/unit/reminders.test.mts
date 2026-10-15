@@ -46,7 +46,7 @@ function fixture() {
       return { status: 'updated', delivery: structuredClone(old) };
     },
   };
-  const context: ExtensionContext = { id: 'synthetic-reminders', schedules,
+  const context: ExtensionContext = { privateDirectory: null, registerSettings: unavailable, credentials: {get: unavailable, has: unavailable, set: unavailable, delete: unavailable}, id: 'synthetic-reminders', schedules,
     registerTool: tool => { assert.ok(!tools.has(tool.name)); tools.set(tool.name, tool); },
     registerContextProvider: unavailable, emitEvent: unavailable, requestWake: unavailable,
     provideService: unavailable, service: unavailable, onCleanup: unavailable, onEvent: unavailable, publish: unavailable, interval: unavailable,
