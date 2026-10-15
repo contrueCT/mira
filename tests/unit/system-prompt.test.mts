@@ -5,6 +5,8 @@ import { readFile } from 'node:fs/promises';
 import { getCurrentSystemMessage, getCurrentSystemPrompt, getCurrentTools } from '@earendil-works/pi-ai';
 import { MIRA_PLACEHOLDERS, MIRA_PROMPT_SECTION, MIRA_PROMPT_SHA256, MIRA_SYSTEM_TEMPLATE, renderMiraPrompt, PiDurableRuntime, type MiraPromptValues } from '@mira/runtime-pi';
 import { assistant, input, MemoryWriter, model, seed, streamOf, effectTool, result, toolCalls, overrideWriter } from '../recovery/fixtures.mts';
+import { estimateRequestTokens } from '../../packages/runtime-pi/src/budget.ts';
+
 const values: MiraPromptValues = { MEMORY_ROOT: '/memory', MEMORY_STATE: '偏好粤菜', CURRENT_TIME: '2026-10-05T00:00:00.000Z', EXTENSIONS_ROOT: 'Not configured', OTHER_ENVIRONMENT_CONTEXT: 'Known cwd only', DYNAMIC_TOOL_AND_EXTENSION_GUIDANCE: 'No tools are available', CURRENT_AUTHORIZATION_CONTEXT: 'No additional authorization evidence' };
 const config = { environmentContext: 'Synthetic offline runtime', authorizationContext: 'Synthetic test calls only', now: () => new Date(values.CURRENT_TIME) };
 
@@ -294,4 +296,40 @@ test('an explicit known prior template identity remains recoverable', async () =
   } as never]);
   await new PiDurableRuntime({ writer, model, streamFn: () => streamOf(assistant()) }).recover();
   assert.equal(promptRevisionCount(writer), 1);
+});
+
+
+test('full-persona summary exceeding 8K fails before provider dispatch; 16K preserves the same complete sources', async () => {
+  const writer = new MemoryWriter();
+  const settings = { autoCompaction: { enabled: false }, miraPrompt: {
+    memoryRoot: '/synthetic-memory', extensionsRoot: '/synthetic-extensions',
+    environmentContext: 'Synthetic isolated acceptance test; no model network',
+    authorizationContext: 'Synthetic test authorization only',
+    now: () => new Date('2026-10-05T13:00:00.000Z'), loadMemory: async () => 'Frozen original Memory',
+  } };
+  await new PiDurableRuntime({ writer, model, ...settings, streamFn: () => streamOf(assistant('Earlier response '.repeat(150))) }).run(input('Older discussion '.repeat(150)));
+  await new PiDurableRuntime({ writer, model, ...settings, streamFn: () => streamOf(assistant('Latest answer')) }).run(input('Latest question'));
+  const before = await writer.load(); let calls = 0;
+  const refreshed = { ...settings, miraPrompt: { ...settings.miraPrompt, loadMemory: async () => 'New Memory at compaction' } };
+  await assert.rejects(new PiDurableRuntime({ writer, model, ...refreshed, streamFn: () => {
+    calls++; return streamOf(assistant('Must not dispatch'));
+  } }).compact({ keepRecentTokens: 1 }), /Compaction summary request exceeds model context budget/);
+  assert.equal(calls, 0);
+  assert.deepEqual(await writer.load(), before, 'over-budget summary publishes neither checkpoint nor candidate Memory');
+  const roomyModel = { ...model, contextWindow: 16_384 };
+  const compacted = await new PiDurableRuntime({ writer, model: roomyModel, ...refreshed, streamFn: (_model, context, options) => {
+    calls++;
+    const required = estimateRequestTokens(context.messages) + options!.maxTokens!;
+    assert.ok(required > model.contextWindow, 'the unchanged complete request genuinely exceeds the 8K fixture');
+    assert.ok(required <= roomyModel.contextWindow);
+    const source = JSON.parse(context.messages.findLast(message => message.role === 'user')!.content as string);
+    assert.match(source.persona_context, /<delegation>/);
+    assert.match(source.persona_context, /# Mira System Prompt v0.2/);
+    assert.match(JSON.stringify(source.source_messages), /Older discussion/);
+    assert.equal(source.memory_snapshot, 'New Memory at compaction');
+    return streamOf(assistant('Synthetic complete-source summary'));
+  } }).compact({ keepRecentTokens: 1 });
+  assert.equal(calls, 1);
+  assert.equal(compacted.entries.filter(entry => entry.type === 'compaction').length, 1);
+  assert.deepEqual(writer.state.records.slice(0, before.records.length), before.records);
 });

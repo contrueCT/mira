@@ -89,3 +89,43 @@ reviewer separately passed 61/61 source/prompt/Memory/subagent focused tests and
 `git diff --check`. PostgreSQL, browser and production-provider validation were
 not performed by that review.
 
+
+## First PostgreSQL CI failure and correction
+
+The first exact-head run at `6fbf7ee`,
+[38730391326](https://github.com/contrueCT/mira/actions/runs/38730391326), failed:
+227 of 229 PostgreSQL/recovery tests passed. The two failures were the full-Mira
+prompt continuity and three-root skills continuity tests. Both explicitly invoked
+compaction using the shared synthetic model's 8,192-token window and 512-token
+output reserve. The production summary-budget guard rejected the complete request
+before calling the injected provider. This was a fixture-capacity failure caused
+by prompt growth, not a database/environment failure or a successful full CI run.
+
+Local measurement through the actual Pi summary request assembly, using the same
+history shapes, estimated 7,748 input + 512 reserve = 8,260 tokens for the prompt
+fixture, and about 7,942 + 512 = 8,454 for the three-skill fixture. With the previous
+published persona those were about 7,681 and 7,875 total. The new delegation section
+adds approximately 579 estimated tokens to these JSON-wrapped requests. Skill
+paths/temporary roots slightly change the exact count; these are the runtime's
+conservative estimates, not provider tokenizer usage or a universal minimum model
+window. A real 8K model presented with the same oversized request must still fail.
+
+Only these two full-content continuity fixtures now select an explicit synthetic
+16K model. Their callbacks assert that actual input plus output reserve fits and
+that the full delegation persona, relevant source history and frozen skill/Memory
+content reach the summarizer. They still execute the real SDK compaction and
+PostgreSQL checkpoint/restart checks; no production budget, reserve, prompt,
+source-history selection or default test model was relaxed. An additional offline
+regression reproduces the 8K rejection, proves zero provider calls and no partial
+checkpoint/Memory publication, then successfully compacts the same complete
+sources with a 16K model and preserves the immutable history prefix.
+
+The correction's focused prompt suite passed 23/23. The full local `pnpm check`
+passed 952 foundation/offline tests, 62 web-state tests, type checks, package
+boundaries and build. A new independent
+`gpt-6.1-sol` / `max` review covered the entire feature and this correction, found
+no actionable issues, and separately passed 62/62 source/prompt/Memory/subagent
+tests plus `git diff --check`. Corrected PostgreSQL CI still requires an exact-head
+rerun; the first failure remains recorded. Historical-upgrade CAS/lost-response
+tests use the in-memory durable writer, not an additional cross-version PostgreSQL
+fixture; the review did not perform production-provider validation.
