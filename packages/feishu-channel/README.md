@@ -154,3 +154,12 @@ always uses reconnect, never registration. Local cancellation does not revoke re
 
 SDK begin does not support request cancellation. The adapter retires its local wait
 on abort or a 15-second begin deadline and suppresses late callbacks/results; this does not cancel or undo remote effects.
+
+
+Reconnect/unbind cancellation is checked again after draining the current send and
+before changing the binding or deleting credentials. Cancellation there restores a
+fresh send controller for future calls and preserves the existing connection, owner
+and receipts. Old queued calls retain their cancelled generation; neither unknown
+requests nor unstarted message tails are replayed. Once the actual disconnect/reset
+has begun, cancellation does not roll back completed effects; the connection status
+reports the resulting state separately from the operation's cancellation receipt.

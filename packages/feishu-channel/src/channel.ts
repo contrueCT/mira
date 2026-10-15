@@ -70,11 +70,11 @@ export class FeishuChannel {
         }) },
         { id: 'confirm', label: '确认这是本人并发送测试消息', execute: ({ signal }) => this.#confirm(signal) },
         { id: 'cancel_pair', label: '取消配对', execute: async () => this.#queue(async () => { this.#pairing = null; this.#settle(); }) },
-        { id: 'reconnect', label: '重新连接', execute: async ({ signal }) => { await this.#retireSend(); return this.#queue(async () => { signal.throwIfAborted(); await this.#disconnect(); await this.#connect(signal); }); } },
+        { id: 'reconnect', label: '重新连接', execute: ({ signal }) => this.#changeConnection(signal, async () => { await this.#disconnect(); await this.#connect(signal); }) },
         { id: 'test', label: '发送新的测试消息', execute: ({ signal }) => this.#test(`test:${randomUUID()}`, signal) },
-        { id: 'unbind', label: '解绑并清除本地凭据', execute: async () => { await this.#retireSend(); return this.#queue(async () => {
+        { id: 'unbind', label: '解绑并清除本地凭据', execute: ({ signal }) => this.#changeConnection(signal, async () => {
           await this.#disconnect(); await this.#context.credentials.delete('appSecret'); await this.#save(initial()); this.#credentials = undefined; this.#pairing = null; this.#error = null; this.#state = 'unconfigured';
-        }); } },
+        }) },
       ], status: () => this.status(),
     });
     this.#context.registerTool({ name: 'feishu_connect', description: 'Start this plugin’s connection action after the user asks to connect Feishu/Lark. Returns immediately while official authorization remains in this extension’s protected settings. Reuses the same settings operation and cancellation; never returns credentials, pairing challenges or provider URLs. An unknown registration must be reconciled in settings, not retried. Optional cancelOperationId cancels exactly that operation locally, without revoking remote effects.',
@@ -196,7 +196,7 @@ export class FeishuChannel {
       await this.#flush(); await this.#flushPublications(); this.#settle();
     } catch { this.#ready = false; this.#state = 'error'; this.#error = '机器人权限或长连接尚未验证，请检查凭据、最小权限、审批和长连接事件订阅。'; throw new Error('Feishu connection was not verified'); }
   }
-  async #disconnect(): Promise<void> { this.#epoch++; this.#ready = false; const connection = this.#connection; this.#connection = undefined; this.#credentials = undefined; await connection?.close(); }
+  async #disconnect(): Promise<void> { this.#epoch++; this.#ready = false; const connection = this.#connection; this.#connection = undefined; this.#credentials = undefined; this.#settle(); await connection?.close(); }
   #settle(): void { this.#state = !this.#data.app ? 'unconfigured' : !this.#ready ? 'disconnected' : this.#data.owner && this.#data.tested ? 'connected' : 'pending'; }
   async #confirm(signal: AbortSignal): Promise<void> {
     await this.#queue(async () => {
@@ -237,6 +237,18 @@ export class FeishuChannel {
       try { await this.#context.requestWake(wake); const next = structuredClone(this.#data); next.inbox.shift(); await this.#save(next); }
       catch { this.#state = 'error'; this.#error = '收到的消息仍保存在本地待投递。请修复持久存储后重连；不会重复启动同一个消息的 Wake。'; throw new Error('Feishu durable reception failed'); }
     }
+  }
+  async #changeConnection(signal: AbortSignal, change: () => Promise<void>): Promise<void> {
+    signal.throwIfAborted();
+    await this.#retireSend();
+    await this.#queue(async () => {
+      if (signal.aborted) {
+        // The previous generation has drained. New calls can use the unchanged
+        // binding, but queued old calls retain their aborted signal and never replay.
+        this.#sendAbort = new AbortController(); signal.throwIfAborted();
+      }
+      await change();
+    });
   }
   async #retireSend(): Promise<void> { this.#sendAbort.abort(); await this.#sending.catch(() => {}); }
   #send(callId: string, text: string, replyToMessageId: string | undefined, signal: AbortSignal): Promise<SendResult> {
