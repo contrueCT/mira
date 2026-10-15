@@ -537,3 +537,16 @@ deciding whether they need evidence files, so those files remain reconstructible
 after compaction/model changes. Annotations that cannot fit fail before dispatch.
 History text-page envelopes omit unbounded original Mira/timestamp strings; their
 exact values remain inside the lossless paged JSON text.
+
+### Delegation guidance and published prompt revisions
+
+[ADR 0038](../../docs/adr/0038-delegation-first-prompt.md) adds main-only guidance
+to delegate substantial independent work while remaining responsive and owning
+result review. New prompt snapshots include their `templateSha256`. Missing
+identity refers only to the hash-checked pre-delegation v0.2 resource; both known
+revisions validate against their own immutable bytes, and unknown identities or
+mismatched text fail closed. Normal request preparation appends the current
+revision before provider execution using the existing frozen Memory. Recovery
+never rewrites history or reloads Memory, and compaction preserves the preceding
+template identity. A new process uses the new prompt on its first normal main
+request; editing source files does not hot-reload an already running process.

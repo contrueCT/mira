@@ -11,7 +11,7 @@ import { validateAttachmentReferences, validateWakeInputArtifact, type WriteOver
 import { hydrateAttachments, messageAttachments, type ResolveAttachment } from './attachments.ts';
 import { observationEntry, sanitizeEntries, validateObservation, withRecoveryAdvisory, type RecoveryOperation, type ToolDiagnostic } from './observations.ts';
 import { compactSnapshot, type CompactionOptions } from './compactor.ts';
-import { MIRA_PROMPT_SECTION, renderMiraPrompt, currentMemory, currentPrompt, memoryConfigured, refreshMiraMemory, projectMiraPrompt, type MiraPromptOptions, type MiraPromptSnapshot } from './system-prompt.ts';
+import { MIRA_PROMPT_SECTION, MIRA_PROMPT_SHA256, renderMiraPrompt, renderMiraPromptSnapshot, currentMemory, currentPrompt, memoryConfigured, refreshMiraMemory, projectMiraPrompt, type MiraPromptOptions, type MiraPromptSnapshot } from './system-prompt.ts';
 export { MIRA_PROMPT_SECTION, MIRA_PROMPT_SHA256, MIRA_SYSTEM_TEMPLATE, MIRA_PLACEHOLDERS, renderMiraPrompt } from './system-prompt.ts';
 export { currentMemory, currentPrompt, memoryConfigured, refreshMiraMemory, projectMiraPrompt } from './system-prompt.ts';
 export type { MiraPromptSnapshot, MiraPromptOptions, MiraPromptValues } from './system-prompt.ts';
@@ -604,7 +604,7 @@ export class PiDurableRuntime implements CognitionRuntime {
               const observations = formatContextProviders(await this.options.loadContextProviders?.(this.controller.signal) ?? []);
               await this.verified();
               attemptGate();
-              const prompt: MiraPromptSnapshot = { values: {
+              const prompt: MiraPromptSnapshot = { templateSha256: MIRA_PROMPT_SHA256, values: {
                 MEMORY_ROOT: config.memoryRoot ?? 'Not configured', MEMORY_STATE: memory,
                 CURRENT_TIME: (config.now?.() ?? new Date()).toISOString(),
                 EXTENSIONS_ROOT: config.extensionsRoot ?? 'Not configured',
@@ -832,7 +832,7 @@ export class PiDurableRuntime implements CognitionRuntime {
     // Persona is reference data, not the summarizer's system instructions. Its
     // Memory slot is a pointer: the single chosen snapshot is supplied once.
     const personaContext = frozenPrompt ? getSystemMessageText({ ...(priorSystem ?? { role: 'system' as const, content: '', timestamp: Date.now() }),
-      sections: { ...priorSystem?.sections, [MIRA_PROMPT_SECTION]: renderMiraPrompt({ ...frozenPrompt.values, MEMORY_STATE: '（Memory 由 memory_snapshot 单独提供）' }) + frozenPrompt.skills } }) :
+      sections: { ...priorSystem?.sections, [MIRA_PROMPT_SECTION]: renderMiraPromptSnapshot({ ...frozenPrompt, values: { ...frozenPrompt.values, MEMORY_STATE: '（Memory 由 memory_snapshot 单独提供）' } }) } }) :
       config ? getSystemMessageText({ ...(priorSystem ?? { role: 'system' as const, content: '', timestamp: Date.now() }),
         sections: { ...priorSystem?.sections, [MIRA_PROMPT_SECTION]: renderMiraPrompt({ MEMORY_ROOT: config.memoryRoot ?? 'Not configured', MEMORY_STATE: '（Memory 由 memory_snapshot 单独提供）',
         CURRENT_TIME: (config.now?.() ?? new Date()).toISOString(), EXTENSIONS_ROOT: config.extensionsRoot ?? 'Not configured',
