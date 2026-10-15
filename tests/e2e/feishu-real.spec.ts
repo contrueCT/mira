@@ -62,6 +62,7 @@ test('Feishu generic settings QR and explicit pairing reach the same durable Mir
     await page.getByLabel('给 Mira 发消息', { exact: true }).fill('（合成测试）请连接飞书。'); await page.getByRole('button', { name: '发送消息', exact: true }).click();
     await expect(page.getByText('已发起飞书连接，请打开设置 → 扩展查看授权二维码。此处为合成测试。', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '扩展', exact: true }).click();
+    await page.getByRole('article', { name: '扩展 feishu', exact: true }).getByRole('button', { name: '连接设置', exact: true }).click();
     const panel = page.getByRole('region', { name: 'feishu 连接设置' });
     await expect(panel).toContainText('操作仍在进行'); expect(requests).toBe(2);
     await expect(panel.getByRole('img', { name: '授权二维码' })).toBeVisible();
