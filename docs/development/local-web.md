@@ -14,9 +14,10 @@ pnpm --version
 git clone https://github.com/contrueCT/mira.git
 cd mira
 pnpm install --frozen-lockfile --ignore-scripts
+pnpm terminal:prepare
 ```
 
-这是私有仓库，克隆需要自己的 GitHub 访问权限；不要把 token 填进仓库 URL。已有 checkout 不需重复 clone。依赖安装脚本保持禁用。
+仓库尚未公开时，克隆需要自己的 GitHub 访问权限；不要把 token 填进仓库 URL。已有 checkout 不需重复 clone。依赖安装脚本保持禁用。
 
 ## 2. 创建日常使用的数据库
 
@@ -170,9 +171,9 @@ Linux 缺少系统库时，使用 Playwright 官方 `pnpm exec playwright instal
 
 ## 7. 仓库里的测试数据是什么
 
-正常启动路径是 `pnpm start` → `web-cli.mts` → `LocalWebService` → PostgreSQL 历史；前端初始消息数组为空。截图里的四条示例对话仅在专用 E2E fixture 源码中，应用不会导入它。显式 synthetic provider 的固定回复属于测试功能代码，不是预置历史。
+正常启动路径是 `pnpm start` → `web-cli.mts` → `LocalWebService` → PostgreSQL 历史；前端初始消息数组为空。浏览器回归测试与 README 展示使用独立的合成对话，应用不会导入这些演示数据。显式 synthetic provider 的固定回复属于测试功能代码，不是预置历史。
 
-合并前按跟踪文件核查：没有截图、浏览器 trace、运行日志、数据库/数据导出、用户 Memory、密钥、node_modules 或 dist 产物进入这批提交。合法测试夹具保留，以继续验证恢复与防重复发送；`.gitignore` 排除运行/构建产物。不要把自己的聊天、配置、数据库或截图另行加入 Git。
+文档展示图仅使用合成、无个人信息的对话，存放在 `docs/assets/`。README 中的截图来自专用 E2E fixture 的真实页面渲染，不代表真实模型输出。浏览器 trace、其余测试输出、运行日志、数据库/数据导出、用户 Memory、密钥、node_modules 和 dist 产物不提交。合法测试夹具保留，以继续验证恢复与防重复发送；`.gitignore` 排除运行/构建产物。不要把自己的聊天、配置、数据库或截图加入 Git。
 
 ### 查看模型请求错误
 

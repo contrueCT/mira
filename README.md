@@ -1,96 +1,100 @@
 # Mira
 
-一个持续存在、保持连续工作上下文、拥有长期语义记忆，并逐步扩展自身能力的个人智能体。
+一个持续存在的个人智能体。让对话、记忆和正在做的事，沿着同一条时间线延续。
 
-> Wake continues the same Mira.
+Mira 保持连续的工作上下文，用普通文件保存长期记忆，也能使用工具、委派子任务和加载扩展。关掉页面再回来，继续和同一个 Mira 聊天。
 
-## 当前状态
+![Mira 聊天界面：一条持续的时间线](docs/assets/mira-chat.png)
 
-当前增量包含 PostgreSQL 持久上下文、合并唤醒、单认知循环、Pi 执行/压缩、普通 Memory、Memory-only Git 快照、通用文件/Shell、只读历史查询、Cordis 手工/生成扩展生命周期与同轮工具更新，以及假 provider CLI 演示、Pi 内置模型目录、显式自定义连接与模型列表发现。新增 Fastify 本地 HTTP 与 React/Vite 单 Timeline、模型设置和一条命令启动；尚未做真实模型联通验收。设置窗口已包含 Memory 总览与自然语言管理、扩展生命周期管理及按 Wake 的只读历史，详见 [设置管理](docs/adr/0020-settings-management.md)。
+*界面截图使用合成演示对话，不含个人数据。*
 
-- [最新设计 v0.5](docs/design/architecture-v0.5.md)
-- [System Prompt 设计 v0.1](docs/design/system-prompt-design-v0.1.md)与[实际模板 v0.2](packages/runtime-pi/prompts/mira-system-v0.2.md)
-- [原始设计 v0.4（历史存档）](docs/design/original-v0.4.md)
-- [架构边界](docs/architecture.md)
-- [开发约束](docs/development/rules.md)
-- [工具链与验证命令](docs/development/toolchain.md)
-- [分阶段验收](docs/acceptance/foundation.md)
-- [决策记录](docs/adr/README.md)
-- [连续上下文与恢复验收](docs/acceptance/durable-context.md)
-- [合并唤醒设计](docs/adr/0002-coalesced-wake-loop.md)
-- [Memory-only 与实际 Prompt 集成](docs/adr/0006-memory-only-system-prompt.md)
-- [主模型动作判断与执行边界](docs/adr/0007-model-owned-action-decisions.md)
-- [手工可信扩展与同轮更新](docs/adr/0004-manual-trusted-extensions.md)
-- [扩展验收与官方 HMR 限制](docs/acceptance/manual-extensions.md)
-- [生成扩展生命周期与执行边界](docs/adr/0005-generated-extension-lifecycle.md)
-- [生成扩展验收](docs/acceptance/generated-extensions.md)
-- [最小假模型演示](apps/server/README.md)
-- [安全的工具恢复诊断](docs/adr/0015-safe-tool-recovery-diagnostics.md)
-- [自动压缩与 Memory 原子刷新](docs/adr/0016-automatic-compaction-memory-refresh.md)
+## 可以做什么
 
-项目仍处早期开发，只维护当前 Architecture v0.5 与 Prompt v0.2，不保留旧 State/Prompt 兼容层；原始设计存档仅作来源记录。当前格式的持久上下文、重启/压缩、原始历史和 Memory Git 完整性继续保证。
+- **持续对话**：聊天与工作上下文持久化到 PostgreSQL，支持重启恢复、自动上下文压缩，以及任务进行中的补充输入。
+- **长期记忆**：Memory 是可读、可编辑的普通文件，独立 Git 保存变更；Dreaming 在满足空闲与新经历条件时整理记忆。
+- **动手处理任务**：文件读写、搜索、Shell 和跨轮次终端进程；支持聊天附件，以及按需使用的文档、转写、浏览器和联网 Skills。
+- **委派子任务**：主 Mira 可启动独立上下文的子代理，并接收结果；在设置的运行记录中查看进度和详情。
+- **扩展能力**：通过 Cordis 管理手工或生成扩展；External SDK 让本机程序提交事件、唤醒 Mira 或在时间线上发送通知。
+- **自己的模型与数据**：网页设置中选择模型、配置 API Key 或自定义连接，管理 Memory、扩展与历史；可选共用网页密码。
 
-自动压缩默认在自然模型请求的输入预算达到 80% 时尝试，保留 Pi 完整 SDK 压缩与工具恢复语义。压缩前读取一次当前 MEMORY.md，摘要与最终 system/摘要/近期尾部原子 checkpoint 使用同一份冻结快照；普通请求和文件修改不重读、不 Wake，重启恢复最新快照。摘要使用已批准的 Mira 连续上下文提示词，公开 Pi hook 单次处理 initial/update/split_turn，失败不回退到 coding-summary。具体预算、单次溢出恢复与失败边界见 ADR 0016；确定性机制验证与[六例原生模型质量探针](docs/acceptance/compaction-continuity.md)分开报告；后者仍有许可措辞及来源 ID 局限，不代表生产 provider 验收。
+终端进程可跨对话轮次保留，但不跨服务重启恢复。Skills 提供说明和必要脚本，浏览器、OCR 等依赖按需准备；附件的处理能力取决于模型与工具。[按需工具说明 →](docs/development/runtime-tools.md)
 
-Dreaming 在本地 Web 配置 Memory 时默认启用：有新的显式用户/扩展/外部 Wake，连续空闲 30 分钟，且自上次触发已有 3 次成功上下文压缩或超过 24 小时，才运行一次普通整理 Wake。首次启用建立基线；无新经历、仅记录事件和外部通知不会空跑。模型使用普通工具安静修订 Memory，Git 与失败恢复沿用现有链路；不强制压缩或刷新 system Memory。详见 [ADR 0018](docs/adr/0018-dreaming-memory-housekeeping.md)。
+## 快速开始
 
-基础设施优先保证连续性、真实历史、执行完整性和故障恢复。主模型根据用户对话、上下文和自然语言 Prompt 决定工具调用或澄清，没有独立 authorize 回调或授权引擎；不建立数值情绪系统、不把每次 Wake 变成新会话。
+需要 Git、**Node.js 24.19.0–24.x**、**pnpm 11.28.4** 和本机 PostgreSQL。CI 使用 Node 24.21.0 与 PostgreSQL 18.6。Linux 的 PTY 构建还需要 Python 3、make 和 C++ 编译器；终端支持 Linux/macOS。
 
-内置 [公开文档、转写、浏览器和联网技能](docs/adr/0023-on-demand-public-skills.md)沿用普通 read/bash；仅提供说明与必要脚本，依赖按需准备，不预装浏览器、OCR 或音频模型。安装与云端调用边界见[按需运行工具](docs/development/runtime-tools.md)。
+安装前请确认这是可信的个人运行环境：Shell 和扩展使用宿主账户权限，没有产品级沙箱。
 
-## 目录
-
-| 路径 | 职责 |
-| --- | --- |
-| `apps/web` | Timeline、Memory、Extensions、Settings |
-| `apps/server` | API、认证、启动与依赖组装 |
-| `packages/life` | 事件、Wake 队列、单主认知循环 |
-| `packages/context` | Working Context、时间渲染、版本 |
-| `packages/cognition` | Runtime 接口与规范化消息 |
-| `packages/runtime-pi` | Pi 适配与压缩集成 |
-| `packages/authorization` | 事实性授权语境占位，无独立判断引擎 |
-| `packages/persistence` | PostgreSQL、迁移、事务与历史检索 |
-| `packages/workspace` | 普通记忆文件、Memory-only Git |
-| `packages/extension-sdk` | 扩展的公开契约 |
-| `packages/extension-host` | Cordis 生命周期与注册 |
-| `packages/external-sdk` | 外部程序事件/Wake API |
-| `tests` | 集成、恢复、端到端验收 |
-| `docs` | 原始设计、决策、开发规则、验收 |
-
-用户记忆、生成扩展、数据库、运行日志和凭据必须放在源码仓库之外。不要把源码仓库当作 Mira 的持久工作空间。
-
-## 安装、使用与测试
-
-第一次安装请按 [本地安装与测试指南](docs/development/local-web.md) 完成 Node/pnpm、PostgreSQL 用户与数据库配置。指南包含完整命令、网页直接填写 API Key、独立模拟环境和测试方式。
+先按[本地安装指南](docs/development/local-web.md)创建独立的 `mira` 数据库和用户，并设置数据库认证。然后运行：
 
 ```sh
-# 克隆这个私有仓库需要已有 GitHub 访问权限
 git clone https://github.com/contrueCT/mira.git
 cd mira
 pnpm install --frozen-lockfile --ignore-scripts
 pnpm terminal:prepare
 
-# 已按指南创建数据库并设置数据库认证后，正常启动（不是模拟模式）
+# 数据库认证按安装指南设置，不要把密码写入仓库或连接 URL
 MIRA_DATABASE_URL=postgres://mira@127.0.0.1:5432/mira pnpm start
 ```
 
-默认打开 `http://127.0.0.1:3210`。新数据库显示空时间线；已有数据库恢复自己的持久历史，不加载截图中的示例对话。先在设置中选择模型并直接填写 API Key，保存后再发送真实消息。密钥以明文保存到源码仓库外的本地 `~/.mira/models.json`，通过文件权限保护；网页仅显示是否已保存，不回填密钥。请只在可信的个人电脑上使用。
+打开 `http://127.0.0.1:3210`，在右上角设置中选择模型并保存 API Key，即可发送消息。新数据库从空时间线开始，不会载入截图中的演示对话。
 
-### 测试入口
+- [完整安装、启动与故障排查](docs/development/local-web.md)
+- [模型目录、自定义连接与推理强度](docs/development/models.md)
+- [无需模型调用的独立模拟环境](docs/development/local-web.md#4-手动模拟与日常数据分开)
 
-- `pnpm check`：严格类型、包边界、离线测试和应用构建，无真实模型调用
-- `pnpm test:integration`：需要显式独立的本地 `mira_test` 数据库；创建/清理测试 schema，不能指向日常数据
-- `pnpm test:e2e`：先 `pnpm build` 并安装 Playwright Chromium；只启动专用浏览器测试 fixture
-- 手动模拟需显式 `--synthetic`，并使用指南中的独立数据库、`MIRA_HOME` 与端口，避免把模拟回复写入日常历史
+## 数据与执行边界
 
-测试源码里的合成对话是回归测试夹具，不是应用初始数据。截图、运行数据、数据库、Memory、密钥、构建产物和浏览器测试输出不提交到源码仓库。真实模型效果与付费调用尚未验收。
+请在可信的个人环境中使用。**文件、Shell 和扩展以宿主 OS 账户身份运行，没有产品级沙箱，也没有独立的工具审批引擎。** 模型根据对话和提示词判断操作或澄清；工作目录和 Cordis 都不是权限边界。
 
-模型目录与协议配置详见 [模型配置与发现](docs/development/models.md)。
+- 数据库、Memory、生成扩展、日志和凭据保存在源码仓库之外。`MIRA_HOME` 默认是 `~/.mira`；不要提交或公开自己的聊天、配置和运行数据。
+- API Key 以明文保存在私有 `models.json`，通过文件权限保护，网页不会回填。它不是加密保险箱；同一 OS 账户下的工具与扩展可能读取它。
+- 使用远程模型会向所选服务商发送模型请求，并可能产生费用。自定义远程连接应使用 HTTPS。
+- 默认只监听 `127.0.0.1`，网页密码默认关闭。可选网页密码不提供传输加密；局域网或公网访问需自行配置访问边界，公网还需 HTTPS 反向代理。[访问配置 →](docs/adr/0033-web-password-access.md)
+- 工具执行结果不明时会保留事实，不自动重放。上下文恢复不意味着外部副作用可以撤销。
 
-模型设置现可选择默认推理强度，缺省为中档，按 Pi 模型能力适配；主 Mira、子任务与 Dreaming 使用同一偏好，压缩摘要独立使用最低支持档。更高档可能增加耗时和费用，实际推理预算仍受总输出上限限制，详见 [ADR 0027](docs/adr/0027-configured-reasoning-levels.md)。
+## 开发状态
 
-## 可选网页密码与局域网访问
+Mira 仍处于早期开发阶段。当前实现围绕 Architecture v0.5 与 Prompt v0.2 演进，不保证旧版本数据格式兼容；升级前请阅读对应变更说明并保留数据备份。
 
-设置 → 访问可启用/修改/关闭共用密码，默认关闭。启用后全部私有 Web API 和附件需登录；修改或关闭需当前密码。登录最长 12 小时，服务重启后重登。密码仅以 scrypt hash 存入私有 `web-access.json`。
+离线、数据库和浏览器测试验证执行机制；它们使用合成模型响应，不等于真实模型效果验收。完整生产 provider 联通与付费调用尚未验收，已有有限的[上下文压缩质量探针](docs/acceptance/compaction-continuity.md)单独记录其范围与局限。
 
-默认仅监听 `127.0.0.1`；局域网可显式设置 `MIRA_HOST=0.0.0.0 MIRA_PUBLIC_ORIGIN=http://<服务器LAN-IP>:3210` 后按原命令启动，客户端访问该 LAN IP。`0.0.0.0` 不是浏览器访问地址。关闭密码时所有能到达服务的人可访问 Mira；HTTP 不加密，公网使用须自行配置 HTTPS 反向代理并设置精确 HTTPS public origin、保持 Host。External SDK 仍仅允许回环访问。没有自动开放端口、TLS、代理部署或新账户系统。
+### 本地检查
+
+```sh
+pnpm check                 # 类型、包边界、离线测试与构建
+pnpm test:integration      # 需显式配置独立 mira_test 数据库
+pnpm exec playwright install chromium
+pnpm test:e2e              # 专用浏览器 fixture，不调用真实模型
+```
+
+集成测试会创建和清理测试 schema，不能指向日常数据库。完整命令和隔离要求见[工具链](docs/development/toolchain.md)及[测试指南](docs/development/local-web.md#5-自动化测试)。
+
+文档用的合成、无个人信息展示图可放在 `docs/assets/`；其余浏览器测试输出、运行数据、Memory、密钥和构建产物不提交。
+
+## 了解实现
+
+TypeScript monorepo，Web 使用 React/Vite 与 Fastify，运行时接入 Pi，持久化使用 PostgreSQL，扩展生命周期由 Cordis 管理。
+
+| 路径 | 职责 |
+| --- | --- |
+| `apps/web`、`apps/server` | 聊天页面、设置、API 与启动组装 |
+| `packages/life`、`packages/context` | 事件、唤醒队列、单主认知循环与连续上下文 |
+| `packages/cognition`、`packages/runtime-pi` | Runtime 契约、模型执行与压缩 |
+| `packages/persistence`、`packages/workspace` | PostgreSQL 历史、普通记忆文件与 Memory Git |
+| `packages/extension-sdk`、`packages/extension-host` | 扩展契约与生命周期 |
+| `packages/external-sdk` | 本机外部程序接入 |
+| `tests`、`docs` | 回归测试、设计、决策与验收记录 |
+
+- [架构概览](docs/architecture.md) · [完整设计 v0.5](docs/design/architecture-v0.5.md) · [实际 System Prompt v0.2](packages/runtime-pi/prompts/mira-system-v0.2.md)
+- [扩展开发](packages/extension-host/README.md) · [External SDK](packages/external-sdk/README.md)
+- [开发约束](docs/development/rules.md) · [开发指引](AGENTS.md) · [决策记录](docs/adr/README.md)
+
+## 许可证
+
+Mira 的原创代码采用 [MIT License](LICENSE)。随仓库分发的第三方内容保留各自许可，不因根目录许可证而改变：[OpenAI 文档](skills/doc/LICENSE.txt)、[PDF](skills/pdf/LICENSE.txt)与[转写技能](skills/transcribe/LICENSE.txt)、[agent-browser](skills/agent-browser/LICENSE)、[扩展作者技能引用](skills/mira-extension-authoring/LICENSE.deepseek)。来源和修改记录见[上游清单](skills/upstream-sources.json)，依赖包遵循各自许可证。
+
+## 致谢
+
+- [Pi](https://github.com/earendil-works/pi) 提供了 Mira 使用的模型运行时、工具和上下文压缩基础。
+- [OpenAI Codex](https://github.com/openai/codex) 为 Mira 的开发、代码审查和测试提供了帮助。
