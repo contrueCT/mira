@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { ArtifactStore } from '@mira/extension-host';
 import { prepareExtensionPackage } from '../../scripts/prepare-extension-package.mts';
@@ -88,4 +89,25 @@ test('dependency manifests cannot follow a link outside the selected package bef
   await rm(path.join(dep, 'package.json')); await symlink(path.join(root, 'unrelated.json'), path.join(dep, 'package.json'));
   await assert.rejects(prepareExtensionPackage(source, path.join(root, 'prepared'), 'index.mjs'), /manifest must be an ordinary file/);
   await assert.rejects(realpath(path.join(root, 'prepared')), /ENOENT/);
+}));
+
+
+for (const variant of ['entry-link', 'imported-file-link', 'imported-directory-link']) test(`preparation rejects ${variant} before writing instead of changing valid Node import resolution`, async () => fixture(async root => {
+  const source = path.join(root, 'source'); await pkg(source, {});
+  await mkdir(path.join(source, 'lib/impl'), { recursive: true });
+  await writeFile(path.join(source, 'lib/name.mjs'), "export default 'correct-location';");
+  await writeFile(path.join(source, 'lib/impl/main.mjs'), "export { default } from '../name.mjs';");
+  if (variant === 'entry-link') {
+    await rm(path.join(source, 'index.mjs')); await symlink('lib/impl/main.mjs', path.join(source, 'index.mjs'));
+  } else if (variant === 'imported-file-link') {
+    await symlink(path.join(source, 'lib/impl/main.mjs'), path.join(source, 'alias.mjs'));
+    await writeFile(path.join(source, 'index.mjs'), "export { default } from './alias.mjs';");
+  } else {
+    await symlink('lib/impl', path.join(source, 'alias'), 'dir');
+    await writeFile(path.join(source, 'index.mjs'), "export { default } from './alias/main.mjs';");
+  }
+  assert.equal((await import(pathToFileURL(path.join(source, 'index.mjs')).href)).default, 'correct-location');
+  const target = path.join(root, 'prepared');
+  await assert.rejects(prepareExtensionPackage(source, target, 'index.mjs'), /Source package symlinks are unsupported/);
+  await assert.rejects(realpath(target), /ENOENT/);
 }));

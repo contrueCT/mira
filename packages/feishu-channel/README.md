@@ -16,7 +16,10 @@ node scripts/prepare-extension-package.mts \
 ```
 
 This helper links only already-installed declared runtime dependencies, never installs
-packages or executes their scripts. The resulting workspace has `entry.mjs`.
+packages or executes their scripts. Authored source-tree symlinks are rejected before
+writing the destination because flattening them can change Node import resolution.
+Ordinary source files are required; declared dependency/pnpm links retain their existing
+controlled topology. The resulting workspace has `entry.mjs`.
 Use the existing `extension_stage` tool with that workspace and entry. Run the normal
 artifact-test command against the returned digest, including a module-import smoke
 check, then `extension_manage` install with the actual digest and activate. See the

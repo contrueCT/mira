@@ -45,6 +45,7 @@ async function validateSourceTree(root: string, directory: string, ancestors = n
   if (path.relative(root, actual).split(path.sep).some(part => part === 'node_modules' || part === '.git')) throw new Error('Source link enters an excluded dependency or Git tree');
   if (!inside(root, actual) || ancestors.has(actual)) throw new Error('Source package contains an external or cyclic link');
   const metadata = await lstat(actual);
+  if ((await lstat(directory)).isSymbolicLink()) throw new Error('Source package symlinks are unsupported; use ordinary source files before preparation');
   if (metadata.isFile()) return;
   if (!metadata.isDirectory()) throw new Error('Source package contains a non-ordinary file');
   const next = new Set(ancestors).add(actual);

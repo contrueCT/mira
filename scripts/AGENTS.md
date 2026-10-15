@@ -25,3 +25,5 @@
 
 - `external-sdk-usability.mts` 使用真实本机 HTTP、生产认证与 ingress、隔离临时 home，持久化明确为内存 fixture；输出/evidence 不含 token。独立作者使用正常 CLI/SDK，不读取实现；不能以此代替 PostgreSQL gate。
 - `prepare-extension-package.mts` 只准备选定源码与已安装的声明运行时依赖闭包；无安装、市场或供应商特例。原有 snapshot/hash/test/install 不变；依赖版本/路径、pnpm、optional/peer 和循环图须有反例验证。
+
+- 准备helper在写目标之前拒绝源码树内部符号链接，避免展平后改变Node相对导入；声明runtime闭包中的受控依赖/pnpm链接仍支持。
