@@ -106,7 +106,7 @@ prerequisites still require an authorized real-tenant check; denial fails closed
 - The SDK refreshes tenant tokens normally. Effectful message create/reply calls have no
   automatic retry, reply fallback or Channel message splitting. Binding/reconnect never sends a message. Actual ordinary send outcomes are
   reported by the send tool and durable receipts.
-- The private state file has a 2 MB bound. Capacity/storage failure stops intake or
+- The private JSON ledger has a 2 MB bound. Capacity/storage failure stops intake or
   further sends with a visible failure rather than dropping queued evidence. Source
   code, Memory and artifact folders do not hold channel state.
 
@@ -121,8 +121,8 @@ when ingestion rejects. The extension stops intake and reports the failure; plat
 redelivery is still not guaranteed. Repair storage and reconcile missing messages.
 Official reconnect lifecycle callback order is covered explicitly by synthetic tests.
 
-Credentials use the host's private store. The extension owns an ordinary private JSON
-state file for owner binding, pending inbox and delivery receipts. Trusted extension
+Credentials use the host's private store. The extension owns an ordinary private
+SQLite file containing one JSON row for owner binding, pending inbox and delivery receipts. Trusted extension
 code runs as the host OS user; these facilities are not a sandbox. Unbind clears local
 credentials/binding; it does **not** delete the remote app or revoke tenant grants.
 Disable retains local state for explicit re-enable. Remove follows generic uninstall
@@ -180,3 +180,31 @@ fail before credential reads or network verification. They cannot silently repla
 owner/inbox/unknown delivery evidence. Explicit unbind/reset deliberately discards a
 readable but unsupported state record and enables recovery; malformed or unsafe
 storage must first be repaired rather than overwritten.
+
+
+## Atomic private ledger and preview upgrade
+
+Node 24's built-in `node:sqlite` stores the existing ledger as one JSON row with its
+content revision in `feishu-state.json.sqlite`; no npm/native system dependency,
+ORM or core storage framework is added. Short `BEGIN IMMEDIATE` transactions check
+and replace that revision atomically across processes. SQLite rollback journaling
+recovers interrupted writes; no PID/timeout lock stealing or manual orphan-lock
+cleanup is used. Unknown schema is rejected without replacing its evidence.
+
+The JSON payload remains bounded to 2 MB. Transactions use synchronous SQLite calls
+with a 100 ms busy timeout, only for this single local row; no network or awaited
+work runs inside them. Disk I/O can still block the event loop. Busy/conflict errors
+are explicit failures, never a reason to repeat an unknown send. The existing
+per-activation state queue and durable unknown-before-HTTP ordering are unchanged.
+
+For an earlier preview installation, stop **all old Mira processes using that
+installation before upgrading**. With no SQLite state, `load()` reads the original
+`feishu-state.json`; normal channel validation still runs before the first write.
+The first successful `save()` initializes and updates the SQLite row in one
+transaction. Concurrent new-version migrations use the same transaction CAS. The
+original JSON is retained byte-for-byte as evidence, not deleted or overwritten.
+Every later access checks its original revision and fails closed if it changes.
+This detects old-version writes; it does not isolate a still-running old binary
+that writes JSON after that check. Running old and new versions together or
+reverting to the old binary is unsupported: stop them and reconcile both preserved
+files rather than deleting evidence or replaying uncertain deliveries.

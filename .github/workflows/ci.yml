@@ -88,5 +88,5 @@ jobs:
       - run: npm install --global pnpm@11.28.4
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm terminal:prepare
-      - name: Verify real Mac pipes, PTYs and lifecycle
-        run: node --import ./tests/deny-model-network.mts --test --test-timeout=60000 tests/unit/terminals.test.mts
+      - name: Verify real Mac terminals and private ledger recovery
+        run: node --import ./tests/deny-model-network.mts --test --test-timeout=60000 tests/unit/terminals.test.mts tests/unit/feishu-store.test.mts

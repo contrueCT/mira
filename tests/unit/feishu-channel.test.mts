@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { ExtensionContext, ExtensionTool, ExtensionEvent, ExtensionWake, ContextProvider, Json } from '@mira/extension-sdk';
 import { createFeishuExtension } from '../../packages/feishu-channel/src/index.ts';
+import { FeishuPrivateStore } from '../../packages/feishu-channel/src/store.ts';
 import { FeishuSdkError } from '../../packages/feishu-channel/src/sdk.ts';
 import type { FeishuSdk, FeishuIncomingText, FeishuRegistrationOptions, FeishuCredentials } from '../../packages/feishu-channel/src/sdk.ts';
 
@@ -47,14 +48,14 @@ async function fixture(t: test.TestContext, options: { directory?: string; secre
   const action = (id: string, signal = new AbortController().signal) => settings.actions.find(item => item.id === id)!.execute({ signal });
   const send = async (callId: string, text: string, replyToMessageId?: string, signal = new AbortController().signal) => (await tools.get('feishu_send_message')!.execute({ text, ...(replyToMessageId ? { replyToMessageId } : {}) }, { callId, signal })).details as { status: string; sentParts: number; totalParts: number };
   const pair = async () => { await action('pair'); const challenge = settings.status().details!.find(item => item.value.startsWith('/mira pair '))!.value; await sdk.receive(incoming({ text: challenge, messageId: 'pair-message' })); };
-  return { directory, secrets, sdk, settings, tools, providers, reads, wakes, events, failEvent(value: boolean) { failEvent = value; }, close, action, send, pair, failWake(value: boolean) { failWake = value; }, state: async () => JSON.parse(await readFile(path.join(directory, 'feishu-state.json'), 'utf8')) };
+  return { directory, secrets, sdk, settings, tools, providers, reads, wakes, events, failEvent(value: boolean) { failEvent = value; }, close, action, send, pair, failWake(value: boolean) { failWake = value; }, state: async () => JSON.parse(JSON.stringify(await new FeishuPrivateStore(path.join(directory, 'feishu-state.json'), path.resolve('packages/feishu-channel')).load())) };
 }
 
 test('Feishu activation is lazy; manual configuration explicitly verifies and connects', async t => {
   const f = await fixture(t); assert.deepEqual(f.sdk.calls, { register: 0, verify: 0, connect: 0 }); assert.deepEqual(f.reads, []);
   assert.equal(f.settings.status().state, 'unconfigured'); assert.equal((await f.send('before', 'hello')).status, 'not_sent');
   await f.action('connect'); assert.equal(f.sdk.calls.verify, 1); assert.equal(f.sdk.calls.connect, 1); assert.equal(f.settings.status().state, 'pending');
-  assert.equal((await f.state()).app.appId, 'app-test'); assert.ok(!(await readFile(path.join(f.directory, 'feishu-state.json'), 'utf8')).includes(secret));
+  assert.equal((await f.state()).app.appId, 'app-test'); assert.ok(!JSON.stringify(await f.state()).includes(secret));
 });
 test('Feishu QR credentials stay private and authorization never enters model observations', async t => {
   const sdk = fakeSdk(); let finish!: (credentials: FeishuCredentials) => void;
@@ -291,7 +292,7 @@ test('startup inbox replay and newly arriving owner messages use the same state 
     assert.equal(received.length, 1, 'startup must not have a concurrent inbox flusher');
   } finally { release.resolve(); await initializing; await delivery; await closed?.(); }
   assert.deepEqual(received.map(wake => (wake.event.payload as { text: string }).text), ['old', 'new after restart']);
-  const saved = JSON.parse(await readFile(path.join(root, 'feishu-state.json'), 'utf8'));
+  const saved = JSON.parse(JSON.stringify(await new FeishuPrivateStore(path.join(root, 'feishu-state.json'), path.resolve('packages/feishu-channel')).load()));
   assert.equal(saved.inbox.length, 0); assert.ok(saved.recentMessages.includes('arrived-during-startup'));
 });
 
@@ -350,4 +351,19 @@ test('expired, cancelled and replaced pairing challenges cannot bind or enter th
   await f.sdk.receive(incoming({ text: valid, messageId: 'consumed' }));
   assert.equal(f.settings.status().state, 'connected'); assert.equal(f.sdk.sends.length, 0); assert.equal(f.wakes.length, 0);
   assert.equal((await f.send('cannot-quote-pair', 'hello', 'consumed')).status, 'not_sent');
+});
+
+
+test('competing channel ledgers reject stale sends before HTTP and preserve the winning unknown receipt', async t => {
+  const first = await fixture(t); await first.action('connect'); await first.pair();
+  const second = await fixture(t, { directory: first.directory, secrets: first.secrets });
+  first.sdk.setSend(async () => { throw new Error('synthetic unknown effect'); });
+  assert.equal((await first.send('winning-unknown', 'must keep evidence')).status, 'unknown');
+  await assert.rejects(second.send('stale-send', 'must never reach HTTP'));
+  assert.equal(second.sdk.sends.length, 0);
+  const state = await first.state(); assert.equal(state.sends['winning-unknown'].parts[0].status, 'unknown');
+  assert.equal(state.sends['stale-send'], undefined);
+  await second.close(); const recovered = await fixture(t, { directory: first.directory, secrets: first.secrets });
+  assert.equal((await recovered.send('winning-unknown', 'must keep evidence')).status, 'unknown');
+  assert.equal(recovered.sdk.sends.length, 0);
 });

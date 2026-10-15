@@ -63,3 +63,14 @@ install/activate 处理。无自动安装、catalog、全 node_modules 打包或
 插件独立声明状态对应的 visibleActions 和次要 action group；未连接仅显示下一步，
 已连接只在通用“更多操作”下保留维护动作。框架只解释通用声明，不包含飞书状态、
 动作 ID 或供应商分支。所有插件消息的时间与来源共用同一行小号淡色脚注。
+
+## 私有记录原子更新
+
+插件使用 Node 24 内置 SQLite 的单表单行保存既有 JSON ledger 和 revision，短事务
+CAS 防止 PostgreSQL ownership 丢失交接时仍存活的旧插件回调与新进程覆盖彼此证据。
+同步操作仅限 2 MB 内单行、本地短事务，busy timeout 为 100 ms；不在事务中联网，
+不新增 npm 依赖、通用存储框架或供应商核心分支。进程中断由 SQLite journal 恢复，
+busy/conflict 不自动重发消息。早期预览 JSON 首次成功 save 时幂等导入且保留原字节。
+升级必须停止所有旧版本实例；legacy revision 检查可检测继续写旧 JSON，但不能隔离
+仍在运行的旧二进制。未知 schema/失败迁移不覆盖原证据。Host 在 writer abort 时未
+统一停止扩展的生命周期问题另行跟踪，本 PR 不扩大该通用生命周期范围。
