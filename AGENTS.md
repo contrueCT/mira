@@ -98,3 +98,5 @@ pnpm check
 
 
 - ADR 0035 的动作 group/visibleActions 仅为通用展示与可用性契约，业务状态映射归插件；HTTP/handle 同 runner 校验，系统层不含 provider 分支。
+
+- ADR 0041：自定义目录可填入经验证的明确元数据；Chat Completions reasoningFormat 显式选择 Pi wire 格式，未指定保留旧强度语义，不猜代理能力或在400后自动换参数。

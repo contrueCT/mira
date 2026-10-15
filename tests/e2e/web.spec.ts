@@ -212,7 +212,7 @@ test('built-in selection writes a password key once and receives only saved stat
   await expect(page.getByText('已保存密钥。留空保留，已保存的值不会显示。')).toBeVisible();
 });
 
-test('manual custom models require explicit limits and capabilities and preserve existing connections', async ({ page }) => {
+test('manual custom models require explicit limits with conservative optional capabilities and preserve existing connections', async ({ page }) => {
   const { writes } = await mockSettings(page);
   await openSettings(page);
   await page.getByRole('button', { name: '自定义连接', exact: true }).click();
@@ -224,11 +224,6 @@ test('manual custom models require explicit limits and capabilities and preserve
   await page.getByLabel('模型 ID', { exact: true }).fill('fixture-manual');
   await page.getByLabel('上下文窗口', { exact: true }).fill('32000');
   await page.getByLabel('最大输出', { exact: true }).fill('2048');
-  await page.getByRole('button', { name: '保存设置', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('请明确选择推理能力和输入类型');
-  expect(writes).toHaveLength(0);
-  await page.getByLabel('推理能力', { exact: true }).selectOption('false');
-  await page.getByLabel('输入类型', { exact: true }).selectOption('text');
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await expect(page.getByText(/配置已保存/u)).toBeVisible();
   expect(writes).toHaveLength(1);
@@ -959,4 +954,75 @@ test('generic extension actions default to primary, collapse secondary controls 
   await expect(connect).toBeEnabled(); expect(starts).toBe(2);
   expect(await page.evaluate(() => JSON.stringify([localStorage, sessionStorage]))).not.toContain('generic-draft');
   expect(errors).toEqual([]);
+});
+
+test('custom discovery prefills supplied metadata, keeps unknown limits blank and makes reasoning format explicit', async ({ page }, testInfo) => {
+  const initial = settingsFixture();
+  initial.configuration.customConnections[0]!.models[0]!.reasoning = true; // Saved before explicit format support existed.
+  const { writes } = await mockSettings(page, initial);
+  let requests = 0;
+  await page.route('**/api/models/discover', route => {
+    requests++;
+    return route.fulfill({ json: { endpoint: 'http://127.0.0.1:9999/v1/models', models: [
+      { id: 'rich-model', name: 'Rich fixture', contextWindow: 64000, maxTokens: 8192, input: ['text', 'image'], reasoning: true },
+      { id: 'gpt-6-luna' },
+    ] } });
+  });
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  await openSettings(page); await page.getByRole('button', { name: '自定义连接', exact: true }).click();
+  await expect(page.getByLabel('默认推理强度', { exact: true })).toBeEnabled();
+  await expect(page.getByText('沿用协议默认推理参数。', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: '获取可用模型', exact: true }).click();
+  await page.getByLabel('发现的候选模型', { exact: true }).selectOption('rich-model');
+  await expect(page.getByLabel('模型 ID', { exact: true })).toHaveValue('rich-model');
+  await expect(page.getByLabel('上下文窗口', { exact: true })).toHaveValue('64000');
+  await expect(page.getByLabel('最大输出', { exact: true })).toHaveValue('8192');
+  await expect(page.getByLabel('输入类型', { exact: true })).toHaveValue('text-image');
+  await expect(page.getByLabel('推理参数格式', { exact: true })).toHaveValue('');
+  await page.getByLabel('推理参数格式', { exact: true }).selectOption('openrouter');
+  await expect(page.getByLabel('默认推理强度', { exact: true })).toBeEnabled();
+  await page.getByLabel('发现的候选模型', { exact: true }).selectOption('gpt-6-luna');
+  await expect(page.getByLabel('上下文窗口', { exact: true })).toHaveValue('');
+  await expect(page.getByLabel('最大输出', { exact: true })).toHaveValue('');
+  await expect(page.getByLabel('默认推理强度', { exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  expect(writes).toHaveLength(0);
+  await page.getByLabel('发现的候选模型', { exact: true }).selectOption('rich-model');
+  await page.getByLabel('推理参数格式', { exact: true }).selectOption('openrouter');
+  await page.locator('.model-editor').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath('custom-model-desktop.png'), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator('.model-editor').scrollIntoViewIfNeeded();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('custom-model-narrow.png'), fullPage: true });
+  await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  await expect(page.getByText(/配置已保存/u)).toBeVisible();
+  expect(writes).toHaveLength(1); expect(requests).toBe(1);
+  const saved = writes[0]!.configuration.customConnections[0]!.models;
+  expect(saved).toHaveLength(2);
+  expect(saved[0]!.reasoning).toBe(true); expect(saved[0]!.reasoningFormat).toBeUndefined();
+  expect(saved[1]).toEqual({ id: 'rich-model', name: 'Rich fixture', contextWindow: 64000, maxTokens: 8192, reasoning: true, reasoningFormat: 'openrouter', input: ['text', 'image'] });
+  await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+  await page.getByRole('button', { name: '模型设置', exact: true }).click();
+  await expect(page.getByLabel('默认推理强度', { exact: true })).toBeEnabled();
+});
+
+test('empty and unsupported discovery leave manual entry available; unsupported reasoning errors remain visible without automatic retry', async ({ page }) => {
+  await mockSettings(page);
+  let requests = 0;
+  await page.route('**/api/models/discover', route => {
+    requests++;
+    return requests === 1 ? route.fulfill({ json: { endpoint: 'http://127.0.0.1:9999/v1/models', models: [] } }) : route.fulfill({ status: 404, json: { error: 'Discovery unsupported' } });
+  });
+  await page.route('**/api/status', route => route.fulfill({ json: { state: 'error', mode: 'live', model: 'gpt-6-luna', error: "HTTP 400: litellm.UnsupportedParamsError: openai does not support parameters: ['reasoning_effort']" } }));
+  await openSettings(page); await page.getByRole('button', { name: '自定义连接', exact: true }).click();
+  await page.getByRole('button', { name: '获取可用模型', exact: true }).click();
+  await expect(page.getByText('此服务未返回候选模型，请手动填写 ID。')).toBeVisible();
+  await page.getByRole('button', { name: '获取可用模型', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('仍可手动填写模型');
+  await page.getByRole('button', { name: '手动添加', exact: true }).click();
+  await expect(page.getByLabel('模型 ID', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(page.getByText(/reasoning_effort/u)).toBeVisible();
+  expect(requests).toBe(2);
 });

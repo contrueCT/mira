@@ -84,7 +84,9 @@ OpenAI 兼容协议不会猜测并补 `/v1`。如果供应商不遵循该路径�
 
 成功响应的 ID／名称／翻页游标若包含连接 Key，发现会明确失败；不会把模型 ID 改写或返回误导性的空成功。endpoint 路径包含解析后的 Key 时也会在发送前拒绝。
 
-发现返回模型 ID／可选名称及 endpoint，不能证明 ID 支持选定推理协议，也不提供虚构的 context、输出限额、图片／推理能力或价格；这些仍需用户确认后填入配置。
+发现返回模型 ID／可选名称及 endpoint；如果目录明确提供有效能力字段，选择模型时会填入可编辑草稿。支持 Mira 字段 `contextWindow`、`maxTokens`、`input`、`reasoning`，以及 [OpenRouter 目录](https://openrouter.ai/docs/api/api-reference/models/get-models)的 `context_length`、`top_provider.context_length`、`top_provider.max_completion_tokens`、`architecture.input_modalities`。只接受正整数限额和已支持的 text/image 输入；畸形字段忽略，最大输出超过已知上下文时留空。缺失值不根据 ID、owned_by、价格或其他目录猜测。标准 OpenAI `/models` 通常只提供模型身份信息，缺失的 token 限额仍须按该服务文档补充。已有同 ID 模型保留原配置，不被目录覆盖；空结果或错误仍可手动添加。
+
+目录支持推理不等于当前 endpoint 支持某一种推理请求字段，发现不会自动启用协议扩展或改写连接。保存前可编辑、取消；发现本身不保存模型或密钥，不发送聊天/测试模型请求。
 
 ## 程序化组装
 
@@ -163,3 +165,7 @@ The SDK modules are loaded at startup, without credentials or network calls;
 provider metadata and the public OpenCode routing wrapper are retained. Mistral's
 unrelated provider dispatch is unchanged. Global environment/console values are
 never modified to suppress SDK logging.
+
+## 自定义推理参数格式
+
+模型设置内可为 Chat Completions 明确选择 `reasoningFormat: "openai"`（`reasoning_effort`）或 `"openrouter"`（`reasoning.effort`）。按实际服务文档选择，不能仅因模型有推理能力就确定格式。未指定的已有配置继续沿用 Pi 协议/URL默认，保留推理强度；UI提示尚未单独确认。此字段不能用于 Responses/Anthropic，后二者仍使用各自原生适配。400错误不自动切换、丢弃字段或重试。详见 [ADR 0041](../adr/0041-custom-model-discovery-and-reasoning-format.md)。

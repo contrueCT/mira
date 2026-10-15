@@ -209,7 +209,8 @@ export function createModelTransport(configuration: ModelConfiguration, selectio
     const id = `custom:${connection.id}`;
     if (builtins.getProvider(id)) throw Error('Custom provider ID collides with a built-in provider');
     model = { id: selected.id, name: selected.name ?? selected.id, api: connection.api, provider: id, baseUrl: connection.baseUrl,
-      contextWindow: selected.contextWindow, maxTokens: selected.maxTokens, reasoning: selected.reasoning, input: [...selected.input],
+      contextWindow: selected.contextWindow, maxTokens: selected.maxTokens, reasoning: selected.reasoning,
+      ...(selected.reasoningFormat ? { compat: { thinkingFormat: selected.reasoningFormat, supportsReasoningEffort: selected.reasoningFormat === 'openai' } } : {}), input: [...selected.input],
       // Pi requires numeric rates; these are calculation placeholders, not prices.
       // Mira's public connection descriptor reports unknown, never free.
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };

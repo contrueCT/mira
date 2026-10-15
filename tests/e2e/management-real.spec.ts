@@ -1,3 +1,4 @@
+import { createServer } from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -533,4 +534,67 @@ test('extension private settings traverse real browser, HTTP, Cordis and Postgre
     expect(JSON.stringify(history.rows)).toContain('hidden settings action refused');
     expect(await page.evaluate(()=>JSON.stringify([localStorage,sessionStorage]))).not.toContain(secret);
   } finally { delayedParentPoll.resolve(); await app?.close(); await service?.close(); await db?.close(); await rm(root,{recursive:true,force:true}); }
+});
+
+
+test('custom model discovery and format survive real browser save, PostgreSQL runtime and restart', async ({ page }, testInfo) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mira-model-settings-real-'));
+  const key = 'synthetic-model-settings-private-key';
+  const payloads: Record<string, unknown>[] = []; let discoveries = 0;
+  let db: Awaited<ReturnType<typeof createTestDatabase>> | undefined;
+  let service: LocalWebService | undefined; let app: ReturnType<typeof createLocalHttp> | undefined;
+  const provider = createServer(async (request, response) => {
+    if (request.headers.authorization !== `Bearer ${key}`) { response.writeHead(401); response.end(); return; }
+    if (request.url === '/v1/models') {
+      discoveries++; response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ data: [{ id: 'fixture-effort', name: 'Fixture reasoning model', context_length: 100000, top_provider: { max_completion_tokens: 4096 }, reasoning: true, input: ['text'] }] })); return;
+    }
+    let raw = ''; for await (const chunk of request) raw += chunk.toString();
+    payloads.push(JSON.parse(raw));
+    response.setHeader('content-type', 'text/event-stream');
+    const events = [{ id: 'fixture', choices: [{ index: 0, delta: { role: 'assistant', content: 'Configured reasoning format works.' }, finish_reason: null }] }, { id: 'fixture', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }];
+    response.end(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n');
+  });
+  await new Promise<void>((resolve, reject) => { provider.once('error', reject); provider.listen(0, '127.0.0.1', resolve); });
+  const address = provider.address(); if (!address || typeof address === 'string') throw Error('Missing fixture address');
+  try {
+    db = await createTestDatabase();
+    const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'model-settings-real', sourceDirectory, workingDirectory: root, miraHome: root, spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), dreaming: { enabled: false }, autoCompaction: { enabled: false } };
+    service = await LocalWebService.open(options);
+    app = createLocalHttp({ backend: service, port, assetsDirectory: path.join(sourceDirectory, 'apps/web/dist') }); await app.listen({ host: '127.0.0.1', port });
+    await page.goto(origin); await page.getByRole('button', { name: '模型设置', exact: true }).click();
+    await page.getByRole('button', { name: '自定义连接', exact: true }).click();
+    await page.getByRole('button', { name: '添加连接', exact: true }).click();
+    await page.getByLabel('服务地址', { exact: true }).fill(`http://127.0.0.1:${address.port}/v1`);
+    await page.getByLabel('API Key', { exact: true }).fill(key);
+    await page.getByRole('button', { name: '获取可用模型', exact: true }).click();
+    await page.getByLabel('发现的候选模型', { exact: true }).selectOption('fixture-effort');
+    await expect(page.getByLabel('上下文窗口', { exact: true })).toHaveValue('100000');
+    await expect(page.getByLabel('最大输出', { exact: true })).toHaveValue('4096');
+    await page.getByLabel('推理参数格式', { exact: true }).selectOption('openrouter');
+    await page.getByLabel('默认推理强度', { exact: true }).selectOption('high');
+    await page.getByRole('button', { name: '保存设置', exact: true }).click();
+    await expect(page.getByText(/配置已保存/u)).toBeVisible();
+    expect(discoveries).toBe(1); expect(payloads).toHaveLength(0);
+    await page.screenshot({ path: testInfo.outputPath('model-settings-real-desktop.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: testInfo.outputPath('model-settings-real-narrow.png'), fullPage: true });
+    expect(await page.evaluate(() => JSON.stringify([localStorage, sessionStorage]))).not.toContain(key);
+    expect(JSON.stringify(await service.settings())).not.toContain(key);
+    await app.close(); app = undefined; await service.close(); service = undefined;
+    service = await LocalWebService.open(options);
+    app = createLocalHttp({ backend: service, port, assetsDirectory: path.join(sourceDirectory, 'apps/web/dist') }); await app.listen({ host: '127.0.0.1', port });
+    await page.goto(origin); await page.getByLabel('给 Mira 发消息', { exact: true }).fill('Use configured model.');
+    await page.getByRole('button', { name: '发送消息', exact: true }).click();
+    await expect(page.getByText('Configured reasoning format works.', { exact: true })).toBeVisible();
+    expect(payloads).toHaveLength(1); expect(payloads[0]!['reasoning_effort']).toBeUndefined();
+    expect(payloads[0]!['reasoning']).toEqual({ effort: 'high' });
+    expect(payloads[0]!['model']).toBe('fixture-effort');
+    const rows = await db.admin.query('SELECT envelope FROM context_records');
+    expect(JSON.stringify(rows.rows)).not.toContain(key);
+  } finally {
+    await app?.close(); await service?.close(); await db?.close();
+    await new Promise<void>((resolve, reject) => provider.close(error => error ? reject(error) : resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
 });

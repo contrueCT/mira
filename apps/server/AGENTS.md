@@ -44,3 +44,5 @@
 - ADR 0033：web-auth.ts 管理独立网页密码 hash 与短期 cookie；External SDK 继续实际 loopback 地址+Host 限制，不跟随 Web 暴露。
 - ADR 0032：`terminals.ts` service级registry、`terminal-process.mts`随主进程IPC生命周期监督；工具闭包按stream绑定owner，不给模型owner参数。普通bash不变，关闭服务须清理终端；取消等待不等于杀进程，异常不重放。
 - ADR0035：扩展私有设置路由复用全部Web鉴权，secret仅写入；模型工具不暴露settings status/授权链接/凭据。异常文字脱敏但保留unknown-outcome恢复语义。
+
+- ADR 0041：发现只导入明确且有效的能力元数据；custom reasoningFormat 只适用 Chat Completions，使用 Pi 原生 compat，旧 profile 不静默关闭推理。

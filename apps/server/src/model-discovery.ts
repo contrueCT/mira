@@ -1,9 +1,6 @@
-import { parseModelConfiguration, type CustomConnection } from './model-config.ts';
+import { parseModelConfiguration, type CustomConnection, type CustomModelConfiguration } from './model-config.ts';
 
-export interface DiscoveredModel {
-  id: string;
-  name?: string;
-}
+export type DiscoveredModel = Pick<CustomModelConfiguration, 'id' | 'name'> & Partial<Omit<CustomModelConfiguration, 'id' | 'name'>>;
 export interface ModelDiscoveryResult {
   endpoint: string;
   models: DiscoveredModel[];
@@ -35,6 +32,29 @@ function validText(value: unknown): value is string {
 function text(value: unknown): string {
   if (!validText(value)) throw invalidResponse();
   return value;
+}
+/** Explicit fields only. OpenAI's standard ID-only list leaves these absent.
+ * OpenRouter-style limits/modalities are documented additions, not name heuristics.
+ * Reasoning support is not permission to send a protocol-specific control.
+ */
+function metadata(item: Record<string, unknown>): Partial<Omit<DiscoveredModel, 'id' | 'name'>> {
+  const result: Partial<Omit<DiscoveredModel, 'id' | 'name'>> = {};
+  const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const positive = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+  const top = object(item['top_provider']);
+  const context = item['contextWindow'] ?? top['context_length'] ?? item['context_length'];
+  const output = item['maxTokens'] ?? top['max_completion_tokens'];
+  if (positive(context)) result.contextWindow = context;
+  if (positive(output) && (!result.contextWindow || output <= result.contextWindow)) result.maxTokens = output;
+  const input = item['input'] ?? object(item['architecture'])['input_modalities'];
+  if (Array.isArray(input)) {
+    const supported = [...new Set(input.filter((kind): kind is 'text' | 'image' => kind === 'text' || kind === 'image'))];
+    if (supported.length) result.input = supported;
+  }
+  if (typeof item['reasoning'] === 'boolean') result.reasoning = item['reasoning'];
+  // A reasoning parameter list may describe a different wire format. Keep the
+  // control opt-in in the editor rather than silently mapping incompatible APIs.
+  return result;
 }
 function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) throw aborted();
@@ -172,7 +192,7 @@ export async function discoverModels(connection: CustomConnection, options: Mode
         if (id.includes(key) || name?.includes(key)) throw invalidResponse();
         if (!ids.has(id)) {
           ids.add(id);
-          models.push({ id, ...(name === undefined ? {} : { name }) });
+          models.push({ id, ...(name === undefined ? {} : { name }), ...metadata(item) });
         }
       }
       checkActive();
