@@ -279,9 +279,9 @@ export class ExtensionHost {
     if (this.hostDiagnostics.length > 50) this.hostDiagnostics.shift();
   }
   private apiFor(ctx: Context): ExtensionContext {
-    this.options.ownerSignal?.throwIfAborted();
     const prior = this.instances.get(ctx.fiber);
     if (prior) return prior.context;
+    this.assertOpen();
     ctx.fiber.assertActive();
     if (ctx.fiber.state !== 1 && ctx.fiber.state !== 2) throw new Error('Cannot create API for an inactive extension');
     const id = ctx.fiber.entry?.id;
