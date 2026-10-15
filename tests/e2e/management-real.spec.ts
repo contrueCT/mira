@@ -364,10 +364,10 @@ test('extension private settings traverse real browser, HTTP, Cordis and Postgre
     db = await createTestDatabase();
     await writeFile(source, `import {defineExtension} from ${JSON.stringify(import.meta.resolve('@mira/extension-sdk'))};
       export default defineExtension({name:'settings-fixture',apply(ctx,config){
-        let status={state:'disconnected'};
+        let status={state:'disconnected'}; let authorizationRequests=0;
         ctx.registerSettings({fields:[{key:'appId',label:'Application ID',type:'text'},{key:'token',label:'Private token',type:'secret'},...['constructor','toString','valueOf'].map(key=>({key,label:'Private '+key,type:'secret'}))],
           actions:[{id:'connect',label:'Connect fixture',async execute({signal}){ if(!await ctx.credentials.has('token'))throw Error('missing'); for(const key of ['constructor','toString','valueOf'])if(await ctx.credentials.get(key)!=='synthetic-'+key)throw Error('prototype credential missing'); status={state:'connected'};}},
-          {id:'authorize',label:'Authorize fixture',async execute({signal}){status={state:'pending',authorization:{url:'https://example.com/authorize?challenge=synthetic-public',label:'Official authorization',qr:true}}; await new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true})); status={state:'disconnected'};}}],status:()=>status});
+          {id:'authorize',label:'Authorize fixture',async execute({signal}){status={state:'pending',authorization:{url:'https://example.com/authorize?challenge=synthetic-public-'+(++authorizationRequests),label:'Official authorization',qr:true}}; await new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true})); status={state:'disconnected'};}}],status:()=>status});
         ctx.registerTool({name:'check_fixture',description:'Check connection',parameters:{type:'object'},async execute(){return {text:status.state}}});
         ctx.onCleanup(()=>{status={state:'disconnected'}});
       }});`);
@@ -432,11 +432,28 @@ test('extension private settings traverse real browser, HTTP, Cordis and Postgre
     expect(protectedView).not.toContain(secret); expect(protectedView).toContain('configured');
     await page.getByRole('button',{name:'Authorize fixture',exact:true}).click();
     await expect(page.getByRole('img',{name:'授权二维码'})).toBeVisible();
+    const authorizationLink = page.getByRole('link', {name:'Official authorization', exact:true});
+    await expect(authorizationLink).toHaveCSS('color', 'rgb(84, 121, 165)');
+    await expect(authorizationLink).toHaveCSS('text-decoration-line', 'none');
+    await authorizationLink.hover();
+    await expect(authorizationLink).toHaveCSS('text-decoration-line', 'underline');
+    await page.keyboard.press('Tab'); // Switch to keyboard modality before focusing.
+    await authorizationLink.focus();
+    await expect(authorizationLink).toHaveCSS('outline-style', 'solid');
+    await expect(authorizationLink).toHaveCSS('outline-width', '3px');
+    await expect(authorizationLink).toHaveCSS('outline-color', 'rgb(84, 121, 165)');
+    await authorizationLink.blur();
+    await page.mouse.move(0, 0);
     await page.screenshot({path:testInfo.outputPath('extension-settings-desktop.png'),fullPage:true});
     await page.setViewportSize({width:390,height:844});
     await page.getByRole('img',{name:'授权二维码'}).scrollIntoViewIfNeeded();
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
     await page.screenshot({path:testInfo.outputPath('extension-settings-narrow.png'),fullPage:true});
+    await page.getByRole('button',{name:'取消当前操作',exact:true}).click();
+    await expect(page.getByLabel('settings-fixture 连接设置')).toContainText('操作已取消');
+    // Reusing a declared action calls its handler again; it does not redraw the old URL.
+    await page.getByRole('button',{name:'Authorize fixture',exact:true}).click();
+    await expect(authorizationLink).toHaveAttribute('href', 'https://example.com/authorize?challenge=synthetic-public-2');
     await page.getByRole('button',{name:'取消当前操作',exact:true}).click();
     await expect(page.getByLabel('settings-fixture 连接设置')).toContainText('操作已取消');
     await page.getByRole('button',{name:'关闭设置',exact:true}).click();

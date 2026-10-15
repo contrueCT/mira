@@ -58,7 +58,7 @@ export function ExtensionSettings({ id, active }: { id: string; active: boolean 
     <h4>连接与设置</h4><p role="status">{labels[view.status.state]}</p>
     {view.status.code && <p className="field-notice">{({ authentication: '认证失败，请核对凭据。', network: '连接异常，请稍后核对。', configuration: '请检查配置。', unknown: '扩展报告错误，原始诊断已隐藏。' } as Record<string, string>)[view.status.code] ?? '扩展报告错误。'}</p>}
     {view.status.details?.map((detail, index) => <p key={index}><strong>{detail.label}</strong>：{detail.value}</p>)}
-    {authorization && url && <p><a href={url} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">{authorization.label}</a></p>}
+    {authorization && url && <p><a className="extension-authorization-link" href={url} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">{authorization.label}</a></p>}
     {authorization?.qr && url && <AuthorizationQr url={url} />}
     {view.operation && <p role="status">{operations[view.operation.state]}</p>}
     {error && <p role="alert" className="field-notice">{error}</p>}
