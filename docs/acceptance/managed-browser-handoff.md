@@ -75,3 +75,7 @@ head763993f / run38734216371 的短probe保留原始 `No usable sandbox!` 错误
 Run 38742733368：官方已安装 Chrome 保持 sandbox 的短 probe 成功，launch/close 成功、ownedBrowserCaptured=true、cleanup=confirmed，无 probeError；完整 gate 内同样的 startup 与实际 daemon SIGKILL/独立 Chrome 清理均通过。主 UI 链路在首次模型请求前失败，后续 gate 跳过，不能报告功能验收通过。
 
 已用真实 PiDurableRuntime/MemoryWriter、生产 23 个工具 schema 与 7 个 skill metadata 的无 socket 探针确认测试夹具原因：复用 8192 上下文模型，但请求估计 18243 tokens，大于 7680 input budget；provider 调用为 0，错误为 Context exceeds input budget after compaction。浏览器真实测试现与既有完整服务 gate 一致，将合成模型上下文设为 100000；不改变生产预算、浏览器超时或安全设置。真实主链路仍需在新 head 上重跑。
+
+### d3b1723 真实认证过渡回归
+
+Run 38746208537 中真实 runtime browser_open/snapshot 与持久工具结果均已通过；初次打开浏览器面板的 WebSocket 403 导致后续验收停止。Trace 证明访问密码 PUT 开始于 14:02:50.261、用时 153.49ms；测试在提交完成前于 .402 请求无 Cookie ticket，随后 .417 WebSocket 已携带新会话 Cookie。生产 cookie 绑定与密码修改撤销按设计拒绝旧 ticket，不能放宽该校验。修复仅让测试等待“访问密码已保存”的实际提交完成提示，而不是等待保存前就已存在的 composer。真实链路需新 head 再验收；旧失败证据保留。

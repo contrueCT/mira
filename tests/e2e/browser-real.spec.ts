@@ -121,7 +121,9 @@ test('real managed browser preserves page/cookie across handoff; rendered input,
     await page.getByLabel('设置访问密码', { exact: true }).fill(password);
     await page.getByLabel('再次输入新密码', { exact: true }).fill(password);
     await page.getByRole('button', { name: '保存访问设置', exact: true }).click();
-    await expect(page.locator('form.composer')).toBeVisible();
+    // The composer already existed before saving; wait for the actual auth commit
+    // before minting a cookie-bound stream ticket. Rotation revokes older tickets.
+    await expect(page.getByText('访问密码已保存，当前浏览器已登录，其他浏览器需重新登录。', { exact: true })).toBeVisible();
     await browserTab(page);
     await expect(page.locator('.browser-viewport canvas')).not.toHaveClass(/browser-canvas-empty/);
     const denied = await context.request.post(`${origin}/api/browser/${opened.id}/ticket`, { headers: { 'x-mira-client': 'web', origin: 'https://untrusted.invalid' }, data: {} });
