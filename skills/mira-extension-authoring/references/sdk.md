@@ -242,3 +242,16 @@ CAS checks the public observation and activation. Never return raw provider erro
 Do not use a global path keyed only by extension name. State survives reload/disable;
 uninstall removes credentials but keeps data files. Reinstall uses a different namespace.
 All extensions share the trusted OS account: this API does not isolate malicious code.
+
+### 插件自选：从普通工具启动已声明设置动作
+
+`const actions = context.registerSettings(definition)` 返回当前 activation 专属 handle：
+`await actions.start(actionId)`、`await actions.current()`、`await actions.cancel(operationId)`。
+start/current 仅返回 `{ id, action, state }`（current 初始为 null），不会返回凭据、
+状态说明、配对码或 provider URL。插件可把安全 receipt 放入自己的普通工具结果；
+是否提供对话发起工具由插件决定，框架不会自动添加 connect 工具。
+
+UI 与工具共享单个 pending 动作。并发 start 只有一个成功；cancel 必须使用对应
+operation.id，旧 activation 的 handle 不可继续使用。start 接受后不要因未知结果
+盲目重试，应先核对 current；操作失败/取消也不代表远端效果被撤销。
+过期判定和重新请求授权的刷新动作仍由插件定义，不能仅重绘旧 URL 当成刷新。

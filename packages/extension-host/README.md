@@ -234,3 +234,7 @@ code must honor the signal and join its background work during cleanup. Closing 
 window does not cancel an already accepted action. Retiring an activation cancels it
 and drains its execution lease. UI writes may save credentials before a config apply
 fails; reread actual state rather than retrying an unknown outcome automatically.
+
+声明式设置的返回 handle 与受保护 HTTP 共用一个动作 runner；工具可自行启动动作，
+无框架 connect 工具。handle 只投影 operation receipt，并拒绝旧 activation。
+工具持有的 execution lease 与生命周期排空之间不加入反向全局队列依赖。

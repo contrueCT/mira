@@ -22,3 +22,16 @@ export interface ExtensionSettingsDefinition {
   /** Synchronous, bounded projection. Never return exceptions or credentials. */
   status(): ExtensionConnectionStatus;
 }
+
+/** Safe receipt only: never status details, credentials or provider authorization URLs. */
+export interface ExtensionSettingsOperation {
+  id: string;
+  action: string;
+  state: 'pending' | 'succeeded' | 'failed' | 'cancelled';
+}
+/** Bound to the registering installation/activation; retired handles reject every call. */
+export interface ExtensionSettingsActions {
+  start(actionId: string): Promise<ExtensionSettingsOperation>;
+  current(): Promise<ExtensionSettingsOperation | null>;
+  cancel(operationId: string): Promise<void>;
+}
