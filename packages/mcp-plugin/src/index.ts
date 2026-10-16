@@ -1,9 +1,10 @@
-import { createHash } from 'node:crypto';
-import { defineExtension, type ExtensionContext, type ExtensionConnectionStatus, type ExtensionToolset, type Json, type ExtensionSettingsActions } from '@mira/extension-sdk';
+import { defineExtension, type ExtensionContext, type ExtensionConnectionStatus, type ExtensionToolset, type Json } from '@mira/extension-sdk';
 import { SdkError, SdkErrorCode, StreamableHTTPClientTransport, auth, computeScopeUnion, isStrictScopeSuperset, type Tool } from '@modelcontextprotocol/client';
 import { parseConfig, type McpConfig } from './config.ts';
 import { createConnection, remoteTools, resultProjection } from './client.ts';
 import { OAuthSession, safeOAuthFetch } from './oauth.ts';
+
+class CatalogError extends Error {}
 
 type Connection = Awaited<ReturnType<typeof createConnection>>;
 /** One ordinary extension activation owns exactly one configured MCP server. */
@@ -15,6 +16,7 @@ class McpInstallation {
   private connection: Connection | undefined;
   private generation = 0;
   private state: ExtensionConnectionStatus['state'] = 'disconnected';
+  private catalogError: string | undefined;
   private code: ExtensionConnectionStatus['code'];
   private authorization: string | null = null;
   private challenge: { scope?: string; resourceMetadataUrl?: URL } | undefined;
@@ -29,7 +31,7 @@ class McpInstallation {
       ...(this.config.redirectUrl ? { redirectUrl: this.config.redirectUrl } : {}), ...(this.config.callbackPort === undefined ? {} : { callbackPort: this.config.callbackPort }),
     }, url => { this.authorization = url; if (url) this.state = 'pending'; });
     context.onCleanup(() => this.close());
-    const actions = context.registerSettings({
+    context.registerSettings({
       fields: [
         { key: 'transport', label: 'Transport', type: 'select', options: [{ value: 'stdio', label: 'Local executable' }, { value: 'http', label: 'Remote HTTP' }] },
         { key: 'command', label: 'Installed executable (absolute path)', type: 'text' },
@@ -52,30 +54,13 @@ class McpInstallation {
         { id: 'forgetAuthorization', label: 'Forget authorization', group: 'secondary', execute: async () => { await this.disconnect(); await this.oauth?.forget(); this.challenge = undefined; } },
       ], status: () => this.status(),
     });
-    this.registerControl(actions);
   }
   private configured(): boolean { return Boolean(this.config.transport === 'stdio' ? this.config.command : this.config.url); }
   private status(): ExtensionConnectionStatus {
-    return { state: this.state, ...(this.code ? { code: this.code } : {}), visibleActions: !this.configured() ? [] : this.state === 'connected' ? ['refresh', 'disconnect', ...(this.oauth ? ['authorize', 'forgetAuthorization'] : [])] : this.state === 'connecting' || this.state === 'pending' ? [] : ['connect', ...(this.oauth ? ['authorize', 'forgetAuthorization'] : [])],
-      ...(this.code === 'configuration' ? { details: [{ label: 'Protocol', value: 'Check the server protocol choice. Local servers default to legacy; modern-only servers require 2026-07-28.' }] } : {}),
-      ...(this.connection?.client.unsupportedHeaderTools ? { details: [{ label: 'Unsupported tools', value: 'Some tools require HTTP header mapping, which is not supported by this plugin.' }] } : {}),
+    return { state: this.state, ...(this.code ? { code: this.code } : {}), visibleActions: !this.configured() ? [] : this.connection && (this.state === 'connected' || this.catalogError) ? ['refresh', 'disconnect', ...(this.oauth ? ['authorize', 'forgetAuthorization'] : [])] : this.state === 'connecting' || this.state === 'pending' ? [] : ['connect', ...(this.oauth ? ['authorize', 'forgetAuthorization'] : [])],
+      ...(this.catalogError ? { details: [{ label: 'Tools', value: this.catalogError }] } : this.code === 'configuration' ? { details: [{ label: 'Protocol', value: 'Check the server protocol choice. Local servers default to legacy; modern-only servers require 2026-07-28.' }] } : {}),
+      ...(!this.catalogError && this.connection?.client.unsupportedHeaderTools ? { details: [{ label: 'Unsupported tools', value: 'Some tools require HTTP header mapping, which is not supported by this plugin.' }] } : {}),
       ...(this.authorization ? { authorization: { url: this.authorization, label: 'Authorize MCP access', qr: true } } : {}) };
-  }
-  private registerControl(actions: ExtensionSettingsActions): void {
-    this.context.registerTool({ name: `mcp_control_${createHash('sha256').update(this.context.id).digest('hex').slice(0,24)}`, description: 'Manage this MCP installation’s connection through its existing protected settings actions. Returns only safe operation receipts. OAuth links and credentials are shown only in Settings. Installation/configuration/update/disable/remove/rollback use ordinary extension_manage.',
-      parameters: { type: 'object', properties: { operation: { type: 'string', enum: ['start', 'current', 'cancel'] }, action: { type: 'string', enum: ['connect', 'authorize', 'refresh', 'disconnect', 'forgetAuthorization'] }, operationId: { type: 'string' } }, required: ['operation'], additionalProperties: false },
-      execute: async raw => {
-        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { text: 'Invalid connection operation.', isError: true };
-        try {
-          let result;
-          if (raw['operation'] === 'start' && typeof raw['action'] === 'string') result = await actions.start(raw['action']);
-          else if (raw['operation'] === 'current') result = await actions.current();
-          else if (raw['operation'] === 'cancel' && typeof raw['operationId'] === 'string') { await actions.cancel(raw['operationId']); result = { cancelled: true }; }
-          else return { text: 'Invalid connection operation.', isError: true };
-          return { text: JSON.stringify(result) };
-        } catch { return { text: 'Connection operation unavailable. Check this extension’s protected settings.', isError: true }; }
-      },
-    });
   }
   async initialize(): Promise<void> {
     if (!this.configured()) { this.state = 'unconfigured'; return; }
@@ -90,14 +75,19 @@ class McpInstallation {
   }
   private publish(connection: Connection, generation: number, tools: Tool[]): void {
     if (this.stopped || generation !== this.generation || this.connection !== connection) return;
-    this.toolset.replace(remoteTools(this.context.id, tools, this.config, async (tool, args, signal) => {
+    try { this.toolset.replace(remoteTools(tools, this.config, async (tool, args, signal) => {
       // Host revisions fence old unbegun declarations; this closure pins the
       // connection and exact remote definition for an already begun call.
       const task = connection.client.callTool({ name: tool.name, arguments: args as Record<string, unknown> }, { signal, timeout: 30_000, toolDefinition: tool });
       this.calls.add(task);
       try { return resultProjection(await task); }
       finally { this.calls.delete(task); }
-    }));
+    })); } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      throw new CatalogError(message.includes('uplicate') ? 'Duplicate tool name. Each tool must have a unique name across all installed extensions and built-in tools.'
+        : message.includes('tool name') ? 'Invalid tool name. Use 1-64 ASCII letters, digits, underscores or hyphens, starting with a letter or underscore. Server names are used unchanged.'
+        : 'Invalid MCP tool catalog. Check the server tool definitions. The previous tools remain unchanged.');
+    }
   }
   private async open(signal: AbortSignal, interactive: boolean, fetch?: typeof globalThis.fetch): Promise<Connection> {
     const generation = ++this.generation;
@@ -113,7 +103,7 @@ class McpInstallation {
   }
   private async connect(signal: AbortSignal, interactive: boolean): Promise<void> {
     if (!this.configured() || this.stopped) throw new Error('MCP is not configured');
-    await this.disconnect(); signal.throwIfAborted(); this.state = 'connecting'; this.code = undefined;
+    await this.disconnect(); signal.throwIfAborted(); this.state = 'connecting'; this.code = undefined; this.catalogError = undefined;
     try {
       if (interactive) {
         if (!this.oauth) throw new Error('OAuth is not configured');
@@ -154,15 +144,15 @@ class McpInstallation {
       await this.queueCatalog(connection, this.generation, signal);
       signal.throwIfAborted(); this.state = 'connected';
     } catch (error) {
-      await this.disconnect(); this.state = 'error'; this.code = error instanceof SdkError && error.code === SdkErrorCode.EraNegotiationFailed ? 'configuration' : this.config.auth === 'none' ? 'network' : 'authentication';
+      await this.disconnect(); this.state = 'error'; this.catalogError = error instanceof CatalogError ? error.message : undefined; this.code = error instanceof CatalogError ? 'configuration' : error instanceof SdkError && error.code === SdkErrorCode.EraNegotiationFailed ? 'configuration' : this.config.auth === 'none' ? 'network' : 'authentication';
       throw new Error('MCP connection failed. Check configuration and protected authentication settings.');
     }
   }
   private async refresh(signal: AbortSignal): Promise<void> {
     const connection = this.connection, generation = this.generation;
-    if (!connection || this.state !== 'connected') throw new Error('MCP is disconnected');
+    if (!connection || (this.state !== 'connected' && !this.catalogError)) throw new Error('MCP is disconnected');
     try { await this.queueCatalog(connection, generation, signal); }
-    catch { if (generation === this.generation) { this.withdraw(); this.state = 'error'; this.code = 'network'; } throw new Error('MCP tools could not be refreshed'); }
+    catch (error) { if (generation === this.generation) this.catalogFailed(error); throw new Error('MCP tools could not be refreshed. Check protected settings.'); }
   }
   private queueCatalog(connection: Connection, generation: number, signal: AbortSignal): Promise<void> {
     const task = this.catalog.then(async () => {
@@ -170,7 +160,7 @@ class McpInstallation {
       if (this.stopped || generation !== this.generation || this.connection !== connection) throw new Error('MCP connection retired');
       const result = await connection.client.listTools(undefined, { signal, timeout: 15_000, cacheMode: 'refresh' });
       signal.throwIfAborted(); this.publish(connection, generation, result.tools);
-      if (!this.stopped && generation === this.generation && this.connection === connection) { this.state = 'connected'; this.code = undefined; }
+      if (!this.stopped && generation === this.generation && this.connection === connection) { this.state = 'connected'; this.code = undefined; this.catalogError = undefined; }
     });
     this.catalog = task.catch(() => {});
     return task;
@@ -188,8 +178,8 @@ class McpInstallation {
       }
     })();
     this.catalogRefresh = task;
-    void task.catch(() => {
-      if (generation === this.generation && !this.stopped) { this.withdraw(); this.state = 'error'; this.code = 'network'; }
+    void task.catch(error => {
+      if (generation === this.generation && !this.stopped) this.catalogFailed(error);
     }).finally(() => {
       if (this.catalogRefresh !== task) return;
       this.catalogRefresh = undefined;
@@ -198,11 +188,16 @@ class McpInstallation {
       if (this.catalogDirty) this.scheduleCatalog(connection, generation);
     });
   }
+  private catalogFailed(error: unknown): void {
+    this.catalogError = error instanceof CatalogError ? error.message : undefined;
+    if (!this.catalogError) this.withdraw();
+    this.state = 'error'; this.code = this.catalogError ? 'configuration' : 'network';
+  }
   private async disconnect(): Promise<void> {
     ++this.generation; this.catalogDirty = false; this.catalogRefresh = undefined; this.withdraw();
     const connection = this.connection; this.connection = undefined;
     await Promise.allSettled([...this.calls]);
-    await connection?.client.close(); this.authorization = null; this.state = 'disconnected';
+    await connection?.client.close(); this.authorization = null; this.catalogError = undefined; this.code = undefined; this.state = 'disconnected';
   }
   async close(): Promise<void> {
     if (this.stopped) return;

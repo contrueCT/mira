@@ -7,9 +7,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { ExtensionHost } from '@mira/extension-host';
-import { extensionTools } from '@mira/server';
+import { extensionTools, extensionManagementTools } from '@mira/server';
 import { McpServer, createMcpHandler } from '@modelcontextprotocol/server';
-import { toolName } from '../../packages/mcp-plugin/src/client.ts';
 import { allowLocalTestHttp } from '../deny-model-network.mts';
 
 const issuer = 'https://synthetic-oauth-host.invalid';
@@ -242,7 +241,7 @@ test(`Host OAuth protects ${protection}: official SDK PKCE, explicit scope upgra
       assert.equal(grantedScope, 'read write');
     }
 
-    const echo = extensionTools(await host.prepare()).find(tool => tool.name === toolName('remote', 'echo'));
+    const echo = extensionTools(await host.prepare()).find(tool => tool.name === 'echo');
     assert.ok(echo);
     assert.match(JSON.stringify(await echo.execute('known-success', {}, new AbortController().signal)), /Safe known content/);
     const exchangesBeforeEffects = tokenExchanges;
@@ -444,12 +443,12 @@ test('Host OAuth recovers effect-only 401/403 through explicit authorization wit
       return result;
     };
     const controlCurrent = async () => {
-      const control = extensionTools(await activeHost.prepare()).find(tool => tool.name.startsWith('mcp_control_'));
+      const control = extensionManagementTools(activeHost).find(tool => tool.name === 'extension_manage');
       assert.ok(control);
-      modelOutput.push(await control.execute('current-safe-receipt', { operation: 'current' }, new AbortController().signal));
+      modelOutput.push(await control.execute('current-safe-receipt', { id: 'remote', action: 'settings-current' }, new AbortController().signal));
     };
     const effect = async (id: string, succeeds = false) => {
-      const echo = extensionTools(await activeHost.prepare()).find(tool => tool.name === toolName('remote', 'echo'));
+      const echo = extensionTools(await activeHost.prepare()).find(tool => tool.name === 'echo');
       assert.ok(echo);
       const before = effectHeaders.length;
       if (succeeds) {

@@ -25,13 +25,9 @@ test('shipped MCP package follows real prepare, stage, content-test, install, ac
     const activation = await host.requestChange('mcp', { action: 'activate' }); assert.equal(activation.status, 'applied', activation.error);
     const settings = await host.extensionSettings('mcp'); assert.ok(settings); assert.equal(settings.status.state, 'unconfigured');
     assert.equal(settings.fields.find(field => field.key === 'bearerToken')?.configured, false);
-    const tools = await host.prepare(); assert.equal(tools.length, 1); assert.match(tools[0]!.tool.name, /^mcp_control_/);
-    const status = tools[0]!;
-    const operation = await status.tool.execute({ operation: 'current' }, { callId: 'status', signal: new AbortController().signal });
-    assert.equal(operation.text, 'null');
+    const tools = await host.prepare(); assert.deepEqual(tools, []);
     assert.ok(!JSON.stringify(await host.inspect()).includes('bearerToken'), 'private key is not extension configuration');
     await host.requestChange('mcp', { action: 'disable' }); assert.equal(await host.extensionSettings('mcp'), null); assert.deepEqual(await host.prepare(), []);
-    const stale = await status.tool.execute({}, { callId: 'retired', signal: new AbortController().signal }); assert.equal((stale.details as { status: string }).status, 'stale');
     const persisted = await readExtensionConfiguration(config); assert.equal(persisted.entries[0]!.enabled, false);
     await host.close(); host = new ExtensionHost({ ...persisted, receive: async () => 'inserted' }); await host.start(); assert.deepEqual(await host.prepare(), []);
     await host.requestChange('mcp', { action: 'enable' }); assert.ok(await host.extensionSettings('mcp'));

@@ -1,14 +1,12 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import { getCurrentTools, type ToolCall, type TranscriptContext } from '@earendil-works/pi-ai';
 import { ArtifactStore, readExtensionConfiguration, type ArtifactManifest } from '@mira/extension-host';
 import type { ToolExecution } from '@mira/life';
 import { decodeRecords } from '@mira/runtime-pi';
 import { createLocalHttp, LocalWebService } from '@mira/server';
-import { toolName } from '../../packages/mcp-plugin/src/client.ts';
 import { prepareExtensionPackage } from '../../scripts/prepare-extension-package.mts';
 import { httpFixture } from '../fixtures/mcp/http.mts';
 import { createTestDatabase } from '../integration/database.mts';
@@ -17,8 +15,7 @@ import { assistant, streamOf } from '../recovery/fixtures.mts';
 const sourceDirectory = path.resolve(import.meta.dirname, '../..');
 const port = 3220, origin = `http://127.0.0.1:${port}`;
 const installation = 'mcp-acceptance';
-const echo = toolName(installation, 'echo');
-const control = `mcp_control_${createHash('sha256').update(installation).digest('hex').slice(0, 24)}`;
+const echo = 'echo';
 const secret = 'synthetic-mcp-bearer-never-real';
 const installInput = '（合成测试）安装并启用本地准备的 MCP 扩展，然后执行一次 echo。';
 const installReply = 'MCP 扩展已通过普通扩展流程安装并连接，echo 已执行一次。';
@@ -87,6 +84,7 @@ test('ordinary MCP installation, protected settings and unknown effects survive 
         const saved = decodeRecords(records.map(row => row.envelope)).flatMap(entry => entry.type === 'message' ? [entry.message] : []);
         expect(getCurrentTools(saved)).toEqual(declarations);
         const remote = declarations.find(tool => tool.name === echo);
+        expect(declarations.some(tool => tool.name.startsWith('mcp_'))).toBe(false);
         switch (contexts.length) {
           case 1:
             expect(serialized).toContain(installInput); expect(remote).toBeUndefined();
@@ -112,9 +110,9 @@ test('ordinary MCP installation, protected settings and unknown effects survive 
             return streamOf(assistant(installReply));
           case 6:
             expect(remote?.parameters).toMatchObject({ properties: { count: { type: 'number' } } });
-            return streamOf(call('mcp-current', control, { operation: 'current' }));
+            return streamOf(call('mcp-current', 'extension_manage', { id: installation, action: 'settings-current' }));
           case 7:
-            expect(toolResult(context, 'mcp-current')).toBeNull();
+            expect(toolResult(context, 'mcp-current')).toEqual({ operation: null });
             return streamOf(call('mcp-after-restart', echo, { count: 7 }));
           case 8:
             expect(toolResult(context, 'mcp-after-restart')).toEqual({ revision: 2, count: 7 });
@@ -190,6 +188,7 @@ test('ordinary MCP installation, protected settings and unknown effects survive 
       await expect(panel.getByRole('button', { name: 'Refresh tools', exact: true })).toBeInViewport({ ratio: 1 });
       await expect(panel.getByRole('button', { name: 'Disconnect', exact: true })).toBeInViewport({ ratio: 1 });
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      for (const name of ['echo', 'structured', 'summary']) await expect(card.getByText(name, { exact: true })).toBeVisible();
       await page.screenshot({ path: testInfo.outputPath(`mcp-settings-connected-${label}.png`), fullPage: true });
     }
     await page.setViewportSize({ width: 1440, height: 1000 });

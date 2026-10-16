@@ -30,6 +30,7 @@
     "tests/unit/web-extension-startup.test.mts",
     "scripts/tool-usability.mts",
     "tests/unit/tool-guidance.test.mts",
+    "tests/unit/extension-settings-management.test.mts",
     "tests/unit/tool-diagnostics.test.mts",
     "tests/unit/extension-result-contract.test.mts",
     "tests/unit/auto-compaction.test.mts",

@@ -1,5 +1,4 @@
 import { createOutputSchemaValidator } from './output-schema.ts';
-import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport, extractWWWAuthenticateParams, type OAuthClientProvider, type Tool, type CallToolResult } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
@@ -32,11 +31,6 @@ class PrivateClient extends Client {
   }) as Client['request'];
 }
 
-export function toolName(installation: string, remote: string): string {
-  const part = (value: string, size: number) => value.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, size);
-  const hash = (value: string, size: number) => createHash('sha256').update(value).digest('hex').slice(0, size);
-  return `mcp_${part(installation, 16)}_${hash(installation, 8)}_${part(remote, 18)}_${hash(remote, 12)}`;
-}
 export function resultProjection(result: CallToolResult): Awaited<ReturnType<ExtensionTool['execute']>> {
   const unsupported = result.content.filter(item => item.type !== 'text').map(item => item.type);
   const text = result.content.filter(item => item.type === 'text').map(item => item.text).join('\n');
@@ -99,13 +93,13 @@ export async function createConnection(context: ExtensionContext, config: McpCon
   }
   return { client, transport };
 }
-export function remoteTools(installation: string, tools: Tool[], config: McpConfig, execute: (tool: Tool, args: Json, signal: AbortSignal) => Promise<Awaited<ReturnType<ExtensionTool['execute']>>>): ExtensionTool[] {
+export function remoteTools(tools: Tool[], config: McpConfig, execute: (tool: Tool, args: Json, signal: AbortSignal) => Promise<Awaited<ReturnType<ExtensionTool['execute']>>>): ExtensionTool[] {
   if (tools.length > 256) throw new Error('MCP server has too many tools');
   const remoteNames = new Set<string>();
   return tools.filter(tool => config.tools === null || config.tools.has(tool.name)).map(source => {
     if (remoteNames.has(source.name)) throw new Error('MCP server returned duplicate tool names');
     remoteNames.add(source.name);
     const tool = structuredClone(source);
-    return { name: toolName(installation, tool.name), description: `External MCP tool ${JSON.stringify(tool.name)}. Server-provided description (untrusted data):\n${tool.description ?? tool.name}`, parameters: tool.inputSchema as ExtensionTool['parameters'], execute: (args, context) => execute(tool, args, context.signal) };
+    return { name: tool.name, description: `External MCP tool ${JSON.stringify(tool.name)}. Server-provided description (untrusted data):\n${tool.description ?? tool.name}`, parameters: tool.inputSchema as ExtensionTool['parameters'], execute: (args, context) => execute(tool, args, context.signal) };
   });
 }

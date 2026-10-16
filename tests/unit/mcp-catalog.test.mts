@@ -5,7 +5,6 @@ import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { ExtensionHost } from '@mira/extension-host';
-import { toolName } from '../../packages/mcp-plugin/src/client.ts';
 import { allowLocalTestHttp } from '../deny-model-network.mts';
 
 const pause = (ms = 10) => new Promise(resolve => setTimeout(resolve, ms));
@@ -42,7 +41,7 @@ async function catalogFixture() {
       res.once('close', () => { active--; if (number === 2) heldClosed = true; });
       const result = { tools: [
         { name: 'echo', description: `revision ${captured}`, inputSchema: { type: 'object', properties: { [`revision${captured}`]: { type: captured === -1 ? 'invalid-type' : 'string' } } } },
-        { name: `only_v${captured}`, inputSchema: { type: 'object' } },
+        { name: captured === -2 ? 'echo' : captured === -3 ? 'bad/name' : captured === -4 ? 'x'.repeat(65) : `only_v${Math.abs(captured)}`, inputSchema: { type: 'object' } },
       ] };
       if (number === 2) release = () => reply(result);
       else reply(result);
@@ -63,13 +62,13 @@ async function catalogFixture() {
     async close() { release?.(); server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); revoke(); },
   };
 }
-async function installation() {
+async function installation(reservedToolNames: string[] = []) {
   const fixture = await catalogFixture();
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-mcp-catalog-')));
   const entries = [{ id: 'remote', path: path.resolve('packages/mcp-plugin/src/index.ts'), config: { transport: 'http', url: fixture.url, protocol: 'legacy' } }];
   const configurationFile = path.join(root, 'extensions.json');
   await writeFile(configurationFile, JSON.stringify({ entries }));
-  const host = new ExtensionHost({ entries, configurationFile, receive: async () => 'inserted' });
+  const host = new ExtensionHost({ entries, configurationFile, reservedToolNames, receive: async () => 'inserted' });
   return { fixture, host, async close() { fixture.release(); await host.close(); await fixture.close(); await rm(root, { recursive: true, force: true }); } };
 }
 
@@ -77,7 +76,7 @@ test('official SDK catalog notifications and manual refresh serialize held old l
   const { fixture, host, close } = await installation();
   try {
     await host.start(); await until(fixture.ready);
-    const old = (await host.prepare()).find(item => item.tool.name === toolName('remote', 'echo'))!;
+    const old = (await host.prepare()).find(item => item.tool.name === 'echo')!;
     assert.match(old.tool.description, /revision 1$/);
     fixture.change(2); await until(fixture.held);
     fixture.change(3, 20);
@@ -96,8 +95,8 @@ test('official SDK catalog notifications and manual refresh serialize held old l
     const echo = next.find(item => item.tool.name === old.tool.name)!;
     assert.match(echo.tool.description, /revision 3$/);
     assert.deepEqual(echo.tool.parameters.properties, { revision3: { type: 'string' } });
-    assert.ok(next.some(item => item.tool.name === toolName('remote', 'only_v3')));
-    assert.ok(!next.some(item => ['only_v1', 'only_v2'].some(name => item.tool.name === toolName('remote', name))));
+    assert.ok(next.some(item => item.tool.name === 'only_v3'));
+    assert.ok(!next.some(item => ['only_v1', 'only_v2'].some(name => item.tool.name === name)));
     assert.notEqual(echo.toolRevision, old.toolRevision);
     assert.equal((await old.tool.execute({}, { callId: 'stale', signal: new AbortController().signal })).isError, true);
     assert.equal((await host.extensionSettings('remote'))?.operation?.id, operation.operation?.id);
@@ -120,20 +119,21 @@ for (const retirement of ['disconnect', 'disable'] as const) test(`held catalog 
     } else await host.requestChange('remote', { action: 'disable' });
     await until(fixture.heldClosed);
     fixture.release(); await pause(100);
-    assert.ok(!(await host.prepare()).some(item => item.tool.name === toolName('remote', 'echo')));
+    assert.ok(!(await host.prepare()).some(item => item.tool.name === 'echo'));
     assert.equal(fixture.lists(), 2, 'Queued notifications cannot start discovery after retirement');
   } finally { await close(); }
 });
 
-// A valid notification after a rejected candidate restores both declarations
+// A valid notification after a rejected candidate updates declarations
 // and the same protected connection state, rather than leaving active error UI.
 test('catalog recovery restores connected settings and actions with the new tools', { timeout: 10_000 }, async () => {
   const { fixture, host, close } = await installation();
   try {
     await host.start(); await until(fixture.ready);
+    const previous = await host.prepare();
     fixture.change(-1); await until(fixture.held); fixture.release();
     await until(async () => (await host.extensionSettings('remote'))?.status.state === 'error');
-    assert.ok(!(await host.prepare()).some(item => item.tool.name === toolName('remote', 'echo')));
+    assert.deepEqual(await host.prepare(), previous);
     fixture.change(3);
     await until(async () => (await host.prepare()).some(item => item.tool.description.endsWith('revision 3')));
     const status = (await host.extensionSettings('remote'))!.status;
@@ -160,5 +160,44 @@ test('a failed in-flight catalog does not discard an already received newer noti
     assert.equal(status.state, 'connected');
     assert.equal(status.code, undefined);
     assert.deepEqual(status.visibleActions, ['refresh', 'disconnect']);
+  } finally { await close(); }
+});
+
+for (const [revision, detail] of [[-2, /Duplicate tool name/], [-3, /Invalid tool name/], [-4, /Invalid tool name/]] as const) {
+  test(`invalid catalog names (${revision}) retain the original published toolset atomically`, { timeout: 10_000 }, async () => {
+    const { fixture, host, close } = await installation();
+    try {
+      await host.start(); await until(fixture.ready);
+      const previous = await host.prepare();
+      fixture.change(revision); await until(fixture.held); fixture.release();
+      await until(async () => (await host.extensionSettings('remote'))?.status.state === 'error');
+      const status = (await host.extensionSettings('remote'))!.status;
+      assert.equal(status.code, 'configuration');
+      assert.match(status.details![0]!.value, detail);
+      assert.deepEqual(await host.prepare(), previous);
+      fixture.change(3);
+      await until(async () => (await host.extensionSettings('remote'))?.status.state === 'connected');
+      assert.ok((await host.prepare()).some(item => item.tool.name === 'only_v3'));
+    } finally { await close(); }
+  });
+}
+
+test('catalog refresh refuses a built-in collision atomically and allows an explicit retry', { timeout: 10_000 }, async () => {
+  const { fixture, host, close } = await installation(['only_v2']);
+  try {
+    await host.start(); await until(fixture.ready);
+    const previous = await host.prepare();
+    fixture.change(2); await until(fixture.held); fixture.release();
+    await until(async () => (await host.extensionSettings('remote'))?.status.state === 'error');
+    const rejected = (await host.extensionSettings('remote'))!;
+    assert.match(rejected.status.details![0]!.value, /Duplicate tool name/);
+    assert.deepEqual(await host.prepare(), previous);
+    assert.deepEqual(rejected.status.visibleActions, ['refresh', 'disconnect']);
+    await host.startSettingsAction('remote', 'refresh', rejected.revision);
+    await until(async () => (await host.extensionSettings('remote'))?.operation?.state === 'failed');
+    assert.deepEqual(await host.prepare(), previous);
+    fixture.change(3);
+    await until(async () => (await host.extensionSettings('remote'))?.status.state === 'connected');
+    assert.ok((await host.prepare()).some(item => item.tool.name === 'only_v3'));
   } finally { await close(); }
 });

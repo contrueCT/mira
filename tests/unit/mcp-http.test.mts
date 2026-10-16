@@ -4,7 +4,6 @@ import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { ExtensionHost } from '@mira/extension-host';
-import { toolName } from '../../packages/mcp-plugin/src/client.ts';
 import { httpFixture } from '../fixtures/mcp/http.mts';
 const plugin = path.resolve('packages/mcp-plugin/src/index.ts');
 for (const protocol of ['legacy', '2026-07-28', 'auto']) test(`official SDK HTTP ${protocol} tools, refresh, known staleness and no effect retry`, { timeout: 30_000 }, async () => {
@@ -17,10 +16,10 @@ for (const protocol of ['legacy', '2026-07-28', 'auto']) test(`official SDK HTTP
   const execution = (callId: string) => ({ callId, signal: new AbortController().signal });
   try {
     await host.start(); assert.equal((await host.extensionSettings('remote'))?.status.state, 'connected');
-    const old = (await host.prepare()).find(item => item.tool.name === toolName('remote', 'echo'))!;
+    const old = (await host.prepare()).find(item => item.tool.name === 'echo')!;
     assert.match((await old.tool.execute({ text: 'hello' }, execution('echo'))).text, /hello/);
     if (protocol !== 'legacy') {
-      const structured = (await host.prepare()).find(item => item.tool.name === toolName('remote', 'structured'))!;
+      const structured = (await host.prepare()).find(item => item.tool.name === 'structured')!;
       for (const value of [0, false, null, '']) {
         const result = await structured.tool.execute({ value }, execution(`structured-${String(value)}`));
         assert.equal(result.text, JSON.stringify(value));
@@ -86,10 +85,10 @@ for (const protocol of ['legacy', '2026-07-28', 'auto']) test(`public request ga
     assert.equal(view?.status.state, 'connected');
     assert.match(JSON.stringify(view?.status.details), /HTTP header mapping/);
     const tools = await host.prepare();
-    assert.equal(tools.length, 3, 'Control plus normal tools from both pages remain available');
-    const echo = tools.find(item => item.tool.name === toolName('remote', 'echo'))!;
+    assert.deepEqual(tools.map(item => item.tool.name).sort(), ['echo', 'summary'], 'Original normal tool names from both pages remain available');
+    const echo = tools.find(item => item.tool.name === 'echo')!;
     assert.match((await echo.tool.execute({ text: 'safe' }, { callId: 'normal', signal: new AbortController().signal })).text, /safe/);
-    assert.ok(tools.some(item => item.tool.name === toolName('remote', 'summary')));
+    assert.ok(tools.some(item => item.tool.name === 'summary'));
     const operation = await host.startSettingsAction('remote', 'refresh', view!.revision);
     for (let attempt = 0; attempt < 100; attempt++) {
       const current = await host.extensionSettings('remote');

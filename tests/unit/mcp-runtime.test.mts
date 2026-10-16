@@ -6,7 +6,6 @@ import os from 'node:os';
 import { ExtensionHost } from '@mira/extension-host';
 import { createModelTransport, extensionTools } from '@mira/server';
 import { httpFixture } from '../fixtures/mcp/http.mts';
-import { toolName } from '../../packages/mcp-plugin/src/client.ts';
 import { assistant, input, MemoryWriter, runtime, streamOf } from '../recovery/fixtures.mts';
 for (const remoteTool of ['known_error', 'unknown_after_effect']) test(`real MCP ${remoteTool} preserves durable known/unknown boundary without replay`, { timeout: 30_000 }, async () => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-mcp-runtime-')));
@@ -19,7 +18,7 @@ for (const remoteTool of ['known_error', 'unknown_after_effect']) test(`real MCP
   try {
     await host.start();
     const instance = runtime(writer, (_model, context) => {
-      if (++requests === 1) return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'mcp-effect', name: toolName('mcp', remoteTool), arguments: {} }] });
+      if (++requests === 1) return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'mcp-effect', name: remoteTool, arguments: {} }] });
       if (remoteTool === 'known_error') {
         const result = context.messages.find(message => message.role === 'toolResult');
         assert.ok(result?.role === 'toolResult'); assert.equal(result.isError, true);
@@ -57,6 +56,8 @@ test('actual MCP summary and structured records both reach the official provider
     env: () => 'synthetic-key', fetch: async (_url, init) => {
       wireCalls++;
       const body = JSON.parse(String(init?.body));
+      assert.deepEqual(body.tools.map((tool: { function: { name: string } }) => tool.function.name).sort(), ['echo', 'structured', 'summary']);
+      assert.equal(body.messages.find((message: { tool_calls?: unknown[] }) => message.tool_calls)?.tool_calls[0].function.name, 'summary');
       const result = body.messages.find((message: { role: string }) => message.role === 'tool');
       assert.equal(result.content, 'Found one account\n{"accounts":[{"id":"acct-123","balance":42}]}');
       return new Response(`data: ${JSON.stringify({ id: 'synthetic-response', choices: [{ index: 0, delta: { role: 'assistant', content: 'Read both forms.' }, finish_reason: 'stop' }] })}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
@@ -65,7 +66,7 @@ test('actual MCP summary and structured records both reach the official provider
   try {
     await host.start();
     await runtime(writer, async (model, context, options) => {
-      if (++requests === 1) return streamOf({ ...assistant(), api: model.api, provider: model.provider, model: model.id, stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'mixed-result', name: toolName('wire', 'summary'), arguments: {} }] });
+      if (++requests === 1) return streamOf({ ...assistant(), api: model.api, provider: model.provider, model: model.id, stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'mixed-result', name: 'summary', arguments: {} }] });
       return transport.streamFn(model, context, options);
     }, { model: transport.model, prepareTools: async () => extensionTools(await host.prepare()), finishTools: () => host.finish() }).run(input('Inspect synthetic account records'));
     assert.equal(wireCalls, 1); assert.equal(fixture.calls.length, 1);
