@@ -381,7 +381,7 @@ test('ended processes retain capacity and handles until their accepted logs fini
     } });
     try {
       const slow = await manager.exec(owner, { command: 'printf slow', yield_ms: 0 });
-      await manager.exec(owner, { command: mode === 'capacity' ? 'printf slow' : 'printf fast', yield_ms: 0 });
+      const second = await manager.exec(owner, { command: mode === 'capacity' ? 'printf slow' : 'printf fast', yield_ms: 0 });
       const deadline = Date.now() + 5000;
       while (manager.list(owner).some(session => session.status === 'running')) { assert.ok(Date.now() < deadline); await delay(10); }
       assert.equal(manager.list(owner).find(session => session.session_id === slow.session_id)?.output_pending, true);
@@ -389,6 +389,10 @@ test('ended processes retain capacity and handles until their accepted logs fini
       assert.equal(pending.output, ''); assert.equal(pending.output_pending, true); assert.equal(pending.has_more, true);
       if (mode === 'capacity') await assert.rejects(manager.exec(owner, { command: 'printf extra', yield_ms: 0 }), /capacity/);
       else {
+        // Process exit can precede log persistence; only a fully drained handle is evictable.
+        const fast = await drain(manager, second);
+        assert.equal(fast.output, 'fast'); assert.equal(fast.result.status, 'exited');
+        assert.equal(fast.result.output_pending, false);
         await manager.exec(owner, { command: 'printf next', yield_ms: 0 });
         assert.ok(manager.list(owner).some(session => session.session_id === slow.session_id), 'draining handle must not be evicted');
       }
