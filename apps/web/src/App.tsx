@@ -10,9 +10,9 @@ import { ArrowUp, ChevronDown, SettingsIcon } from './icons.tsx';
 import { SettingsDialog } from './SettingsDialog.tsx';
 import { createMemoryRequest, readMemoryRequest, recoverMemoryRequest, writeMemoryRequest } from './management.ts';
 import type { MemoryRequestIdentity } from './management.ts';
-import { latestPagination, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
+import { confirmsPending, replySnippet, timelineSpacing, latestPagination, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
 import type { HistoryPagination, HistoryRequest } from './timeline.ts';
-import type { Attachment, MessageEnvelope, PendingMessage, ServerStatus, TimelineItem, TimelinePage } from './types.ts';
+import type { Attachment, MessageEnvelope, PendingMessage, ReplyReference, ServerStatus, TimelineItem, TimelinePage } from './types.ts';
 
 const timeFormat = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' });
 function timeLabel(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? '' : timeFormat.format(date); }
@@ -54,6 +54,11 @@ export function App() {
   const previewFocusRef = useRef<HTMLElement | null>(null);
   const [dragging, setDragging] = useState(false);
   const [composer, setComposer] = useState('');
+  const [replyTarget, setReplyTarget] = useState<ReplyReference | null>(null);
+  const [quoteSearch, setQuoteSearch] = useState(false);
+  const [quoteNotice, setQuoteNotice] = useState<string | null>(null);
+  const quoteAbortRef = useRef<AbortController | null>(null);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
   const [composerError, setComposerError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [nearBottom, setNearBottom] = useState(true);
@@ -142,7 +147,7 @@ export function App() {
     document.addEventListener('visibilitychange', polling.visibilityChanged);
     return () => {
       polling.stop(); pollingRef.current = null;
-      activeRef.current = false; controller.abort(); postAbortRef.current?.abort();
+      activeRef.current = false; controller.abort(); postAbortRef.current?.abort(); quoteAbortRef.current?.abort();
       inFlightRef.current = null;
       document.removeEventListener('visibilitychange', polling.visibilityChanged);
     };
@@ -202,11 +207,11 @@ export function App() {
         const page = await api<TimelinePage>('/api/timeline', { signal: controller.signal });
         if (!activeRef.current) return;
         acceptPage(page);
-        if (itemsRef.current.some(item => item.role === 'user' && item.externalEventId === envelope.id)) return;
+        if (itemsRef.current.some(item => confirmsPending(envelope, item))) return;
       }
       if (!updatePending(current => [...current.filter(message => message.id !== envelope.id), { ...envelope, state: 'sending' }], true)) return;
       if (fromMemory) writeMemoryRequest(window.sessionStorage, envelope);
-      if (!retry && !fromMemory) { setComposer(''); attachments.clear(); }
+      if (!retry && !fromMemory) { setComposer(''); setReplyTarget(null); attachments.clear(); }
       const receipt = await api<{ id: string; receipt: 'inserted' | 'duplicate' }>('/api/messages', { method: 'POST', body: JSON.stringify(envelope), signal: controller.signal });
       if (!activeRef.current) return;
       if (receipt.id !== envelope.id || !['inserted', 'duplicate'].includes(receipt.receipt)) throw new Error('无法确认服务端的接收回执');
@@ -235,7 +240,7 @@ export function App() {
     event?.preventDefault();
     const text = composer.trim();
     if ((!text && !attachments.drafts.length) || !attachments.ready || sendingRef.current || recovered.error) return;
-    const envelope: MessageEnvelope = { id: browserUuid(), text, occurredAt: new Date().toISOString(), ...(attachments.attachments.length ? { attachmentIds: attachments.attachments.map(item => item.id) } : {}) };
+    const envelope: MessageEnvelope = { ...(replyTarget ? { replyToMessageId: replyTarget.messageId } : {}), id: browserUuid(), text, occurredAt: new Date().toISOString(), ...(attachments.attachments.length ? { attachmentIds: attachments.attachments.map(item => item.id) } : {}) };
     if (new TextEncoder().encode(JSON.stringify(envelope)).byteLength > 65_536) { setComposerError('消息太长，请缩短后再发送（上限约 64 KB）'); return; }
     setComposerError(null);
     scrollToLatest();
@@ -267,7 +272,50 @@ export function App() {
   };
   const stateLabel = connectionError ? '连接中断' : !status ? '正在连接' : ({ idle: '在这里', working: '正在处理', error: '需要留意', stopped: '已停止' } as const)[status.state];
   const showEmpty = !loading && !items.length && !pending.length && !connectionError;
-  let lastDate = '';
+  const beginReply = (item: TimelineItem) => {
+    if (item.role !== 'assistant' || sendingRef.current) return;
+    setReplyTarget({ messageId: item.id, role: item.role, text: item.text, ...(item.attachments?.length ? { attachmentNames: item.attachments.map(file => file.name) } : {}), ...(item.source ? { source: item.source } : {}) });
+    textareaRef.current?.focus();
+  };
+  const jumpToReply = async (messageId: string) => {
+    quoteAbortRef.current?.abort();
+    setQuoteNotice(null);
+    const reveal = () => {
+      const target = [...scrollRef.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? []].find(element => element.dataset['messageId'] === messageId);
+      if (!target) return false;
+      nearBottomRef.current = false; setNearBottom(false);
+      target.scrollIntoView({ block: 'center', behavior: 'instant' }); target.focus({ preventScroll: true }); setHighlightId(messageId);
+      return true;
+    };
+    if (reveal()) return;
+    if (olderBusyRef.current) { setQuoteNotice('历史消息正在读取，请稍后再点引用。'); return; }
+    const controller = new AbortController(); quoteAbortRef.current = controller;
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    olderBusyRef.current = true; setLoadingOlder(true); setQuoteSearch(true);
+    nearBottomRef.current = false;
+    const cursors = new Set<string>();
+    try {
+      for (let pageCount = 0; pageCount < 8; pageCount++) {
+        const request = nextHistoryRequest(paginationRef.current);
+        if (!request || cursors.has(request.cursor)) break;
+        cursors.add(request.cursor);
+        const page = await api<TimelinePage>('/api/timeline', { method: 'POST', body: JSON.stringify({ before: request.cursor }), signal: controller.signal });
+        if (!activeRef.current || controller.signal.aborted) return;
+        acceptPage(page, request);
+        // Wait for React's DOM commit, including the normal prepend anchor correction.
+        await new Promise<void>(resolve => { const timer = setTimeout(resolve, 50); requestAnimationFrame(() => { clearTimeout(timer); resolve(); }); });
+        if (controller.signal.aborted) { setQuoteNotice('查找已停止，引用内容仍保留。'); return; }
+        if (reveal()) return;
+      }
+      setQuoteNotice('暂未找到原消息。可以继续查看更早的消息，再点引用。');
+    } catch (error) {
+      if (activeRef.current) setQuoteNotice(isAbort(error) ? '查找已停止，引用内容仍保留。' : '暂时无法读取原消息，请稍后重试。');
+    } finally {
+      clearTimeout(timeout); olderBusyRef.current = false;
+      if (quoteAbortRef.current === controller) quoteAbortRef.current = null;
+      if (activeRef.current) { setQuoteSearch(false); setLoadingOlder(false); }
+    }
+  };
 
   return <>
     <div className="mira-app" inert={settingsOpen || !!preview}>
@@ -288,26 +336,35 @@ export function App() {
           {nextCursor && <div className="history-controls"><button className="text-button" onClick={() => { void loadOlder(); }} disabled={loadingOlder}>{loadingOlder ? '正在读取…' : hasHistoryGap ? '补齐尚未读取的消息' : '查看更早的消息'}</button>{hasHistoryGap && <p className="history-gap-note">有一段消息尚未读取，点击后可继续补齐</p>}{olderError && <p className="inline-error" role="alert">{olderError}</p>}</div>}
           {showEmpty && <div className="empty-state"><span className="eyebrow">每一句，都会留在这里</span><h2>和 Mira 说点什么</h2><p>一个想法、一件小事，或今天的心情。</p><p className="empty-note">从这里开始，慢慢聊。</p></div>}
           <div className="message-list" role="log" aria-live="polite" aria-relevant="additions text" aria-label="消息">
-            {items.map(item => {
-              const date = dateLabel(item.occurredAt); const showDate = date !== lastDate; lastDate = date;
-              return <div key={item.id}>
-                {showDate && <p className="date-divider">{date}</p>}
-                <article data-message-id={item.id} className={`message-row ${item.role}`} aria-label={item.source ? `${item.source.label} 扩展消息` : item.role === 'user' ? '你的消息' : item.role === 'assistant' ? 'Mira 的消息' : '服务通知'}>
+            {items.map((item, index) => {
+              const spacing = timelineSpacing(items[index - 1], item);
+              return <div key={item.id} className={`message-group ${spacing.compact ? 'compact' : ''}`}>
+                {spacing.divider && <p className="date-divider">{dateLabel(item.occurredAt)} {timeLabel(item.occurredAt)}</p>}
+                <article tabIndex={0} data-message-id={item.id} className={`message-row ${item.role} ${highlightId === item.id ? 'quote-highlight' : ''}`} aria-label={item.source ? `${item.source.label} 扩展消息` : item.role === 'user' ? '你的消息' : item.role === 'assistant' ? 'Mira 的消息' : '服务通知'}>
+                  {item.reply && <button type="button" className="reply-quote" aria-label="查看引用的消息" title={replySnippet(item.reply)} disabled={quoteSearch} onClick={() => { void jumpToReply(item.reply!.messageId); }}><span aria-hidden="true">↪</span><span>{replySnippet(item.reply)}</span></button>}
+                  <div className="message-content-line">
+                  <div className="message-payload">
                   {item.text && <div className="message-bubble">{item.text}</div>}
                   {!!item.attachments?.length && <AttachmentList attachments={item.attachments} onPreview={openPreview} />}
+                  </div>
+                  <div className="message-side">
+                  {item.role === 'assistant' && <button className="reply-action" type="button" aria-label="回复这条消息" title="回复这条消息" disabled={sending} onClick={() => beginReply(item)}>↩</button>}
                   <div className="message-meta">
-                  {item.source && <span className="message-source" title={`扩展 ${item.source.extensionId}${item.source.senderId ? ` · 来源身份 ${item.source.senderId}${item.source.senderVerified ? '（由扩展验证）' : ''}` : ''}`}>{item.source.label} · {item.source.extensionId} · {item.source.direction === 'inbound' ? '收到' : '已发送'}</span>}
+                  {item.source && <span className="message-source" title={`${item.source.label} · ${item.source.direction === 'inbound' ? '收到' : '已发送'} · 扩展 ${item.source.extensionId}${item.source.senderId ? ` · 来源身份 ${item.source.senderId}${item.source.senderVerified ? '（由扩展验证）' : ''}` : ''}`}>{item.source.label} · {item.source.extensionId} · {item.source.direction === 'inbound' ? '收到' : '已发送'}</span>}
                   <time className="message-time" dateTime={item.occurredAt}>{timeLabel(item.occurredAt)}</time>
+                  </div>
+                  </div>
                   </div>
                 </article>
               </div>;
             })}
             {pending.map(message => <article className="message-row user pending-message" key={message.id} aria-label="待确认的消息">
+              {message.replyToMessageId && <p className="reply-quote pending-quote"><span aria-hidden="true">↪</span><span>{(() => { const target = items.find(item => item.id === message.replyToMessageId); return target ? replySnippet({ messageId: target.id, role: 'assistant', text: target.text, attachmentNames: target.attachments?.map(file => file.name) ?? [] }) : '回复原消息'; })()}</span></p>}
               {message.text && <div className="message-bubble">{message.text}</div>}
               {!!message.attachmentIds?.length && <p className="pending-attachments">{message.attachmentIds.length} 个附件 · 已保留，等待消息确认</p>}
               <div className={`message-receipt ${message.state === 'uncertain' ? 'uncertain' : ''}`}>
                 {message.state === 'sending' ? '正在发送…' : message.state === 'queued' ? '已接收 · 等待处理' : '接收结果待确认'}
-                {message.state === 'uncertain' && <button className="text-button" disabled={sending} onClick={() => { void sendEnvelope({ id: message.id, text: message.text, occurredAt: message.occurredAt, ...(message.attachmentIds !== undefined ? { attachmentIds: [...message.attachmentIds] } : {}) }, true); }}>核对并重试</button>}
+                {message.state === 'uncertain' && <button className="text-button" disabled={sending} onClick={() => { void sendEnvelope({ id: message.id, text: message.text, occurredAt: message.occurredAt, ...(message.replyToMessageId ? { replyToMessageId: message.replyToMessageId } : {}), ...(message.attachmentIds !== undefined ? { attachmentIds: [...message.attachmentIds] } : {}) }, true); }}>核对并重试</button>}
               </div>
               {message.state === 'uncertain' && <p className="pending-help">{message.error ?? '刷新前的发送尚未确认'}。不会自动重发</p>}
             </article>)}
@@ -317,7 +374,9 @@ export function App() {
       </main>
 
       <footer className="composer-section">
+        {(quoteSearch || quoteNotice) && <p className="quote-search-status" role="status">{quoteSearch ? '正在查找引用消息…' : quoteNotice}{quoteSearch && <button type="button" className="text-button" onClick={() => quoteAbortRef.current?.abort()}>取消查找</button>}</p>}
         {!nearBottom && <button className="latest-button" type="button" onClick={scrollToLatest}><ChevronDown />回到最新消息</button>}
+        {replyTarget && <div className="composer-reply" aria-label="回复预览"><span aria-hidden="true">↪</span><span className="composer-reply-text"><strong>回复 {replyTarget.source?.label ?? 'Mira'}</strong><span>{replySnippet(replyTarget)}</span></span><button type="button" aria-label="取消回复" title="取消回复" onClick={() => { setReplyTarget(null); textareaRef.current?.focus(); }}>×</button></div>}
         <form className={`composer ${composer.includes('\n') || attachments.drafts.length ? 'expanded' : ''} ${dragging ? 'dragging' : ''}`} onSubmit={submit}
           onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDragging(true); } }}
           onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }}

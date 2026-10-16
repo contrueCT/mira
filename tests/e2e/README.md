@@ -39,3 +39,9 @@ fresh-process PG crash tests or establish live-provider behavior.
 `pnpm test:feishu:e2e` joins the official Feishu SDK HTTP/WS fixtures, generic extension settings/QR/owner pairing, real PostgreSQL Event/Wake, model tool execution, restart deduplication and Web Timeline. It captures desktop/narrow QR and sourced-message screenshots, including a non-Feishu ordinary plugin. Only transport/model fixtures are synthetic; it never creates a real app, grants permissions or uses live credentials. Missing PostgreSQL/browser support fails this gate rather than claiming a live Feishu test.
 
 扩展设置的通用动作分组分别由 HTTP fixture 与真实管理链路覆盖。未标组和 primary 动作直接显示，secondary 与编辑入口置于默认收起的“更多操作”；折叠不隐藏取消。真实 settings-fixture 扩展通过 visibleActions 在连接、断开和 pending 间切换，走真实 Host 过滤、HTTP 与浏览器；桌面收起态和窄屏展开态截图保留在 management-real 的 CI 产物中。fixture 另测键盘展开、编辑中折叠、关闭/返回清空草稿、重复启动、重开取消和未知结果核对。
+
+`pnpm test:replies:e2e` runs the reply acceptance chain through real Chromium,
+HTTP, PostgreSQL and the production runtime. Only model output is scripted.
+It requires the same isolated `MIRA_TEST_DATABASE_URL` and installed browser;
+missing services fail rather than skip. Synthetic desktop/narrow screenshots
+are written beneath `test-results/replies-real/`, never committed as source.

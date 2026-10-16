@@ -6,7 +6,7 @@ test('desktop and narrow layouts render the single Mira timeline without console
   await expect(page.getByText('Mira，我们从这里开始吧', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '模型设置', exact: true })).toBeVisible();
   await expect(page.getByLabel('给 Mira 发消息', { exact: true })).toBeVisible();
-  await expect(page.locator('.mira-app button')).toHaveCount(3); // Existing gear/send plus the approved attachment picker; no new management entry.
+  await expect(page.locator('.settings-button')).toHaveCount(1); // Reply actions remain local to messages, not a new management entry.
   await expect(page.getByRole('tab')).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath('mira-desktop.png'), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -959,4 +959,152 @@ test('generic extension actions default to primary, collapse secondary controls 
   await expect(connect).toBeEnabled(); expect(starts).toBe(2);
   expect(await page.evaluate(() => JSON.stringify([localStorage, sessionStorage]))).not.toContain('generic-draft');
   expect(errors).toEqual([]);
+});
+
+test('reply preview cancels and exact pending target survives reload and retry', async ({ page }, testInfo) => {
+  const target = '11111111-1111-4111-8111-111111111111';
+  const posts: Record<string, unknown>[] = [];
+  await page.route('**/api/timeline', route => route.fulfill({ json: { items: [
+    { id: target, role: 'assistant', text: '这是一条可以引用的合成消息，保留附近对话的紧凑间距。', occurredAt: '2026-10-16T03:00:00Z' },
+    { id: '22222222-2222-4222-8222-222222222222', role: 'assistant', text: '这里是五分钟以内的第二条消息。', occurredAt: '2026-10-16T03:05:00Z' },
+    { id: '33333333-3333-4333-8333-333333333333', role: 'user', text: '引用可以跳回原消息。', occurredAt: '2026-10-16T03:10:01Z', reply: { messageId: target, role: 'assistant', text: '这是一条可以引用的合成消息，保留附近对话的紧凑间距。' } },
+  ], nextCursor: null } }));
+  await page.route('**/api/messages', async route => { posts.push(route.request().postDataJSON() as Record<string, unknown>); await route.abort(); });
+  await page.setViewportSize({ width: 1200, height: 850 }); await page.goto('/');
+  const row = page.locator(`[data-message-id="${target}"]`);
+  await expect(page.locator('.date-divider')).toHaveCount(2);
+  await expect(page.locator('.message-group.compact')).toHaveCount(1);
+  await expect(row.locator('.message-meta')).toHaveCSS('opacity', '0');
+  await row.hover(); await expect(row.locator('.message-meta')).toHaveCSS('opacity', '1');
+  await row.getByRole('button', { name: '回复这条消息' }).focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByLabel('回复预览')).toBeVisible();
+  await page.getByRole('button', { name: '取消回复' }).click();
+  await expect(page.getByLabel('回复预览')).toHaveCount(0);
+  await page.getByRole('button', { name: '查看引用的消息' }).click();
+  await expect(row).toBeFocused();
+  await row.getByRole('button', { name: '回复这条消息' }).click();
+  await page.getByLabel('给 Mira 发消息', { exact: true }).fill('有针对性的合成回复');
+  await page.screenshot({ path: testInfo.outputPath('reply-desktop.png'), fullPage: true });
+  await page.getByRole('button', { name: '发送消息', exact: true }).click();
+  await expect(page.getByRole('button', { name: '核对并重试' })).toBeVisible();
+  expect(posts[0]?.['replyToMessageId']).toBe(target); expect(posts[0]?.['reply']).toBeUndefined();
+  await page.reload();
+  await page.getByRole('button', { name: '核对并重试' }).click();
+  await expect.poll(() => posts.length).toBe(2); expect(posts[1]).toEqual(posts[0]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByText('有针对性的合成回复', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('reply-narrow.png'), fullPage: true });
+});
+
+test('quote navigation pages safely, has cancellation and preserves unavailable quote text', async ({ page }) => {
+  const target = '11111111-1111-4111-8111-111111111111';
+  let reads = 0;
+  await page.route('**/api/timeline', async route => {
+    if (route.request().method() === 'POST') { reads++; await route.fulfill({ json: { items: [], nextCursor: `older-${reads}` } }); return; }
+    await route.fulfill({ json: { items: [{ id: '22222222-2222-4222-8222-222222222222', role: 'user', text: '合成回复', occurredAt: '2026-10-16T03:00:00Z', reply: { messageId: target, role: 'assistant', text: '仍可读的引用内容' } }], nextCursor: 'older-0' } });
+  });
+  await page.goto('/'); await page.getByRole('button', { name: '查看引用的消息' }).click();
+  await expect(page.getByText('暂未找到原消息。可以继续查看更早的消息，再点引用。')).toBeVisible();
+  expect(reads).toBe(8); await expect(page.getByText('仍可读的引用内容', { exact: true })).toBeVisible();
+  await page.route('**/api/timeline', async route => {
+    if (route.request().method() === 'POST') { await new Promise(resolve => setTimeout(resolve, 1_000)); await route.fulfill({ json: { items: [], nextCursor: 'later' } }).catch(() => {}); return; }
+    await route.fallback();
+  });
+  await page.getByRole('button', { name: '查看引用的消息' }).click();
+  await page.getByRole('button', { name: '取消查找' }).click();
+  await expect(page.getByText('查找已停止，引用内容仍保留。')).toBeVisible();
+});
+
+test('touch viewport exposes a usable reply action without hover', async ({ browser }) => {
+  const context = await browser.newContext({ baseURL: 'http://127.0.0.1:3211', viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  await page.goto('/');
+  const reply = page.getByRole('button', { name: '回复这条消息' }).first();
+  await expect(reply).toHaveCSS('opacity', '1'); await reply.tap();
+  await expect(page.getByLabel('回复预览')).toBeVisible();
+  await page.getByRole('button', { name: '取消回复' }).tap();
+  await expect(page.getByLabel('回复预览')).toHaveCount(0);
+  await context.close();
+});
+
+test('quote navigation finds an older page and focuses the original message', async ({ page }) => {
+  const target = '11111111-1111-4111-8111-111111111111';
+  let reads = 0;
+  await page.route('**/api/timeline', route => {
+    if (route.request().method() === 'POST') { reads++; return route.fulfill({ json: { items: [{ id: target, role: 'assistant', text: '分页中的原消息', occurredAt: '2026-10-15T03:00:00Z' }], nextCursor: null } }); }
+    return route.fulfill({ json: { items: [{ id: '22222222-2222-4222-8222-222222222222', role: 'user', text: '合成回复', occurredAt: '2026-10-16T03:00:00Z', reply: { messageId: target, role: 'assistant', text: '分页中的原消息' } }], nextCursor: 'older' } });
+  });
+  await page.goto('/'); await page.getByRole('button', { name: '查看引用的消息' }).click();
+  await expect(page.locator(`[data-message-id="${target}"]`)).toBeFocused();
+  expect(reads).toBe(1);
+  await expect(page.getByRole('button', { name: '取消查找' })).toHaveCount(0);
+});
+
+test('quote navigation stops on a repeated cursor and retains the quote after a failed page', async ({ page }) => {
+  const target = '11111111-1111-4111-8111-111111111111';
+  let reads = 0; let failPage = false;
+  await page.route('**/api/timeline', async route => {
+    if (route.request().method() === 'POST') {
+      reads++;
+      if (failPage) { await route.fulfill({ status: 503, json: { error: 'synthetic unavailable' } }); return; }
+      const request = route.request().postDataJSON() as { before: string };
+      await route.fulfill({ json: { items: [], nextCursor: request.before } }); return;
+    }
+    await route.fulfill({ json: { items: [{ id: '22222222-2222-4222-8222-222222222222', role: 'user', text: '合成回复', occurredAt: '2026-10-16T03:00:00Z', reply: { messageId: target, role: 'assistant', text: '失败后仍然保留的引用' } }], nextCursor: 'unchanged-cursor' } });
+  });
+  await page.goto('/');
+  const quote = page.getByRole('button', { name: '查看引用的消息' });
+  await quote.click();
+  await expect(page.getByText('暂未找到原消息。可以继续查看更早的消息，再点引用。')).toBeVisible();
+  expect(reads).toBe(1);
+  await expect(quote).toBeEnabled();
+  await expect(page.getByRole('button', { name: '取消查找' })).toHaveCount(0);
+  failPage = true;
+  await quote.click();
+  await expect(page.getByText('暂时无法读取原消息，请稍后重试。')).toBeVisible();
+  expect(reads).toBe(2);
+  await expect(page.getByText('失败后仍然保留的引用', { exact: true })).toBeVisible();
+  await expect(quote).toBeEnabled();
+  await expect(page.getByRole('button', { name: '取消查找' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '查看更早的消息' })).toBeEnabled();
+});
+
+test('reply timeline keeps message sides and centered dividers on desktop and narrow screens', async ({ page }) => {
+  const target = '11111111-1111-4111-8111-111111111111';
+  await page.route('**/api/timeline', route => route.fulfill({ json: { items: [
+    { id: target, role: 'assistant', text: '左侧合成消息', occurredAt: '2026-10-16T03:00:00Z' },
+    { id: '22222222-2222-4222-8222-222222222222', role: 'user', text: '右侧合成回复', occurredAt: '2026-10-16T03:01:00Z', reply: { messageId: target, role: 'assistant', text: '左侧合成消息' } },
+    { id: '33333333-3333-4333-8333-333333333333', role: 'notice', text: '居中的合成通知', occurredAt: '2026-10-16T03:02:00Z' },
+  ], nextCursor: null } }));
+  await page.addInitScript(() => sessionStorage.setItem('mira.pending-messages.v1', JSON.stringify([{ id: '44444444-4444-4444-8444-444444444444', text: '右侧待确认消息', occurredAt: '2026-10-16T03:03:00Z', replyToMessageId: '11111111-1111-4111-8111-111111111111', state: 'uncertain' }])));
+  await page.goto('/');
+  for (const viewport of [{ width: 1200, height: 850 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    const assistant = page.locator('.message-row.assistant');
+    const user = page.locator('.message-row.user:not(.pending-message)');
+    const pending = page.locator('.pending-message');
+    const notice = page.locator('.message-row.notice');
+    await expect(assistant).toHaveCSS('display', 'flex');
+    await expect(assistant).toHaveCSS('flex-direction', 'column');
+    await expect(assistant).toHaveCSS('align-items', 'flex-start');
+    await expect(user).toHaveCSS('align-items', 'flex-end');
+    await expect(pending).toHaveCSS('align-items', 'flex-end');
+    await expect(notice).toHaveCSS('align-items', 'center');
+    await expect(page.locator('.date-divider')).toHaveCSS('text-align', 'center');
+    await expect(page.locator('.date-divider')).toHaveCSS('color', 'rgb(166, 167, 174)');
+    const a = (await assistant.boundingBox())!; const ab = (await assistant.locator('.message-bubble').boundingBox())!;
+    const u = (await user.boundingBox())!; const ub = (await user.locator('.message-bubble').boundingBox())!; const uq = (await user.locator('.reply-quote').boundingBox())!;
+    const p = (await pending.boundingBox())!; const pb = (await pending.locator('.message-bubble').boundingBox())!; const pq = (await pending.locator('.reply-quote').boundingBox())!;
+    const n = (await notice.boundingBox())!; const nb = (await notice.locator('.message-bubble').boundingBox())!;
+    expect(Math.abs(ab.x - a.x)).toBeLessThan(2);
+    expect(Math.abs(ub.x + ub.width - u.x - u.width)).toBeLessThan(2);
+    expect(Math.abs(uq.x + uq.width - ub.x - ub.width)).toBeLessThan(2);
+    expect(uq.y + uq.height).toBeLessThanOrEqual(ub.y + 1);
+    expect(Math.abs(pb.x + pb.width - p.x - p.width)).toBeLessThan(2);
+    expect(pq.y + pq.height).toBeLessThanOrEqual(pb.y + 1);
+    expect(Math.abs(nb.x + nb.width / 2 - n.x - n.width / 2)).toBeLessThan(2);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  }
 });

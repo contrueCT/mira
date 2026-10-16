@@ -83,3 +83,5 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 - [0039 — Parent-to-child live followups](0039-live-child-followups.md): accepted scope; implementation under verification. Separate task inbox and child transcript boundary, no main Wake ownership.
 - [0035 扩展私有凭据与声明式设置](0035-extension-private-settings.md)：Accepted，2026-10-15；手工/生成扩展共用安装命名空间、私有凭据、纯文本字段/动作/状态与本地授权二维码。
 - [0036 飞书本人单聊扩展](0036-feishu-owner-channel.md)：已批准普通 Cordis 扩展，使用通用设置/凭据和既有安装生命周期；固定官方 SDK、显式本人绑定、持久收件与未知投递保护，真实租户联通未执行。
+
+- [0043：紧凑时间线与双向指定消息回复](0043-message-replies-timeline.md)：2026-10-16 授权实现；稳定 History 引用、有界服务端快照、主 Mira 显式发布及紧凑浅色聊天 UI。

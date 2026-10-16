@@ -73,3 +73,12 @@ clear is explicit. Cancel/close clears drafts. Pending actions survive closing t
 window and can be cancelled after reopening. Unknown writes require rereading before
 another attempt. HTTPS authorization QR codes use pinned `qrcode-generator` locally;
 no external QR service receives the link.
+
+
+### 消息分组与回复
+
+相邻同角色、同来源消息紧凑排列；首条、间隔严格超过五分钟或本地日期变化时居中显示日期和时间。时间与扩展来源在气泡外侧随悬停或键盘焦点显示。Mira 消息有可聚焦的回复按钮，触屏始终可见；正文上方显示带弯箭头的单行引用，不增加反应、已读状态或常驻工具栏。
+
+选择回复会在输入框上方显示可取消预览；发送仅提交 `replyToMessageId`，由服务端验证目标并生成快照。附件和回复 ID 与原始幂等信封一起保留到确认，刷新不会自动重发。点击引用可跳至原消息；未加载时按现有历史分页最多读 8 页、等待 15 秒，可随时取消。找不到时保留引用内容并提示继续手动读取历史。
+
+浏览器合成测试位于 `tests/e2e/web.spec.ts`，覆盖悬停/焦点、触屏、取消、提交、刷新重试和有界引用查找；这些 fixture 不代表真实数据库链路通过。

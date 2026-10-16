@@ -198,3 +198,23 @@ validated declarative fields, configured booleans and explicitly public status.
 No secret read endpoint or model credential-write tool exists. Actions return pending
 receipts and are checked with exact settings revisions; polling observes completion.
 Existing extension lifecycle/configuration remains authoritative. See ADR 0035.
+
+### Timeline replies
+
+`POST /api/messages` accepts optional `replyToMessageId`, a canonical History UUID.
+The server resolves a bounded quote from the same Mira's public main Timeline;
+client-supplied quote text is rejected. User/assistant text messages, attachment
+publications and generic extension messages can be targets. Notices, internal
+records and child streams cannot. The frozen reference is part of the immutable
+Event/live-input payload. New Web events identify input format version 1; old
+unversioned envelopes keep their exact persisted rendering and retry format. Thus retrying a receipt with a different target conflicts.
+
+Main-runtime `send_reply({ replyToMessageId, text, attachmentIds? })` publishes one
+assistant message only after its successful tool outcome is durable. It uses the
+tool History UUID as the Timeline identity, survives restart without replay, and
+never sends to third-party channels. Attached IDs must already exist in the
+immutable attachment store. Reply snapshots contain at most 500 Unicode code
+points, ten attachment display names and whitelisted source metadata; they expose
+no file paths. Quoted source content is not an instruction or grant of permission.
+The model sees canonical IDs and deterministic reply metadata through recovery
+and compaction, with ordinary History lookup for omitted originals.

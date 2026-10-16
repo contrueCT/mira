@@ -37,6 +37,8 @@
     "dist",
     "packages/runtime-pi",
     "tests/unit/runtime.test.mts",
+    "tests/unit/replies.test.mts",
+    "tests/unit/reply-context.test.mts",
     "apps/server",
     "tests/unit/wake-runtime.test.mts",
     "tests/unit/server-demo.test.mts",

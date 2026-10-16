@@ -103,3 +103,5 @@ pnpm check
 
 
 - ADR 0035 的动作 group/visibleActions 仅为通用展示与可用性契约，业务状态映射归插件；HTTP/handle 同 runner 校验，系统层不含 provider 分支。
+
+- [ADR 0043](docs/adr/0043-message-replies-timeline.md)：主 Timeline 紧凑时间分组及双向 History-ID 回复；引用是服务端验证的有界数据快照，不升级权限，子任务不发布主聊天回复。真实浏览器门禁 `test:replies:e2e` 与合成 UI/离线测试分开。

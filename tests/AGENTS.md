@@ -47,3 +47,5 @@ ADR 0007 回归直接工具调用与模型普通澄清，保留 schema/参数、
 - 浏览器 native socket 合约由 run-tests 的 MIRA_TEST_REQUIRE_HOST_SOCKETS 标记在 CI 禁止跳过；该 test-only 标记不传 native 环境，不透传会改变 sandbox 行为的 CI。
 - ADR 0039: task-live-input offline Pi and task-live-runtime/task-live-persistence real PG gates cover ordered parent input, single-tool/model yield, final admission, lost acknowledgements, terminal receipts and task ownership. Existing task summary cancellation tests remain mandatory; mocks cannot establish cross-connection lock correctness.
 - 扩展私有设置：extension-settings.test.mts验证真实Cordis/文件生命周期；management-real.spec.ts增加真实PG/HTTP/浏览器设置和二维码截图。离线通过不代表真实外部认证。
+
+- ADR0043：replies 的离线边界、真实PG/recovery与 `test:replies:e2e` 分开报告；验证双向 canonical History 引用、插话/压缩/重启、子任务隔离、旧待确认请求幂等和真实桌面/触屏布局。引用文字是数据，不能构成权限；私人参考图不进源码。

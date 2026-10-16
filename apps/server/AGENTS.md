@@ -46,3 +46,5 @@
 
 - ADR 0034：browser-manager/driver/tools 负责受管 daemon、owner 与命令队列；显式路径优先，其次发现服务 miraHome/tools 标准安装，无自动下载；browser-http 只代理登记的 loopback stream，独立严格 WebSocket 鉴权与一次票据。人工输入/帧不进历史；注销/改密/关闭撤销。
 - ADR0035：扩展私有设置路由复用全部Web鉴权，secret仅写入；模型工具不暴露settings status/授权链接/凭据。异常文字脱敏但保留unknown-outcome恢复语义。
+
+- Timeline replies: `replies.ts` resolves only same-Mira public main messages by canonical History UUID. Browser submits only `replyToMessageId`; frozen quote/source joins immutable Event/live input. Main-only `send_reply` publishes through successful durable tool outcome, never a channel send or mutable next-response flag. Both Timeline HTTP routes whitelist `reply`; child/internal/notice records remain unavailable as targets.

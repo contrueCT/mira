@@ -156,7 +156,11 @@ test('actual Pi parent continues while isolated child runs; asynchronous result 
   try {
     const t = transport(stream); const runtime = new PiDurableRuntime({ writer: f.parent, ...t, tools: createSubagentTools(f.manager, t) });
     await runtime.run(input('Delegate research and continue'));
-    assert.equal(mainCalls, 2); assert.equal(childCalls, 1);
+    assert.equal(mainCalls, 2);
+    // Spawn schedules an independent child; parent completion need not wait for
+    // the child to reach its provider. Wait for that observable boundary only.
+    await until(() => childCalls === 1);
+    assert.equal(childCalls, 1);
     const parentState = await f.parent.load(); const child = f.parent.children[0]!;
     assert.equal(child.spec.fork.mode, 'none'); assert.equal(child.spec.fork.bytes, 0);
     release.resolve(); await until(() => child.turns[0]!.status === 'completed');

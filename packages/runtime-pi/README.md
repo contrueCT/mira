@@ -554,3 +554,30 @@ revision before provider execution using the existing frozen Memory. Recovery
 never rewrites history or reloads Memory, and compaction preserves the preceding
 template identity. A new process uses the new prompt on its first normal main
 request; editing source files does not hot-reload an already running process.
+
+## Quoted message replies
+
+Versioned Web inputs persist `miraReplySources` and `miraReplies` for original
+Wake and ordered live inputs. Recovery validates the metadata against each
+immutable source event, including finalized links. Successful `send_reply`
+results retain strict `reply-publication` details and attachment references;
+server tool text renders the quote for actual provider requests. No assistant
+signed content is rewritten to add IDs.
+
+Main compaction adds a deterministic `miraReplyIndex` ordinary-file pointer and
+a fixed notice, independently of the summary model. Line-pageable index nodes
+retain bounded source snapshots, original roles, source attribution, explicit
+reply links and the prior node pointer. Tool publications are identified by
+provider call ID plus their containing transcript History ID, never by falsely
+using that container UUID as the public tool-operation Timeline ID. Recovery
+reconstructs missing index nodes from persisted records and prior pointers;
+conflicting paths, bytes or notices fail closed. Summary requests keep metadata
+counts rather than reinflating large offloaded batches. Task compaction does not
+create main Timeline reply indexes.
+
+Offline `tests/unit/reply-context.test.mts` covers original/live/restart,
+pre-feature byte preservation, Unicode bounds, repeated compaction, actual
+provider index notices and missing-file reconstruction. The separate
+`tests/recovery/reply-context.test.mts` requires isolated PostgreSQL and checks
+real persistence, writer restart and reconstruction; synthetic providers do not
+establish live-model behavior.

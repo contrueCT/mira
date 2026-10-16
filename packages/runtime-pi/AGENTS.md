@@ -67,3 +67,5 @@ real database, and live model validation. See recovery README for exact setup.
 - ADR 0027: explicitly initialize Agent thinkingLevel with the configured preference (default medium) adapted by Pi public model capabilities. Main/child/Dreaming share this option; summaries use the lowest supported level independently, never inherit costly conversation settings or autonomously escalate.
 
 - ADR 0039: task-local parent instructions reuse generic per-tool/request boundaries through TaskInputWriter; keep explicit parent provenance, atomic child final admission, frozen summaries and no main Wake ownership.
+
+- Web reply metadata 恢复校验原 Wake/live；主压缩用可从持久记录重建的有界普通文件 reply index 链，不靠摘要保留引用；toolResult transcript UUID 不冒充公开 tool History UUID，不改写 assistant signed blocks。

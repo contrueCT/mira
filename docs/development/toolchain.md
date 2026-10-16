@@ -89,3 +89,5 @@ An unavailable native module produces an explicit PTY setup error; ordinary pipe
 execution and the existing synchronous Pi bash tool do not require a native addon.
 CI executes actual pipe/PTY/lifecycle tests on Linux and macOS. Windows is outside
 this first terminal implementation.
+
+`pnpm test:replies:e2e` 为双向指定消息回复的独立真实浏览器链路门禁；需先构建页面、安装 Chromium 并配置隔离的 `MIRA_TEST_DATABASE_URL`。它使用生产 HTTP/service/runtime 与真实 PostgreSQL，只有模型返回为合成，不代表真实模型回复选择质量。CI 保留原有门禁并执行此命令。

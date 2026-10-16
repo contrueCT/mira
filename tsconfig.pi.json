@@ -9,6 +9,8 @@
     "packages/runtime-pi/**/*.ts",
     "packages/runtime-pi/**/*.mts",
     "tests/unit/runtime.test.mts",
+    "tests/unit/replies.test.mts",
+    "tests/unit/reply-context.test.mts",
     "tests/recovery/**/*.mts",
     "apps/server/**/*.ts",
     "apps/server/**/*.mts",
