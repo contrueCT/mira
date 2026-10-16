@@ -1,4 +1,5 @@
 import { browserUuid } from './uuid.ts';
+import { flushSync } from 'react-dom';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent } from 'react';
 import { AttachmentList, AttachmentPreview } from './Attachments.tsx';
@@ -334,9 +335,9 @@ export function App() {
         cursors.add(request.cursor);
         const page = await api<TimelinePage>('/api/timeline', { method: 'POST', body: JSON.stringify({ before: request.cursor }), signal: controller.signal });
         if (!activeRef.current || quoteAbortRef.current !== controller || controller.signal.aborted) return;
-        acceptPage(page, request);
-        // Wait for React's DOM commit, including the normal prepend anchor correction.
-        await new Promise<void>(resolve => { const timer = setTimeout(resolve, 50); requestAnimationFrame(() => { clearTimeout(timer); resolve(); }); });
+        // The next step reads/focuses this page's DOM. A frame is not a React
+        // commit guarantee: finish this insertion and its anchor layout effect first.
+        flushSync(() => acceptPage(page, request));
         if (!activeRef.current || quoteAbortRef.current !== controller) return;
         if (controller.signal.aborted) { setQuoteNotice('查找已停止，引用内容仍保留。'); return; }
         if (reveal()) return;

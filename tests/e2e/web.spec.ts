@@ -1243,16 +1243,17 @@ test('short desktop bubbles use their natural width while long messages stay bou
 
 for (const intent of ['normal', 'loaded-quote', 'paged-quote', 'settings', 'settings-history', 'attachment', 'attachment-history', 'article-focus', 'timeline-focus', 'timeline-wheel'] as const) {
   test(`late send completion respects newer ${intent} intent`, async ({ page }) => {
-    let releaseSend!: () => void; let releaseLookup!: () => void;
+    let releaseSend!: () => void; let releaseLookup!: () => void; let releaseRefresh!: () => void;
     const heldSend = new Promise<void>(resolve => { releaseSend = resolve; });
     const heldLookup = new Promise<void>(resolve => { releaseLookup = resolve; });
+    const heldRefresh = new Promise<void>(resolve => { releaseRefresh = resolve; });
     const bounded = async <T,>(promise: Promise<T>, label: string): Promise<T> => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timed out`)), 10_000); })]); }
       finally { clearTimeout(timer); }
     };
     const target = '11111111-1111-4111-8111-111111111111';
-    let sends = 0; let lookups = 0;
+    let sends = 0; let lookups = 0; let latestReads = 0;
     let routeFailure: unknown;
     try {
       const original = { id: target, role: 'assistant', text: '保留阅读焦点的原消息', occurredAt: '2026-10-15T03:00:00Z' };
@@ -1264,7 +1265,14 @@ for (const intent of ['normal', 'loaded-quote', 'paged-quote', 'settings', 'sett
       ];
       await page.route('**/api/attachments/*', route => route.fulfill({ body: 'fixture', contentType: 'text/plain' }));
       await page.route('**/api/timeline', async route => {
-        if (route.request().method() !== 'POST') { await route.fulfill({ json: { items, nextCursor: intent === 'paged-quote' ? 'older' : null } }); return; }
+        if (route.request().method() !== 'POST') {
+          latestReads++;
+          try {
+            if (intent === 'paged-quote' && latestReads > 1) await bounded(heldRefresh, 'overlapping latest refresh');
+            await route.fulfill({ json: { items, nextCursor: intent === 'paged-quote' ? 'older' : null } });
+          } catch (error) { routeFailure = error; await route.abort().catch(() => {}); }
+          return;
+        }
         lookups++;
         try { await bounded(heldLookup, 'held quote page'); await route.fulfill({ json: { items: [original], nextCursor: null } }); }
         catch (error) { routeFailure = error; await route.abort().catch(() => {}); }
@@ -1304,7 +1312,13 @@ for (const intent of ['normal', 'loaded-quote', 'paged-quote', 'settings', 'sett
         // A late send must neither steal focus nor abort the newer in-progress lookup.
         await expect(input).not.toBeFocused();
         await expect(page.getByRole('button', { name: '取消查找' })).toBeVisible();
-        releaseLookup(); await expect(page.locator(`[data-message-id="${target}"]`)).toBeFocused();
+        // Both requests are in flight before release, exercising competing React updates.
+        await expect.poll(() => latestReads).toBeGreaterThanOrEqual(2);
+        releaseRefresh(); releaseLookup(); await expect(page.locator(`[data-message-id="${target}"]`)).toBeFocused();
+        await expect(page.locator(`[data-message-id="${target}"]`)).toHaveClass(/quote-highlight/u);
+        await expect(page.getByText('暂未找到原消息。可以继续查看更早的消息，再点引用。', { exact: true })).toHaveCount(0);
+        await expect(page.getByRole('button', { name: '取消查找' })).toHaveCount(0);
+        expect(lookups).toBe(1);
       } else if (intent === 'loaded-quote') {
         await expect(page.locator(`[data-message-id="${target}"]`)).toBeFocused();
         expect(Math.abs(await page.locator('.timeline-scroll').evaluate(element => element.scrollTop) - scrollBeforeReceipt)).toBeLessThan(2);
@@ -1319,7 +1333,7 @@ for (const intent of ['normal', 'loaded-quote', 'paged-quote', 'settings', 'sett
       } else await expect(input).toBeFocused();
       expect(routeFailure).toBeUndefined();
     } finally {
-      releaseSend(); releaseLookup();
+      releaseSend(); releaseLookup(); releaseRefresh();
       await bounded(page.unrouteAll({ behavior: 'wait' }), 'late send route cleanup');
     }
   });
