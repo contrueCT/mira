@@ -92,12 +92,15 @@ test('real PostgreSQL: continueTurn compacts automatically and final Wake remain
   } finally { await db.close(); }
 });
 
-async function settled(service: LocalWebService): Promise<void> {
+async function settled(service: LocalWebService, providerFailure: () => unknown = () => undefined): Promise<void> {
   const deadline = Date.now() + 10_000;
   while ((await service.status()).state === 'working') {
     if (Date.now() > deadline) throw Error('Synthetic Web service failed to settle');
     await new Promise(resolve => setTimeout(resolve, 10));
   }
+  // Surface the fixture's original callback assertion instead of the service's
+  // intentionally redacted public failure, so CI reports the actionable cause.
+  if (providerFailure() !== undefined) throw providerFailure();
   assert.equal((await service.status()).error, null);
   assert.equal((await service.status()).state, 'idle');
 }
@@ -108,6 +111,7 @@ test('real PostgreSQL: Web service request path automatically compacts, refreshe
   let service: LocalWebService | undefined;
   try {
     let naturalRequests = 0, summaries = 0;
+    let providerFailure: unknown;
     const memoryRoot = path.join(root, 'memory');
     const options = {
       connectionString: db.connectionString, schema: db.schema, miraId: 'web-auto-compaction',
@@ -115,23 +119,25 @@ test('real PostgreSQL: Web service request path automatically compacts, refreshe
       miraHome: root, memoryRoot, synthetic: true,
       autoCompaction: { threshold: 0.008, reserveTokens: 512, keepRecentTokens: 1 },
       syntheticStream: (_model: unknown, context: TranscriptContext) => {
-        if (isSummary(context)) { summaries++; return streamOf(assistant('Synthetic Web checkpoint')); }
-        naturalRequests++;
-        if (naturalRequests >= 2) {
-          assert.match(systemText(context), /WEB_MEMORY_REFRESHED/);
-          assert.doesNotMatch(systemText(context), /WEB_DISK_CHANGED_LATER/);
-        }
-        return streamOf(assistant(naturalRequests === 1 ? 'Earlier Web answer '.repeat(2000) : `Natural Web answer ${naturalRequests}`));
+        try {
+          if (isSummary(context)) { summaries++; return streamOf(assistant('Synthetic Web checkpoint')); }
+          naturalRequests++;
+          if (naturalRequests >= 2) {
+            assert.match(systemText(context), /WEB_MEMORY_REFRESHED/);
+            assert.doesNotMatch(systemText(context), /WEB_DISK_CHANGED_LATER/);
+          }
+          return streamOf(assistant(naturalRequests === 1 ? 'Earlier Web answer '.repeat(2000) : `Natural Web answer ${naturalRequests}`));
+        } catch (error) { providerFailure = error; throw error; }
       },
     };
-    service = await LocalWebService.open(options); await settled(service);
+    service = await LocalWebService.open(options); await settled(service, () => providerFailure);
     assert.equal(naturalRequests, 0); assert.equal(summaries, 0);
     await service.submit({ id: 'web-auto-first', text: 'First Web question', occurredAt: '2026-10-08T09:00:00Z' });
-    await settled(service); assert.equal(naturalRequests, 1); assert.equal(summaries, 0);
+    await settled(service, () => providerFailure); assert.equal(naturalRequests, 1); assert.equal(summaries, 0);
     const prefix = await rawHistory(db, options.miraId);
     await writeFile(path.join(memoryRoot, 'MEMORY.md'), 'WEB_MEMORY_REFRESHED');
     await service.submit({ id: 'web-auto-second', text: 'Second Web question triggers compaction', occurredAt: '2026-10-08T09:01:00Z' });
-    await settled(service); assert.equal(naturalRequests, 2); assert.ok(summaries >= 1);
+    await settled(service, () => providerFailure); assert.equal(naturalRequests, 2); assert.ok(summaries >= 1);
     assert.deepEqual((await rawHistory(db, options.miraId)).slice(0, prefix.length), prefix);
     assert.equal((await db.admin.query("SELECT count(*)::int AS n FROM context_records WHERE envelope->'payload'->>'type' = 'compaction'")).rows[0].n, 1);
     const timeline = await service.timeline();
@@ -141,11 +147,11 @@ test('real PostgreSQL: Web service request path automatically compacts, refreshe
     await service.close(); service = undefined;
     await writeFile(path.join(memoryRoot, 'MEMORY.md'), 'WEB_DISK_CHANGED_LATER');
     const callsBeforeRestart = naturalRequests + summaries;
-    service = await LocalWebService.open({ ...options, autoCompaction: disabled }); await settled(service);
+    service = await LocalWebService.open({ ...options, autoCompaction: disabled }); await settled(service, () => providerFailure);
     assert.equal(naturalRequests + summaries, callsBeforeRestart, 'startup does not rerun a finalized Wake or summary');
     assert.deepEqual((await service.timeline()).items, timeline.items);
     await service.submit({ id: 'web-auto-third', text: 'Ordinary restart continuation', occurredAt: '2026-10-08T09:02:00Z' });
-    await settled(service); assert.equal(naturalRequests, 3);
+    await settled(service, () => providerFailure); assert.equal(naturalRequests, 3);
     assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_runs WHERE completed')).rows[0].n, 3);
   } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });

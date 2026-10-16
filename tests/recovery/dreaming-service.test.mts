@@ -6,6 +6,8 @@ import test from 'node:test';
 import { createAssistantMessageEventStream, getCurrentSystemMessage, getCurrentTools, getSystemMessageText, type ToolCall, type TranscriptContext } from '@earendil-works/pi-ai';
 import type { HistorySearchResult, LifeEvent } from '@mira/life';
 import { LocalWebService } from '@mira/server';
+import { demoModel } from '../../apps/server/src/index.ts';
+import { estimateRequestTokens } from '../../packages/runtime-pi/src/budget.ts';
 import { dreamingInstruction, dreamingDefaults } from '../../apps/server/src/dreaming.ts';
 import { createTestDatabase } from '../integration/database.mts';
 import { assistant, deferred, streamOf } from './fixtures.mts';
@@ -87,7 +89,7 @@ test('real PostgreSQL Dreaming reads current Memory and original History, edits 
       if (requests === 3) return streamOf(calls(call('dream-read-original', 'history_read', { id: found.hits[0]!.id })));
       const original = JSON.parse(resultText(context, 'dream-read-original')) as { kind: string; event: LifeEvent };
       assert.equal(original.kind, 'event'); assert.equal(original.event.source, 'user');
-      assert.deepEqual(original.event.payload, { text: 'NEPTUNE_SOURCE_FACT: Project Neptune uses PostgreSQL.' });
+      assert.deepEqual(original.event.payload, { text: 'NEPTUNE_SOURCE_FACT: Project Neptune uses PostgreSQL.', messageFormatVersion: 1 });
       if (requests === 4) return streamOf(calls(
         call('dream-write-detail', 'write', { path: detail, content: 'Project Neptune uses PostgreSQL.\n' }),
         call('dream-edit-memory', 'edit', { path: file, edits: [{ oldText: 'CURRENT_MEMORY_ON_DISK', newText: 'REMEMBERED_NEPTUNE: Project Neptune uses PostgreSQL. See projects/neptune.md.' }] }),
@@ -314,11 +316,15 @@ test('real PostgreSQL three actual automatic compactions unlock idle Dreaming be
   try {
     const checkpoints = async () => (await db.admin.query<{ n: number }>(
       "SELECT count(*)::int AS n FROM context_records WHERE envelope->>'kind' = 'checkpoint'")).rows[0]!.n;
+    const longAnswer = 'Long natural answer for automatic compaction. '.repeat(4000);
+    const threshold = 0.025;
+    const thresholdTokens = (demoModel.contextWindow - 512) * threshold;
     const configuration = { ...options(db, root, 'dreaming-real-compactions'),
       dreaming: { idleMs: 60, intervalMs: dreamingDefaults.intervalMs, minCompactions: 3 },
-      // The static system fits below this budget, while each large ordinary
-      // reply forces one genuine Pi compaction at the next natural request.
-      autoCompaction: { threshold: 0.02, reserveTokens: 512, keepRecentTokens: 1 },
+      // Current full Web prompt/tools and the reply index cost about 20k
+      // estimated tokens. Keep short/compacted turns below ~25k, while each
+      // long answer exceeds it. The callback verifies both sides of this gap.
+      autoCompaction: { threshold, reserveTokens: 512, keepRecentTokens: 1 },
       syntheticStream: (_model: unknown, context: TranscriptContext) => {
         if (systemText(context).startsWith('你负责压缩 Mira 的 Working Context')) {
           summaryAttempts++;
@@ -326,13 +332,24 @@ test('real PostgreSQL three actual automatic compactions unlock idle Dreaming be
           successfulSummaries++;
           return streamOf(assistant(`Successful automatic continuity summary ${successfulSummaries}.`));
         }
+        // Use the actual prepared declarations and runtime estimator; these
+        // declaration-only adapters are never executed. This checks the budget
+        // assumption rather than silently accepting a newly oversized baseline.
+        const declaredTools = getCurrentTools(context.messages).map(tool => ({ ...tool, label: tool.name,
+          execute: async () => { throw Error('Budget-only declaration must not execute'); } }));
+        const preparedTokens = estimateRequestTokens(context.messages, declaredTools, demoModel);
+        assert.ok(preparedTokens < thresholdTokens, `Short prepared request ${preparedTokens} must remain below ${thresholdTokens}`);
         const latest = JSON.stringify(context.messages.filter(message => message.role === 'user').at(-1));
         if (latest.includes('memory.dreaming')) {
           dreamingRequests++; assert.equal(successfulSummaries, 3);
           return streamOf(assistant(''));
         }
         naturalRequests++;
-        return streamOf(assistant(naturalRequests <= 3 ? 'Long natural answer for automatic compaction. '.repeat(4000) : 'Short answer after the recovered third checkpoint.'));
+        if (naturalRequests <= 3) {
+          const longTokens = estimateRequestTokens([...context.messages, assistant(longAnswer)], declaredTools, demoModel);
+          assert.ok(longTokens > thresholdTokens, `Long answer context ${longTokens} must exceed ${thresholdTokens}`);
+        }
+        return streamOf(assistant(naturalRequests <= 3 ? longAnswer : 'Short answer after the recovered third checkpoint.'));
       },
     };
     service = await LocalWebService.open(configuration); await settled(service);

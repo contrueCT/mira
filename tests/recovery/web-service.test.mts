@@ -1,3 +1,4 @@
+import { providerEntered } from './service-wait-fixture.mts';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -248,23 +249,27 @@ test('missing live model is a setup state and cannot enqueue or call a model', {
   } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('shutdown cancels an active model run, retains user receipt and resumes the same wake on restart', { timeout: 30_000 }, async () => {
+test('shutdown cancels an active model run, retains user receipt and resumes the same wake on restart', { timeout: 30_000 }, async t => {
   const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-shutdown-');
-  let service: LocalWebService | undefined; let entered!: () => void; const started = new Promise<void>(resolve => { entered = resolve; });
+  let service: LocalWebService | undefined; let started = false; let providerFailure: unknown;
   let originalInput: TranscriptContext['messages'][number] | undefined;
   try {
     const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'cancelled', sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true };
     service = await LocalWebService.open({ ...options, syntheticStream: (_model, context, streamOptions) => {
-      originalInput = structuredClone(context.messages.find(message => message.role === 'user'));
-      assert.ok(originalInput?.role === 'user'); assert.match(String(originalInput.content), /\[user \| "2026-10-06T08:00:00.000Z"\]\nKeep my receipt$/);
-      assert.doesNotMatch(String(originalInput.content), /cancel-input|web.message|Wake reason|"payload"|"event"/);
-      const stream = createAssistantMessageEventStream(); entered();
-      const abort = () => { stream.push({ type: 'error', reason: 'aborted', error: { ...assistant(), stopReason: 'aborted', errorMessage: 'Cancelled fixture' } }); };
-      streamOptions?.signal?.addEventListener('abort', abort, { once: true });
-      if (streamOptions?.signal?.aborted) abort();
-      return stream;
+      try {
+        originalInput = structuredClone(context.messages.find(message => message.role === 'user'));
+        assert.ok(originalInput?.role === 'user'); assert.match(String(originalInput.content), /\[user \| "2026-10-06T08:00:00.000Z" \| History ID "[0-9a-f-]{36}"\]\nKeep my receipt$/);
+        assert.doesNotMatch(String(originalInput.content), /cancel-input|web.message|Wake reason|"payload"|"event"/);
+        const stream = createAssistantMessageEventStream(); started = true;
+        const abort = () => { stream.push({ type: 'error', reason: 'aborted', error: { ...assistant(), stopReason: 'aborted', errorMessage: 'Cancelled fixture' } }); };
+        streamOptions?.signal?.addEventListener('abort', abort, { once: true });
+        if (streamOptions?.signal?.aborted) abort();
+        return stream;
+      } catch (error) { providerFailure = error; throw error; }
     } });
-    await service.submit({ id: 'cancel-input', text: 'Keep my receipt', occurredAt: '2026-10-06T08:00:00.000Z' }); await started;
+    await service.submit({ id: 'cancel-input', text: 'Keep my receipt', occurredAt: '2026-10-06T08:00:00.000Z' }); await providerEntered(service, () => started, () => providerFailure, t.signal);
+    const link = await db.store.history('cancelled').findEventRun('cancel-input'); assert.ok(link);
+    assert.ok(String(originalInput!.content).includes(`History ID "${link.eventId}"`), 'provider sees the exact committed user Event History UUID');
     await assert.rejects(service.saveSettings(await service.settings()), WebHttpError);
     await service.close(); service = undefined;
     service = await LocalWebService.open({ ...options, syntheticStream: (_model, context) => {

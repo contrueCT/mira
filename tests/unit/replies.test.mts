@@ -1,3 +1,5 @@
+import { boundedFixtureWait, providerEntered } from '../recovery/service-wait-fixture.mts';
+import type { LocalWebService } from '@mira/server';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { randomUUID } from 'node:crypto';
@@ -43,4 +45,25 @@ test('HTTP accepts only target UUID and whitelists reply fields on both timeline
   for (const payload of [{ ...body, replyToMessageId: 'external' }, { ...body, reply: { text: 'forged' } }]) assert.equal((await app.inject({ method: 'POST', url: '/api/messages', headers, payload })).statusCode, 400);
   const response = await app.inject({ method: 'GET', url: '/api/timeline', headers }); assert.equal(response.statusCode, 200); assert.deepEqual(response.json().items[0].reply, { messageId: id, role: 'assistant', text: 'original' });
   const older = await app.inject({ method: 'POST', url: '/api/timeline', headers, payload: { before: 'cursor' } }); assert.equal(older.statusCode, 200); assert.deepEqual(older.json().items[0].reply, response.json().items[0].reply);
+});
+
+
+test('fixture barriers unwind cleanup on their own deadline and propagate provider assertions', async () => {
+  let cleaned = false;
+  await assert.rejects((async () => {
+    try { await boundedFixtureWait(new Promise<void>(() => {}), 'synthetic held provider', undefined, 20); }
+    finally { cleaned = true; }
+  })(), /synthetic held provider: timed out/);
+  assert.equal(cleaned, true, 'fixture finally runs without relying on Node test timeout');
+  const failure = new Error('exact failed provider assertion');
+  const service = { status: async () => ({ state: 'error', error: 'protected service error' }) } as unknown as LocalWebService;
+  await assert.rejects(providerEntered(service, () => false, () => failure), error => error === failure);
+  await assert.rejects(providerEntered(service, () => false, () => undefined), /Provider did not enter:.*protected service error/);
+});
+
+test('fixture held provider honors abort and cleans up its pending deadline', async () => {
+  const controller = new AbortController(); const reason = new Error('fixture test cancelled'); let cleaned = false;
+  const work = (async () => { try { await boundedFixtureWait(new Promise<void>(() => {}), 'release', controller.signal); } finally { cleaned = true; } })();
+  controller.abort(reason);
+  await assert.rejects(work, error => error === reason); assert.equal(cleaned, true);
 });

@@ -1,3 +1,4 @@
+import { boundedFixtureWait, providerEntered } from './service-wait-fixture.mts';
 import type { Json } from '@mira/context';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -13,10 +14,10 @@ import type { StreamFn } from '@earendil-works/pi-agent-core';
 async function settled(service: LocalWebService): Promise<void> {
   const end = Date.now() + 15_000;
   while ((await service.status()).state === 'working') {
-    if (Date.now() > end) throw Error('Service did not settle');
+    if (Date.now() > end) throw Error(`Service did not settle: ${JSON.stringify(await service.status())}`);
     await new Promise(resolve => setTimeout(resolve, 10));
   }
-  assert.equal((await service.status()).state, 'idle');
+  const status = await service.status(); assert.equal(status.state, 'idle', JSON.stringify(status));
 }
 test('bidirectional replies persist canonical snapshots, attachments and exact publication IDs across PostgreSQL restart', { timeout: 45_000 }, async () => {
   const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-reply-recovery-');
@@ -99,7 +100,7 @@ test('real child transcript IDs stay private and generic extension sources retai
     assert.equal(sources.length, 2);
     await service.submit({ id: 'spawn', text: 'Delegate a task', occurredAt: '2026-10-16T11:00:00.000Z' });
     const end = Date.now() + 15_000;
-    while (!childChecked || !(await db.admin.query('SELECT 1 FROM subagent_turns WHERE parent_mira_id=$1 AND status=$2', ['source-main', 'completed'])).rowCount) { if (Date.now() > end) throw Error('Child not completed'); await new Promise(resolve => setTimeout(resolve, 10)); }
+    while (!childChecked || !(await db.admin.query('SELECT 1 FROM subagent_turns WHERE parent_mira_id=$1 AND status=$2', ['source-main', 'completed'])).rowCount) { if (Date.now() > end || (await service.status()).state === 'error') throw Error(`Child not completed: service=${JSON.stringify(await service.status())}; turns=${JSON.stringify((await db.admin.query('SELECT status FROM subagent_turns WHERE parent_mira_id=$1', ['source-main'])).rows)}`); await new Promise(resolve => setTimeout(resolve, 10)); }
     await settled(service);
     const childIds = (await db.admin.query('SELECT record_id FROM context_records JOIN subagents ON subagents.stream_id=context_records.mira_id WHERE subagents.parent_mira_id=$1', ['source-main'])).rows.map(row => row.record_id as string);
     assert.ok(childIds.length > 0);
@@ -126,7 +127,7 @@ test('live Web reply is admitted during a real tool and reaches the next model r
     target = (await service.timeline()).items.find(item => item.role === 'assistant')!.id;
     await service.submit({ id: 'working', text: 'Wait briefly', occurredAt: '2026-10-16T10:01:00.000Z' });
     const end = Date.now() + 10_000;
-    while (!(await db.admin.query('SELECT 1 FROM tool_executions WHERE mira_id=$1 AND call_id=$2', ['reply-live', 'reply-live-delay'])).rowCount) { if (Date.now() > end) throw Error('Tool not entered'); await new Promise(resolve => setTimeout(resolve, 5)); }
+    while (!(await db.admin.query('SELECT 1 FROM tool_executions WHERE mira_id=$1 AND call_id=$2', ['reply-live', 'reply-live-delay'])).rowCount) { if (Date.now() > end || (await service.status()).state === 'error') throw Error(`Tool not entered: ${JSON.stringify(await service.status())}`); await new Promise(resolve => setTimeout(resolve, 5)); }
     const reply = { id: 'live-reply', text: 'Reply during work', occurredAt: '2026-10-16T10:02:00.000Z', replyToMessageId: target };
     await service.submit(reply); await settled(service);
     assert.match(observed, /Reply during work/); assert.ok(observed.includes(target)); assert.match(observed, /Original assistant target/);
@@ -139,30 +140,33 @@ test('live Web reply is admitted during a real tool and reaches the next model r
   } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('HTTP retries preserve old pending envelopes and actual history tools discover legacy reply targets', { timeout: 30_000 }, async () => {
+test('HTTP retries preserve old pending envelopes and actual history tools discover legacy reply targets', { timeout: 30_000 }, async t => {
   const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-reply-old-retry-'); let service: LocalWebService | undefined;
-  const entered = deferred(), release = deferred(); let calls = 0; let discoveredId = '';
+  const release = deferred(); let entered = false; let providerFailure: unknown; let calls = 0; let discoveredId = '';
   try {
     const input = { id: 'old-pending', text: 'Original pending message', occurredAt: '2026-10-16T10:00:00.000Z' };
     const writer = await db.acquire('old-retry');
     await writer.receiveLiveInput({ id: input.id, occurredAt: input.occurredAt, type: 'web.message', source: 'user', payload: { text: input.text } }, { id: `web:${input.id}`, reason: 'User message from the local web interface' });
     await writer.close();
-    service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'old-retry', sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true, syntheticStream: async (_model, context) => {
-      calls++;
-      if (calls === 1) { entered.resolve(); await release.promise; return streamOf(assistant('Finished old input')); }
-      const call = (id: string, name: string, args: Record<string, Json>) => streamOf({ ...assistant(), stopReason: 'toolUse' as const, content: [{ type: 'toolCall' as const, id, name, arguments: args }] });
-      if (calls === 2) return call('find-old-target', 'history_search', { query: 'Original pending message', mode: 'substring', kinds: ['event'] });
-      const last = context.messages.at(-1);
-      if (calls === 3 || calls === 4) {
-        assert.ok(last?.role === 'toolResult'); const block = last.content.find(item => item.type === 'text'); assert.ok(block?.type === 'text');
-        const result = JSON.parse(block.text);
-        if (calls === 3) { assert.equal(result.hits.length, 1); discoveredId = result.hits[0].id; return call('read-old-target', 'history_read', { id: discoveredId }); }
-        assert.equal(result.id, discoveredId); assert.deepEqual(result.event.payload, { text: input.text });
-        return call('reply-to-legacy', 'send_reply', { replyToMessageId: result.id, text: 'Reply discovered through History' });
-      }
-      return streamOf(assistant(''));
+    service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'old-retry', sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true, syntheticStream: async (_model, context, streamOptions) => {
+      try {
+        calls++;
+        if (calls === 1) { entered = true; await boundedFixtureWait(release.promise, 'Legacy provider release', AbortSignal.any([t.signal, ...(streamOptions?.signal ? [streamOptions.signal] : [])])); return streamOf(assistant('Finished old input')); }
+        const call = (id: string, name: string, args: Record<string, Json>) => streamOf({ ...assistant(), stopReason: 'toolUse' as const, content: [{ type: 'toolCall' as const, id, name, arguments: args }] });
+        if (calls === 2) return call('find-old-target', 'history_search', { query: 'Original pending message', mode: 'substring', kinds: ['event'] });
+        const expectedCall = calls === 3 ? 'find-old-target' : 'read-old-target';
+        const last = context.messages.findLast(message => message.role === 'toolResult' && message.toolCallId === expectedCall);
+        if (calls === 3 || calls === 4) {
+          assert.ok(last?.role === 'toolResult'); assert.equal(last.toolName, calls === 3 ? 'history_search' : 'history_read'); assert.equal(last.isError, false); const block = last.content.find(item => item.type === 'text'); assert.ok(block?.type === 'text');
+          const result = JSON.parse(block.text);
+          if (calls === 3) { assert.equal(result.hits.length, 1); discoveredId = result.hits[0].id; return call('read-old-target', 'history_read', { id: discoveredId }); }
+          assert.equal(result.id, discoveredId); assert.deepEqual(result.event.payload, { text: input.text });
+          return call('reply-to-legacy', 'send_reply', { replyToMessageId: result.id, text: 'Reply discovered through History' });
+        }
+        return streamOf(assistant(''));
+      } catch (error) { providerFailure = error; throw error; }
     } });
-    await entered.promise;
+    await providerEntered(service, () => entered, () => providerFailure, t.signal);
     const app = createLocalHttp({ backend: service, port: 4779 });
     try {
       const headers = { host: '127.0.0.1:4779', origin: 'http://127.0.0.1:4779', 'x-mira-client': 'web' };
@@ -172,8 +176,9 @@ test('HTTP retries preserve old pending envelopes and actual history tools disco
       const original = await db.store.history('old-retry').read({ id: eventId }); assert.ok(original?.kind === 'event');
       assert.deepEqual(original.event.payload, { text: input.text });
     } finally { await app.close(); }
-    release.resolve(); await settled(service);
-    await service.submit({ id: 'find-older', text: 'Find the earlier user message and reply to it', occurredAt: '2026-10-16T11:00:00.000Z' }); await settled(service);
+    release.resolve(); await settled(service).catch(error => { throw providerFailure ?? error; });
+    await service.submit({ id: 'find-older', text: 'Find the earlier user message and reply to it', occurredAt: '2026-10-16T11:00:00.000Z' }); await settled(service).catch(error => { throw providerFailure ?? error; });
+    if (providerFailure !== undefined) throw providerFailure;
     const published = (await service.timeline()).items.find(item => item.text === 'Reply discovered through History');
     assert.ok(published); assert.equal(published.reply?.messageId, discoveredId); assert.equal(published.reply?.text, input.text); assert.equal(calls, 5);
   } finally { release.resolve(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
