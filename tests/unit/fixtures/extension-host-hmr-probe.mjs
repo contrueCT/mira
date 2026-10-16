@@ -35,7 +35,9 @@ const source = version => `
     });
   } });
 `;
+const owner = new AbortController();
 const host = new ExtensionHost({
+  ownerSignal: owner.signal,
   entries: [{ id: 'host-hmr', path: entry }], hmr: true,
   async receive(source, event, wake) { state.received.push({ source, event, wake }); return 'inserted'; },
 });
@@ -100,6 +102,25 @@ try {
   assert.equal((await execute(first)).details.executed, false, 'retired declaration cannot emit new activity');
   assert.equal(state.received.length, 3);
   await host.finish();
+  // Lose ownership while the real watcher is retiring a held generation.
+  state.gate = new Promise(resolve => { state.release = resolve; });
+  const interrupted = execute(second);
+  const interruptedSample = secondProvider.sample(new AbortController().signal);
+  const toolStopped = assert.rejects(interrupted, /ownership lost/);
+  const sampleStopped = assert.rejects(interruptedSample, /ownership lost/);
+  await writeFile(entry, source(3));
+  await until(() => host.inspect()[0].status === 'unloading', 'owner loss must overlap actual HMR retirement');
+  owner.abort(new Error('ownership lost'));
+  await sampleStopped;
+  const frozenTicks = state.runs[1].ticks;
+  await sleep(20);
+  assert.equal(state.runs[1].ticks, frozenTicks, 'ownership loss fences callbacks before held leases drain');
+  assert.equal(state.runs[1].closed, false, 'lease stays until trusted callback actually settles');
+  state.release(); state.gate = null;
+  await toolStopped; await host.close();
+  assert.equal(state.runs.length, 2, 'HMR must not apply the pending generation after ownership loss');
+  await writeFile(entry, source(4)); await sleep(200);
+  assert.equal(state.runs.length, 2, 'closed watcher cannot resurrect an activation');
   success = true;
 } finally {
   state.release?.();

@@ -242,3 +242,20 @@ fails; reread actual state rather than retrying an unknown outcome automatically
 设置动作支持 SDK 的可选静态 group 与状态 visibleActions。Host 仅校验/投影已声明
 ID 子集并加入 revision，HTTP/handle 共用 runner 拒绝当前隐藏或过期动作；不解释
 任何插件业务状态。状态投影无效时隐藏动作，既有 operation 查询/取消仍可使用。
+
+### Composition ownership loss
+
+The composition may supply `ownerSignal`. Aborting it permanently closes that Host:
+new tools/providers, credentials, events, scheduled operations, registrations and
+Host-managed callbacks are fenced immediately. Settings actions are cancelled
+before lifecycle queues drain. Running tools/providers receive the combined owner
+and caller cancellation signal, while their execution leases remain held until
+they actually settle. Startup, queued changes and shutdown cannot publish a fresh
+activation after ownership loss. `close()` is joinable and cleanup errors remain
+observable; the abort listener observes its asynchronous rejection.
+
+Normal graceful retirement still preserves pinned service access needed by
+already admitted work and cleanup. This is cooperative lifecycle management,
+not a sandbox: arbitrary trusted plugin network/filesystem effects cannot be
+forcibly preempted or rolled back. Plugins must retain their own durable
+idempotency/CAS and unknown-outcome handling across process overlap.

@@ -108,6 +108,10 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   #modelFailure: ModelRequestFailure | null = null;
   #modelRetry: ModelRetryStatus | null = null;
   #closed = false;
+  #closeTask: Promise<void> | undefined;
+  readonly #ownershipLost = (): void => {
+    void this.close().catch(() => { this.#error ??= publicFailure; });
+  };
   #settingsValue: WebSettings;
   #configurationWrite = false;
   #settingsGeneration = 0;
@@ -117,6 +121,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     this.browser = browser; this.#terminals = terminals; this.#subagentReader = subagentReader; this.#subagents = subagents; this.#attachments = attachments; this.#options = options; this.#writer = writer; this.#history = history; this.#settings = settings;
     this.#settingsValue = settingsValue; this.#loop = loop; this.#host = host;
     this.#unsubscribeLiveInput = writer.onLiveInput(() => subagents.onLiveInput());
+    writer.signal.addEventListener('abort', this.#ownershipLost, { once: true });
     this.external = createExternalIngress(writer, () => this.#kick());
     if (host) this.#deliveries = new DeliveryTimer(async () => {
       if (this.#closed || writer.signal.aborted) return null;
@@ -125,7 +130,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       // silently retry an already-failed cognitive run.
       if (result.enqueued && !this.#error) this.#kick();
       return result.nextDueAt;
-    }, error => { if (!this.#closed) this.#error = PersistenceFailureNotice.from(error) ?? publicFailure; });
+    }, error => { this.#recordFailure(error); });
     const policy = dreamingPolicy(options.dreaming);
     if (options.memoryRoot && policy.enabled !== false) {
       this.#dreaming = new DreamingScheduler(async () => {
@@ -135,7 +140,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
           minCompactions: policy.minCompactions, instruction: dreamingInstruction });
         if (result.status === 'inserted') { this.#kick(); return null; }
         return result.nextCheckAt;
-      }, error => { if (!this.#closed) this.#error = PersistenceFailureNotice.from(error) ?? publicFailure; });
+      }, error => { this.#recordFailure(error); });
     }
   }
   static async open(options: WebServiceOptions): Promise<LocalWebService> {
@@ -161,11 +166,10 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       const terminalManager = terminals;
       browser = new BrowserManager({ cwd, mainOwner: writer.miraId, ...(options.miraHome === undefined ? {} : { miraHome: options.miraHome }) });
       const browserManager = browser;
-      writer.signal.addEventListener('abort', () => { void browserManager.close(); }, { once: true });
-      writer.signal.addEventListener('abort', () => { void terminalManager.close(); }, { once: true });
+      writer.signal.throwIfAborted();
       const baseTools = [...createBrowserTools(browserManager, writer.miraId), ...createTerminalTools(terminalManager, writer.miraId), createAttachmentTool(attachments, cwd), ...createWorkspaceTools(cwd).map(tool => withVideoRead(tool, attachments, cwd)), ...createHistoryTools(persistence.history(writer.miraId))];
       if (options.extensions) {
-        host = new ExtensionHost({ ...options.extensions, privateStorageExcludedDirectories: [options.sourceDirectory, ...options.memoryRoot ? [options.memoryRoot] : []], schedules: extensionScheduling(writer), onSchedulesChanged: () => { if (service) service.#deliveries?.schedule(); }, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage', 'subagent_spawn', 'subagent_status', 'subagent_send', 'subagent_wait', 'subagent_cancel'], receive: async (extensionId, event, wake) => {
+        host = new ExtensionHost({ ...options.extensions, ownerSignal: writer.signal, privateStorageExcludedDirectories: [options.sourceDirectory, ...options.memoryRoot ? [options.memoryRoot] : []], schedules: extensionScheduling(writer), onSchedulesChanged: () => { if (service) service.#deliveries?.schedule(); }, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage', 'subagent_spawn', 'subagent_status', 'subagent_send', 'subagent_wait', 'subagent_cancel'], receive: async (extensionId, event, wake) => {
           const receipt = await extensionReceiver(writer)(extensionId, event, wake);
           if (wake && receipt === 'inserted' && service) service.#kick();
           return receipt;
@@ -178,9 +182,10 @@ export class LocalWebService implements WebBackend, ManagementBackend {
         tools: streamId => [...createBrowserTools(browserManager, streamId), ...createWorkspaceTools(cwd), ...createTerminalTools(terminalManager, streamId), ...createHistoryTools(persistence.history(streamId))],
         writeOverflowInput, ...(roots ? { memoryRoot: roots.memoryRoot } : {}),
         onCompletion: () => { if (service && !service.#error) service.#kick(); },
-        onFailure: error => { if (service && !service.#closed) service.#error = PersistenceFailureNotice.from(error) ?? publicFailure; },
+        onFailure: error => { if (service) service.#recordFailure(error); },
       });
       await subagents.initialize();
+      writer.signal.throwIfAborted();
       const children = subagents;
       const loop = new WakeLoop({ writer,
         writeOverflowInput,
@@ -208,21 +213,35 @@ export class LocalWebService implements WebBackend, ManagementBackend {
         },
       });
       if (roots && options.dreaming?.enabled !== false) await writer.initializeDreaming();
+      writer.signal.throwIfAborted();
       service = new LocalWebService(options, writer, persistence.history(writer.miraId), settings, settingsValue, loop, attachments, children, persistence.subagents(writer.miraId), terminalManager, browserManager, host);
       // Existing durable pending runs resume through the same recovery contracts.
       service.#deliveries?.schedule();
       service.#kick();
       return service;
-    } catch (error) { await browser?.close(); await terminals?.close(); await subagents?.close(); try { await host?.close(); } finally { await writer.close(); } throw error; }
+    } catch (error) {
+      // Every resource must be attempted, even if a sibling cleanup fails.
+      const results = await Promise.allSettled([host?.close(), browser?.close(), terminals?.close(), subagents?.close()]);
+      await writer.close();
+      const failures = results.filter(result => result.status === 'rejected').map(result => result.reason as unknown);
+      if (failures.length) throw new AggregateError([error, ...failures], 'Mira startup and cleanup failed');
+      throw error;
+    }
+  }
+  #recordFailure(error: unknown, fallback: string | ModelRequestFailure = publicFailure): void {
+    // A durable write fault aborts ownership before its rejection reaches us.
+    // Keep its safe notice after fencing; ordinary shutdown errors stay silent.
+    const notice = PersistenceFailureNotice.from(error);
+    if (notice || !this.#closed) this.#error = notice ?? fallback;
   }
   #kick(): void {
-    if (this.#closed) return;
+    if (this.#closed || this.#writer.signal.aborted) return;
     if (this.#configurationWrite || (!this.#options.synthetic && !hasSelectedWebApiKey(this.#settingsValue))) { this.#kickRequested = true; return; }
     if (this.#drain) { this.#kickRequested = true; return; }
     this.#kickRequested = false;
     this.#error = null; this.#modelFailure = null;
     this.#drain = this.#loop.drain(this.#abort.signal).then(() => {}).catch((error: unknown) => {
-      if (!this.#closed) this.#error = PersistenceFailureNotice.from(error) ?? (error instanceof Error && error.message === this.#modelFailure?.terminalMessage ? this.#modelFailure : publicFailure);
+      this.#recordFailure(error, error instanceof Error && error.message === this.#modelFailure?.terminalMessage ? this.#modelFailure : publicFailure);
     }).finally(() => {
       this.#modelRetry = null;
       this.#drain = undefined;
@@ -261,7 +280,8 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     }
   }
   async discover(connection: unknown, signal?: AbortSignal) {
-    return this.#settings.discover(connection, { ...(signal ? { signal } : {}) });
+    if (this.#closed || this.#writer.signal.aborted) throw new WebHttpError('unavailable');
+    return this.#settings.discover(connection, { signal: signal ? AbortSignal.any([signal, this.#abort.signal]) : this.#abort.signal });
   }
   async uploadAttachment(name: string, bytes: Uint8Array) {
     if (this.#closed || this.#writer.signal.aborted) throw new WebHttpError('unavailable');
@@ -422,15 +442,20 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     const child = await this.#subagentReader.getSubagentForRun(id, runId);
     return child ? childDetail(child, runId) : null;
   }
-  async close(): Promise<void> {
-    if (this.#closed) return;
-    this.#closed = true; this.#unsubscribeLiveInput(); this.#abort.abort(new Error('Mira is stopping'));
-    await this.#deliveries?.close();
-    await this.#dreaming?.close();
-    await this.browser.close();
-    await this.#terminals.close();
-    await this.#subagents.close();
-    await this.#drain;
-    try { await this.#host?.close(); } finally { await this.#writer.close(); }
+  close(): Promise<void> {
+    if (this.#closeTask) return this.#closeTask;
+    this.#closed = true; this.#unsubscribeLiveInput(); this.#abort.abort(this.#writer.signal.aborted ? this.#writer.signal.reason : new Error('Mira is stopping'));
+    this.#writer.signal.removeEventListener('abort', this.#ownershipLost);
+    // Fence/cancel all independent resources now, before awaiting any lease.
+    // In particular a settings action must not wait behind the runtime drain.
+    const resources = [this.#host?.close(), this.#deliveries?.close(), this.#dreaming?.close(),
+      this.browser.close(), this.#terminals.close(), this.#subagents.close(), this.#drain];
+    this.#closeTask = (async () => {
+      const results = await Promise.allSettled(resources);
+      await this.#writer.close();
+      const failures = results.filter(result => result.status === 'rejected').map(result => result.reason as unknown);
+      if (failures.length) throw new AggregateError(failures, 'Mira cleanup failed');
+    })();
+    return this.#closeTask;
   }
 }
