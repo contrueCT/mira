@@ -135,8 +135,18 @@ test('ordinary MCP installation, protected settings and unknown effects survive 
     const counts = async () => (await db!.admin.query('SELECT (SELECT count(*) FROM life_events)::integer AS events, (SELECT count(*) FROM wake_requests)::integer AS wakes, (SELECT count(*) FROM wake_runs)::integer AS runs, (SELECT count(*) FROM tool_executions)::integer AS tools')).rows[0];
     const executions = async () => (await db!.admin.query<ToolExecution>('SELECT intent, outcome FROM tool_executions ORDER BY context_version')).rows;
     await start(); expect(contexts).toHaveLength(0);
-    await send(installInput); await expect(page.getByText(installReply, { exact: true })).toBeVisible();
-    await expect.poll(async () => (await service!.status()).state).toBe('idle');
+    await send(installInput);
+    // Staging and activation verify the full captured dependency tree, then do
+    // bounded MCP connect/list requests. Wait for that backend workflow rather
+    // than imposing the ordinary UI locator's 10-second rendering deadline.
+    await expect.poll(async () => {
+      const { state, error } = await service!.status();
+      return { terminal: state === 'error' || state === 'stopped' || (state === 'idle' && contexts.length > 0),
+        state, error, requests: contexts.length };
+    }, { timeout: 60_000, message: 'MCP install workflow must settle; terminal failure is not retried' }).toMatchObject({ terminal: true });
+    expect(await service!.status()).toMatchObject({ state: 'idle', error: null });
+    expect(contexts).toHaveLength(5);
+    await expect(page.getByText(installReply, { exact: true })).toBeVisible();
     expect(contexts).toHaveLength(5); expect(fixture.calls).toHaveLength(1); expect(fixture.effects()).toBe(1);
     expect(await counts()).toEqual({ events: 1, wakes: 1, runs: 1, tools: 4 });
     const initialExecutions = await executions();
