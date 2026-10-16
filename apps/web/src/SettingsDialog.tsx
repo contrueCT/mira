@@ -17,10 +17,10 @@ import type { BuiltinCatalog, CustomConnection, CustomConnectionWrite, CustomMod
 interface Props { synthetic: boolean; onClose: () => void; onSaved: () => void; returnFocus: RefObject<HTMLButtonElement | null>; memoryRequest: MemoryPanelProps['request']; memoryPending: MemoryPanelProps['pending']; sending: boolean; storageError: string | null; onMemorySubmit: MemoryPanelProps['onSubmit']; onMemoryRetry: MemoryPanelProps['onRetry'] }
 type SettingsTab = 'model' | 'memory' | 'extensions' | 'runs' | 'access' | 'browser';
 const tabs: { id: SettingsTab; label: string }[] = [{ id: 'model', label: '模型' }, { id: 'memory', label: 'Memory' }, { id: 'extensions', label: '扩展' }, { id: 'runs', label: '运行记录' }, { id: 'access', label: '访问' }, { id: 'browser', label: '浏览器' }];
-interface ModelDraft { originalId: string | null; id: string; name: string; contextWindow: string; maxTokens: string; reasoning: '' | 'true' | 'false'; input: '' | 'text' | 'image' | 'text-image' }
-const blankModel = (id = '', name = ''): ModelDraft => ({ originalId: null, id, name, contextWindow: '', maxTokens: '', reasoning: '', input: '' });
+interface ModelDraft { originalId: string | null; id: string; name: string; contextWindow: string; maxTokens: string; reasoning: '' | 'true' | 'false'; reasoningFormat: '' | 'openai' | 'openrouter'; input: '' | 'text' | 'image' | 'text-image' }
+const blankModel = (id = '', name = ''): ModelDraft => ({ originalId: null, id, name, contextWindow: '', maxTokens: '', reasoning: 'false', reasoningFormat: '', input: 'text' });
 function modelDraftFrom(model: CustomModel): ModelDraft {
-  return { originalId: model.id, id: model.id, name: model.name ?? '', contextWindow: String(model.contextWindow), maxTokens: String(model.maxTokens), reasoning: model.reasoning ? 'true' : 'false', input: model.input.length === 2 ? 'text-image' : model.input[0] ?? '' };
+  return { originalId: model.id, id: model.id, name: model.name ?? '', contextWindow: String(model.contextWindow), maxTokens: String(model.maxTokens), reasoning: model.reasoning ? 'true' : 'false', reasoningFormat: model.reasoningFormat ?? '', input: model.input.length === 2 ? 'text-image' : model.input[0] ?? '' };
 }
 function parseModel(model: ModelDraft): CustomModel {
   const contextWindow = Number(model.contextWindow); const maxTokens = Number(model.maxTokens);
@@ -28,7 +28,7 @@ function parseModel(model: ModelDraft): CustomModel {
   if (!Number.isSafeInteger(contextWindow) || contextWindow < 1 || !Number.isSafeInteger(maxTokens) || maxTokens < 1) throw new Error('请根据服务商文档填写上下文窗口与最大输出，均须为正整数');
   if (maxTokens > contextWindow) throw new Error('最大输出不能超过上下文窗口');
   if (!model.reasoning || !model.input) throw new Error('请明确选择推理能力和输入类型');
-  return { id: model.id.trim(), ...(model.name.trim() ? { name: model.name.trim() } : {}), contextWindow, maxTokens, reasoning: model.reasoning === 'true', input: model.input === 'text-image' ? ['text', 'image'] : [model.input] };
+  return { id: model.id.trim(), ...(model.name.trim() ? { name: model.name.trim() } : {}), contextWindow, maxTokens, reasoning: model.reasoning === 'true', ...(model.reasoningFormat ? { reasoningFormat: model.reasoningFormat } : {}), input: model.input === 'text-image' ? ['text', 'image'] : [model.input] };
 }
 function validateConnection(connection: CustomConnectionWrite): void {
   validateApiKey(connection);
@@ -66,7 +66,6 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
   const [discovery, setDiscovery] = useState<Discovery | null>(null);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [discovering, setDiscovering] = useState(false);
-  const [candidateId, setCandidateId] = useState('');
   const loadAbortRef = useRef<AbortController | null>(null);
   const discoveryAbortRef = useRef<AbortController | null>(null);
   const saveAbortRef = useRef<AbortController | null>(null);
@@ -120,7 +119,7 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
   }, [tab]);
 
   const touch = () => { editVersionRef.current += 1; setDirty(true); setSaved(false); setError(null); };
-  const stopDiscovery = () => { discoveryAbortRef.current?.abort(); discoveryAbortRef.current = null; setDiscovering(false); setDiscovery(null); setDiscoveryError(null); setCandidateId(''); };
+  const stopDiscovery = () => { discoveryAbortRef.current?.abort(); discoveryAbortRef.current = null; setDiscovering(false); setDiscovery(null); setDiscoveryError(null);  };
   const change = (update: (value: SettingsWrite) => SettingsWrite) => { touch(); setDraft(current => current ? update(current) : current); };
   const provider = catalog?.providers.find(item => item.id === providerId);
   const connection = draft?.configuration.customConnections.find(item => item.id === connectionId);
@@ -158,9 +157,10 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
   };
   const editConnection = (patch: Partial<CustomConnectionWrite>) => {
     stopDiscovery();
+    if (patch.api !== undefined && patch.api !== 'openai-completions') setModelDraft(current => current ? { ...current, reasoningFormat: '' } : current);
     change(current => ({ ...current, configuration: { ...current.configuration, customConnections: current.configuration.customConnections.map(item => {
       if (item.id !== connectionId) return item;
-      const next = { ...item, ...patch };
+      const next = { ...item, ...patch, ...(patch.api !== undefined && patch.api !== 'openai-completions' ? { models: item.models.map(({ reasoningFormat: _format, ...model }) => model) } : {}) };
       // Never reuse a stored or entered secret at a newly edited destination.
       return sameCredentialTarget(item, next) ? next : withApiKey({ ...next, hasApiKey: false }, undefined);
     }) } }));
@@ -197,22 +197,28 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
   };
   const discover = async () => {
     if (!connection || discovering || discoveryAbortRef.current) return;
-    setDiscoveryError(null); setDiscovery(null); setCandidateId('');
+    setDiscoveryError(null); setDiscovery(null);
     try { validateConnection(connection); if (!hasUsableApiKey(connection)) throw new Error('请先填写此连接的 API Key'); } catch (cause) { setDiscoveryError(errorText(cause)); return; }
     const controller = new AbortController(); discoveryAbortRef.current = controller;
     const version = editVersionRef.current;
     setDiscovering(true);
     try {
       const result = await api<Discovery>('/api/models/discover', { method: 'POST', body: JSON.stringify({ connection }), signal: controller.signal });
-      if (!controller.signal.aborted && aliveRef.current && version === editVersionRef.current) { setDiscovery(result); setCandidateId(result.models[0]?.id ?? ''); }
+      if (!controller.signal.aborted && aliveRef.current && version === editVersionRef.current) { setDiscovery(result); }
     } catch (cause) { if (!controller.signal.aborted && aliveRef.current) setDiscoveryError('无法获取模型，请检查服务地址、API Key 和服务权限'); }
     finally { if (discoveryAbortRef.current === controller) { discoveryAbortRef.current = null; if (aliveRef.current) setDiscovering(false); } }
   };
-  const useCandidate = () => {
-    const candidate = discovery?.models.find(item => item.id === candidateId);
+  const useCandidate = (id: string) => {
+    const candidate = discovery?.models.find(item => item.id === id);
     if (!candidate) return;
     const existing = connection?.models.find(item => item.id === candidate.id);
-    touch(); setModelDraft(existing ? modelDraftFrom(existing) : blankModel(candidate.id, candidate.name));
+    touch(); setModelDraft(existing ? modelDraftFrom(existing) : {
+      ...blankModel(candidate.id, candidate.name),
+      contextWindow: candidate.contextWindow === undefined ? '' : String(candidate.contextWindow),
+      maxTokens: candidate.maxTokens === undefined ? '' : String(candidate.maxTokens),
+      reasoning: candidate.reasoning === true ? 'true' : 'false',
+      input: candidate.input?.length === 2 ? 'text-image' : candidate.input?.[0] ?? 'text',
+    });
   };
   const updateModelDraft = (patch: Partial<ModelDraft>) => { touch(); setModelDraft(current => current ? { ...current, ...patch } : current); };
 
@@ -301,18 +307,19 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
               <details className="discovery-options"><summary>指定模型发现地址</summary><label className="field-label" htmlFor="models-url">发现地址 <span className="optional">可选，与服务地址同源</span></label><input id="models-url" type="url" autoComplete="off" spellCheck={false} placeholder="https://api.example.com/v1/models" value={connection.modelsUrl ?? ''} onChange={event => { const modelsUrl = event.target.value; if (modelsUrl) editConnection({ modelsUrl }); else { stopDiscovery(); change(current => ({ ...current, configuration: { ...current.configuration, customConnections: current.configuration.customConnections.map(item => { if (item.id !== connectionId) return item; const { modelsUrl: _url, ...rest } = item; return withApiKey({ ...rest, hasApiKey: false }, undefined); }) } })); } }} /></details>
               <div className="discovery-section"><button type="button" className="secondary-button" onClick={() => { void discover(); }} disabled={discovering}>{discovering ? '正在获取模型…' : '获取可用模型'}</button><p className="field-hint">会请求上方服务的模型目录。你也可以直接填写模型 ID。</p>
                 {discoveryError && <p className="inline-error" role="alert">{discoveryError}。仍可手动填写模型</p>}
-                {discovery && (discovery.models.length ? <div className="discovery-candidates"><label className="field-label" htmlFor="discovered-model">发现的候选模型</label><select id="discovered-model" value={candidateId} onChange={event => setCandidateId(event.target.value)}>{discovery.models.map(item => <option key={item.id} value={item.id}>{item.name ? `${item.name} · ` : ''}{item.id}</option>)}</select><button type="button" className="text-button" onClick={useCandidate}>使用此 ID，填写能力</button></div> : <p className="field-notice">此服务未返回候选模型，请手动填写 ID。</p>)}
+                {discovery && (discovery.models.length ? <div className="discovery-candidates"><label className="field-label" htmlFor="discovered-model">发现的候选模型</label><select id="discovered-model" value="" onChange={event => useCandidate(event.target.value)}><option value="" disabled>选择模型并填入可用信息</option>{discovery.models.map(item => <option key={item.id} value={item.id}>{item.name ? `${item.name} · ` : ''}{item.id}</option>)}</select></div> : <p className="field-notice">此服务未返回候选模型，请手动填写 ID。</p>)}
               </div>
               <div className="field-heading"><label className="field-label" htmlFor="custom-model">已配置模型</label><button type="button" className="text-button" onClick={() => { touch(); setModelDraft(blankModel()); }}>手动添加</button></div>
               <select id="custom-model" value={modelDraft ? '' : selectedCustom?.id ?? ''} onChange={event => { setModelDraft(null); change(current => ({ ...current, selection: { kind: 'custom', connection: connection.id, model: event.target.value } })); }}><option value="" disabled>{modelDraft ? '正在填写模型' : '选择模型'}</option>{connection.models.map(item => <option key={item.id} value={item.id}>{item.name ?? item.id}</option>)}</select>
-              {selectedCustom && !modelDraft && <div className="model-facts"><p>{modelSummary(selectedCustom)}</p><button type="button" className="text-button" onClick={() => { touch(); setModelDraft(modelDraftFrom(selectedCustom)); }}>编辑模型能力</button></div>}
+              {selectedCustom && !modelDraft && <div className="model-facts"><p>{modelSummary(selectedCustom)}</p>{selectedCustom.reasoning && connection.api === 'openai-completions' && !selectedCustom.reasoningFormat && <p className="field-hint">推理参数：自动（沿用接口适配）。仅在服务文档明确要求时更改。</p>}<button type="button" className="text-button" onClick={() => { touch(); setModelDraft(modelDraftFrom(selectedCustom)); }}>编辑模型能力</button></div>}
               {modelDraft && <div className="model-editor">
                 <div className="field-heading"><h3>{modelDraft.originalId ? '编辑模型' : '配置模型'}</h3>{connection.models.length > 0 && <button type="button" className="text-button" onClick={() => setModelDraft(null)}>取消编辑</button>}</div>
-                <p className="field-hint">发现结果只提供 ID 和名称。请查阅服务商文档，明确填写以下限额和能力。</p>
+                <p className="field-hint">已填入目录提供的信息。未提供的 token 限额请按服务文档补充；输入类型默认选为文本；推理格式通常无需更改。</p>
                 <label className="field-label" htmlFor="model-id">模型 ID</label><input id="model-id" spellCheck={false} autoComplete="off" value={modelDraft.id} placeholder="服务商定义的精确 ID" onChange={event => updateModelDraft({ id: event.target.value })} />
                 <label className="field-label" htmlFor="model-name">显示名称 <span className="optional">可选</span></label><input id="model-name" value={modelDraft.name} onChange={event => updateModelDraft({ name: event.target.value })} />
                 <div className="field-grid"><div><label className="field-label" htmlFor="context-window">上下文窗口</label><input id="context-window" type="number" min="1" step="1" placeholder="tokens" value={modelDraft.contextWindow} onChange={event => updateModelDraft({ contextWindow: event.target.value })} /></div><div><label className="field-label" htmlFor="max-tokens">最大输出</label><input id="max-tokens" type="number" min="1" step="1" placeholder="tokens" value={modelDraft.maxTokens} onChange={event => updateModelDraft({ maxTokens: event.target.value })} /></div></div>
-                <div className="field-grid"><div><label className="field-label" htmlFor="reasoning">推理能力</label><select id="reasoning" value={modelDraft.reasoning} onChange={event => updateModelDraft({ reasoning: event.target.value as ModelDraft['reasoning'] })}><option value="" disabled>请选择</option><option value="false">不支持</option><option value="true">支持</option></select></div><div><label className="field-label" htmlFor="model-input">输入类型</label><select id="model-input" value={modelDraft.input} onChange={event => updateModelDraft({ input: event.target.value as ModelDraft['input'] })}><option value="" disabled>请选择</option><option value="text">文本</option><option value="image">图片</option><option value="text-image">文本和图片</option></select></div></div>
+                <div className="field-grid"><div><label className="field-label" htmlFor="reasoning">推理能力</label><select id="reasoning" value={modelDraft.reasoning} onChange={event => updateModelDraft({ reasoning: event.target.value as ModelDraft['reasoning'] })}><option value="" disabled>请选择</option><option value="false">未声明或不支持</option><option value="true">支持</option></select></div><div><label className="field-label" htmlFor="model-input">输入类型</label><select id="model-input" value={modelDraft.input} onChange={event => updateModelDraft({ input: event.target.value as ModelDraft['input'] })}><option value="" disabled>请选择</option><option value="text">文本</option><option value="image">图片</option><option value="text-image">文本和图片</option></select></div></div>
+                {modelDraft.reasoning === 'true' && connection.api === 'openai-completions' && <><label className="field-label" htmlFor="reasoning-format">推理参数格式</label><select id="reasoning-format" value={modelDraft.reasoningFormat} onChange={event => updateModelDraft({ reasoningFormat: event.target.value as ModelDraft['reasoningFormat'] })}><option value="">自动（沿用接口适配）</option><option value="openai">OpenAI · reasoning_effort</option><option value="openrouter">OpenRouter · reasoning.effort</option></select><p className="field-hint">标准 Chat Completions 通常发送 reasoning_effort；仅在服务文档明确要求时更改。不会自动试发其他格式。</p></> }
               </div>}
             </>}
           </section>}
@@ -322,7 +329,7 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
               {availableThinkingLevels.map(level => <option key={level} value={level}>{thinkingLabels[level]}</option>)}
             </select>
             <p className="field-hint">用于 Mira、子任务和 Memory 整理；压缩摘要独立使用最低支持档位。更高强度可能增加耗时和费用，实际推理预算仍受总输出上限约束。</p>
-            <p className="field-hint">{reasoningSupported ? `当前模型档位：${thinkingLabels[activeThinkingLevel]}。` : '当前模型不支持推理，使用关闭档位。'}{requestedThinkingLevel !== activeThinkingLevel ? `默认偏好“${thinkingLabels[requestedThinkingLevel]}”仍保留，切换模型时按能力适配。` : ''}</p>
+            <p className="field-hint">{reasoningSupported ? `当前模型档位：${thinkingLabels[activeThinkingLevel]}。` : '当前模型未声明推理能力，使用关闭档位。'}{requestedThinkingLevel !== activeThinkingLevel ? `默认偏好“${thinkingLabels[requestedThinkingLevel]}”仍保留，切换模型时按能力适配。` : ''}</p>
           </section>
         </fieldset>
         {error && <div className="settings-error" role="alert"><p>{error}</p><button type="button" className="text-button" disabled={saving} onClick={reloadSettings}>重新读取并放弃当前编辑</button></div>}

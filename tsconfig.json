@@ -95,6 +95,7 @@
     "tests/unit/extension-package-preparation.test.mts",
     "tests/unit/feishu-generated-install.test.mts",
     "tests/unit/feishu-dialogue.test.mts",
+    "tests/unit/custom-model-setup.test.mts",
     "tests/unit/mcp-plugin.test.mts",
     "tests/unit/extension-toolsets.test.mts",
     "tests/unit/mcp-http.test.mts",

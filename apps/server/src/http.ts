@@ -281,7 +281,13 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     const timer = setTimeout(abort, 16_000);
     try {
       const result = await backend.discover(connection, controller.signal);
-      return { endpoint: result.endpoint, models: result.models.map(model => ({ id: model.id, ...(model.name === undefined ? {} : { name: model.name }) })) };
+      return { endpoint: result.endpoint, models: result.models.map(model => ({
+        id: model.id, ...(model.name === undefined ? {} : { name: model.name }),
+        ...(model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
+        ...(model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens }),
+        ...(model.input === undefined ? {} : { input: [...model.input] }),
+        ...(model.reasoning === undefined ? {} : { reasoning: model.reasoning }),
+      })) };
     } finally { clearTimeout(timer); request.raw.removeListener('aborted', abort); discovering = false; }
   });
   if (options.assetsDirectory !== undefined) {
