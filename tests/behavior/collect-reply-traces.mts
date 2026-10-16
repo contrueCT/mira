@@ -32,7 +32,7 @@ for (const root of roots) {
   const setup = events.slice(0, setupCount).map((event, index) => {
     const payload = event.event.payload as { text: string; messageFormatVersion?: number };
     if (!pastAnswers[index]) throw Error('Missing captured historical assistant response');
-    return { userText: payload.text, assistantText: pastAnswers[index]!.text, versioned: payload.messageFormatVersion === 1 };
+    return { userText: payload.text, userOccurredAt: event.event.occurredAt, assistantText: pastAnswers[index]!.text, versioned: payload.messageFormatVersion === 1 };
   });
   const currentPayload = events[setupCount]!.event.payload as { text: string; reply?: { messageId: string } };
   const trigger = { text: currentPayload.text, ...(currentPayload.reply ? { replyCaptureId: currentPayload.reply.messageId } : {}) };

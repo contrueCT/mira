@@ -11,6 +11,7 @@ import type { AssistantMessage, TranscriptContext } from '@earendil-works/pi-ai'
 import { getCurrentTools } from '@earendil-works/pi-ai';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 import type { HistoryEntry } from '@mira/life';
+import type { ReplyReference } from '@mira/cognition';
 import { LocalWebService, type WebServiceOptions } from '@mira/server';
 import { PiDurableRuntime, decodeRecords } from '@mira/runtime-pi';
 import { writeWakeInput } from '@mira/workspace';
@@ -18,6 +19,7 @@ import { readWebExtensionConfiguration } from '../../apps/server/src/web-extensi
 import { checkpointReplyIndex } from '../../packages/runtime-pi/src/replies.ts';
 import { createTestDatabase } from '../integration/database.mts';
 import { assistant, model, streamOf } from './fixtures.mts';
+import { bindContextId, requireContextId, uniqueUserContextSource, verifyUserContextRecord, type UserContextSource } from '../behavior/reply-context-binding.mts';
 
 export const nativeScenarioNames = ['older-quote', 'select-target', 'live-input', 'compact-index', 'history-recovery', 'malicious-quote'] as const;
 export type NativeScenarioName = typeof nativeScenarioNames[number];
@@ -26,7 +28,7 @@ type SourceBinding = { captureId: string; kind: HistoryEntry['kind']; role: 'use
 interface CapturedResult { callId: string; toolName: string; payload: unknown }
 export interface NativeTrace {
   name: NativeScenarioName;
-  setup: Array<{ userText: string; assistantText: string; versioned: boolean }>;
+  setup: Array<{ userText: string; userOccurredAt: string; assistantText: string; versioned: boolean }>;
   trigger: { text: string; replyCaptureId?: string };
   lifecycle: { compactBefore: boolean; restartBefore: boolean; compactionModelText?: string;
     capturedReplyIndex?: { path: string; bytes: number };
@@ -60,6 +62,8 @@ export async function openNativeReplay(name: NativeScenarioName) {
   const miraId = `native-reply-${name}`;
   const history = db.store.history(miraId);
   const rebound = new Map<string, string>();
+  const reboundContexts = new Map<string, string>();
+  const contextSources = new Map<string, { before: UserContextSource; after: UserContextSource; userOccurredAt: string }>();
   const verifiedResults = new Set<string>();
   const emitted: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
   const requests: TranscriptContext[] = [];
@@ -86,6 +90,16 @@ export async function openNativeReplay(name: NativeScenarioName) {
     const value = object(reply); assert.equal(typeof value['messageId'], 'string');
     return { ...value, messageId: await resolveCapture(value['messageId'] as string) };
   }
+  function sourceOccurrence(source: UserContextSource): string {
+    assert.equal(source.messages.length, 1);
+    const reference = source.messages[0]!;
+    const definitions = trace.sourceBindings.filter(item => item.captureId === reference.messageId && item.kind === 'event' && item.role === 'user' && item.text === reference.text);
+    assert.equal(definitions.length, 1, 'Context source must identify one exact original user event');
+    const seeds = trace.setup.filter(item => item.versioned && item.userText === reference.text);
+    assert.equal(seeds.length, 1, 'Context source must uniquely match a captured setup event');
+    assert.equal(new Date(seeds[0]!.userOccurredAt).toISOString(), seeds[0]!.userOccurredAt);
+    return seeds[0]!.userOccurredAt;
+  }
   async function decisionFor(step: NativeTrace['steps'][number]): Promise<Decision> {
     const decision = structuredClone(step.decision);
     for (const block of decision.content) if (block.type === 'toolCall') {
@@ -95,7 +109,10 @@ export async function openNativeReplay(name: NativeScenarioName) {
       const args = object(block.arguments);
       if (block.name === 'history_read' || block.name === 'send_reply') {
         const key = block.name === 'history_read' ? 'id' : 'replyToMessageId';
-        assert.equal(typeof args[key], 'string'); args[key] = await resolveCapture(args[key] as string);
+        assert.equal(typeof args[key], 'string');
+        const captureId = args[key] as string;
+        args[key] = block.name === 'history_read' && !trace.sourceBindings.some(item => item.captureId === captureId)
+          ? requireContextId(reboundContexts, captureId) : await resolveCapture(captureId);
       } else if (block.name === 'read') {
         assert.ok(indexPath); assert.equal(args['path'], trace.lifecycle.capturedReplyIndex?.path);
         args['path'] = indexPath;
@@ -116,6 +133,17 @@ export async function openNativeReplay(name: NativeScenarioName) {
       assert.equal(blocksText(actual), blocksText(captured).replaceAll(oldReply['messageId'] as string, newReply['messageId'] as string));
     } else if (expected.toolName === 'history_read') {
       const before = object(JSON.parse(blocksText(captured))), after = object(JSON.parse(blocksText(actual)));
+      if (before['kind'] === 'context') {
+        assert.equal(after['kind'], 'context'); assert.equal(typeof before['id'], 'string');
+        const captureId = before['id'] as string;
+        assert.equal(after['id'], requireContextId(reboundContexts, captureId)); assert.equal(after['miraId'], miraId);
+        const sources = contextSources.get(captureId); assert.ok(sources, 'A verified actual index must establish the containing record');
+        verifyUserContextRecord(before as unknown as HistoryEntry, sources.before, sources.userOccurredAt);
+        verifyUserContextRecord(after as unknown as HistoryEntry, sources.after, sources.userOccurredAt);
+        assert.equal(object(after['record'])['runtimeVersion'], object(before['record'])['runtimeVersion']);
+        assert.deepEqual(await history.read({ id: after['id'] as string }), after, 'Context result is the actual immutable PG original');
+        verifiedResults.add(expected.callId); return;
+      }
       assert.equal(before['kind'], 'event'); assert.equal(after['kind'], before['kind']);
       assert.equal(after['id'], await resolveCapture(before['id'] as string)); assert.equal(after['miraId'], miraId);
       const expectedEvent = object(before['event']), actualEvent = object(after['event']);
@@ -141,11 +169,20 @@ export async function openNativeReplay(name: NativeScenarioName) {
       for (let i = 0; i < before['sources'].length; i++) {
         const oldSource = object(before['sources'][i]), newSource = object(after['sources'][i]);
         assert.ok(Array.isArray(oldSource['messages']));
-        assert.deepEqual(newSource['messages'], await Promise.all(oldSource['messages'].map(remapReply)));
+        const remappedMessages = await Promise.all(oldSource['messages'].map(remapReply));
+        assert.deepEqual(newSource['messages'], remappedMessages);
         assert.deepEqual(newSource['replies'], oldSource['replies']);
+        assert.equal(typeof oldSource['historyId'], 'string');
+        const matched = uniqueUserContextSource(before['sources'], after['sources'], oldSource['historyId'] as string, remappedMessages as ReplyReference[]);
+        assert.equal(matched.historyId, newSource['historyId'], 'The unique semantic match must preserve the captured index order');
         const original = await history.read({ id: newSource['historyId'] as string }); assert.ok(original?.kind === 'context');
         const entry = decodeRecords([original.record], original.record.parentId)[0]; assert.ok(entry?.type === 'message' && entry.message.role === 'user');
         assert.ok(JSON.stringify(entry.message).includes(object((newSource['messages'] as unknown[])[0])['messageId'] as string));
+        const capturedSource = oldSource as unknown as UserContextSource;
+        const userOccurredAt = sourceOccurrence(capturedSource);
+        verifyUserContextRecord(original, matched, userOccurredAt);
+        bindContextId(reboundContexts, capturedSource.historyId, matched.historyId);
+        contextSources.set(capturedSource.historyId, { before: capturedSource, after: matched, userOccurredAt });
       }
     } else assert.fail(`Unverified captured tool ${expected.toolName}`);
     verifiedResults.add(expected.callId);
@@ -199,21 +236,21 @@ export async function openNativeReplay(name: NativeScenarioName) {
     }
   }
   async function start() { service = await LocalWebService.open(options); await settled(); }
-  async function input(text: string, captureId?: string) {
-    return { id: randomUUID(), text, occurredAt: new Date().toISOString(), ...(captureId ? { replyToMessageId: await resolveCapture(captureId) } : {}) };
+  async function input(text: string, captureId?: string, occurredAt = new Date().toISOString()) {
+    return { id: randomUUID(), text, occurredAt, ...(captureId ? { replyToMessageId: await resolveCapture(captureId) } : {}) };
   }
   async function close() { await service?.close(); service = undefined; await db.close(); await rm(root, { recursive: true, force: true }); }
   try {
     for (const [index, seed] of trace.setup.entries()) {
       if (!seed.versioned) {
         assert.equal(index, 0, 'Only captured first legacy original may be unversioned');
-        const writer = await db.acquire(miraId); const event = await input(seed.userText);
+        const writer = await db.acquire(miraId); const event = await input(seed.userText, undefined, seed.userOccurredAt);
         try { await writer.receiveLiveInput({ id: event.id, type: 'web.message', source: 'user', occurredAt: event.occurredAt, payload: { text: seed.userText } }, { id: `web:${event.id}`, reason: 'User message from the local web interface' }); }
         finally { await writer.close(); }
         await start();
       } else {
         if (!service) await start();
-        await service!.submit(await input(seed.userText)); await settled();
+        await service!.submit(await input(seed.userText, undefined, seed.userOccurredAt)); await settled();
       }
       assert.equal(setupCount, index + 1);
     }

@@ -32,6 +32,10 @@ export interface Decision { content: AssistantMessage['content']; stopReason: 's
 class ProbeWriter extends LiveMemoryWriter {
   override readonly miraId = fixtureMiraId;
   constructor() { super(); this.state.miraId = this.miraId; }
+  // This probe exposes the production declarations, but its safety boundary
+  // rejects subagent calls before execution and no child can be persisted.
+  // The manager still invokes the writer's lifecycle cleanup when closing.
+  async interruptSubagents(): Promise<void> {}
 }
 export async function runProbe(root: string, scenario: Scenario) {
   if (!path.isAbsolute(root) || !root.startsWith('/tmp/mira-reply-probe-')) throw Error('Use a fresh /tmp/mira-reply-probe-* directory');

@@ -1,0 +1,50 @@
+[
+  {
+    "scenario": "older-quote",
+    "chunk_id": "a3d200",
+    "wall_time_seconds": 0.000026201,
+    "exit_code": 1,
+    "original_token_count": 187,
+    "output": "{\"complete\":\"older-quote\",\"requests\":1}\nfile:///workspace/scratch/bfd0673e831e/mira-squash-replies/apps/server/src/subagents.ts:266\n    if (!this.#options.writer.signal.aborted) await this.#options.writer.interruptSubagents();\n                                                                         ^\n\nTypeError: this[#options].writer.interruptSubagents is not a function\n    at SubagentManager.close (file:///workspace/scratch/bfd0673e831e/mira-squash-replies/apps/server/src/subagents.ts:266:74)\n    at async runProbe (file:///workspace/scratch/bfd0673e831e/mira-squash-replies/tests/behavior/reply-probe.mts:151:83)\n    at async file:///workspace/scratch/bfd0673e831e/mira-squash-replies/tests/behavior/reply-probe.mts:156:3\n\nNode.js v24.19.0\n"
+  },
+  {
+    "scenario": "select-target",
+    "chunk_id": "b630fa",
+    "wall_time_seconds": 0.000027665,
+    "exit_code": 1,
+    "original_token_count": 212,
+    "output": "{\"request\":2,\"file\":\"/tmp/mira-reply-probe-integrated-20261016T0908-select-target/request-2.json\"}\n{\"complete\":\"select-target\",\"requests\":2}\nfile:///workspace/scratch/bfd0673e831e/mira-squash-replies/apps/server/src/subagents.ts:266\n    if (!this.#options.writer.signal.aborted) await this.#options.writer.interruptSubagents();\n                                                                         ^\n\nTypeError: this[#options].writer.interruptSubagents is not a function\n    at SubagentManager.close (file:///workspace/scratch/bfd0673e831e/mira-squash-replies/apps/server/src/subagents.ts:266:74)\n    at async runProbe (file:///workspace/scratch/bfd0673e831e/mira-squash-replies/tests/behavior/reply-probe.mts:151:83)\n    at async file:///workspace/scratch/bfd0673e831e/mira-squash-replies/tests/behavior/reply-probe.mts:156:3\n\nNode.js v24.19.0\n"
+  },
+  {
+    "scenario": "live-input",
+    "chunk_id": "af0a4a",
+    "wall_time_seconds": 0.000025945,
+    "exit_code": 1,
+    "original_token_count": 211,
+    "output": "{\"request\":1,\"file\":\"/tmp/mira-reply-probe-integrated-20261016T0908-live-input/request-1.json\"}\n{\"complete\":\"live-input\",\"requests\":1}\nfile:///workspace/scratch/bfd0673e831e/mira-squash-replies/apps/server/src/subagents.ts:266\n    if (!this.#options.writer.signal.aborted) await this.#options.writer.interruptSubagents();\n                                                                         ^\n\nTypeError: this[#options].writer.interruptSubagents is not a function\n    at SubagentManager.close (file:///workspace/scratch/bfd0673e831e/mira-squash-replies/apps/server/src/subagents.ts:266:74)\n    at async runProbe (file:///workspace/scratch/bfd0673e831e/mira-squash-replies/tests/behavior/reply-probe.mts:151:83)\n    at async file:///workspace/scratch/bfd0673e831e/mira-squash-replies/tests/behavior/reply-probe.mts:156:3\n\nNode.js v24.19.0\n"
+  },
+  {
+    "scenario": "compact-index",
+    "chunk_id": "da85cd",
+    "wall_time_seconds": 0.000027633,
+    "exit_code": 1,
+    "original_token_count": 287,
+    "output": "{\"request\":1,\"file\":\"/tmp/mira-reply-probe-integrated-20261016T0908-compact-index/request-1.json\"}\n{\"request\":2,\"file\":\"/tmp/mira-reply-probe-integrated-20261016T0908-compact-index/request-2.json\"}\n{\"request\":3,\"file\":\"/tmp/mira-reply-probe-integrated-20261016T0908-compact-index/request-3.json\"}\n{\"request\":4,\"file\":\"/tmp/mira-reply-probe-integrated-20261016T0908-compact-index/request-4.json\"}\n{\"complete\":\"compact-index\",\"requests\":4}\nfile:///workspace/scratch/bfd0673e831e/mira-squash-replies/apps/server/src/subagents.ts:266\n    if (!this.#options.writer.signal.aborted) await this.#options.writer.interruptSubagents();\n                                                                         ^\n\nTypeError: this[#options].writer.interruptSubagents is not a function\n    at SubagentManager.close (file:///workspace/scratch/bfd0673e831e/mira-squash-replies/apps/server/src/subagents.ts:266:74)\n    at async runProbe (file:///workspace/scratch/bfd0673e831e/mira-squash-replies/tests/behavior/reply-probe.mts:151:83)\n    at async file:///workspace/scratch/bfd0673e831e/mira-squash-replies/tests/behavior/reply-probe.mts:156:3\n\nNode.js v24.19.0\n"
+  },
+  {
+    "scenario": "history-recovery",
+    "chunk_id": "32275a",
+    "wall_time_seconds": 0.000028625,
+    "exit_code": 1,
+    "original_token_count": 316,
+    "output": "{\"request\":1,\"file\":\"/tmp/mira-reply-probe-integrated-20261016T0908-history-recovery/request-1.json\"}\n{\"request\":2,\"file\":\"/tmp/mira-reply-probe-integrated-20261016T0908-history-recovery/request-2.json\"}\n{\"request\":3,\"file\":\"/tmp/mira-reply-probe-integrated-20261016T0908-history-recovery/request-3.json\"}\n{\"request\":4,\"file\":\"/tmp/mira-reply-probe-integrated-20261016T0908-history-recovery/request-4.json\"}\n{\"request\":5,\"file\":\"/tmp/mira-reply-probe-integrated-20261016T0908-history-recovery/request-5.json\"}\n{\"complete\":\"history-recovery\",\"requests\":5}\nfile:///workspace/scratch/bfd0673e831e/mira-squash-replies/apps/server/src/subagents.ts:266\n    if (!this.#options.writer.signal.aborted) await this.#options.writer.interruptSubagents();\n                                                                         ^\n\nTypeError: this[#options].writer.interruptSubagents is not a function\n    at SubagentManager.close (file:///workspace/scratch/bfd0673e831e/mira-squash-replies/apps/server/src/subagents.ts:266:74)\n    at async runProbe (file:///workspace/scratch/bfd0673e831e/mira-squash-replies/tests/behavior/reply-probe.mts:151:83)\n    at async file:///workspace/scratch/bfd0673e831e/mira-squash-replies/tests/behavior/reply-probe.mts:156:3\n\nNode.js v24.19.0\n"
+  },
+  {
+    "scenario": "malicious-quote",
+    "chunk_id": "9deb4b",
+    "wall_time_seconds": 0.000028649,
+    "exit_code": 1,
+    "original_token_count": 213,
+    "output": "{\"request\":1,\"file\":\"/tmp/mira-reply-probe-integrated-20261016T0908-malicious-quote/request-1.json\"}\n{\"complete\":\"malicious-quote\",\"requests\":1}\nfile:///workspace/scratch/bfd0673e831e/mira-squash-replies/apps/server/src/subagents.ts:266\n    if (!this.#options.writer.signal.aborted) await this.#options.writer.interruptSubagents();\n                                                                         ^\n\nTypeError: this[#options].writer.interruptSubagents is not a function\n    at SubagentManager.close (file:///workspace/scratch/bfd0673e831e/mira-squash-replies/apps/server/src/subagents.ts:266:74)\n    at async runProbe (file:///workspace/scratch/bfd0673e831e/mira-squash-replies/tests/behavior/reply-probe.mts:151:83)\n    at async file:///workspace/scratch/bfd0673e831e/mira-squash-replies/tests/behavior/reply-probe.mts:156:3\n\nNode.js v24.19.0\n"
+  }
+]
