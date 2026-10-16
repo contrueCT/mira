@@ -1118,7 +1118,7 @@ test('reply timeline keeps message sides and centered dividers on desktop and na
   }
 });
 
-for (const intent of ['latest', 'send', 'reply', 'compose'] as const) {
+for (const intent of ['latest', 'send', 'reply', 'compose', 'settings-history', 'attachment-history'] as const) {
   test(`delayed quote lookup cannot steal scroll or focus after ${intent}`, async ({ page }) => {
     const target = '11111111-1111-4111-8111-111111111111';
     let releasePage!: () => void; let pageFinished!: () => void;
@@ -1134,6 +1134,10 @@ for (const intent of ['latest', 'send', 'reply', 'compose'] as const) {
     let routeFailure: unknown;
     try {
       const items = Array.from({ length: 30 }, (_, index) => ({ id: `visible-${index}`, role: 'assistant', text: `合成消息 ${index}，用于形成可滚动的消息记录。`, occurredAt: new Date(Date.UTC(2026, 9, 16, 3, index)).toISOString(), ...(index === 0 ? { reply: { messageId: target, role: 'assistant', text: '延迟读取的原消息' } } : {}) }));
+      if (intent === 'attachment-history') {
+        Object.assign(items[0]!, { attachments: [{ id: '55555555-5555-4555-8555-555555555555', name: 'history-fixture.txt', mimeType: 'text/plain', size: 7, sha256: 'a'.repeat(64) }] });
+        await page.route('**/api/attachments/*', route => route.fulfill({ body: 'fixture', contentType: 'text/plain' }));
+      }
       await page.route('**/api/timeline', async route => {
         if (route.request().method() === 'POST') {
           reads++;
@@ -1149,6 +1153,13 @@ for (const intent of ['latest', 'send', 'reply', 'compose'] as const) {
       await page.route('**/api/messages', route => route.fulfill({ json: { id: (route.request().postDataJSON() as { id: string }).id, receipt: 'inserted' } }));
       await page.goto('/');
       const input = page.getByLabel('给 Mira 发消息', { exact: true });
+      const historyModal = intent === 'settings-history' || intent === 'attachment-history';
+      const modalControl = intent === 'settings-history' ? page.getByRole('button', { name: '模型设置', exact: true }) : page.getByRole('button', { name: '查看附件 history-fixture.txt', exact: true });
+      if (historyModal) {
+        await modalControl.click(); await expect(page.getByRole('dialog')).toBeVisible();
+        await page.goBack(); await expect(page.getByRole('dialog')).toHaveCount(0);
+        await expect(modalControl).toBeFocused();
+      }
       if (intent === 'send') await input.fill('查找期间发送的新消息');
       await page.getByRole('button', { name: '查看引用的消息' }).click();
       await expect.poll(() => reads).toBe(1);
@@ -1156,6 +1167,12 @@ for (const intent of ['latest', 'send', 'reply', 'compose'] as const) {
       if (intent === 'latest') await page.getByRole('button', { name: '回到最新消息' }).click();
       else if (intent === 'send') { await page.getByRole('button', { name: '发送消息', exact: true }).click(); await expect(input).toBeFocused(); }
       else if (intent === 'reply') { await page.locator('[data-message-id="visible-0"]').getByRole('button', { name: '回复这条消息' }).click(); await expect(input).toBeFocused(); }
+      else if (historyModal) {
+        // Forward activates the modal through popstate/hashchange, not its button handler.
+        await page.goForward(); await expect(page.getByRole('dialog')).toBeVisible();
+        await page.goBack(); await expect(page.getByRole('dialog')).toHaveCount(0);
+        await expect(modalControl).toBeFocused();
+      }
       else { await input.click(); await input.pressSequentially('查找期间继续编辑的草稿'); await expect(input).toBeFocused(); }
       await expect(page.getByRole('button', { name: '取消查找' })).toHaveCount(0);
       const scrollAfterIntent = await page.locator('.timeline-scroll').evaluate(element => element.scrollTop);
@@ -1167,6 +1184,10 @@ for (const intent of ['latest', 'send', 'reply', 'compose'] as const) {
       await expect(page.locator(`[data-message-id="${target}"]`)).toHaveCount(0);
       await expect(page.getByText('查找已停止，引用内容仍保留。')).toHaveCount(0);
       if (intent === 'reply' || intent === 'send' || intent === 'compose') await expect(input).toBeFocused();
+      if (historyModal) {
+        await expect(modalControl).toBeFocused();
+        expect(Math.abs(await page.locator('.timeline-scroll').evaluate(element => element.scrollTop) - scrollAfterIntent)).toBeLessThan(2);
+      }
       if (intent === 'compose') {
         await expect(input).toHaveValue('查找期间继续编辑的草稿');
         expect(Math.abs(await page.locator('.timeline-scroll').evaluate(element => element.scrollTop) - scrollAfterIntent)).toBeLessThan(2);

@@ -83,6 +83,15 @@ export function App() {
   const inFlightRef = useRef<Promise<void> | null>(null);
   const pollingRef = useRef<ReturnType<typeof createStatusPolling> | null>(null);
 
+  const cancelQuoteNavigation = useCallback(() => {
+    const controller = quoteAbortRef.current;
+    if (!controller) return;
+    // Release only this lookup's ownership before abort callbacks can run.
+    quoteAbortRef.current = null;
+    controller.abort(); olderBusyRef.current = false;
+    setQuoteSearch(false); setLoadingOlder(false); setQuoteNotice(null);
+  }, []);
+
   const updatePending = useCallback((change: (current: PendingMessage[]) => PendingMessage[], mustPersist = false) => {
     if (recovered.error) return false; // Never overwrite a queue we could not recover.
     const next = change(pendingRef.current);
@@ -155,10 +164,10 @@ export function App() {
   }, [refresh]);
 
   useEffect(() => {
-    const sync = () => { closingSettingsRef.current = false; closingPreviewRef.current = false; setSettingsOpen(window.location.hash === '#settings'); setPreviewId(window.location.hash.startsWith('#attachment=') ? window.location.hash.slice(12) : null); };
+    const sync = () => { if (window.location.hash === '#settings' || window.location.hash.startsWith('#attachment=')) cancelQuoteNavigation(); closingSettingsRef.current = false; closingPreviewRef.current = false; setSettingsOpen(window.location.hash === '#settings'); setPreviewId(window.location.hash.startsWith('#attachment=') ? window.location.hash.slice(12) : null); };
     window.addEventListener('hashchange', sync); window.addEventListener('popstate', sync);
     return () => { window.removeEventListener('hashchange', sync); window.removeEventListener('popstate', sync); };
-  }, []);
+  }, [cancelQuoteNavigation]);
 
   useLayoutEffect(() => {
     const container = scrollRef.current;
@@ -189,14 +198,6 @@ export function App() {
     nearBottomRef.current = isNear;
     setNearBottom(isNear);
   };
-  const cancelQuoteNavigation = () => {
-    const controller = quoteAbortRef.current;
-    if (!controller) return;
-    // Release only this lookup's ownership before abort callbacks can run.
-    quoteAbortRef.current = null;
-    controller.abort(); olderBusyRef.current = false;
-    setQuoteSearch(false); setLoadingOlder(false); setQuoteNotice(null);
-  };
   const scrollToLatest = () => {
     cancelQuoteNavigation();
     nearBottomRef.current = true; setNearBottom(true);
@@ -215,6 +216,7 @@ export function App() {
 
   const sendEnvelope = async (envelope: MessageEnvelope, retry = false, fromMemory = memoryRequestRef.current?.id === envelope.id) => {
     if (sendingRef.current || recovered.error) return;
+    cancelQuoteNavigation();
     sendingRef.current = true; setSending(true);
     const controller = new AbortController(); postAbortRef.current = controller;
     const timeout = setTimeout(() => controller.abort(), 20_000);
@@ -273,7 +275,7 @@ export function App() {
     if (window.history.state?.miraSettings) window.history.back();
     else { window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}`); closingSettingsRef.current = false; setSettingsOpen(false); }
   };
-  const addFiles = (files: File[]) => { if (sendingRef.current || recovered.error) return; setComposerError(attachments.add(files)); };
+  const addFiles = (files: File[]) => { if (sendingRef.current || recovered.error) return; cancelQuoteNavigation(); setComposerError(attachments.add(files)); };
   for (const item of items) for (const attachment of item.attachments ?? []) previewRegistry.current.set(attachment.id, attachment);
   for (const attachment of attachments.attachments) previewRegistry.current.set(attachment.id, attachment);
   const preview = previewId ? previewRegistry.current.get(previewId) : undefined;
@@ -399,7 +401,7 @@ export function App() {
         {(quoteSearch || quoteNotice) && <p className="quote-search-status" role="status">{quoteSearch ? '正在查找引用消息…' : quoteNotice}{quoteSearch && <button type="button" className="text-button" onClick={() => quoteAbortRef.current?.abort()}>取消查找</button>}</p>}
         {!nearBottom && <button className="latest-button" type="button" onClick={scrollToLatest}><ChevronDown />回到最新消息</button>}
         {replyTarget && <div className="composer-reply" aria-label="回复预览"><span aria-hidden="true">↪</span><span className="composer-reply-text"><strong>回复 {replyTarget.source?.label ?? 'Mira'}</strong><span>{replySnippet(replyTarget)}</span></span><button type="button" aria-label="取消回复" title="取消回复" onClick={() => { setReplyTarget(null); textareaRef.current?.focus(); }}>×</button></div>}
-        <form className={`composer ${composer.includes('\n') || attachments.drafts.length ? 'expanded' : ''} ${dragging ? 'dragging' : ''}`} onSubmit={submit}
+        <form className={`composer ${composer.includes('\n') || attachments.drafts.length ? 'expanded' : ''} ${dragging ? 'dragging' : ''}`} onSubmit={submit} onFocusCapture={cancelQuoteNavigation}
           onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDragging(true); } }}
           onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }}
           onDrop={event => { event.preventDefault(); setDragging(false); addFiles([...event.dataTransfer.files]); }}
@@ -412,7 +414,7 @@ export function App() {
           </div>)}</div>}
           <button className="add-attachment-button icon-button" type="button" disabled={sending || !!recovered.error} onClick={() => fileInputRef.current?.click()} aria-label="添加附件" title="添加图片、视频或文件">+</button>
           <label className="sr-only" htmlFor="message-input">给 Mira 发消息</label>
-          <textarea ref={textareaRef} id="message-input" placeholder="给 Mira 发消息…" value={composer} onFocus={cancelQuoteNavigation} onChange={event => { cancelQuoteNavigation(); setComposer(event.target.value); setComposerError(null); }} onKeyDown={onComposerKey} rows={1} disabled={sending || !!recovered.error} maxLength={50_000} />
+          <textarea ref={textareaRef} id="message-input" placeholder="给 Mira 发消息…" value={composer} onChange={event => { cancelQuoteNavigation(); setComposer(event.target.value); setComposerError(null); }} onKeyDown={onComposerKey} rows={1} disabled={sending || !!recovered.error} maxLength={50_000} />
           <button className="send-button" type="submit" disabled={(!composer.trim() && !attachments.drafts.length) || !attachments.ready || sending || !!recovered.error} aria-label={sending ? '正在发送' : '发送消息'} title="发送消息"><ArrowUp /></button>
         </form>
         {composerError && <p className="composer-error" role="alert">{composerError}</p>}
