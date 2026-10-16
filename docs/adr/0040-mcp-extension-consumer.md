@@ -10,10 +10,23 @@ A toolset candidate is cloned and validated in full before a synchronous publica
 
 MCP `isError` remains a known failed outcome through the existing durable runtime. Transport loss remains unknown and is not replayed. Only text/structured content is delivered; unsupported media is explicitly reported. Server tool names are used unchanged in model declarations, Settings and remote calls. Invalid names (including names longer than 64 characters) and actual global duplicates fail clearly; no prefixes, hashes, aliases or name mappings are generated. A rejected replacement preserves the existing toolset atomically, including malformed catalogs rejected at the official SDK result-validation boundary. Transport/authentication failures remain distinct. Tool selection is configuration, never an approval engine.
 
-Protected settings reuse safe action handles and generic action groups. The existing vendor-neutral `extension_manage` exposes settings-start/current/cancel through the existing runner, with extension ID and revision fences; `extension_inspect` exposes only available action IDs and revision. MCP registers no installation control tool. OAuth follows SDK discovery/PKCE, installation/server/issuer/registration-scoped credentials, one-use ephemeral state, issuer checking, bounded expiry and joined cancellation. Default loopback assumes the same browser computer. A different browser requires an explicitly configured provider-accepted HTTPS callback via an already existing user-managed route; no automatic network changes. Authorize is an explicit action, and model tools return safe operation receipts only.
+Protected settings reuse safe action handles and generic action groups. The existing vendor-neutral `extension_manage` exposes settings-start/current/cancel through the existing runner, with extension ID and revision fences; `extension_inspect` exposes available action IDs/revision and fixed connection state/code, never details, credentials or authorization URLs. Generic diagnostic codes include name_conflict and invalid_tools; consumers select them without publishing remote metadata. MCP registers no installation control tool. OAuth follows SDK discovery/PKCE, installation/server/issuer/registration-scoped credentials, one-use ephemeral state, issuer checking, bounded expiry and joined cancellation. Default loopback assumes the same browser computer. A different browser requires an explicitly configured provider-accepted HTTPS callback via an already existing user-managed route; no automatic network changes. Authorize is an explicit action, and model tools return safe operation receipts only.
 
 Local launch uses a pinned installed executable with a minimal environment. The official transport owns MCP framing; a small POSIX supervisor owns only the server's spawned process group and joins/escalates shutdown. It is not a sandbox and cannot prevent deliberate reparenting/detaching by trusted code.
 
 Tasks, Apps, sampling, automatic resources, prompts-to-skills and marketplace are out of scope. Synthetic protocol/auth fixtures are not live-account validation. See the package README and `test:mcp:e2e` for verification boundaries.
 
 SDK 2.3.1 has direct raw-console warnings outside `client.onerror`. The plugin uses a quiet public output-schema validator and the public Client.request boundary to exclude header-mirroring (`x-mcp-header`) tools before high-level listing, with a fixed settings notice derived from the current complete listing. No global console interception or private SDK method is used; this extra HTTP mapping capability is outside the first version.
+
+The ordinary source skill catalog includes `mira-mcp` for connection/lifecycle
+requests. It points to this package and existing generic artifact/management
+workflow; it adds no tool, installer, account permission or runtime mechanism.
+The real skill loader, main/child prompt catalog and ordinary read delivery are
+covered by bundled-skills tests. Model-selected execution probes and deterministic
+mechanism tests have separate acceptance claims.
+
+A native cold-start probe revealed that an active extension with a rejected MCP
+catalog looked indistinguishable from an active empty service to the model.
+The existing generic settings projection now includes only validated state/code;
+ordinary non-MCP fixture tests verify this projection and retained secret/detail
+redaction. Connection failures remain separate from lifecycle application status.

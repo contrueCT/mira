@@ -193,7 +193,7 @@ for (const [revision, detail] of [[-2, /Duplicate tool name/], [-3, /Invalid too
       fixture.change(revision); await until(fixture.held); fixture.release();
       await until(async () => (await host.extensionSettings('remote'))?.status.state === 'error');
       const status = (await host.extensionSettings('remote'))!.status;
-      assert.equal(status.code, 'configuration');
+      assert.equal(status.code, revision === -2 ? 'name_conflict' : 'invalid_tools');
       assert.match(status.details![0]!.value, detail);
       assert.deepEqual(await host.prepare(), previous);
       assert.equal((await echo.execute({}, { callId: 'after-rejection', signal: new AbortController().signal })).isError, false);

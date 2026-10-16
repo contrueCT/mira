@@ -80,7 +80,7 @@ test('real MCP installations reject actual duplicate names without redirecting t
     const rejected = owner === 'first' ? 'second' : 'first';
     assert.equal((await host.extensionSettings(owner))?.status.state, 'connected');
     const status = (await host.extensionSettings(rejected))!.status;
-    assert.equal(status.state, 'error'); assert.equal(status.code, 'configuration');
+    assert.equal(status.state, 'error'); assert.equal(status.code, 'name_conflict');
     assert.match(status.details![0]!.value, /Duplicate tool name/);
     assert.equal((await tools[0]!.tool.execute({ text: 'original' }, { callId: 'original', signal: signal() })).text, 'original\n{"text":"original"}');
     await host.requestChange(owner, { action: 'disable' });

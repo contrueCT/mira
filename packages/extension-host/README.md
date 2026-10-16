@@ -234,6 +234,10 @@ code must honor the signal and join its background work during cleanup. Closing 
 window does not cancel an already accepted action. Retiring an activation cancels it
 and drains its execution lease. UI writes may save credentials before a config apply
 fails; reread actual state rather than retrying an unknown outcome automatically.
+The ordinary `extension_inspect` tool exposes only settings action IDs/revision and
+fixed connection state/code. Codes include generic `name_conflict` and
+`invalid_tools`; details, authorization links and credentials remain protected.
+An active extension may still report a disconnected or failed connection.
 
 声明式设置的返回 handle 与受保护 HTTP 共用一个动作 runner；工具可自行启动动作，
 无框架 connect 工具。handle 只投影 operation receipt，并拒绝旧 activation。

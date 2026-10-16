@@ -4,7 +4,7 @@ import { mkdtemp, realpath, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { ExtensionHost } from '@mira/extension-host';
-import { createModelTransport, extensionTools } from '@mira/server';
+import { createModelTransport, extensionManagementTools, extensionTools } from '@mira/server';
 import { httpFixture } from '../fixtures/mcp/http.mts';
 import { assistant, input, MemoryWriter, runtime, streamOf } from '../recovery/fixtures.mts';
 for (const remoteTool of ['known_error', 'unknown_after_effect']) test(`real MCP ${remoteTool} preserves durable known/unknown boundary without replay`, { timeout: 30_000 }, async () => {
@@ -74,4 +74,26 @@ test('actual MCP summary and structured records both reach the official provider
     assert.ok(payload && typeof payload === 'object' && !Array.isArray(payload));
     assert.deepEqual(payload['details'], { structuredContent: { accounts: [{ id: 'acct-123', balance: 42 }] } });
   } finally { await host.close(); await fixture.close(); await writer.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('model inspection distinguishes a real duplicate MCP catalog from an active connected installation', { timeout: 30_000 }, async () => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-mcp-model-conflict-')));
+  const entries = ['first', 'second'].map(id => ({ id, path: path.resolve('packages/mcp-plugin/src/index.ts'), config: { command: process.execPath,
+    argsJson: JSON.stringify([path.resolve('tests/fixtures/mcp/server.mts'), 'legacy']), toolsJson: '["echo"]' } }));
+  const configurationFile = path.join(root, 'extensions.json');
+  await writeFile(configurationFile, JSON.stringify({ entries }));
+  const host = new ExtensionHost({ entries, configurationFile, receive: async () => 'inserted' });
+  try {
+    await host.start();
+    const tools = await host.prepare(); assert.equal(tools.length, 1);
+    const owner = tools[0]!.extensionId; const rejected = owner === 'first' ? 'second' : 'first';
+    const inspect = extensionManagementTools(host).find(tool => tool.name === 'extension_inspect')!;
+    const projected = await inspect.execute('inspect-conflict', {});
+    const text = projected.content[0]; assert.equal(text?.type, 'text');
+    const view = JSON.parse((text as { text: string }).text);
+    assert.deepEqual(view.extensions.find((item: { id: string }) => item.id === rejected).settings.connection, { state: 'error', code: 'name_conflict' });
+    assert.deepEqual(view.extensions.find((item: { id: string }) => item.id === owner).settings.connection, { state: 'connected' });
+    assert.ok(!JSON.stringify(view).includes('Duplicate tool name.'), 'only the fixed code crosses the model boundary');
+  } finally { await host.close(); await rm(root, { recursive: true, force: true }); }
 });

@@ -202,12 +202,16 @@ Existing extension lifecycle/configuration remains authoritative. See ADR 0035.
 The existing model-facing `extension_manage` also supports `settings-start`
 (`actionId` and exact `expectedRevision`), `settings-current`, and
 `settings-cancel` (exact `operationId`), always targeting the configured extension
-`id`. `extension_inspect` exposes only `{ revision, actions: string[] }` in each
-extension's `settings`, or null when unavailable. These are generic actions from
+`id`. `extension_inspect` exposes `{ revision, actions: string[], connection }` in
+each extension's `settings`, or null when unavailable. `connection` contains only
+the Host-validated fixed `state` and optional `code`, including `name_conflict` and
+`invalid_tools`. Active extension code is distinct from a connected service.
+These are generic actions from
 the same Host runner, with its activation/revision and single-flight checks.
 Settings management returns only `{ operation: { id, action, state } | null }`;
-it never returns settings fields, connection status, authorization URLs or raw
-errors. A start receipt can remain pending; cancellation requests do not undo
+these operation receipts never return settings fields, connection status,
+authorization URLs or raw errors. Inspection also excludes private status details,
+fields and authorization links. A start receipt can remain pending; cancellation requests do not undo
 external effects. Recheck the receipt rather than assuming either is complete.
 Settings credentials remain write-only through the protected settings UI.
 

@@ -10,12 +10,13 @@ import { extensionManagementTools } from '@mira/server';
 
 type Operation = { id: string; action: string; state: 'pending' | 'succeeded' | 'failed' | 'cancelled' };
 type Receipt = { operation?: Operation | null; status?: string; error?: string };
-type SettingsMetadata = { revision: string; actions: string[] };
+type SettingsMetadata = { revision: string; actions: string[]; connection: { state: string; code?: string } };
 type Inspection = { extensions: Array<{ id: string; status: string; config: unknown; settings: SettingsMetadata | null }> };
 type FixtureState = {
   starts: number;
   cleanups: number;
   visibleActions: string[];
+  code?: string;
   handles: Array<{ start(action: string): Promise<Operation>; current(): Promise<Operation | null> }>;
 };
 const sdk = import.meta.resolve('@mira/extension-sdk');
@@ -49,7 +50,7 @@ async function fixture(run: (host: ExtensionHost, state: FixtureState, manage: A
           { id: 'fail', label: 'Fail', async execute() { state.starts++; throw Error(${JSON.stringify(privateError)}); } },
           { id: 'hidden', label: 'Hidden', async execute() { state.starts++; } },
         ],
-        status: () => ({ state: 'pending', visibleActions: state.visibleActions,
+        status: () => ({ state: 'pending', visibleActions: state.visibleActions, ...(state.code ? { code: state.code } : {}),
           details: [{ label: 'Provider', value: 'synthetic-status-detail' }],
           authorization: { url: ${JSON.stringify(settingsOnly[3])}, label: 'Open authorization', qr: true } }),
       });
@@ -81,11 +82,11 @@ function assertSafe(value: unknown): void {
   for (const forbidden of [...settingsOnly, privateError, 'synthetic-private-token']) assert.ok(!text.includes(forbidden), forbidden);
 }
 
-test('existing inspect exposes only revision and available action IDs for any ordinary extension', async () => {
+test('existing inspect exposes revision, action IDs and fixed connection state for any ordinary extension', async () => {
   await fixture(async (host, _state, manage, inspect) => {
     const view = await call<Inspection>(inspect, {});
     const ordinary = view.extensions.find(entry => entry.id === 'ordinary')!;
-    assert.deepEqual(ordinary.settings, { revision: (await host.extensionSettings('ordinary'))!.revision, actions: ['synchronize', 'complete', 'fail'] });
+    assert.deepEqual(ordinary.settings, { revision: (await host.extensionSettings('ordinary'))!.revision, actions: ['synchronize', 'complete', 'fail'], connection: { state: 'pending' } });
     assert.deepEqual(ordinary.config, { account: 'ordinary-public-config' }, 'existing lifecycle inspection remains unchanged');
     assert.equal(view.extensions.find(entry => entry.id === 'plain')!.settings, null);
     assertSafe(view);
@@ -206,5 +207,21 @@ test('settings management never forwards view fields, extra operation fields or 
       assert.equal(receipt.error, 'Extension settings request could not be confirmed. Inspect current state before retrying. Raw diagnostics are hidden.');
       assertSafe(receipt);
     }
+  });
+});
+
+
+test('ordinary settings diagnostic codes are fixed, useful and never expose private details', async () => {
+  await fixture(async (_host, state, _manage, inspect) => {
+    for (const code of ['authentication', 'network', 'configuration', 'name_conflict', 'invalid_tools', 'unknown']) {
+      state.code = code;
+      const view = await call<Inspection>(inspect, {});
+      assert.deepEqual(view.extensions.find(entry => entry.id === 'ordinary')!.settings!.connection, { state: 'pending', code });
+      assertSafe(view);
+    }
+    state.code = 'synthetic-private-token';
+    const rejected = await call<Inspection>(inspect, {});
+    assert.deepEqual(rejected.extensions.find(entry => entry.id === 'ordinary')!.settings!.connection, { state: 'error', code: 'unknown' });
+    assertSafe(rejected);
   });
 });

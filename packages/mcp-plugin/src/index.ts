@@ -4,7 +4,10 @@ import { parseConfig, type McpConfig } from './config.ts';
 import { createConnection, remoteTools, resultProjection } from './client.ts';
 import { OAuthSession, safeOAuthFetch } from './oauth.ts';
 
-class CatalogError extends Error {}
+class CatalogError extends Error {
+  readonly code: 'name_conflict' | 'invalid_tools';
+  constructor(message: string, code: 'name_conflict' | 'invalid_tools' = 'invalid_tools') { super(message); this.code = code; }
+}
 
 type Connection = Awaited<ReturnType<typeof createConnection>>;
 /** One ordinary extension activation owns exactly one configured MCP server. */
@@ -86,7 +89,7 @@ class McpInstallation {
       const message = error instanceof Error ? error.message : '';
       throw new CatalogError(message.includes('uplicate') ? 'Duplicate tool name. Each tool must have a unique name across all installed extensions and built-in tools.'
         : message.includes('tool name') ? 'Invalid tool name. Use 1-64 ASCII letters, digits, underscores or hyphens, starting with a letter or underscore. Server names are used unchanged.'
-        : 'Invalid MCP tool catalog. Check the server tool definitions. The previous tools remain unchanged.');
+        : 'Invalid MCP tool catalog. Check the server tool definitions. The previous tools remain unchanged.', message.includes('uplicate') ? 'name_conflict' : 'invalid_tools');
     }
   }
   private async open(signal: AbortSignal, interactive: boolean, fetch?: typeof globalThis.fetch): Promise<Connection> {
@@ -144,7 +147,7 @@ class McpInstallation {
       await this.queueCatalog(connection, this.generation, signal);
       signal.throwIfAborted(); this.state = 'connected';
     } catch (error) {
-      await this.disconnect(); this.state = 'error'; this.catalogError = error instanceof CatalogError ? error.message : undefined; this.code = error instanceof CatalogError ? 'configuration' : error instanceof SdkError && error.code === SdkErrorCode.EraNegotiationFailed ? 'configuration' : this.config.auth === 'none' ? 'network' : 'authentication';
+      await this.disconnect(); this.state = 'error'; this.catalogError = error instanceof CatalogError ? error.message : undefined; this.code = error instanceof CatalogError ? error.code : error instanceof SdkError && error.code === SdkErrorCode.EraNegotiationFailed ? 'configuration' : this.config.auth === 'none' ? 'network' : 'authentication';
       throw new Error('MCP connection failed. Check configuration and protected authentication settings.');
     }
   }
@@ -203,7 +206,7 @@ class McpInstallation {
   private catalogFailed(error: unknown): void {
     this.catalogError = error instanceof CatalogError ? error.message : undefined;
     if (!this.catalogError) this.withdraw();
-    this.state = 'error'; this.code = this.catalogError ? 'configuration' : 'network';
+    this.state = 'error'; this.code = error instanceof CatalogError ? error.code : 'network';
   }
   private async disconnect(): Promise<void> {
     ++this.generation; this.catalogDirty = false; this.catalogRefresh = undefined; this.withdraw();
