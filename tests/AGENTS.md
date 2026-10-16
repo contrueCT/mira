@@ -49,3 +49,4 @@ ADR 0007 回归直接工具调用与模型普通澄清，保留 schema/参数、
 - 扩展私有设置：extension-settings.test.mts验证真实Cordis/文件生命周期；management-real.spec.ts增加真实PG/HTTP/浏览器设置和二维码截图。离线通过不代表真实外部认证。
 
 - ADR0043：replies 的离线边界、真实PG/recovery与 `test:replies:e2e` 分开报告；验证双向 canonical History 引用、插话/压缩/重启、子任务隔离、旧待确认请求幂等和真实桌面/触屏布局。引用文字是数据，不能构成权限；私人参考图不进源码。
+- `behavior/reply-probe.mts` 捕获真实请求交给冷启动 native 模型作首次选择，`behavior/fixtures/reply-native-traces.json` 保留其实际决策和工具结果；PG/browser 回放只允许按唯一来源绑定新 UUID/索引路径，不得重写所选对象、正文或工具顺序。生产工具 schema 必须核对一致。行为模拟、录制回放、真实用户配置模型的质量结论必须区分，任何失败首轮不可删除或冒充成功。

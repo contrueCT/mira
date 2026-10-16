@@ -71,6 +71,7 @@ export function App() {
   const itemsRef = useRef(items);
   const nearBottomRef = useRef(true);
   const sendingRef = useRef(false);
+  const restoreComposerFocusRef = useRef(false);
   const initializedRef = useRef(false);
   const paginationRef = useRef<HistoryPagination>({ latestCursor: null, oldestCursor: null, gaps: [] });
   const activeRef = useRef(true);
@@ -174,6 +175,13 @@ export function App() {
     if (textarea) { textarea.style.height = 'auto'; textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`; }
   }, [composer]);
 
+  useLayoutEffect(() => {
+    if (!sending && restoreComposerFocusRef.current) {
+      restoreComposerFocusRef.current = false;
+      textareaRef.current?.focus();
+    }
+  }, [sending]);
+
   const onScroll = () => {
     const container = scrollRef.current;
     if (!container) return;
@@ -232,7 +240,7 @@ export function App() {
       clearTimeout(timeout);
       if (postAbortRef.current === controller) postAbortRef.current = null;
       sendingRef.current = false;
-      if (activeRef.current) { setSending(false); if (!fromMemory) textareaRef.current?.focus(); }
+      if (activeRef.current) { restoreComposerFocusRef.current = !fromMemory; setSending(false); }
     }
   };
   const submitMemory = (text: string): boolean => {

@@ -9,6 +9,7 @@ import { readExtensionConfiguration } from '@mira/extension-host';
 import { createTestDatabase } from '../integration/database.mts';
 import { assistant, model, streamOf } from '../recovery/fixtures.mts';
 import { firstImage } from './attachment-fixtures/media.mts';
+import { openNativeReplay } from '../recovery/reply-native-fixture.mts';
 
 const sourceDirectory = fileURLToPath(new URL('../../', import.meta.url));
 const port = 3220, origin = `http://127.0.0.1:${port}`;
@@ -300,3 +301,58 @@ test('compact generic extension messages and time gaps preserve quoted source th
     await page.screenshot({ path: testInfo.outputPath('replies-extension-source-narrow.png'), fullPage: true });
   } finally { await app?.close(); await service?.close(); await db?.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+// These provider outputs are actual first-attempt native decisions captured with
+// the full production tool declarations. This is a deterministic replay of that
+// evidence, not a fresh model-quality claim or a fixture timeline.
+for (const scenario of ['older-quote', 'select-target'] as const) {
+  test(`recorded native ${scenario} decision reaches the real browser quote UI`, async ({ page, browser }, testInfo) => {
+    const replay = await openNativeReplay(scenario);
+    let app: ReturnType<typeof createLocalHttp> | undefined;
+    try {
+      app = createLocalHttp({ backend: replay.service, port, assetsDirectory: path.join(sourceDirectory, 'apps/web/dist') });
+      await app.listen({ port, host: '127.0.0.1' }); await page.goto(origin);
+      const originalAssistant = await replay.resolveCapture(replay.trace.expectedSource.assistant);
+      const originalUser = await replay.resolveCapture(replay.trace.expectedSource.user);
+      await expect(row(page, originalAssistant).locator('.message-bubble')).toHaveText(replay.trace.setup[0]!.assistantText);
+      await expect(row(page, originalUser).locator('.message-bubble')).toHaveText(replay.trace.setup[0]!.userText);
+      await replay.begin();
+      if (replay.trace.trigger.replyCaptureId) {
+        const selected = await replay.resolveCapture(replay.trace.trigger.replyCaptureId);
+        await quote(page, selected);
+        await expect(page.getByLabel('回复预览', { exact: true })).toContainText(replay.trace.setup[0]!.assistantText);
+      }
+      await say(page, replay.trace.trigger.text);
+      const result = await replay.finish();
+      const sent = result.items.find(item => item.role === 'user' && item.text === replay.trace.trigger.text)!;
+      expect(sent).toBeTruthy();
+      let answerId: string;
+      if (scenario === 'older-quote') {
+        expect(sent.reply).toEqual({ messageId: originalAssistant, role: 'assistant', text: replay.trace.setup[0]!.assistantText });
+        const answer = result.items.filter(item => item.role === 'assistant' && item.text === '48'); expect(answer).toHaveLength(1);
+        answerId = answer[0]!.id;
+        await expect(row(page, sent.id).locator('.reply-quote')).toContainText(replay.trace.setup[0]!.assistantText);
+        await expect(row(page, answerId).locator('.message-bubble')).toHaveText('48');
+      } else {
+        const call = result.emitted.find(item => item.name === 'send_reply')!; expect(call).toBeTruthy();
+        expect(call.arguments['replyToMessageId']).toBe(originalUser);
+        const publication = result.items.filter(item => item.role === 'assistant' && item.text === call.arguments['text']); expect(publication).toHaveLength(1);
+        answerId = publication[0]!.id;
+        expect(publication[0]!.reply).toEqual({ messageId: originalUser, role: 'user', text: replay.trace.setup[0]!.userText });
+        await expect(row(page, answerId).locator('.reply-quote')).toContainText(replay.trace.setup[0]!.userText);
+        await expect(row(page, answerId).locator('.message-bubble')).toHaveText(call.arguments['text'] as string);
+        await expect(page.locator('.message-row.assistant')).toHaveCount(replay.trace.setup.length + 1);
+      }
+      await row(page, answerId).scrollIntoViewIfNeeded();
+      await noOverflow(page); await conversationGeometry(page);
+      await page.screenshot({ path: testInfo.outputPath(`native-${scenario}-desktop.png`), fullPage: true });
+      const touch = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, timezoneId: 'UTC' });
+      try {
+        const narrow = await touch.newPage(); await narrow.goto(origin);
+        await expect(row(narrow, answerId)).toBeVisible();
+        await noOverflow(narrow); await conversationGeometry(narrow);
+        await narrow.screenshot({ path: testInfo.outputPath(`native-${scenario}-narrow.png`), fullPage: true });
+      } finally { await touch.close(); }
+    } finally { await app?.close(); await replay.close(); }
+  });
+}

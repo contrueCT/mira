@@ -689,7 +689,8 @@ test('child activity stays in settings, observes each identity and recovers refr
   await page.goto('/');
   await expect(page.getByText('我正在核对资料。', { exact: true })).toBeVisible();
   await expect(page.locator('.mira-app .child-card')).toHaveCount(0);
-  await expect(page.locator('.mira-app button')).toHaveCount(3);
+  for (const name of ['模型设置', '添加附件', '发送消息', '回复这条消息']) await expect(page.locator('.mira-app').getByRole('button', { name, exact: true })).toHaveCount(1);
+  await expect(page.locator('.mira-app').getByRole('button', { name: /子任务|运行记录/u })).toHaveCount(0);
   expect(childReads).toEqual([]);
   await page.getByRole('button', { name: '模型设置', exact: true }).click();
   await page.getByRole('tab', { name: '运行记录', exact: true }).click();
@@ -728,7 +729,8 @@ test('child activity stays in settings, observes each identity and recovers refr
   await expect(page.getByRole('dialog', { name: '设置', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '关闭设置', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  await expect(page.locator('.mira-app button')).toHaveCount(3);
+  for (const name of ['模型设置', '添加附件', '发送消息', '回复这条消息']) await expect(page.locator('.mira-app').getByRole('button', { name, exact: true })).toHaveCount(1);
+  await expect(page.locator('.mira-app').getByRole('button', { name: /子任务|运行记录/u })).toHaveCount(0);
 });
 
 test('run child pagination discovers a newly followed-up older child after all previous pages were exhausted', async ({ page }) => {
@@ -847,7 +849,14 @@ test('ordinary plugin messages use subtle source labels without impersonating We
   await expect(page.getByText('已经发出的通知', { exact: true })).toHaveCount(2);
   await expect(page.locator('.message-source')).toHaveCount(2);
   await expect(page.locator('.message-source').first()).toHaveCSS('font-size', '10px');
-  await expect(page.locator('.message-source').first()).toHaveAttribute('title', '扩展 weather-station · 来源身份 sensor-1（由扩展验证）');
+  const inbound = page.locator('[data-message-id="plugin-in"]');
+  const source = inbound.locator('.message-source');
+  await expect(source).toHaveText('气象站 · weather-station · 收到');
+  await expect(source).toHaveAttribute('title', '气象站 · 收到 · 扩展 weather-station · 来源身份 sensor-1（由扩展验证）');
+  await expect(inbound.locator('.message-meta')).toHaveCSS('opacity', '0');
+  await inbound.hover();
+  await expect(inbound.locator('.message-meta')).toHaveCSS('opacity', '1');
+  await expect(page.locator('[data-message-id="plugin-out"] .message-source')).toHaveAttribute('title', '气象站 · 已发送 · 扩展 weather-station');
   await page.screenshot({ path: testInfo.outputPath('extension-source-desktop.png'), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -1167,3 +1176,32 @@ for (const intent of ['latest', 'send', 'reply'] as const) {
     }
   });
 }
+
+
+test('short desktop bubbles use their natural width while long messages stay bounded', async ({ page }) => {
+  await page.route('**/api/timeline', route => route.fulfill({ json: { items: [
+    { id: 'short-assistant', role: 'assistant', text: '这里是五分钟以内的第二条消息。', occurredAt: '2026-10-16T03:00:00Z' },
+    { id: 'short-user', role: 'user', text: '引用可以跳回原消息。', occurredAt: '2026-10-16T03:01:00Z' },
+    { id: 'long-assistant', role: 'assistant', text: '用于验证长消息在气泡内正常换行。'.repeat(30), occurredAt: '2026-10-16T03:02:00Z' },
+    { id: 'long-user', role: 'user', text: '用于验证用户长消息边界。'.repeat(30), occurredAt: '2026-10-16T03:03:00Z' },
+  ], nextCursor: null } }));
+  await page.setViewportSize({ width: 1200, height: 850 }); await page.goto('/');
+  for (const id of ['short-assistant', 'short-user']) {
+    const dimensions = await page.locator(`[data-message-id="${id}"] .message-bubble`).evaluate(element => {
+      const style = getComputedStyle(element);
+      return { height: element.getBoundingClientRect().height, oneLineHeight: parseFloat(style.lineHeight) + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) };
+    });
+    expect(Math.abs(dimensions.height - dimensions.oneLineHeight)).toBeLessThan(2);
+  }
+  for (const viewport of [{ width: 1200, height: 850 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    for (const id of ['long-assistant', 'long-user']) {
+      const row = page.locator(`[data-message-id="${id}"]`);
+      const bounds = (await row.boundingBox())!; const bubble = (await row.locator('.message-bubble').boundingBox())!;
+      expect(bubble.x).toBeGreaterThanOrEqual(bounds.x - 1);
+      expect(bubble.x + bubble.width).toBeLessThanOrEqual(bounds.x + bounds.width + 1);
+      expect(await row.locator('.message-payload').evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  }
+});

@@ -12,6 +12,7 @@
     "tests/unit/replies.test.mts",
     "tests/unit/reply-context.test.mts",
     "tests/recovery/**/*.mts",
+    "tests/behavior/**/*.mts",
     "apps/server/**/*.ts",
     "apps/server/**/*.mts",
     "tests/unit/wake-runtime.test.mts",

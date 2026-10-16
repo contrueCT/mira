@@ -21,7 +21,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 
 /** Offline fault-injection fixture only. Never a production persistence fallback. */
 export class MemoryWriter implements DurableWriter {
-  readonly miraId = 'synthetic-mira';
+  readonly miraId: string = 'synthetic-mira';
   readonly epoch = '1';
   readonly controller = new AbortController();
   readonly signal = this.controller.signal;

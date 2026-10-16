@@ -389,7 +389,7 @@ button:disabled { opacity: .48; }
 .date-divider { text-align: center; color: #a6a7ae; letter-spacing: .2px; margin: 26px 0 18px; font-size: 11px; }
 .message-content-line { display: flex; align-items: center; gap: 7px; max-width: 100%; min-width: 0; }
 .message-row.user .message-content-line { flex-direction: row-reverse; }
-.message-payload { min-width: 0; max-width: 86%; display: flex; flex-direction: column; align-items: flex-start; }
+.message-payload { flex: 0 1 auto; min-width: 0; max-width: 100%; display: flex; flex-direction: column; align-items: flex-start; }
 .message-row.user .message-payload { align-items: flex-end; }
 .message-payload .message-bubble, .message-row.user .message-payload .message-bubble { max-width: 100%; padding: 10px 17px; line-height: 1.65; border-radius: 22px; }
 .message-side { position: relative; display: flex; align-items: center; gap: 3px; flex-shrink: 0; }
@@ -423,11 +423,9 @@ button:disabled { opacity: .48; }
 .quote-search-status button { margin-left: 10px; }
 @media (max-width: 600px) {
   .message-content-line { max-width: calc(100% - 76px); gap: 3px; }
-  .message-payload { max-width: calc(100% - 30px); }
   .message-meta { width: 72px; max-width: 72px; margin-left: 0; flex-direction: column; align-items: flex-start; gap: 3px; }
   .message-source { max-width: 72px; font-size: 10px; }
   .message-time { font-size: 9px; }
-  .message-row.user .message-payload { max-width: 100%; }
   .message-row.user .message-meta { right: 100%; align-items: flex-end; }
   .reply-quote { max-width: 90%; }
   .date-divider { margin: 22px 0 15px; }
