@@ -266,7 +266,7 @@ export function App() {
   const onComposerKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); submit(); }
   };
-  const openSettings = () => { if (window.location.hash === '#settings') return; closingSettingsRef.current = false; window.history.pushState({ ...window.history.state, miraSettings: true }, '', '#settings'); setSettingsOpen(true); };
+  const openSettings = () => { if (window.location.hash === '#settings') return; cancelQuoteNavigation(); closingSettingsRef.current = false; window.history.pushState({ ...window.history.state, miraSettings: true }, '', '#settings'); setSettingsOpen(true); };
   const closeSettings = () => {
     if (closingSettingsRef.current) return;
     closingSettingsRef.current = true;
@@ -278,6 +278,7 @@ export function App() {
   for (const attachment of attachments.attachments) previewRegistry.current.set(attachment.id, attachment);
   const preview = previewId ? previewRegistry.current.get(previewId) : undefined;
   const openPreview = (attachment: Attachment) => {
+    cancelQuoteNavigation();
     previewRegistry.current.set(attachment.id, attachment); closingPreviewRef.current = false;
     previewFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     window.history.pushState({ ...window.history.state, miraAttachment: true }, '', `#attachment=${attachment.id}`); setPreviewId(attachment.id);
@@ -411,7 +412,7 @@ export function App() {
           </div>)}</div>}
           <button className="add-attachment-button icon-button" type="button" disabled={sending || !!recovered.error} onClick={() => fileInputRef.current?.click()} aria-label="添加附件" title="添加图片、视频或文件">+</button>
           <label className="sr-only" htmlFor="message-input">给 Mira 发消息</label>
-          <textarea ref={textareaRef} id="message-input" placeholder="给 Mira 发消息…" value={composer} onChange={event => { setComposer(event.target.value); setComposerError(null); }} onKeyDown={onComposerKey} rows={1} disabled={sending || !!recovered.error} maxLength={50_000} />
+          <textarea ref={textareaRef} id="message-input" placeholder="给 Mira 发消息…" value={composer} onFocus={cancelQuoteNavigation} onChange={event => { cancelQuoteNavigation(); setComposer(event.target.value); setComposerError(null); }} onKeyDown={onComposerKey} rows={1} disabled={sending || !!recovered.error} maxLength={50_000} />
           <button className="send-button" type="submit" disabled={(!composer.trim() && !attachments.drafts.length) || !attachments.ready || sending || !!recovered.error} aria-label={sending ? '正在发送' : '发送消息'} title="发送消息"><ArrowUp /></button>
         </form>
         {composerError && <p className="composer-error" role="alert">{composerError}</p>}

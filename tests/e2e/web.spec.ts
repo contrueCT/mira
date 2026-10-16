@@ -1118,7 +1118,7 @@ test('reply timeline keeps message sides and centered dividers on desktop and na
   }
 });
 
-for (const intent of ['latest', 'send', 'reply'] as const) {
+for (const intent of ['latest', 'send', 'reply', 'compose'] as const) {
   test(`delayed quote lookup cannot steal scroll or focus after ${intent}`, async ({ page }) => {
     const target = '11111111-1111-4111-8111-111111111111';
     let releasePage!: () => void; let pageFinished!: () => void;
@@ -1155,8 +1155,10 @@ for (const intent of ['latest', 'send', 'reply'] as const) {
       await expect(page.getByRole('button', { name: '取消查找' })).toBeVisible();
       if (intent === 'latest') await page.getByRole('button', { name: '回到最新消息' }).click();
       else if (intent === 'send') { await page.getByRole('button', { name: '发送消息', exact: true }).click(); await expect(input).toBeFocused(); }
-      else { await page.locator('[data-message-id="visible-0"]').getByRole('button', { name: '回复这条消息' }).click(); await expect(input).toBeFocused(); }
+      else if (intent === 'reply') { await page.locator('[data-message-id="visible-0"]').getByRole('button', { name: '回复这条消息' }).click(); await expect(input).toBeFocused(); }
+      else { await input.click(); await input.pressSequentially('查找期间继续编辑的草稿'); await expect(input).toBeFocused(); }
       await expect(page.getByRole('button', { name: '取消查找' })).toHaveCount(0);
+      const scrollAfterIntent = await page.locator('.timeline-scroll').evaluate(element => element.scrollTop);
       releasePage(); await bounded(finished, 'delayed quote page completion');
       expect(routeFailure).toBeUndefined();
       // Flush React's frame-delayed navigation path after the late page settles.
@@ -1164,8 +1166,12 @@ for (const intent of ['latest', 'send', 'reply'] as const) {
       await expect(page.locator('.quote-highlight')).toHaveCount(0);
       await expect(page.locator(`[data-message-id="${target}"]`)).toHaveCount(0);
       await expect(page.getByText('查找已停止，引用内容仍保留。')).toHaveCount(0);
-      if (intent === 'reply' || intent === 'send') await expect(input).toBeFocused();
-      if (intent !== 'reply') {
+      if (intent === 'reply' || intent === 'send' || intent === 'compose') await expect(input).toBeFocused();
+      if (intent === 'compose') {
+        await expect(input).toHaveValue('查找期间继续编辑的草稿');
+        expect(Math.abs(await page.locator('.timeline-scroll').evaluate(element => element.scrollTop) - scrollAfterIntent)).toBeLessThan(2);
+      }
+      if (intent === 'latest' || intent === 'send') {
         const distance = await page.locator('.timeline-scroll').evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight);
         expect(distance).toBeLessThan(5);
       }
