@@ -50,7 +50,8 @@ test('automatic ownership close retains a safe persistence notice but suppresses
     const resource = { close: async () => {} };
     const writer = { signal: owner.signal, onLiveInput: () => () => {}, receiveLiveInput: async () => 'inserted', close: async () => {} };
     const loop = { drain: async (signal: AbortSignal) => { await Promise.resolve(); owner.abort(failure); throw signal.reason; } };
-    const service = Reflect.construct(LocalWebService, [{ synthetic: true, dreaming: { enabled: false } }, writer, {}, {}, { selection: null }, loop,
+    const history = { findEventRun: async () => null };
+    const service = Reflect.construct(LocalWebService, [{ synthetic: true, dreaming: { enabled: false } }, writer, history, {}, { selection: null }, loop,
       { resolve: async () => [] }, resource, {}, resource, resource]) as LocalWebService;
     await service.submit({ id: 'diagnostic', text: 'Test shutdown', occurredAt: '2026-10-15T00:00:00.000Z' });
     await service.close();
