@@ -16,7 +16,7 @@ async function until(check: () => boolean | Promise<boolean>): Promise<void> {
 // Synthetic legacy HTTP wire peer; the production plugin uses the real official
 // SDK, including its notification handling, transport and request cancellation.
 async function catalogFixture(dialect?: string) {
-  let revision = 1, lists = 0, active = 0, maximum = 0;
+  let revision = 1, lists = 0, active = 0, maximum = 0, calls = 0;
   let stream: http.ServerResponse | undefined;
   let release: (() => void) | undefined;
   let heldClosed = false;
@@ -40,20 +40,37 @@ async function catalogFixture(dialect?: string) {
       maximum = Math.max(maximum, ++active);
       res.once('close', () => { active--; if (number === 2) heldClosed = true; });
       const result = { tools: [
-        { name: captured === -6 ? 42 : 'echo', description: `revision ${captured}`, inputSchema: { ...(dialect ? { $schema: dialect } : {}), type: 'object', properties: captured === -5 ? 42 : { [`revision${captured}`]: { type: captured === -1 ? 'invalid-type' : 'string' } } } },
+        {
+          name: captured === -6 ? 42 : 'echo', description: `revision ${captured}`,
+          inputSchema: {
+            ...([-9, -16, -17].includes(captured)
+              ? { $schema: captured === -9 ? null : captured === -16 ? 42 : false }
+              : dialect ? { $schema: dialect } : {}),
+            type: 'object',
+            properties: captured === -5 ? 42 : { [`revision${captured}`]: { type: captured === -1 ? 'invalid-type' : 'string' } },
+          },
+          outputSchema: {
+            type: 'object',
+            ...([-12, -13, -14, -15].includes(captured)
+              ? { $schema: captured === -12 ? 'https://synthetic.invalid/unsupported' : captured === -13 ? null : captured === -14 ? 42 : false }
+              : {}),
+            properties: { value: captured === -11 ? { $ref: '#/$defs/missing' } : { type: 'string', ...(captured === -10 ? { pattern: '[' } : {}) } },
+          },
+        },
         { name: captured === -2 ? 'echo' : captured === -3 ? 'bad/name' : captured === -4 ? 'x'.repeat(65) : `only_v${Math.abs(captured)}`, inputSchema: { type: 'object' } },
       ] };
       if (number === 2) release = () => reply(result);
       else reply(result);
       return;
     }
+    if (message.method === 'tools/call') { calls++; reply({ content: [{ type: 'text', text: 'catalog echo' }], structuredContent: { value: 'ok' } }); return; }
     res.writeHead(202); res.end();
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); assert.ok(address && typeof address !== 'string');
   const origin = `http://127.0.0.1:${address.port}`, revoke = allowLocalTestHttp(origin);
   return {
-    url: origin + '/mcp', lists: () => lists, maximum: () => maximum, held: () => Boolean(release), heldClosed: () => heldClosed,
+    url: origin + '/mcp', calls: () => calls, lists: () => lists, maximum: () => maximum, held: () => Boolean(release), heldClosed: () => heldClosed,
     ready: () => Boolean(stream), release: () => release?.(),
     change(value: number, notifications = 1) {
       revision = value;
@@ -163,18 +180,22 @@ test('a failed in-flight catalog does not discard an already received newer noti
   } finally { await close(); }
 });
 
-for (const [revision, detail] of [[-2, /Duplicate tool name/], [-3, /Invalid tool name/], [-4, /Invalid tool name/], [-5, /Invalid MCP tool catalog/], [-6, /Invalid MCP tool catalog/]] as const) {
-  test(`invalid catalog names (${revision}) retain the original published toolset atomically`, { timeout: 10_000 }, async () => {
+for (const [revision, detail] of [[-2, /Duplicate tool name/], [-3, /Invalid tool name/], [-4, /Invalid tool name/], [-5, /Invalid MCP tool catalog/], [-6, /Invalid MCP tool catalog/], ...[-9, -10, -11, -12, -13, -14, -15, -16, -17].map(revision => [revision, /Invalid MCP tool catalog/] as const)] as const) {
+  test(`invalid catalog declarations (${revision}) retain the original published toolset atomically`, { timeout: 10_000 }, async () => {
     const { fixture, host, close } = await installation();
     try {
       await host.start(); await until(fixture.ready);
       const previous = await host.prepare();
+      const echo = previous.find(item => item.tool.name === 'echo')!.tool;
+      assert.equal((await echo.execute({}, { callId: 'before', signal: new AbortController().signal })).isError, false);
       fixture.change(revision); await until(fixture.held); fixture.release();
       await until(async () => (await host.extensionSettings('remote'))?.status.state === 'error');
       const status = (await host.extensionSettings('remote'))!.status;
       assert.equal(status.code, 'configuration');
       assert.match(status.details![0]!.value, detail);
       assert.deepEqual(await host.prepare(), previous);
+      assert.equal((await echo.execute({}, { callId: 'after-rejection', signal: new AbortController().signal })).isError, false);
+      assert.equal(fixture.calls(), 2, 'The old exact declaration remains executable after rejection');
       fixture.change(3);
       await until(async () => (await host.extensionSettings('remote'))?.status.state === 'connected');
       assert.ok((await host.prepare()).some(item => item.tool.name === 'only_v3'));

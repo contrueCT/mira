@@ -46,6 +46,7 @@ test('quiet output validator retains dialect-specific tuple and recursive semant
   const validator = createOutputSchemaValidator();
   // SDK types describe 2020-12; older dialect keywords arrive as JSON on the wire.
   const compile = (schema: unknown) => validator.getValidator(schema as Parameters<typeof validator.getValidator>[0]);
+  for (const $schema of [null, 42, false]) assert.throws(() => compile({ $schema, type: 'object' }), /^Error: Unsupported MCP output schema dialect$/);
   for (const $schema of [undefined, 'https://json-schema.org/draft/2020-12/schema#']) {
     const validate = compile({ ...($schema ? { $schema } : {}), type: 'array', prefixItems: [{ type: 'string' }], items: false });
     assert.equal(validate(['ok']).valid, true);

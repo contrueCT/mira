@@ -87,6 +87,7 @@ test('schema preflight rejects malformed or unresolved candidates without replac
     { properties: { text: { $ref: 'https://synthetic.invalid/schema' } } },
     { patternProperties: { '[': { type: 'string' } } },
     { $schema: 'https://synthetic.invalid/dialect' },
+    ...[null, 42, false].map($schema => ({ $schema })),
   ];
   for (const schema of invalid) {
     assert.throws(() => set.replace([tool('candidate'), { ...tool('bad'), parameters: { type: 'object', ...schema } as ExtensionTool['parameters'] }]), /schema/);

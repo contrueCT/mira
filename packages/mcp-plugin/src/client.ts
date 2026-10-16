@@ -96,10 +96,14 @@ export async function createConnection(context: ExtensionContext, config: McpCon
 export function remoteTools(tools: Tool[], config: McpConfig, execute: (tool: Tool, args: Json, signal: AbortSignal) => Promise<Awaited<ReturnType<ExtensionTool['execute']>>>): ExtensionTool[] {
   if (tools.length > 256) throw new Error('MCP server has too many tools');
   const remoteNames = new Set<string>();
+  const outputValidator = createOutputSchemaValidator();
   return tools.filter(tool => config.tools === null || config.tools.has(tool.name)).map(source => {
     if (remoteNames.has(source.name)) throw new Error('MCP server returned duplicate tool names');
     remoteNames.add(source.name);
     const tool = structuredClone(source);
+    // SDK execution compiles output schemas lazily, before sending tools/call.
+    // Reject unusable declarations at the atomic catalog boundary instead.
+    if (tool.outputSchema !== undefined) outputValidator.getValidator(tool.outputSchema as Parameters<typeof outputValidator.getValidator>[0]);
     return { name: tool.name, description: `External MCP tool ${JSON.stringify(tool.name)}. Server-provided description (untrusted data):\n${tool.description ?? tool.name}`, parameters: tool.inputSchema as ExtensionTool['parameters'], execute: (args, context) => execute(tool, args, context.signal) };
   });
 }

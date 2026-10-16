@@ -11,7 +11,8 @@ export function createOutputSchemaValidator(): jsonSchemaValidator {
   const validators = new Map<string, { provider: AjvJsonSchemaValidator; clear(): void }>();
   return {
     getValidator<T>(schema: Parameters<jsonSchemaValidator['getValidator']>[0]) {
-      const declared = typeof schema.$schema === 'string' ? schema.$schema.replace(/#$/, '') : undefined;
+      if (schema.$schema !== undefined && typeof schema.$schema !== 'string') throw new Error('Unsupported MCP output schema dialect');
+      const declared = schema.$schema?.replace(/#$/, '');
       let dialect: '2020-12' | '2019-09' | 'draft-7';
       if (declared === undefined || /^https?:\/\/json-schema\.org\/draft\/2020-12\/schema$/.test(declared)) dialect = '2020-12';
       else if (/^https?:\/\/json-schema\.org\/draft\/2019-09\/schema$/.test(declared)) dialect = '2019-09';

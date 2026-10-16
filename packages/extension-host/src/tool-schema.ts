@@ -14,7 +14,7 @@ const dialects = new Map([
   ['https://json-schema.org/draft/2020-12/schema', new Ajv2020(options)],
 ]);
 export function validateToolSchema(schema: ExtensionTool['parameters']): void {
-  const declared = schema['$schema'] ?? 'https://json-schema.org/draft/2020-12/schema';
+  const declared = schema['$schema'] === undefined ? 'https://json-schema.org/draft/2020-12/schema' : schema['$schema'];
   const dialect = typeof declared === 'string' ? declared.replace(/#$/u, '')
     .replace(/^https:\/\/json-schema\.org\/draft-07\/schema$/, 'http://json-schema.org/draft-07/schema')
     .replace(/^http:\/\/json-schema\.org\/draft\/(2019-09|2020-12)\/schema$/, 'https://json-schema.org/draft/$1/schema') : undefined;
