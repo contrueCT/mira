@@ -158,9 +158,21 @@ class McpInstallation {
     const task = this.catalog.then(async () => {
       signal.throwIfAborted();
       if (this.stopped || generation !== this.generation || this.connection !== connection) throw new Error('MCP connection retired');
-      const result = await connection.client.listTools(undefined, { signal, timeout: 15_000, cacheMode: 'refresh' });
-      signal.throwIfAborted(); this.publish(connection, generation, result.tools);
-      if (!this.stopped && generation === this.generation && this.connection === connection) { this.state = 'connected'; this.code = undefined; this.catalogError = undefined; }
+      const previousHeaderTools = connection.client.unsupportedHeaderTools;
+      // One serialized listing may contain several pages. Accumulate the notice
+      // across those pages, and commit it only with a valid complete catalog.
+      connection.client.unsupportedHeaderTools = false;
+      try {
+        const result = await connection.client.listTools(undefined, { signal, timeout: 15_000, cacheMode: 'refresh' });
+        signal.throwIfAborted(); this.publish(connection, generation, result.tools);
+        if (!this.stopped && generation === this.generation && this.connection === connection) { this.state = 'connected'; this.code = undefined; this.catalogError = undefined; }
+      } catch (error) {
+        connection.client.unsupportedHeaderTools = previousHeaderTools;
+        if (error instanceof SdkError && (error.code === SdkErrorCode.InvalidResult || error.code === SdkErrorCode.ListPaginationExceeded)) {
+          throw new CatalogError('Invalid MCP tool catalog. Check the server tool definitions. The previous tools remain unchanged.');
+        }
+        throw error;
+      }
     });
     this.catalog = task.catch(() => {});
     return task;

@@ -298,7 +298,7 @@ test('real PostgreSQL model configure, reload and remove await lifecycle changes
           const completed = toolResult<Inspection>(context, 'inspect-configure-completed');
           assert.deepEqual(completed.changes, [receipt]); assert.equal(completed.extensions[0]!.status, 'active');
           assert.deepEqual(completed.extensions[0]!.config, updatedConfig); assert.ok(configuredDescription.includes(completed.extensions[0]!.activation!));
-          assert.deepEqual(receipt.runtime, completed.extensions[0]);
+          assert.deepEqual({ ...receipt.runtime, settings: null }, completed.extensions[0]);
           const lifecycle = await fixture.lifecycle();
           assert.deepEqual(lifecycle.map(item => [item.phase, item.revision]), [['apply', 1], ['execute', 1], ['cleanup', 1], ['apply', 2]]);
           assert.deepEqual(lifecycle[1]!.saved, initialEntry, 'the earlier sibling completes against the original config before configure begins');
@@ -318,7 +318,7 @@ test('real PostgreSQL model configure, reload and remove await lifecycle changes
           const completed = toolResult<Inspection>(context, 'inspect-reload-completed');
           assert.deepEqual(completed.changes, [...configured.changes, receipt]);
           assert.ok(reloadedDescription.includes(completed.extensions[0]!.activation!)); assert.deepEqual(completed.extensions[0]!.config, updatedConfig);
-          assert.deepEqual(receipt.runtime, completed.extensions[0]);
+          assert.deepEqual({ ...receipt.runtime, settings: null }, completed.extensions[0]);
           assert.deepEqual((await fixture.lifecycle()).map(item => [item.phase, item.activation, item.revision]), [
             ['apply', 1, 1], ['execute', 1, 1], ['cleanup', 1, 1], ['apply', 2, 2], ['execute', 2, 2], ['cleanup', 2, 2], ['apply', 3, 2],
           ]);

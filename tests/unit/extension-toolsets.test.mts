@@ -97,6 +97,7 @@ test('schema preflight rejects malformed or unresolved candidates without replac
 test('schema preflight preserves supported dialects, references, tuples and schema-valued additional properties', () => {
   const schemas = [
     { type: 'object', properties: { text: { type: 'string', format: 'synthetic-annotation' } }, additionalProperties: { type: 'number' } },
+    ...['https://json-schema.org/draft-07/schema#', 'http://json-schema.org/draft/2019-09/schema', 'http://json-schema.org/draft/2020-12/schema#'].map($schema => ({ $schema, type: 'object', properties: { text: { type: 'string' } } })),
     { $schema: 'http://json-schema.org/draft-07/schema#', type: 'object', properties: { tuple: { type: 'array', items: [{ type: 'string' }, { type: 'number' }], additionalItems: false } } },
     { $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'object', properties: { tuple: { type: 'array', prefixItems: [{ type: 'string' }], items: false } } },
     { $schema: 'https://json-schema.org/draft/2019-09/schema', type: 'object', $defs: { text: { type: 'string' } }, properties: { value: { $ref: '#/$defs/text' } } },

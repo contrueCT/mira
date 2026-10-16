@@ -15,7 +15,7 @@ async function until(check: () => boolean | Promise<boolean>): Promise<void> {
 
 // Synthetic legacy HTTP wire peer; the production plugin uses the real official
 // SDK, including its notification handling, transport and request cancellation.
-async function catalogFixture() {
+async function catalogFixture(dialect?: string) {
   let revision = 1, lists = 0, active = 0, maximum = 0;
   let stream: http.ServerResponse | undefined;
   let release: (() => void) | undefined;
@@ -40,7 +40,7 @@ async function catalogFixture() {
       maximum = Math.max(maximum, ++active);
       res.once('close', () => { active--; if (number === 2) heldClosed = true; });
       const result = { tools: [
-        { name: 'echo', description: `revision ${captured}`, inputSchema: { type: 'object', properties: { [`revision${captured}`]: { type: captured === -1 ? 'invalid-type' : 'string' } } } },
+        { name: captured === -6 ? 42 : 'echo', description: `revision ${captured}`, inputSchema: { ...(dialect ? { $schema: dialect } : {}), type: 'object', properties: captured === -5 ? 42 : { [`revision${captured}`]: { type: captured === -1 ? 'invalid-type' : 'string' } } } },
         { name: captured === -2 ? 'echo' : captured === -3 ? 'bad/name' : captured === -4 ? 'x'.repeat(65) : `only_v${Math.abs(captured)}`, inputSchema: { type: 'object' } },
       ] };
       if (number === 2) release = () => reply(result);
@@ -62,8 +62,8 @@ async function catalogFixture() {
     async close() { release?.(); server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); revoke(); },
   };
 }
-async function installation(reservedToolNames: string[] = []) {
-  const fixture = await catalogFixture();
+async function installation(reservedToolNames: string[] = [], dialect?: string) {
+  const fixture = await catalogFixture(dialect);
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-mcp-catalog-')));
   const entries = [{ id: 'remote', path: path.resolve('packages/mcp-plugin/src/index.ts'), config: { transport: 'http', url: fixture.url, protocol: 'legacy' } }];
   const configurationFile = path.join(root, 'extensions.json');
@@ -163,7 +163,7 @@ test('a failed in-flight catalog does not discard an already received newer noti
   } finally { await close(); }
 });
 
-for (const [revision, detail] of [[-2, /Duplicate tool name/], [-3, /Invalid tool name/], [-4, /Invalid tool name/]] as const) {
+for (const [revision, detail] of [[-2, /Duplicate tool name/], [-3, /Invalid tool name/], [-4, /Invalid tool name/], [-5, /Invalid MCP tool catalog/], [-6, /Invalid MCP tool catalog/]] as const) {
   test(`invalid catalog names (${revision}) retain the original published toolset atomically`, { timeout: 10_000 }, async () => {
     const { fixture, host, close } = await installation();
     try {
@@ -201,3 +201,16 @@ test('catalog refresh refuses a built-in collision atomically and allows an expl
     assert.ok((await host.prepare()).some(item => item.tool.name === 'only_v3'));
   } finally { await close(); }
 });
+
+for (const dialect of ['https://json-schema.org/draft-07/schema#', 'http://json-schema.org/draft/2019-09/schema', 'http://json-schema.org/draft/2020-12/schema#']) {
+  test(`official SDK catalogs preserve alternate schema dialect ${dialect}`, { timeout: 10_000 }, async () => {
+    const { host, close } = await installation([], dialect);
+    try {
+      await host.start();
+      assert.equal((await host.extensionSettings('remote'))?.status.state, 'connected');
+      const echo = (await host.prepare()).find(item => item.tool.name === 'echo')!;
+      assert.equal(echo.tool.parameters['$schema'], dialect);
+      assert.deepEqual(echo.tool.parameters.properties, { revision1: { type: 'string' } });
+    } finally { await close(); }
+  });
+}

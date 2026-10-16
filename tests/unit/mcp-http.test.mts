@@ -73,7 +73,8 @@ test('late MCP notifications during ownership-loss lifecycle drain do not strand
 for (const protocol of ['legacy', '2026-07-28', 'auto']) test(`public request gate excludes header mapping across ${protocol} pages without raw SDK warnings`, async t => {
   const logs: string[] = [];
   for (const method of ['warn', 'error', 'log', 'info', 'debug'] as const) t.mock.method(console, method, (...args: unknown[]) => logs.push(args.map(String).join(' ')));
-  const fixture = await httpFixture({ headerTools: true });
+  const options = { headerTools: true };
+  const fixture = await httpFixture(options);
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-mcp-header-')));
   const configurationFile = path.join(root, 'extensions.json');
   const entries = [{ id: 'remote', path: plugin, config: { transport: 'http', url: fixture.url, protocol } }];
@@ -89,6 +90,7 @@ for (const protocol of ['legacy', '2026-07-28', 'auto']) test(`public request ga
     const echo = tools.find(item => item.tool.name === 'echo')!;
     assert.match((await echo.tool.execute({ text: 'safe' }, { callId: 'normal', signal: new AbortController().signal })).text, /safe/);
     assert.ok(tools.some(item => item.tool.name === 'summary'));
+    options.headerTools = false;
     const operation = await host.startSettingsAction('remote', 'refresh', view!.revision);
     for (let attempt = 0; attempt < 100; attempt++) {
       const current = await host.extensionSettings('remote');
@@ -96,6 +98,8 @@ for (const protocol of ['legacy', '2026-07-28', 'auto']) test(`public request ga
       await new Promise(resolve => setTimeout(resolve, 10));
     }
     assert.equal((await host.extensionSettings('remote'))?.operation?.state, 'succeeded');
+    assert.deepEqual((await host.prepare()).map(item => item.tool.name).sort(), ['echo', 'structured', 'summary']);
+    assert.equal((await host.extensionSettings('remote'))?.status.details, undefined, 'A complete refreshed listing clears an obsolete header warning');
     assert.equal(logs.length, 0, 'Official SDK cannot log untrusted names or metadata');
     assert.ok(!JSON.stringify({ view, inspect: host.inspect(), diagnostics: host.diagnosticsLog() }).includes('PRIVATE'));
   } finally { await host.close(); await fixture.close(); await rm(root, { recursive: true, force: true }); }
