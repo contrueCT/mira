@@ -51,6 +51,7 @@ async function catalogFixture(dialect?: string) {
           },
           outputSchema: {
             type: 'object',
+            ...(captured === -18 ? { $async: true } : {}),
             ...([-12, -13, -14, -15].includes(captured)
               ? { $schema: captured === -12 ? 'https://synthetic.invalid/unsupported' : captured === -13 ? null : captured === -14 ? 42 : false }
               : {}),
@@ -180,7 +181,7 @@ test('a failed in-flight catalog does not discard an already received newer noti
   } finally { await close(); }
 });
 
-for (const [revision, detail] of [[-2, /Duplicate tool name/], [-3, /Invalid tool name/], [-4, /Invalid tool name/], [-5, /Invalid MCP tool catalog/], [-6, /Invalid MCP tool catalog/], ...[-9, -10, -11, -12, -13, -14, -15, -16, -17].map(revision => [revision, /Invalid MCP tool catalog/] as const)] as const) {
+for (const [revision, detail] of [[-2, /Duplicate tool name/], [-3, /Invalid tool name/], [-4, /Invalid tool name/], [-5, /Invalid MCP tool catalog/], [-6, /Invalid MCP tool catalog/], ...[-9, -10, -11, -12, -13, -14, -15, -16, -17, -18].map(revision => [revision, /Invalid MCP tool catalog/] as const)] as const) {
   test(`invalid catalog declarations (${revision}) retain the original published toolset atomically`, { timeout: 10_000 }, async () => {
     const { fixture, host, close } = await installation();
     try {

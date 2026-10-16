@@ -11,6 +11,9 @@ export function createOutputSchemaValidator(): jsonSchemaValidator {
   const validators = new Map<string, { provider: AjvJsonSchemaValidator; clear(): void }>();
   return {
     getValidator<T>(schema: Parameters<jsonSchemaValidator['getValidator']>[0]) {
+      // The SDK validator contract is synchronous; Ajv async validators return
+      // promises that its wrapper would treat as truthy successful validation.
+      if ('$async' in schema && schema.$async) throw new Error('Async MCP output schemas are not supported');
       if (schema.$schema !== undefined && typeof schema.$schema !== 'string') throw new Error('Unsupported MCP output schema dialect');
       const declared = schema.$schema?.replace(/#$/, '');
       let dialect: '2020-12' | '2019-09' | 'draft-7';
