@@ -1,4 +1,5 @@
-import { writeFile } from 'node:fs/promises';
+import { realpath, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { getCurrentSystemMessage, getSystemMessageText } from '@earendil-works/pi-ai';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { PostgresPersistence } from '@mira/persistence';
@@ -7,7 +8,11 @@ import { SubagentManager, createSubagentTools } from '../../apps/server/src/suba
 import { testDatabaseUrl } from '../integration/database.mts';
 import { assistant, streamOf, model, input, effectTool, result } from './fixtures.mts';
 const [schema, marker] = process.argv.slice(2);
-if (!schema || !/^mira_test_[a-f0-9]+$/.test(schema) || !marker?.startsWith('/tmp/')) throw Error('Explicit isolated fixture required');
+const temporaryRoot = await realpath('/tmp');
+if (!schema || !/^mira_test_[a-f0-9]+$/.test(schema) || !marker
+  || path.dirname(path.dirname(marker)) !== temporaryRoot
+  || !path.basename(path.dirname(marker)).startsWith('mira-subagent-kill-')
+  || path.basename(marker) !== 'effect.txt') throw Error('Explicit isolated fixture required');
 const persistence = new PostgresPersistence({ connectionString: testDatabaseUrl(), schema });
 const writer = await persistence.acquire('killed-parent');
 const manager = new SubagentManager({ writer, acquire: id => persistence.acquire(id), tools: () => [effectTool(async () => {
