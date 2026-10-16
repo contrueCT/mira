@@ -181,7 +181,16 @@ export function App() {
     nearBottomRef.current = isNear;
     setNearBottom(isNear);
   };
+  const cancelQuoteNavigation = () => {
+    const controller = quoteAbortRef.current;
+    if (!controller) return;
+    // Release only this lookup's ownership before abort callbacks can run.
+    quoteAbortRef.current = null;
+    controller.abort(); olderBusyRef.current = false;
+    setQuoteSearch(false); setLoadingOlder(false); setQuoteNotice(null);
+  };
   const scrollToLatest = () => {
+    cancelQuoteNavigation();
     nearBottomRef.current = true; setNearBottom(true);
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   };
@@ -274,11 +283,12 @@ export function App() {
   const showEmpty = !loading && !items.length && !pending.length && !connectionError;
   const beginReply = (item: TimelineItem) => {
     if (item.role !== 'assistant' || sendingRef.current) return;
+    cancelQuoteNavigation();
     setReplyTarget({ messageId: item.id, role: item.role, text: item.text, ...(item.attachments?.length ? { attachmentNames: item.attachments.map(file => file.name) } : {}), ...(item.source ? { source: item.source } : {}) });
     textareaRef.current?.focus();
   };
   const jumpToReply = async (messageId: string) => {
-    quoteAbortRef.current?.abort();
+    cancelQuoteNavigation();
     setQuoteNotice(null);
     const reveal = () => {
       const target = [...scrollRef.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? []].find(element => element.dataset['messageId'] === messageId);
@@ -300,20 +310,23 @@ export function App() {
         if (!request || cursors.has(request.cursor)) break;
         cursors.add(request.cursor);
         const page = await api<TimelinePage>('/api/timeline', { method: 'POST', body: JSON.stringify({ before: request.cursor }), signal: controller.signal });
-        if (!activeRef.current || controller.signal.aborted) return;
+        if (!activeRef.current || quoteAbortRef.current !== controller || controller.signal.aborted) return;
         acceptPage(page, request);
         // Wait for React's DOM commit, including the normal prepend anchor correction.
         await new Promise<void>(resolve => { const timer = setTimeout(resolve, 50); requestAnimationFrame(() => { clearTimeout(timer); resolve(); }); });
+        if (!activeRef.current || quoteAbortRef.current !== controller) return;
         if (controller.signal.aborted) { setQuoteNotice('查找已停止，引用内容仍保留。'); return; }
         if (reveal()) return;
       }
       setQuoteNotice('暂未找到原消息。可以继续查看更早的消息，再点引用。');
     } catch (error) {
-      if (activeRef.current) setQuoteNotice(isAbort(error) ? '查找已停止，引用内容仍保留。' : '暂时无法读取原消息，请稍后重试。');
+      if (activeRef.current && quoteAbortRef.current === controller) setQuoteNotice(isAbort(error) ? '查找已停止，引用内容仍保留。' : '暂时无法读取原消息，请稍后重试。');
     } finally {
-      clearTimeout(timeout); olderBusyRef.current = false;
-      if (quoteAbortRef.current === controller) quoteAbortRef.current = null;
-      if (activeRef.current) { setQuoteSearch(false); setLoadingOlder(false); }
+      clearTimeout(timeout);
+      if (quoteAbortRef.current === controller) {
+        quoteAbortRef.current = null; olderBusyRef.current = false;
+        if (activeRef.current) { setQuoteSearch(false); setLoadingOlder(false); }
+      }
     }
   };
 
