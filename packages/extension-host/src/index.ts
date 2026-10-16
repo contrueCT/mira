@@ -1,3 +1,4 @@
+import { createToolset, snapshotTool } from './toolsets.ts';
 import { ExtensionPrivateStorage, credentialKey } from './private-storage.ts';
 import { RegisteredSettings, validateSettings, ExtensionSettingsError, type ExtensionSettingsView, type ExtensionSettingsWrite } from './settings.ts';
 export { ExtensionSettingsError } from './settings.ts';
@@ -34,6 +35,8 @@ export interface GeneratedRevision { id: string; digest: string; config: Json }
 export interface GeneratedVersion { digest: string; revision: string; history: GeneratedRevision[] }
 export interface ExtensionHostOptions {
   entries: LocalExtensionEntry[];
+  /** Composition ownership: abort permanently retires this host, without reconnecting. */
+  ownerSignal?: AbortSignal;
   reservedToolNames?: string[];
   /** Identity is bound by the host; extension-supplied source fields are ignored. */
   receive(source: string, event: ExtensionEvent, wake?: { id: string; reason: string }): Promise<'inserted' | 'duplicate'>;
@@ -49,7 +52,7 @@ export interface ExtensionHostOptions {
   /** Ordinary release files outside the source repository, not a sandbox. */
   artifactsDirectory?: string;
 }
-export interface RegisteredTool { extensionId: string; activation: string; digest?: string; tool: ExtensionTool }
+export interface RegisteredTool { extensionId: string; activation: string; toolRevision?: string; digest?: string; tool: ExtensionTool }
 export interface ContextProviderSample {
   extensionId: string; activation: string; providerId: string; digest?: string;
   status: 'ok' | 'empty' | 'failed' | 'stale' | 'too-large' | 'budget-exceeded';
@@ -100,6 +103,11 @@ export class ExtensionHost {
   private closed = false;
   private closing = false;
   private closeTask: Promise<void> | undefined;
+  private readonly ownershipLost = (): void => {
+    // Abort dispatch cannot await cleanup. Keep the joinable task observed and
+    // record failures; close() still reports its rejection to explicit callers.
+    void this.close().catch(() => { this.hostDiagnostics.push('Extension ownership cleanup failed'); });
+  };
   private configuration: ConfigurationWriter | undefined;
   private readonly reserved: Set<string>;
   private readonly artifacts: ArtifactStore | undefined;
@@ -130,11 +138,16 @@ export class ExtensionHost {
     }
     this.privateStorage = options.privateDirectory || options.configurationFile ? new ExtensionPrivateStorage(options.privateDirectory ?? path.resolve(path.dirname(options.configurationFile!), 'extension-private'), [fileURLToPath(new URL('../../../', import.meta.url)), ...options.privateStorageExcludedDirectories ?? [], ...options.artifactsDirectory ? [options.artifactsDirectory] : []]) : undefined;
     this.options = { ...options, entries: structuredClone(options.entries) };
+    options.ownerSignal?.addEventListener('abort', this.ownershipLost, { once: true });
+    if (options.ownerSignal?.aborted) this.ownershipLost();
   }
 
   async start(): Promise<void> {
-    if (this.started || this.closed) throw new Error('Extension host cannot be started twice');
+    if (this.started || this.closed || this.closing) throw new Error('Extension host cannot be started twice');
     this.started = true;
+    return this.serialize(() => this.startInternal());
+  }
+  private async startInternal(): Promise<void> {
     await this.privateStorage?.validateLocation();
     if (this.options.configurationFile) this.configuration = await ConfigurationWriter.open(this.options.configurationFile, this.options.entries, this.hmrEnabled, this.options.artifactsDirectory);
     // Existing generated revision history already owns an installation identity.
@@ -148,6 +161,7 @@ export class ExtensionHost {
       }
     }
     if (this.privateStorage) for (const entry of this.entries.values()) { const owner = this.scheduleOwner(entry.id); if (owner) { const directory = await this.privateStorage.prepare(owner); await mkdir(path.join(directory, 'data'), { recursive: true, mode: 0o700 }); } }
+    this.assertOpen();
     this.ctx.baseUrl = pathToFileURL(`${process.cwd()}${path.sep}`).href;
     this.ctx.logger.exporter({ export: message => {
       if (message.type !== 'error' && message.type !== 'warn') return;
@@ -166,6 +180,7 @@ export class ExtensionHost {
       this.artifactWatchRoot = await realpath(this.artifacts.root);
     }
     for (const entry of this.entries.values()) {
+      this.assertOpen();
       // The configured identity is stable even though Cordis code instances change.
       if (entry.generated) {
         try { await this.createGenerated(entry); } catch (error) { this.diagnostics.set(entry.id, error instanceof Error ? error.message : String(error)); }
@@ -173,10 +188,12 @@ export class ExtensionHost {
       }
       entry.path = await realpath(entry.path);
       if (!(await stat(entry.path)).isFile()) throw new Error(`Extension is not a file: ${entry.id}`);
+      this.assertOpen();
       const config: EntryOptions = { id: entry.id, name: pathToFileURL(entry.path).href, config: entry.config, disabled: entry.enabled === false, inject: ['timer'] };
       await this.ctx.loader.create(config);
     }
     await this.ctx.loader.await();
+    this.assertOpen();
     if (this.hmrEnabled && [...this.entries.values()].some(entry => !entry.generated)) {
       if (!this.ctx.loader.internal) throw new Error('Source HMR requires Node --expose-internals; native addons are not installed');
       // A manual directory can contain the artifact store. Exclude both its
@@ -195,7 +212,7 @@ export class ExtensionHost {
     }
   }
 
-  private assertOpen(): void { if (!this.started || this.closed || this.closing) throw new Error('Extension host is not running'); }
+  private assertOpen(): void { this.options.ownerSignal?.throwIfAborted(); if (!this.started || this.closed || this.closing) throw new Error('Extension host is not running'); }
   private async waitExecutions(ctx: Context): Promise<void> {
     // Cordis fences the fiber as unloading before invoking its disposers. Tool
     // admission checks that state and acquires synchronously, so this snapshot
@@ -205,7 +222,7 @@ export class ExtensionHost {
     await Promise.all(instance?.executions ?? []);
   }
   private serialize<T>(action: () => Promise<T>): Promise<T> {
-    const task = this.lifecycle.then(action);
+    const task = this.lifecycle.then(() => { this.assertOpen(); return action(); });
     this.lifecycle = task.then(() => {}, () => {});
     return task;
   }
@@ -265,6 +282,7 @@ export class ExtensionHost {
   private apiFor(ctx: Context): ExtensionContext {
     const prior = this.instances.get(ctx.fiber);
     if (prior) return prior.context;
+    this.assertOpen();
     ctx.fiber.assertActive();
     if (ctx.fiber.state !== 1 && ctx.fiber.state !== 2) throw new Error('Cannot create API for an inactive extension');
     const id = ctx.fiber.entry?.id;
@@ -298,8 +316,30 @@ export class ExtensionHost {
     const releaseResource = (cleanup: Cleanup): Promise<void> => this.defer(ctx, async () => { await drainDependencies(); await cleanup(); });
     const alive = (): void => { if (this.closed) throw new Error('Extension host is closed'); if (retired) throw new Error('Extension activation has retired'); };
     const canRegister = (): void => {
-      alive(); ctx.fiber.assertActive();
+      alive(); this.options.ownerSignal?.throwIfAborted();
+      if (this.closing) throw new Error('Extension host is closing');
+      ctx.fiber.assertActive();
       if (ctx.fiber.state !== 1 && ctx.fiber.state !== 2) throw new Error('Cannot register resources while extension is retiring');
+    };
+    const wrapTool = (tool: ExtensionTool, revision?: string): RegisteredTool => {
+      const { name, description, parameters, execute } = tool;
+        const registered: RegisteredTool = { extensionId: id, activation, ...(revision ? { toolRevision: revision } : {}), ...(this.entries.get(id)?.generated ? { digest: this.entries.get(id)!.generated!.digest } : {}), tool: {
+          name, description, parameters: structuredClone(parameters),
+          execute: async (arguments_, execution) => {
+            if (retired || this.closed || this.closing || this.options.ownerSignal?.aborted || ctx.fiber.state !== 2 || this.tools.get(name) !== registered) {
+              return {
+                isError: true,
+                text: `Tool ${name} was not executed because extension activation ${activation} is stale. Use the next model request’s fresh tool declarations before retrying.`,
+                details: { status: 'stale', executed: false, extensionId: id, activation, toolName: name },
+              };
+            }
+            const lease = Promise.withResolvers<void>();
+            executions.add(lease.promise);
+            try { return await execute.call(tool, arguments_, { ...execution, signal: this.options.ownerSignal ? AbortSignal.any([execution.signal, this.options.ownerSignal]) : execution.signal }); }
+            finally { executions.delete(lease.promise); lease.resolve(); }
+          },
+        } };
+      return registered;
     };
     const context: ExtensionContext = {
       id,
@@ -336,30 +376,17 @@ export class ExtensionHost {
         });
       },
       schedules: this.scopedSchedules(id, () => { canRegister(); }),
-      registerTool: tool => {
-        canRegister();
-        const name = tool.name, description = tool.description, parameters = tool.parameters, execute = tool.execute;
-        if (typeof name !== 'string' || !/^[a-zA-Z_]/.test(name) || name.length > 64 || /[^a-zA-Z0-9_-]/.test(name)) throw new Error('Invalid extension tool name: use 1-64 ASCII letters, digits, underscores or hyphens, starting with a letter or underscore');
-        if (!description.trim() || parameters.type !== 'object' || typeof execute !== 'function') throw new Error('Invalid extension tool');
-        if (this.reserved.has(name) || this.tools.has(name)) throw new Error(`Duplicate registered tool: ${name}`);
-        const registered: RegisteredTool = { extensionId: id, activation, ...(this.entries.get(id)?.generated ? { digest: this.entries.get(id)!.generated!.digest } : {}), tool: {
-          name, description, parameters: structuredClone(parameters),
-          execute: async (arguments_, execution) => {
-            if (retired || this.closed || this.closing || ctx.fiber.state !== 2 || this.tools.get(name) !== registered) {
-              return {
-                text: `Tool ${name} was not executed because extension activation ${activation} is stale. Use the next model request’s fresh tool declarations before retrying.`,
-                details: { status: 'stale', executed: false, extensionId: id, activation, toolName: name },
-              };
-            }
-            const lease = Promise.withResolvers<void>();
-            executions.add(lease.promise);
-            try { return await execute.call(tool, arguments_, execution); }
-            finally { executions.delete(lease.promise); lease.resolve(); }
-          },
-        } };
-        resourceDrains.push(releaseResource(() => { if (this.tools.get(name) === registered) this.tools.delete(name); }));
-        this.tools.set(name, registered);
+      registerTool: candidate => {
+        canRegister(); const tool = snapshotTool(candidate);
+        if (this.reserved.has(tool.name) || this.tools.has(tool.name)) throw new Error(`Duplicate registered tool: ${tool.name}`);
+        const registered = wrapTool(tool);
+        resourceDrains.push(releaseResource(() => { if (this.tools.get(tool.name) === registered) this.tools.delete(tool.name); }));
+        this.tools.set(tool.name, registered);
       },
+      registerToolset: tools => createToolset({
+        registry: this.tools, reserved: this.reserved, assertActive: canRegister,
+        wrap: wrapTool, cleanup: cleanup => { resourceDrains.push(releaseResource(cleanup)); },
+      }, tools),
       registerContextProvider: provider => {
         canRegister();
         const providerId = provider.id, provide = provider.provide;
@@ -371,7 +398,8 @@ export class ExtensionHost {
         const source = { extensionId: id, activation, providerId, ...(this.entries.get(id)?.generated ? { digest: this.entries.get(id)!.generated!.digest } : {}) };
         const registered: RegisteredContextProvider = { ...source, sample: async signal => {
           signal.throwIfAborted();
-          if (retired || this.closed || this.closing || ctx.fiber.state !== 2 || this.contextProviders.get(key) !== registered) return { ...source, status: 'stale' };
+          if (retired || this.closed || this.closing || this.options.ownerSignal?.aborted || ctx.fiber.state !== 2 || this.contextProviders.get(key) !== registered) return { ...source, status: 'stale' };
+          if (this.options.ownerSignal) signal = AbortSignal.any([signal, this.options.ownerSignal]);
           const lease = Promise.withResolvers<void>();
           executions.add(lease.promise);
           // Cancellation stops request preparation promptly, but cannot preempt
@@ -395,9 +423,9 @@ export class ExtensionHost {
         resourceDrains.push(releaseResource(() => { if (this.contextProviders.get(key) === registered) { this.contextProviders.delete(key); this.contextProviderDiagnostics.delete(key); } }));
         this.contextProviders.set(key, registered);
       },
-      emitEvent: async event => { alive(); return this.options.receive(id, validatedEvent(event)); },
+      emitEvent: async event => { alive(); this.options.ownerSignal?.throwIfAborted(); return this.options.receive(id, validatedEvent(event)); },
       requestWake: async request => {
-        alive();
+        alive(); this.options.ownerSignal?.throwIfAborted();
         if (!request.id || !request.reason.trim()) throw new Error('Wake needs a stable ID and reason');
         return this.options.receive(id, validatedEvent(request.event), { id: request.id, reason: request.reason });
       },
@@ -415,18 +443,22 @@ export class ExtensionHost {
       onCleanup: cleanup => { canRegister(); cleanupDrains.push(this.defer(ctx, async () => { await drainDependencies(); await Promise.all(resourceDrains); await cleanup(); })); },
       onEvent: (name, listener) => {
         canRegister();
-        const registeredListener = (payload: Json): void => listener(payload);
+        const registeredListener = (payload: Json): void => {
+          if (!retired && !this.closed && !this.options.ownerSignal?.aborted) listener(payload);
+        };
         let listeners = this.listeners.get(name);
         if (!listeners) listeners = new Set();
         resourceDrains.push(releaseResource(() => { listeners.delete(registeredListener); if (!listeners.size) this.listeners.delete(name); }));
         this.listeners.set(name, listeners);
         listeners.add(registeredListener);
       },
-      publish: (name, payload) => { alive(); for (const listener of this.listeners.get(name) ?? []) listener(structuredClone(payload)); },
+      publish: (name, payload) => { alive(); this.options.ownerSignal?.throwIfAborted(); for (const listener of this.listeners.get(name) ?? []) listener(structuredClone(payload)); },
       interval: (callback, milliseconds) => {
         canRegister();
         if (!Number.isFinite(milliseconds) || milliseconds <= 0) throw new Error('Interval must be positive');
-        resourceDrains.push(this.deferNative(ctx, ctx.interval(callback, milliseconds), drainDependencies));
+        resourceDrains.push(this.deferNative(ctx, ctx.interval(() => {
+          if (!retired && !this.closed && !this.options.ownerSignal?.aborted) callback();
+        }, milliseconds), drainDependencies));
       },
     };
     const instance = { id, activation, context, fiber: ctx.fiber, executions, dependencies, provided };
@@ -472,7 +504,7 @@ export class ExtensionHost {
   async withScheduledOwners<T>(dispatch: (owners: string[]) => Promise<T>): Promise<T> {
     this.assertOpen();
     return this.serialize(async () => {
-      await this.ctx.loader.await();
+      await this.ctx.loader.await(); this.assertOpen();
       const owners = this.snapshot().filter(entry => entry.status === 'active' && entry.enabled)
         .map(entry => this.scheduleOwner(entry.id)).filter((owner): owner is string => owner !== null);
       return dispatch(owners);
@@ -491,7 +523,7 @@ export class ExtensionHost {
     return this.serialize(async () => {
       // Settle an already-started HMR replacement before comparing the state the
       // client saw. The check and dispatch below have no intervening await.
-      await this.ctx.loader.await();
+      await this.ctx.loader.await(); this.assertOpen();
       if (expectedRevision !== undefined && this.managementRevision(id) !== expectedRevision) throw new ExtensionRevisionConflictError();
       if (snapshot.action === 'install') {
         if (this.entries.has(id)) throw new Error(`Extension already installed: ${id}`);
@@ -606,6 +638,7 @@ export class ExtensionHost {
     const owner = this.scheduleOwner(entry.id);
     if (owner && this.privateStorage) { const directory = await this.privateStorage.prepare(owner); await mkdir(path.join(directory, 'data'), { recursive: true, mode: 0o700 }); }
     const options: EntryOptions = { id: entry.id, name: pathToFileURL(fresh.entry).href, config: entry.config, disabled: entry.enabled === false, inject: ['timer'] };
+    this.assertOpen();
     await this.ctx.loader.create(options);
   }
   private async desiredEntry(id: string, change: ExtensionChange, receipt: ChangeStatus): Promise<LocalExtensionEntry | null> {
@@ -653,6 +686,7 @@ export class ExtensionHost {
       this.cleanupFailures.delete(id);
       this.beginCleanupScope(id);
       const desired = await this.desiredEntry(id, change, receipt);
+      this.assertOpen();
       if (this.configuration && change.action !== 'reload') {
         try { await this.configuration.replace(id, desired); receipt.persistence = 'saved'; }
         catch (error) { receipt.persistence = 'failed'; throw error; }
@@ -662,6 +696,7 @@ export class ExtensionHost {
       // task check and mutation in the same turn, so a stale fiber cannot be
       // disabled/configured while HMR is still replacing it.
       while (this.ctx.loader.getTasks().length) await this.ctx.loader.await();
+      this.assertOpen();
       this.diagnostics.delete(id);
       if (desired === null) {
         try { await this.removeRuntime(id); }
@@ -761,9 +796,18 @@ export class ExtensionHost {
   close(): Promise<void> {
     if (this.closeTask) return this.closeTask;
     this.closing = true;
+    for (const settings of this.settings.values()) settings.cancel();
     this.closeTask = (async () => {
       await this.lifecycle;
-      try { await this.ctx.fiber.dispose(); } finally { this.closed = true; this.closing = false; }
+      // Source HMR owns loader tasks outside our explicit mutation queue. Drain
+      // its retiring fibers before disposing the root, so their leases remain
+      // part of the joinable shutdown too.
+      try {
+        try { await this.ctx.loader?.await(); } finally { await this.ctx.fiber.dispose(); }
+      } finally {
+        this.closed = true; this.closing = false;
+        this.options.ownerSignal?.removeEventListener('abort', this.ownershipLost);
+      }
     })();
     return this.closeTask;
   }

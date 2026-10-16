@@ -6,7 +6,7 @@ const unavailable = (): never => { throw Error('Unexpected resource use'); };
 const context: ExtensionContext = {
     privateDirectory: null, registerSettings: unavailable, credentials: {get: unavailable, has: unavailable, set: unavailable, delete: unavailable},
     schedules: { create: unavailable, get: unavailable, list: unavailable, replace: unavailable, cancel: unavailable },
-  id: 'configuration-boundary-test', registerTool: unavailable, registerContextProvider: unavailable, emitEvent: unavailable,
+  id: 'configuration-boundary-test', registerToolset: () => { throw new Error('Unused toolset'); }, registerTool: unavailable, registerContextProvider: unavailable, emitEvent: unavailable,
   requestWake: unavailable, provideService: unavailable, service: unavailable,
   onCleanup: unavailable, onEvent: unavailable, publish: unavailable, interval: unavailable,
 };

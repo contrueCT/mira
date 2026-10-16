@@ -1072,3 +1072,81 @@ test('ordinary extension message projection is copied and validated under the co
     } finally { await host.close(); }
   });
 });
+
+test('owner loss fences retained capabilities and cancels before queued lifecycle drainage', { timeout: 10_000 }, async () => {
+  await withDirectory(async directory => {
+    const entry = await fixture<any>(directory, 'ownership-drain', `
+      export const state = { contexts: [], applied: 0, cleaned: 0, ticks: 0, events: 0, started: false, cancelled: false, release: null };
+      export default defineExtension({ name: 'ownership-drain', apply(ctx) {
+        state.contexts.push(ctx); state.applied++;
+        ctx.provideService('cleanup-resource', { close() { state.cleaned++; } });
+        ctx.onCleanup(() => ctx.service('cleanup-resource').close());
+        ctx.interval(() => { state.ticks++; }, 2);
+        ctx.onEvent('notice', () => { state.events++; });
+        const actions = ctx.registerSettings({ fields: [], status: () => ({state:'connected'}), actions: [{
+          id: 'hold', label: 'Hold', async execute({signal}) {
+            state.started = true;
+            await new Promise(resolve => signal.addEventListener('abort', resolve, {once:true}));
+            state.cancelled = true;
+          }
+        }] });
+        ctx.registerContextProvider({ id: 'sample', async provide() { return {text:'sample'}; } });
+        ctx.registerTool({ name: 'ownership_hold', description: 'Hold an execution lease', parameters: {type:'object'}, async execute() {
+          await actions.start('hold');
+          await new Promise(resolve => { state.release = resolve; });
+          return {text:'effect already happened'};
+        } });
+      } });
+    `);
+    await writeFile(path.join(directory, 'config.json'), JSON.stringify({ entries: [{ id:'owned', path:entry.path }] }));
+    const owner = new AbortController();
+    const host = new ExtensionHost({ entries: [{ id: 'owned', path: entry.path }], configurationFile: path.join(directory, 'config.json'), ownerSignal: owner.signal, receive: received });
+    let call: Promise<unknown> | undefined, reload: Promise<unknown> | undefined;
+    try {
+      await host.start(); const capabilities = await host.prepareCapabilities();
+      call = capabilities.tools[0]!.tool.execute({}, execution);
+      while (!entry.state.release || !entry.state.started) await delay(2);
+      reload = host.requestChange('owned', { action: 'reload' });
+      // The lifecycle operation now waits for the executing tool's lease.
+      await delay(10);
+      const queued = host.prepareCapabilities(); const rejected = assert.rejects(queued);
+      owner.abort(new Error('owner lost'));
+      const closing = host.close(); assert.equal(host.close(), closing);
+      while (!entry.state.cancelled) await delay(2);
+      assert.equal(entry.state.cleaned, 0, 'cancellation must not discard the held execution lease');
+      const context = entry.state.contexts[0];
+      await assert.rejects(context.credentials.set('late', 'synthetic'));
+      await assert.rejects(context.emitEvent({ id:'late', type:'test', occurredAt:new Date().toISOString(), payload:null }));
+      assert.throws(() => context.publish('notice', null));
+      assert.throws(() => context.interval(() => {}, 1));
+      assert.match((await capabilities.tools[0]!.tool.execute({}, execution)).text, /not executed.*stale/);
+      assert.equal((await capabilities.contextProviders[0]!.sample(execution.signal)).status, 'stale');
+      const ticks = entry.state.ticks; await delay(10); assert.equal(entry.state.ticks, ticks);
+      entry.state.release(); await call; await reload; await rejected; await closing;
+      assert.equal(entry.state.cleaned, 1, 'pinned service lookup remains available to cleanup');
+      assert.equal(entry.state.applied, 1, 'retirement cannot activate a replacement after ownership loss');
+    } finally { entry.state.release?.(); await call; await reload; await host.close(); }
+  });
+});
+
+test('owner loss during async plugin startup drains before returning and cannot restart', async () => {
+  await withDirectory(async directory => {
+    const entry = await fixture<any>(directory, 'ownership-start', `
+      export const state = { entered:false, cleaned:false, release:null, late:false };
+      export default defineExtension({ name:'ownership-start', async apply(ctx) {
+        ctx.onCleanup(() => { state.cleaned = true; }); state.entered = true;
+        await new Promise(resolve => { state.release = resolve; });
+        ctx.registerTool({ name:'late_start', description:'Late registration', parameters:{type:'object'}, async execute(){ state.late=true; return {text:'late'}; } });
+      } });
+    `);
+    const owner = new AbortController(); const host = new ExtensionHost({ entries:[{id:'starting',path:entry.path}], ownerSignal:owner.signal, receive:received });
+    const starting = host.start(); const failed = assert.rejects(starting);
+    try {
+      while (!entry.state.entered) await delay(2);
+      owner.abort(new Error('startup ownership lost')); entry.state.release();
+      await failed; await host.close();
+      assert.equal(entry.state.cleaned, true); assert.equal(entry.state.late, false);
+      await assert.rejects(host.start());
+    } finally { entry.state.release?.(); await failed; await host.close(); }
+  });
+});

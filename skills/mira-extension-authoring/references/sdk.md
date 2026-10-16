@@ -255,3 +255,12 @@ UI 与工具共享单个 pending 动作。并发 start 只有一个成功；canc
 operation.id，旧 activation 的 handle 不可继续使用。start 接受后不要因未知结果
 盲目重试，应先核对 current；操作失败/取消也不代表远端效果被撤销。
 过期判定和重新请求授权的刷新动作仍由插件定义，不能仅重绘旧 URL 当成刷新。
+
+Dynamic collections may use `registerToolset(initialTools)` and
+`handle.replace(candidateTools)`. Replacement validates/clones the whole set,
+returns its revision and changes declarations at the next natural request.
+Already-started calls retain their original implementation; unbegun old
+snapshots return known stale/not-executed. Use `replace([])` to withdraw a set.
+A tool result may include `isError: true` for a known failure; throw only when
+the effect result is genuinely unknown. MCP integration uses these ordinary
+contracts; see `packages/mcp-plugin/README.md` for package preparation and config.
