@@ -234,6 +234,10 @@ code must honor the signal and join its background work during cleanup. Closing 
 window does not cancel an already accepted action. Retiring an activation cancels it
 and drains its execution lease. UI writes may save credentials before a config apply
 fails; reread actual state rather than retrying an unknown outcome automatically.
+The ordinary `extension_inspect` tool exposes only settings action IDs/revision and
+fixed connection state/code. Codes include generic `name_conflict` and
+`invalid_tools`; details, authorization links and credentials remain protected.
+An active extension may still report a disconnected or failed connection.
 
 声明式设置的返回 handle 与受保护 HTTP 共用一个动作 runner；工具可自行启动动作，
 无框架 connect 工具。handle 只投影 operation receipt，并拒绝旧 activation。
@@ -259,3 +263,15 @@ already admitted work and cleanup. This is cooperative lifecycle management,
 not a sandbox: arbitrary trusted plugin network/filesystem effects cannot be
 forcibly preempted or rolled back. Plugins must retain their own durable
 idempotency/CAS and unknown-outcome handling across process overlap.
+Dynamic collections use the SDK `registerToolset` handle. A candidate is fully
+validated/cloned before any live registry change; publication carries a revision
+in the normal declaration identity. Existing activation/admission/lease guards
+also cover set replacement and every captured declaration. Cleanup withdraws
+only this set's registrations. The host contains no MCP protocol or OAuth code.
+
+Captured pinned pnpm Node bin shims retain their executable target, arguments and
+symlink/PATH behavior, while redundant NODE_PATH entries are cleared. Ordinary Node ancestor lookup uses
+the sparse captured topology without inheriting ambient NODE_PATH. Unknown scripts are not rewritten;
+the package preparation gate still rejects unknown shims. This relocator supports
+the pinned POSIX Node shim, not arbitrary shell, Windows cmd/PowerShell or other
+package-manager launcher formats. Stage never executes launchers.

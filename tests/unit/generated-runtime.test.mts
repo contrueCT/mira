@@ -127,7 +127,7 @@ test('awaited generated management installs, activates, inspects and invokes wit
         assert.deepEqual(inspected.changes, actions.slice(0, index + 1).map(previous => receipts.get(`manage-${previous}`)));
         assert.equal(inspected.extensions.length, 1);
         const extension = inspected.extensions[0]!;
-        assert.deepEqual(receipt.runtime, extension, 'management returns its own exact post-operation runtime snapshot');
+        assert.deepEqual(extension, { ...receipt.runtime, settings: null }, 'inspection adds unavailable settings metadata to the exact post-operation runtime snapshot');
         assert.equal(extension.id, 'generated'); assert.equal(extension.status, statuses[action]);
         assert.equal(extension.enabled, action === 'activate');
         assert.deepEqual(extension.tools, action === 'activate' ? ['generated_echo'] : []);
@@ -195,7 +195,7 @@ test('failed generated activation returns saved desired state and a known durabl
       assert.ok(failed.runtime); assert.equal(failed.runtime.status, 'import-failed'); assert.equal(failed.runtime.enabled, true);
       assert.deepEqual(failed.runtime.tools, []);
       const inspected = toolResult<{ extensions: ExtensionStatus[]; changes: ChangeStatus[] }>(context, 'inspect-broken');
-      assert.deepEqual(inspected.extensions, [failed.runtime]); assert.deepEqual(inspected.changes, [installed, failed]);
+      assert.deepEqual(inspected.extensions, [{ ...failed.runtime, settings: null }]); assert.deepEqual(inspected.changes, [installed, failed]);
       const saved = await readExtensionConfiguration(files.configurationFile);
       assert.equal(saved.entries[0]!.enabled, true); assert.equal(saved.entries[0]!.generated!.digest, release.digest);
       return streamOf(assistant('Activation failed; the saved desired state is still enabled'));

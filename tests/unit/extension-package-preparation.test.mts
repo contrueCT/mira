@@ -1,12 +1,14 @@
+import { pnpmNodeShim as template } from '@mira/extension-host/package-bin-shims';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { chmod, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { ArtifactStore } from '@mira/extension-host';
 import { prepareExtensionPackage } from '../../scripts/prepare-extension-package.mts';
-async function fixture(run: (root: string) => Promise<void>) { const root = await mkdtemp(path.join(os.tmpdir(), 'mira-package-prep-')); try { await run(root); } finally { await rm(root, { recursive: true, force: true }); } }
+async function fixture(run: (root: string) => Promise<void>) { const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-package-prep-'))); try { await run(root); } finally { await rm(root, { recursive: true, force: true }); } }
 async function pkg(directory: string, manifest: object, body = 'export default {};') { await mkdir(directory, { recursive: true }); await writeFile(path.join(directory, 'package.json'), JSON.stringify({ type: 'module', main: 'index.mjs', ...manifest })); await writeFile(path.join(directory, 'index.mjs'), body); }
 async function link(directory: string, name: string, target: string) { const destination = path.join(directory, 'node_modules', name); await mkdir(path.dirname(destination), { recursive: true }); await symlink(target, destination, 'dir'); }
 
@@ -179,3 +181,129 @@ test('standard file URL encoding preserves a trailing-space entry through movabl
   const receipt = await store.test(artifact, { command: process.execPath, args: ['--input-type=module', '-e', "if((await import('./entry.mjs')).default !== 'literal') throw Error('entry identity changed');"] });
   assert.equal(receipt.passed, true, receipt.stderr);
 }));
+
+test('pnpm bin shims admit only declared captured targets and preserve all external-link fences', async () => fixture(async root => {
+  const source = path.join(root, 'source'), dep = path.join(root, 'dep'), executable = path.join(root, 'executable');
+  await pkg(source, { dependencies: { dep: '1' } });
+  await pkg(dep, { dependencies: { executable: '1' } });
+  await pkg(executable, { name: 'executable', bin: { demo: 'run.mjs' } });
+  await writeFile(path.join(executable, 'run.mjs'), 'console.log("synthetic");');
+  await link(source, 'dep', dep); await link(dep, 'executable', executable);
+  const bin = path.join(dep, 'node_modules', '.bin'); await mkdir(bin);
+  const shim = path.join(bin, 'demo'); const target = path.join(executable, 'run.mjs');
+  const valid = template.replaceAll('@@TARGET@@', target).replaceAll('@@RELATIVE@@', path.relative(bin, target)).replaceAll('@@NODE_PATH@@', path.join(executable, 'node_modules'));
+  await writeFile(shim, valid);
+  const prepared = await prepareExtensionPackage(source, path.join(root, 'good'), 'index.mjs');
+  await new ArtifactStore(path.join(root, 'artifacts')).stage(prepared.directory, prepared.entryRelative);
+  for (const content of ['#!/bin/sh\nexit 0\n', `#!/bin/sh\n# cmd-shim-target=${path.join(root, 'unrelated')}\n`, `#!/bin/sh\n# cmd-shim-target=${target}\n# cmd-shim-target=${target}\n`, `#!/bin/sh\n# cmd-shim-target=${target}\nexec /arbitrary/external/executable \"$@\"\n`, valid + 'echo injected\n', valid.replace('exec node  ', 'exec /external/node  '), valid.replace(path.join(executable, 'node_modules'), '/external/node_modules')]) {
+    await writeFile(shim, content); await assert.rejects(prepareExtensionPackage(source, path.join(root, 'bad'), 'index.mjs'), /escapes the declared closure/);
+    await assert.rejects(realpath(path.join(root, 'bad')), /ENOENT/);
+  }
+  await writeFile(shim, valid);
+  await writeFile(path.join(bin, 'undeclared'), `#!/bin/sh\n# cmd-shim-target=${target}\n`);
+  await assert.rejects(prepareExtensionPackage(source, path.join(root, 'bad'), 'index.mjs'), /escapes the declared closure/);
+  await rm(path.join(bin, 'undeclared'));
+  await mkdir(path.join(root, 'unrelated')); await writeFile(path.join(root, 'unrelated', 'secret'), 'synthetic-private');
+  await symlink(path.join(root, 'unrelated'), path.join(bin, 'nested'));
+  await assert.rejects(prepareExtensionPackage(source, path.join(root, 'bad'), 'index.mjs'), /escapes the declared closure/);
+  await rm(path.join(bin, 'nested')); await rm(shim); await symlink(path.join(root, 'unrelated', 'secret'), shim);
+  await assert.rejects(prepareExtensionPackage(source, path.join(root, 'bad'), 'index.mjs'), /escapes the declared closure/);
+  await rm(bin, { recursive: true }); await symlink(path.join(root, 'unrelated'), bin);
+  await assert.rejects(prepareExtensionPackage(source, path.join(root, 'bad'), 'index.mjs'), /must not be a link/);
+}));
+
+
+test('executable captured pnpm shims resolve only the captured closure after source mutation and removal', async () =>
+  fixture(async sourceRoot => fixture(async storeRoot => fixture(async runtimeRoot => {
+    // Separate roots prevent ordinary Node ancestor lookup from accidentally
+    // finding the original installation during artifact execution.
+    const source = path.join(sourceRoot, 'source with spaces');
+    const modules = path.join(sourceRoot, 'node_modules');
+    const dep = path.join(modules, 'dep');
+    const executable = path.join(modules, 'executable');
+    const declared = path.join(modules, 'declared');
+    const outside = path.join(modules, 'outside');
+    const ambient = path.join(runtimeRoot, 'ambient modules');
+    const poisonBin = path.join(runtimeRoot, 'node_modules', '.bin');
+    await pkg(source, { dependencies: { dep: '1' } }, "export {default} from 'dep';");
+    await pkg(dep, { dependencies: { executable: '1' } },
+      "import {fileURLToPath} from 'node:url'; export default fileURLToPath(new URL('./node_modules/.bin/demo', import.meta.url));");
+    await pkg(executable, { name: 'executable', bin: { demo: 'run.cjs' }, dependencies: { declared: '1' } });
+    await pkg(declared, { main: 'index.cjs' });
+    await writeFile(path.join(declared, 'index.cjs'), "module.exports = 'captured declared value';");
+    await pkg(outside, { main: 'index.cjs' });
+    await writeFile(path.join(outside, 'index.cjs'), "module.exports = 'original undeclared value';");
+    await pkg(path.join(ambient, 'ambient-only'), { main: 'index.cjs' });
+    await writeFile(path.join(ambient, 'ambient-only', 'index.cjs'), "module.exports = 'ambient undeclared value';");
+    await writeFile(path.join(executable, 'run.cjs'), [
+      '#!/usr/bin/env node',
+      "const resolve = name => { try { return require(name); } catch (error) { if (error.code === 'MODULE_NOT_FOUND') return 'NOT_CAPTURED'; throw error; } };",
+      "console.log(JSON.stringify({ declared: resolve('declared'), outside: resolve('outside'), ambient: resolve('ambient-only'), args: process.argv.slice(2) }));",
+      '',
+    ].join('\n'));
+    const bin = path.join(dep, 'node_modules', '.bin');
+    await mkdir(bin, { recursive: true });
+    const originalShim = path.join(bin, 'demo');
+    const target = path.join(executable, 'run.cjs');
+    await writeFile(originalShim, template
+      .replaceAll('@@TARGET@@', target)
+      .replaceAll('@@RELATIVE@@', path.relative(bin, target))
+      .replaceAll('@@NODE_PATH@@', [path.join(executable, 'node_modules'), modules].join(':')));
+    await chmod(originalShim, 0o755);
+    await mkdir(poisonBin, { recursive: true });
+    for (const helper of ['readlink', 'sed', 'uname', 'printf']) {
+      const filename = path.join(poisonBin, helper);
+      await writeFile(filename, '#!/bin/sh\necho hostile-PATH-helper >&2\nexit 91\n');
+      await chmod(filename, 0o755);
+    }
+    const env = {
+      PATH: [poisonBin, path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter),
+      NODE_PATH: ambient,
+      HOME: runtimeRoot,
+    };
+    const args = ['argument with spaces', '', '$HOME; echo not-a-command', 'quote"and\'quote', '--literal'];
+    const run = (shim: string) => JSON.parse(execFileSync(shim, args, {
+      cwd: runtimeRoot, env, encoding: 'utf8', timeout: 10_000,
+    }));
+    // Demonstrate both escape routes really exist in the original executable.
+    assert.deepEqual(run(originalShim), {
+      declared: 'captured declared value', outside: 'original undeclared value',
+      ambient: 'ambient undeclared value', args,
+    });
+    const prepared = await prepareExtensionPackage(source, path.join(sourceRoot, 'prepared with spaces'), 'index.mjs');
+    // A POSIX colon in the runtime base must not become a NODE_PATH delimiter.
+    const colonEscape = path.join(storeRoot, 'ambient', 'outside');
+    await pkg(colonEscape, { main: 'index.cjs' });
+    await writeFile(path.join(colonEscape, 'index.cjs'), "module.exports = 'unhashed colon escape';");
+    const store = new ArtifactStore(path.join(storeRoot, 'ambient:suffix', 'artifacts with spaces'));
+    const artifact = await store.stage(prepared.directory, prepared.entryRelative);
+    const stagedShim: string = (await import(pathToFileURL(artifact.entry).href)).default;
+    const invocation = path.join(runtimeRoot, 'linked executable with spaces');
+    await symlink(stagedShim, invocation);
+    const expected = { declared: 'captured declared value', outside: 'NOT_CAPTURED', ambient: 'NOT_CAPTURED', args };
+    assert.deepEqual(run(stagedShim), expected);
+    assert.deepEqual(run(invocation), expected);
+    await writeFile(path.join(declared, 'index.cjs'), "module.exports = 'mutated declared value';");
+    await writeFile(path.join(outside, 'index.cjs'), "module.exports = 'mutated undeclared value';");
+    await writeFile(path.join(colonEscape, 'index.cjs'), "module.exports = 'mutated unhashed colon escape';");
+    assert.deepEqual(run(invocation), expected);
+    await rm(sourceRoot, { recursive: true, force: true });
+    assert.deepEqual(run(invocation), expected);
+    // Fresh activation relocates the same captured shim once more.
+    const fresh = await store.prepareFreshActivation(artifact);
+    const freshShim: string = (await import(pathToFileURL(fresh.entry).href)).default;
+    assert.deepEqual(run(freshShim), expected);
+    await store.verify(artifact);
+  }))));
+
+for (const bin of [null, ['run.js'], { 'c++': 'run.js' }, { unused: 'missing/unbuilt.js' }]) {
+  test(`unused bin metadata remains compatible without actual launchers: ${JSON.stringify(bin)}`, async () => fixture(async root => {
+    const source = path.join(root, 'source'), dependency = path.join(root, 'dependency');
+    await pkg(source, { dependencies: { dependency: '1' } });
+    await pkg(dependency, { name: 'dependency', bin });
+    await link(source, 'dependency', dependency);
+    const prepared = await prepareExtensionPackage(source, path.join(root, 'prepared'), 'index.mjs');
+    const store = new ArtifactStore(path.join(root, 'artifacts'));
+    await store.verify(await store.stage(prepared.directory, prepared.entryRelative));
+  }));
+}

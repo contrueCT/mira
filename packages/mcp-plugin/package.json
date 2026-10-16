@@ -1,0 +1,12 @@
+{
+  "name": "@mira/mcp-plugin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@mira/extension-sdk": "workspace:*",
+    "@modelcontextprotocol/client": "2.3.1",
+    "ajv": "8.20.0"
+  }
+}

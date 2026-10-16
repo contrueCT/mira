@@ -27,3 +27,4 @@
 - ADR0035：私有命名空间复用持久安装身份；重载/更新/停用保留，卸载清凭据但留data。动作先取消再等待execution lease，不把异常或凭据放入公共设置投影。
 - 设置handle与HTTP共用runner，插件tool可自选start/current/cancel；只投影operation receipt，旧代拒绝。handle不能排全局生命周期队列，以免与tool lease形成死锁。
 - 组装层可传ownerSignal；失去所有权立即fence入口并取消动作，再等待lifecycle/execution lease。close可重复等待；保留cleanup的依赖service访问，不能声称强制终止可信插件任意文件/网络副作用。
+- ADR0040: toolset replacement reuses canRegister and exact registry identity/lease fences; validate all candidates before publication, never redirect stale snapshots by name. MCP/OAuth stays in its consumer package.

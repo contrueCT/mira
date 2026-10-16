@@ -14,8 +14,8 @@ import { assistant, input, MemoryWriter, model, streamOf } from '../recovery/fix
 
 const sourceDirectory = fileURLToPath(new URL('../../', import.meta.url));
 const run = promisify(execFile);
-const names = ['pdf', 'doc', 'transcribe', 'agent-browser', 'mira-web-search'];
-const bodyHeadings = ['# PDF Skill', '# DOCX Skill', '# Audio Transcribe', '## Mira runtime setup', '# Public web search and extraction'];
+const names = ['pdf', 'doc', 'transcribe', 'agent-browser', 'mira-web-search', 'mira-mcp'];
+const bodyHeadings = ['# PDF Skill', '# DOCX Skill', '# Audio Transcribe', '## Mira runtime setup', '# Public web search and extraction', '# Connect and manage MCP servers'];
 
 for (const worker of [false, true]) test(`${worker ? 'worker' : 'Mira'} bundled public skills use the real loader and ordinary read tools`, async t => {
   const miraHome = await mkdtemp(path.join(os.tmpdir(), 'mira-bundled-skills-'));
