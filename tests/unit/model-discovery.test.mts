@@ -107,7 +107,7 @@ test('OpenAI data rows preserve IDs and optional names, deduplicate stably, and 
     { id: 'model-z', name: 'First name', context_window: 42, max_tokens: 1000, reasoning: true, cost: 2 },
     { id: 'model-a' }, { id: 'model-z', name: 'Later name' },
   ] });
-  assert.deepEqual(result.models, [{ id: 'model-z', name: 'First name' }, { id: 'model-a' }]);
+  assert.deepEqual(result.models, [{ id: 'model-z', name: 'First name', reasoning: true }, { id: 'model-a' }]);
 });
 
 test('data takes precedence over any models shape, including an empty data array', async () => {
@@ -396,4 +396,21 @@ test('discovery rejects a resolved credential in endpoint paths without sending 
   for (const baseUrl of [`https://provider.example/${env.CUSTOM_KEY}`, `https://provider.example/%73${env.CUSTOM_KEY.slice(1)}`]) {
     await assert.rejects(discoverModels(connection({ baseUrl }), { env, fetch: neverFetch }), error => error instanceof Error && /must not contain the API key/u.test(error.message) && !error.message.includes(env.CUSTOM_KEY));
   }
+});
+
+
+test('discovery imports only explicit valid metadata and never infers controls or limits from IDs', async () => {
+  const result = await listed({ data: [
+    { id: 'gpt-6-luna', owned_by: 'openai' },
+    { id: 'rich', context_length: 65536, top_provider: { max_completion_tokens: 8192 }, architecture: { input_modalities: ['text', 'image', 'audio'] }, reasoning: true, supported_parameters: ['reasoning_effort'], reasoningControl: true },
+    { id: 'invalid', contextWindow: '100000', maxTokens: -1, input: ['audio'], reasoning: 'true' },
+    { id: 'inconsistent', contextWindow: 100, maxTokens: 101 },
+    { id: 'canonical', contextWindow: 2000, maxTokens: 500, input: ['text'], reasoning: false },
+  ] });
+  assert.deepEqual(result.models, [
+    { id: 'gpt-6-luna' },
+    { id: 'rich', contextWindow: 65536, maxTokens: 8192, input: ['text', 'image'], reasoning: true },
+    { id: 'invalid' }, { id: 'inconsistent', contextWindow: 100 },
+    { id: 'canonical', contextWindow: 2000, maxTokens: 500, input: ['text'], reasoning: false },
+  ]);
 });

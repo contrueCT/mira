@@ -359,3 +359,14 @@ test('both timeline routes retain generic extension source identity without raw 
     assert.ok(!response.body.includes('DO_NOT_PROJECT_SOURCE_RAW')); assert.equal(response.json().items[0].externalEventId, undefined);
   }
 });
+
+
+test('HTTP discovery preserves only the validated capability metadata needed by the model editor', async t => {
+  const supplied = { id: 'rich', name: 'Rich', contextWindow: 100000, maxTokens: 4096, reasoning: true, input: ['text' as const, 'image' as const], raw: 'private-sentinel', apiKey: 'private-sentinel', reasoningFormat: 'openrouter' as const };
+  const app = createLocalHttp({ backend: backend({ discover: async () => ({ endpoint: `${connection.baseUrl}/models`, models: [supplied, { id: 'id-only' }], headers: { authorization: 'private-sentinel' } }) }), port });
+  t.after(() => app.close());
+  const response = await app.inject({ method: 'POST', url: '/api/models/discover', headers: writeHeaders, payload: { connection } });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json().models, [{ id: 'rich', name: 'Rich', contextWindow: 100000, maxTokens: 4096, reasoning: true, input: ['text', 'image'] }, { id: 'id-only' }]);
+  assert.ok(!response.body.includes('private-sentinel')); assert.ok(!response.body.includes('reasoningFormat'));
+});

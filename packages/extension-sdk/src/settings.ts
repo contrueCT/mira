@@ -13,7 +13,8 @@ export interface ExtensionConnectionStatus {
   state: 'unconfigured' | 'disconnected' | 'connecting' | 'pending' | 'connected' | 'error';
   /** Declared action IDs available now; omitted exposes all, [] exposes none. */
   visibleActions?: string[];
-  code?: 'authentication' | 'network' | 'configuration' | 'unknown';
+  /** Fixed non-sensitive diagnostics; state/code may be exposed to the model. */
+  code?: 'authentication' | 'network' | 'configuration' | 'name_conflict' | 'invalid_tools' | 'unknown';
   /** Explicitly public to the protected settings screen, never model metadata. */
   details?: Array<{ label: string; value: string }>;
   authorization?: { url: string; label: string; qr?: boolean };

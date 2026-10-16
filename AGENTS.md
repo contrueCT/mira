@@ -103,5 +103,9 @@ pnpm check
 
 
 - ADR 0035 的动作 group/visibleActions 仅为通用展示与可用性契约，业务状态映射归插件；HTTP/handle 同 runner 校验，系统层不含 provider 分支。
+- ADR0040：MCP 是普通独立扩展实例，仅复用通用动态工具集和 isError；核心无 MCP/OAuth 分支。官方 SDK 2.3.1 独立锁定，Pi 不升级；无隐式重放，真实协议/PG/浏览器与 live account 验收分开。
+
+- ADR 0041：自定义目录可填入经验证的明确元数据；Chat Completions reasoningFormat 显式选择 Pi wire 格式，未指定保留旧强度语义，不猜代理能力或在400后自动换参数。
+
 
 - [ADR 0043](docs/adr/0043-message-replies-timeline.md)：主 Timeline 紧凑时间分组及双向 History-ID 回复；引用是服务端验证的有界数据快照，不升级权限，子任务不发布主聊天回复。真实浏览器门禁 `test:replies:e2e` 与合成 UI/离线测试分开。

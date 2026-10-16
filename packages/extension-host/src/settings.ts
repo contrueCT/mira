@@ -46,7 +46,7 @@ function publicStatus(value: ExtensionConnectionStatus, actions: ExtensionSettin
     // Declaration order is stable; provider array order is not a UI ordering API.
     status.visibleActions = actions.filter(action => value.visibleActions!.includes(action.id)).map(action => action.id);
   }
-  if (value.code !== undefined) { if (!['authentication', 'network', 'configuration', 'unknown'].includes(value.code)) invalid(); status.code = value.code; }
+  if (value.code !== undefined) { if (!['authentication', 'network', 'configuration', 'name_conflict', 'invalid_tools', 'unknown'].includes(value.code)) invalid(); status.code = value.code; }
   if (value.details !== undefined) {
     if (!Array.isArray(value.details) || value.details.length > 12) invalid();
     status.details = value.details.map(item => ({ label: text(item.label), value: text(item.value, 1024) }));

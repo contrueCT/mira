@@ -7,8 +7,14 @@ export interface ExtensionTool {
   /** 1-64 ASCII letters, digits, underscores or hyphens; start with a letter or underscore. Used unchanged on model APIs. */
   name: string;
   description: string;
-  parameters: { type: 'object'; properties?: { [key: string]: Json }; required?: string[]; additionalProperties?: boolean };
-  execute(arguments_: Json, context: { callId: string; signal: AbortSignal }): Promise<{ text: string; details?: Json }>;
+  parameters: { type: 'object'; properties?: { [key: string]: Json }; required?: string[]; additionalProperties?: boolean | { [key: string]: Json }; [key: string]: Json | undefined };
+  execute(arguments_: Json, context: { callId: string; signal: AbortSignal }): Promise<{ text: string; details?: Json; isError?: boolean }>;
+}
+/** One installation-owned dynamic collection. Replacing validates the entire
+ * candidate before publishing; begun calls retain their original implementation.
+ * A captured, not-yet-started old declaration returns known stale/not-executed. */
+export interface ExtensionToolset {
+  replace(tools: readonly ExtensionTool[]): { revision: string };
 }
 /** Read-only observation sampled once at a natural model-request boundary.
  * Return null/empty text when unavailable. Honor cancellation; this is trusted
@@ -64,6 +70,7 @@ export interface ExtensionContext {
   /** Host-scoped stable installation identity; retired activations cannot write. */
   readonly schedules: ExtensionSchedules;
   registerTool(tool: ExtensionTool): void;
+  registerToolset(tools: readonly ExtensionTool[]): ExtensionToolset;
   registerContextProvider(provider: ContextProvider): void;
   emitEvent(event: ExtensionEvent): Promise<'inserted' | 'duplicate'>;
   requestWake(request: ExtensionWake): Promise<'inserted' | 'duplicate'>;

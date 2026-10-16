@@ -271,3 +271,20 @@ test('Feishu is an ordinary SDK consumer; core cannot import its vendor SDK', as
     for (const expected of ['forbidden import @mira/life', 'forbidden import @mira/server', 'external import not allowed @larksuite/channel']) assert.ok(errors.some(error => error.includes(expected)), expected);
   });
 });
+
+test('MCP consumer imports only its public SDK while core cannot import the MCP client', async () => {
+  await fixture(async root => {
+    const policyPath = path.join(root, 'scripts/boundaries.json');
+    const policy = JSON.parse(await readFile(policyPath, 'utf8'));
+    policy['@mira/mcp-plugin'] = { path: 'packages/mcp-plugin', allow: ['@mira/extension-sdk'], external: ['@modelcontextprotocol/client', 'ajv'] };
+    await writeFile(policyPath, JSON.stringify(policy));
+    await mkdir(path.join(root, 'packages/mcp-plugin'), { recursive: true });
+
+    await writeFile(path.join(root, 'packages/mcp-plugin/client.ts'), "import { Client } from '@modelcontextprotocol/client';");
+    assert.deepEqual(await checkBoundaries(root), []);
+    await writeFile(path.join(root, 'packages/life/mcp.ts'), "import { Client } from '@modelcontextprotocol/client';");
+    assert.ok((await checkBoundaries(root)).some(error => error.includes('@modelcontextprotocol/client')));
+    await writeFile(path.join(root, 'packages/mcp-plugin/client.ts'), "import { PiDurableRuntime } from '@mira/runtime-pi';");
+    assert.ok((await checkBoundaries(root)).some(error => error.includes('forbidden import @mira/runtime-pi')));
+  });
+});

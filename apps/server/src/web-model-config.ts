@@ -46,7 +46,7 @@ export function webConnectionMetadata(connection: Omit<CustomConnection, 'apiKey
     baseUrl: connection.baseUrl, api: connection.api,
     ...(connection.modelsUrl === undefined ? {} : { modelsUrl: connection.modelsUrl }),
     models: connection.models.map(model => ({ id: model.id, ...(model.name === undefined ? {} : { name: model.name }), contextWindow: model.contextWindow,
-      maxTokens: model.maxTokens, reasoning: model.reasoning, input: [...model.input] })),
+      maxTokens: model.maxTokens, reasoning: model.reasoning, ...(model.reasoningFormat === undefined ? {} : { reasoningFormat: model.reasoningFormat }), input: [...model.input] })),
   };
 }
 function parseConnection(value: unknown, write: boolean): WebCustomConnectionWrite {

@@ -492,7 +492,7 @@ test('independent child reads can fail and recover without discarding readable p
     readSubagentsForRun: async () => { if (unavailable) throw Error('Synthetic unavailable'); return parent.listSubagents(); },
     getSubagentForRun: async () => { if (unavailable) throw Error('Synthetic unavailable'); return parent.getSubagent(record.id); },
   };
-  const service = Reflect.construct(LocalWebService, [{ dreaming: { enabled: false } }, { onLiveInput: () => () => {} }, history, {}, {}, {}, {}, {}, reader]) as typeof LocalWebService.prototype;
+  const service = Reflect.construct(LocalWebService, [{ dreaming: { enabled: false } }, { signal: new AbortController().signal, onLiveInput: () => () => {} }, history, {}, {}, {}, {}, {}, reader]) as typeof LocalWebService.prototype;
   const detail = await service.run(runId); assert(detail);
   assert.equal(detail.executions.length, 1); assert.equal(detail.error, null);
   assert.equal(detail.executions[0]!.kind, 'tool');

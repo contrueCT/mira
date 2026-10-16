@@ -1,0 +1,32 @@
+# ADR 0040: MCP as an ordinary extension consumer
+
+Status: user-approved design; implementation acceptance tracked by checks, not assumed from this document.
+
+One generic MCP package is instantiated as independent ordinary extensions, reusing package preparation, stage/test/install/activate/configure/update/rollback/disable/remove. No second MCP manager, lifecycle ledger, screen or core vendor branches. Core additions are limited to atomic replaceable toolsets, optional known-failure `isError` outcomes and access to the existing protected settings runner through ordinary extension management. MCP protocol and OAuth behavior remain inside the plugin.
+
+The official TypeScript client is independently pinned at 2.3.1. Pi stays at 1.0.2. Both 2026-07-28 and legacy servers are supported. HTTP uses official negotiation; stdio defaults legacy and allows explicit modern selection. The SDK's documented subclass in-place negotiation avoids its base transport's disposable sibling launch. Its automatic input fulfilment, header-mismatch effect retry and OAuth effect retries are disabled or bypassed through public options and token-only effect authentication.
+
+A toolset candidate is cloned and validated in full before a synchronous publication. Selected MCP output schemas are precompiled with the same quiet validator used by execution; malformed schemas, asynchronous output schemas incompatible with the SDK’s synchronous validator contract, or explicitly non-string dialect declarations reject the candidate before replacing working tools. Registry identity binds an unbegun call to its exact revision; removed/replaced declarations produce known stale/not-executed outcomes. Already begun calls retain their original closure/client/schema. Next natural request captures the new declarations. Generic schema preflight uses Ajv 8.20.0 (default draft 2020-12, explicit draft-07/2019-09 supported; recognized dialect URIs accept http/https spellings without changing published schema bytes), followed by the same pinned TypeBox 1.3.27 compiler as the runtime. It rejects malformed schemas and unresolved references before publication without fetching remote schemas, retaining revision caches, coercing arguments or logging remote content. No atomic zero-downtime upgrade or reversal of external effects is promised.
+
+MCP `isError` remains a known failed outcome through the existing durable runtime. Transport loss remains unknown and is not replayed. Only text/structured content is delivered; unsupported media is explicitly reported. Server tool names are used unchanged in model declarations, Settings and remote calls. Invalid names (including names longer than 64 characters) and actual global duplicates fail clearly; no prefixes, hashes, aliases or name mappings are generated. A rejected replacement preserves the existing toolset atomically, including malformed catalogs rejected at the official SDK result-validation boundary. Transport/authentication failures remain distinct. Tool selection is configuration, never an approval engine.
+
+Protected settings reuse safe action handles and generic action groups. The existing vendor-neutral `extension_manage` exposes settings-start/current/cancel through the existing runner, with extension ID and revision fences; `extension_inspect` exposes available action IDs/revision and fixed connection state/code, never details, credentials or authorization URLs. Generic diagnostic codes include name_conflict and invalid_tools; consumers select them without publishing remote metadata. MCP registers no installation control tool. OAuth follows SDK discovery/PKCE, installation/server/issuer/registration-scoped credentials, one-use ephemeral state, issuer checking, bounded expiry and joined cancellation. Default loopback assumes the same browser computer. A different browser requires an explicitly configured provider-accepted HTTPS callback via an already existing user-managed route; no automatic network changes. Authorize is an explicit action, and model tools return safe operation receipts only.
+
+Local launch uses a pinned installed executable with a minimal environment. The official transport owns MCP framing; a small POSIX supervisor owns only the server's spawned process group and joins/escalates shutdown. It is not a sandbox and cannot prevent deliberate reparenting/detaching by trusted code.
+
+Tasks, Apps, sampling, automatic resources, prompts-to-skills and marketplace are out of scope. Synthetic protocol/auth fixtures are not live-account validation. See the package README and `test:mcp:e2e` for verification boundaries.
+
+SDK 2.3.1 has direct raw-console warnings outside `client.onerror`. The plugin uses a quiet public output-schema validator and the public Client.request boundary to exclude header-mirroring (`x-mcp-header`) tools before high-level listing, with a fixed settings notice derived from the current complete listing. No global console interception or private SDK method is used; this extra HTTP mapping capability is outside the first version.
+
+The ordinary source skill catalog includes `mira-mcp` for connection/lifecycle
+requests. It points to this package and existing generic artifact/management
+workflow; it adds no tool, installer, account permission or runtime mechanism.
+The real skill loader, main/child prompt catalog and ordinary read delivery are
+covered by bundled-skills tests. Model-selected execution probes and deterministic
+mechanism tests have separate acceptance claims.
+
+A native cold-start probe revealed that an active extension with a rejected MCP
+catalog looked indistinguishable from an active empty service to the model.
+The existing generic settings projection now includes only validated state/code;
+ordinary non-MCP fixture tests verify this projection and retained secret/detail
+redaction. Connection failures remain separate from lifecycle application status.

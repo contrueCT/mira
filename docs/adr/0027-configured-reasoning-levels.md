@@ -7,7 +7,7 @@
 固定 Pi 1.0.2 的 Agent 在未传 `initialState.thinkingLevel` 时使用 `off`。模型的 `reasoning: true` 只声明能力，不能自动开启推理。Mira 现在显式传入档位，让设置真正到达 provider 请求。
 
 - Web 既有模型设置及 CLI/程序化 configuration 新增可选 `defaultThinkingLevel`，支持 `off | minimal | low | medium | high | xhigh | max`。未配置时采用 `medium`。
-- 能力只来自固定 Pi 公开 `getSupportedThinkingLevels` / `clampThinkingLevel`；非推理模型实际 `off`。自定义模型沿用明确声明的 reasoning 布尔能力及 Pi 默认档位，不凭发现结果猜能力、额外协议字段或极高档支持。
+- 能力只来自固定 Pi 公开 `getSupportedThinkingLevels` / `clampThinkingLevel`；非推理模型实际 `off`。自定义模型沿用明确声明的 reasoning 布尔能力及 Pi 默认档位，不凭模型名猜能力或极高档支持。后续 ADR 0041 增加 Chat Completions 显式 wire 格式选择，未指定时保留既有默认行为。
 - 保存的是默认偏好；实际档位按当前模型适配。例如无 xhigh 的模型使用 high，不能关闭推理的模型会使用其最低支持档位。Pi 的公开规则优先找不低于请求档位的支持项，再向下找；界面展示当前可选档位及保留的偏好。它是确定性的能力适配，不是模型或工具可触发的升档策略。
 - 主 Mira、child 与 Dreaming 通过相同 runtime 接收实际档位。一个运行中的实例保留启动时快照，新 Wake/child turn 使用组装时设置；Web 保存需主循环和全部 child 执行槽都空闲，取消后的工具收尾及已完成 child 的异步清理也继续占槽；不改变正在执行的工具、不新建 Wake。偏好通过原私有设置文件和 revision CAS 保存，重启继续读取；不新增数据库表、迁移或日志。
 - Runtime API 为 `PiRuntimeOptions.thinkingLevel`。`createModelTransport` 返回解析后的 `thinkingLevel`，组装必须一起传入 runtime。单独直接调用 `streamFn` 仍只遵循显式请求 options，不隐藏地填入会污染压缩的会话默认值。

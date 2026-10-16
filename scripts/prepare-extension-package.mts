@@ -1,3 +1,4 @@
+import { findPackageBinShim } from '@mira/extension-host/package-bin-shims';
 import { cp, lstat, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -63,10 +64,15 @@ async function validateSourceTree(root: string, directory: string, ancestors = n
 async function validateDependencyTrees(closure: Set<string>): Promise<void> {
   const roots = [...closure]; const visited = new Set<string>();
   const visit = async (input: string): Promise<void> => {
+    if (path.basename(input) === '.bin' && (await lstat(input)).isSymbolicLink()) throw new Error('Runtime dependency .bin directory must not be a link');
     const actual = await realpath(input);
     const contained = roots.some(root => inside(root, actual) && !path.relative(root, actual).split(path.sep).some(part => part === 'node_modules' || part === '.git'));
     const namespace = roots.some(root => /^node_modules(?:\/@[^/]+)?$/u.test(path.relative(root, actual).split(path.sep).join('/')));
-    if (!contained && !namespace) throw new Error('Runtime dependency link or directory escapes the declared closure');
+    const binParent = roots.find(root => path.dirname(actual) === path.join(root, 'node_modules', '.bin'));
+    const binDirectory = roots.some(root => actual === path.join(root, 'node_modules', '.bin'));
+    const shim = binParent && (await lstat(input)).isFile()
+      ? await findPackageBinShim(actual, await readFile(actual, 'utf8'), roots) : null;
+    if (!contained && !namespace && !binDirectory && !shim) throw new Error('Runtime dependency link or directory escapes the declared closure');
     if (visited.has(actual)) return; visited.add(actual);
     const info = await lstat(actual);
     if (info.isFile()) return;

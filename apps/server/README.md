@@ -199,6 +199,29 @@ No secret read endpoint or model credential-write tool exists. Actions return pe
 receipts and are checked with exact settings revisions; polling observes completion.
 Existing extension lifecycle/configuration remains authoritative. See ADR 0035.
 
+The existing model-facing `extension_manage` also supports `settings-start`
+(`actionId` and exact `expectedRevision`), `settings-current`, and
+`settings-cancel` (exact `operationId`), always targeting the configured extension
+`id`. `extension_inspect` exposes `{ revision, actions: string[], connection }` in
+each extension's `settings`, or null when unavailable. `connection` contains only
+the Host-validated fixed `state` and optional `code`, including `name_conflict` and
+`invalid_tools`. Active extension code is distinct from a connected service.
+These are generic actions from
+the same Host runner, with its activation/revision and single-flight checks.
+Settings management returns only `{ operation: { id, action, state } | null }`;
+these operation receipts never return settings fields, connection status,
+authorization URLs or raw errors. Inspection also excludes private status details,
+fields and authorization links. A start receipt can remain pending; cancellation requests do not undo
+external effects. Recheck the receipt rather than assuming either is complete.
+Settings credentials remain write-only through the protected settings UI.
+
+Writer ownership loss closes the same Web service resources as explicit shutdown:
+Host admission is fenced immediately, settings actions and runtime/child work are
+cancelled, and timers, terminals, extension cleanup and active work are drained.
+Concurrent `close()` callers join one result; sibling cleanup failures do not
+skip remaining resources or writer closure. CLI composition also binds its Host
+to the writer signal. No old writer reconnects and no uncertain effect is retried.
+
 ### Timeline replies
 
 `POST /api/messages` accepts optional `replyToMessageId`, a canonical History UUID.
