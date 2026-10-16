@@ -15,6 +15,12 @@ interface Scenario {
 }
 const evidence = JSON.parse(await readFile(new URL('../behavior/fixtures/reply-native-traces.json', import.meta.url), 'utf8')) as { formatVersion: number; firstAttemptsOnly: boolean; evidenceType: string; scenarios: Scenario[] };
 const calls = (scenario: Scenario) => scenario.steps.flatMap(step => step.decision.content.filter((block): block is Extract<Block, { type: 'toolCall' }> => block.type === 'toolCall'));
+// Historical hashes describe the scripts that actually produced those replays.
+// Keep those exact bytes separate from the current portable entry points.
+const historicalReplaySource = (file: string) => ({
+  'tests/behavior/reply-probe.mts': 'tests/behavior/archive/pre-macos-canonical/reply-probe.mts.txt',
+  'tests/behavior/replay-reply-probe.mts': 'tests/behavior/archive/pre-macos-canonical/replay-reply-probe.mts.txt',
+} as Record<string, string>)[file] ?? file;
 
 test('native reply evidence preserves all six first attempts and every actually executed chosen call', () => {
   assert.equal(evidence.formatVersion, 1); assert.equal(evidence.firstAttemptsOnly, true);
@@ -96,7 +102,7 @@ test('native capture manifest distinguishes original capture and fixed-probe rep
   assert.notEqual(manifest.fixedProbeSha256, manifest.captureProbeSha256);
   for (const [file, expected] of Object.entries({ ...manifest.artifacts, ...manifest.productionSourceSha256,
     'tests/behavior/reply-probe.mts': manifest.fixedProbeSha256, 'tests/behavior/collect-reply-traces.mts': manifest.extractionCollectorSha256 })) {
-    const bytes = await readFile(new URL(`../../${file}`, import.meta.url));
+    const bytes = await readFile(new URL(`../../${historicalReplaySource(file)}`, import.meta.url));
     assert.equal(createHash('sha256').update(bytes).digest('hex'), expected, file);
   }
   assert.equal(manifest.nativeDecisions, evidence.scenarios.reduce((sum, scenario) => sum + scenario.steps.length, 0));
@@ -115,14 +121,17 @@ test('six original cleanup failures and six normal-exit recorded-choice replays 
   const original = JSON.parse(await readFile(new URL('../behavior/archive/integrated-first-attempts/process-exits.json', import.meta.url), 'utf8')) as Array<{ scenario: string; exit_code: number; output: string }>;
   assert.deepEqual(original.map(item => item.scenario), evidence.scenarios.map(item => item.name));
   for (const item of original) { assert.equal(item.exit_code, 1); assert.match(item.output, /"complete":/); assert.match(item.output, /interruptSubagents is not a function/); assert.match(item.output, /Node.js v24\.19\.0/); }
-  for (const replayFile of ['reply-probe-teardown-replay.json', 'reply-probe-teardown-replay-node24-21.json']) {
+  for (const replayFile of ['reply-probe-teardown-replay.json', 'reply-probe-teardown-replay-node24-21.json', 'reply-probe-replay-macos-node24-21.json']) {
     const replay = JSON.parse(await readFile(new URL(`../behavior/fixtures/${replayFile}`, import.meta.url), 'utf8')) as {
       evidenceType: string; nativeFixtureSha256: string; fixedProbeSha256: string; driverSha256: string;
       scenarios: Array<{ name: string; exitCode: number; decisions: number; selectedTools: string[]; requestHashes: string[]; resultSha256: string; processOutputSha256: string }>;
     };
     assert.match(replay.evidenceType, /deterministic recorded-native-choice replay/);
     for (const [file, expected] of [['fixtures/reply-native-traces.json', replay.nativeFixtureSha256], ['reply-probe.mts', replay.fixedProbeSha256], ['replay-reply-probe.mts', replay.driverSha256]]) {
-      assert.equal(createHash('sha256').update(await readFile(new URL(`../behavior/${file}`, import.meta.url))).digest('hex'), expected);
+      const source = `tests/behavior/${file}`;
+      const current = replayFile === 'reply-probe-replay-macos-node24-21.json';
+      const bytes = await readFile(new URL(`../../${current ? source : historicalReplaySource(source)}`, import.meta.url));
+      assert.equal(createHash('sha256').update(bytes).digest('hex'), expected);
     }
     assert.deepEqual(replay.scenarios.map(item => item.name), evidence.scenarios.map(item => item.name));
     for (const [index, item] of replay.scenarios.entries()) {

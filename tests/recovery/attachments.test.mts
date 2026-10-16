@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
 import { LocalWebService, WebHttpError } from '@mira/server';
@@ -14,7 +14,7 @@ async function settled(service: LocalWebService): Promise<void> {
   }
 }
 test('attachment-only events, immutable envelopes and explicit publications survive PostgreSQL service restart', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-attachment-recovery-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-attachment-recovery-'));
   let service: LocalWebService | undefined; let calls = 0;
   try {
     const original = path.join(root, 'generated.txt'); await writeFile(original, 'immutable reply bytes');

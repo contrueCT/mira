@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, writeFile, access } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, access, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getCurrentTools, type Context } from '@earendil-works/pi-ai';
@@ -26,12 +26,13 @@ const textOf = (value: unknown): string => {
 };
 const prefix = process.argv[2];
 assert.ok(prefix?.startsWith('/tmp/mira-reply-probe-') && path.isAbsolute(prefix), 'Supply a fresh /tmp/mira-reply-probe-* prefix');
-const home = await mkdtemp('/tmp/mira-reply-recorded-choice-home-');
+const home = await realpath(await mkdtemp('/tmp/mira-reply-recorded-choice-home-'));
 const summaries = [];
 for (const trace of capture.scenarios) {
-  const root = `${prefix}-${trace.name}`;
+  const requestedRoot = `${prefix}-${trace.name}`;
+  const root = path.join(await realpath(path.dirname(requestedRoot)), path.basename(requestedRoot));
   await assert.rejects(access(root), { code: 'ENOENT' });
-  const child = spawn(process.execPath, [path.join(sourceDirectory, 'tests/behavior/reply-probe.mts'), root, trace.name], { cwd: sourceDirectory,
+  const child = spawn(process.execPath, [path.join(sourceDirectory, 'tests/behavior/reply-probe.mts'), requestedRoot, trace.name], { cwd: sourceDirectory,
     env: { PATH: process.env['PATH'], HOME: home, XDG_CONFIG_HOME: home, XDG_DATA_HOME: home, XDG_CACHE_HOME: home,
       NODE_OPTIONS: `--import=${path.join(sourceDirectory, 'tests/deny-model-network.mts')}` }, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '', ended = false;

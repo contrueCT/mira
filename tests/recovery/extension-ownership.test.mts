@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -23,7 +23,7 @@ async function terminateOwner(db: Awaited<ReturnType<typeof createTestDatabase>>
   assert.equal((await db.admin.query('SELECT pg_terminate_backend($1) AS killed', [owners.rows[0].pid])).rows[0].killed, true);
 }
 async function fixture() {
-  const db = await createTestDatabase(), root = await mkdtemp('/tmp/mira-owner-service-');
+  const db = await createTestDatabase(), root = await realpath(await mkdtemp('/tmp/mira-owner-service-'));
   const plugin = path.join(root, 'plugin.mjs'), configurationFile = path.join(root, 'extensions.json');
   await writeFile(plugin, `import { defineExtension } from ${JSON.stringify(import.meta.resolve('@mira/extension-sdk'))};
     export const state = { generations:[], effects:[], cancelled:0 };

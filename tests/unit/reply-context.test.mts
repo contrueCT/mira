@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { validateReplyReference, type ReplyReference } from '@mira/cognition';
 import { prepareWakeTurn, renderWakeBatch, type HistoryEntry } from '@mira/life';
@@ -69,7 +69,7 @@ test('original and live reply metadata survive failed request and restart withou
 });
 
 test('pre-feature active Wake and consumed live inputs resume byte-for-byte including overflow files', async () => {
-  const root = await mkdtemp('/tmp/mira-reply-old-input-');
+  const root = await realpath(await mkdtemp('/tmp/mira-reply-old-input-'));
   try {
     for (const overflow of [false, true]) {
       const writer = new LiveMemoryWriter(); const writeOverflowInput = spool(path.join(root, String(overflow)));
@@ -97,7 +97,7 @@ test('reply metadata validation rejects wrong placement, orphan links and malfor
 });
 
 test('compaction preserves quoted reply snapshots and tool links deterministically through repeated summaries, deletion and restart', async () => {
-  const root = await mkdtemp('/tmp/mira-reply-index-');
+  const root = await realpath(await mkdtemp('/tmp/mira-reply-index-'));
   try {
     const writeOverflowInput = spool(root); const writer = new MemoryWriter(); const quote = target(); const sourceId = randomUUID();
     const call = toolCalls('published-reply'); const block = call.content[0]!; assert.equal(block.type, 'toolCall'); block.name = 'send_reply';

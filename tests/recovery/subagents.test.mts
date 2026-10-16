@@ -1,7 +1,7 @@
 import type { Json } from '@mira/context';
 import { once } from 'node:events';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
 import { getCurrentSystemMessage, getSystemMessageText } from '@earendil-works/pi-ai';
@@ -17,7 +17,7 @@ async function until(check: () => boolean | Promise<boolean>, limit = 10_000) { 
 const childContext = (messages: Parameters<StreamFn>[1]['messages']) => { const system = getCurrentSystemMessage(messages); return !!system && getSystemMessageText(system).includes('task-scoped worker'); };
 
 test('PostgreSQL actual Pi spawn dedupe, terminal receipt atomicity, followup and independent transcript recovery', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-subagent-pg-'); let manager: SubagentManager | undefined;
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-subagent-pg-')); let manager: SubagentManager | undefined;
   try {
     let writer = await db.acquire('parent'); let childCalls = 0; const failures: unknown[] = [];
     const makeManager = () => new SubagentManager({ writer, acquire: id => db.acquire(id), tools: () => [],
@@ -54,7 +54,7 @@ test('PostgreSQL actual Pi spawn dedupe, terminal receipt atomicity, followup an
 });
 
 test('real web service keeps parent available, child completion wakes an idle parent once, Memory is unchanged and run details stay bounded', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-subagent-web-'); let service: LocalWebService | undefined;
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-subagent-web-')); let service: LocalWebService | undefined;
   const release = deferred(); let childCalls = 0; let parentCalls = 0;
   try {
     const stream: StreamFn = async (_m, context) => {
@@ -131,7 +131,7 @@ test('parent ownership loss interrupts real child effects; restart preserves unk
 test('SIGKILL during a real child effect releases writer ownership; restart does not replay or erase unknown evidence', { timeout: 30_000 }, async () => {
   const { spawn } = await import('node:child_process');
   const { fileURLToPath } = await import('node:url');
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-subagent-kill-'); const marker = path.join(root, 'effect.txt');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-subagent-kill-')); const marker = path.join(root, 'effect.txt');
   let manager: SubagentManager | undefined;
   const worker = spawn(process.execPath, [fileURLToPath(new URL('./subagent-process-worker.mts', import.meta.url)), db.schema, marker], {
     stdio: ['ignore', 'ignore', 'pipe', 'ipc'], env: { PATH: process.env['PATH'], HOME: root, MIRA_TEST_DATABASE_URL: db.connectionString, NODE_OPTIONS: process.env['NODE_OPTIONS'] },
@@ -267,7 +267,7 @@ test('PostgreSQL pre-input child interruption retains original assignment and fr
 });
 
 test('child auto-compaction checkpoints survive PostgreSQL restart without main Memory or Dreaming state', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-subagent-compaction-'); let manager: SubagentManager | undefined;
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-subagent-compaction-')); let manager: SubagentManager | undefined;
   const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: root, sourceDirectory: process.cwd(), runId, content });
   try {
     let writer = await db.acquire('compact-parent'); await writer.initializeDreaming();

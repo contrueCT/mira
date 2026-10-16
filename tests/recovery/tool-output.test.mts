@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { createHistoryTools, type RecoveredContext } from '@mira/runtime-pi';
 import type { ToolCall } from '@earendil-works/pi-ai';
@@ -16,7 +16,7 @@ const worker = new URL('./tool-output-worker.mts', import.meta.url).pathname;
 const guard = new URL('../deny-model-network.mts', import.meta.url).pathname;
 
 test('real PostgreSQL process death after outcome commit restores full evidence, readable files and bounded provider projection without replay', async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-tool-output-postgres-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-tool-output-postgres-'));
   try {
     const miraId = 'large-output-process', spool = path.join(root, 'spool'), counter = path.join(root, 'effect');
     const child = (mode: string) => exec(process.execPath, ['--import', guard, worker, db.schema, miraId, mode, spool, counter], { timeout: 30_000, maxBuffer: 10_000_000 });
@@ -50,7 +50,7 @@ test('real PostgreSQL process death after outcome commit restores full evidence,
 });
 
 test('real runtime history_read reaches a >1 MiB original tail through revision-bound pages across restart', async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-tool-output-history-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-tool-output-history-'));
   try {
     const writer = await db.acquire('history-large-tool');
     const original = { id: 'huge-original', type: 'fixture', source: 'external' as const, occurredAt: new Date().toISOString(), payload: { text: largeToolText.repeat(5) + 'BEYOND_ONE_MIB_TAIL' } };

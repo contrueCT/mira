@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm, chmod, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, chmod, writeFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { createWorkspaceTools, extensionTools } from '@mira/server';
 import { type ToolResultMessage } from '@earendil-works/pi-ai';
@@ -16,7 +16,7 @@ const textBytes = (message: ToolResultMessage) => Buffer.byteLength(message.cont
 const largeModel = { ...model, contextWindow: 200_000 };
 
 test('actual extension result.text is bounded before the next model request; original file pages remain readable after recovery', async () => {
-  const root = await mkdtemp('/tmp/mira-tool-output-');
+  const root = await realpath(await mkdtemp('/tmp/mira-tool-output-'));
   try {
     const writer = new MemoryWriter(); let calls = 0, effects = 0; let savedPath = '';
     const tools = [...createWorkspaceTools(root), ...extensionTools([{ extensionId: 'large', activation: 'test', tool: {
@@ -53,7 +53,7 @@ test('actual extension result.text is bounded before the next model request; ori
 });
 
 for (const length of [4_047, 4_050]) test(`bounded spool keys preserve readable evidence and restart for a ${length}-character Mira ID`, async () => {
-  const root = await mkdtemp('/tmp/mira-tool-output-long-id-');
+  const root = await realpath(await mkdtemp('/tmp/mira-tool-output-long-id-'));
   try {
     const writer = new MemoryWriter(), miraId = 'm'.repeat(length);
     writer.state.miraId = miraId;
@@ -100,7 +100,7 @@ for (const length of [4_047, 4_050]) test(`bounded spool keys preserve readable 
 });
 
 test('all result fields, images, multiple text blocks and known error status survive the real durable boundary', async () => {
-  const root = await mkdtemp('/tmp/mira-tool-output-metadata-');
+  const root = await realpath(await mkdtemp('/tmp/mira-tool-output-metadata-'));
   try {
     const writer = new MemoryWriter();
     const returned = { content: [{ type: 'text' as const, text: largeToolText, textSignature: 'opaque' }, { type: 'image' as const, data: 'synthetic-image', mimeType: 'image/png' }, { type: 'text' as const, text: 'SECOND_BLOCK_END' }],
@@ -117,7 +117,7 @@ test('all result fields, images, multiple text blocks and known error status sur
 });
 
 for (const failure of ['missing-writer', 'writer-failed', 'wrong-bytes']) test(`spool ${failure} stops after saving the known result; retry never replays the effect`, async () => {
-  const root = await mkdtemp('/tmp/mira-tool-output-failure-');
+  const root = await realpath(await mkdtemp('/tmp/mira-tool-output-failure-'));
   try {
     const writer = new MemoryWriter(); let effects = 0, requests = 0;
     const tools = [effectTool(async () => { effects++; return { content: [{ type: 'text' as const, text: largeToolText }], details: {} }; })];
@@ -133,7 +133,7 @@ for (const failure of ['missing-writer', 'writer-failed', 'wrong-bytes']) test(`
 });
 
 test('outcome-before-transcript crash preserves exact known evidence and reconstructs its bounded projection', async () => {
-  const root = await mkdtemp('/tmp/mira-tool-output-crash-');
+  const root = await realpath(await mkdtemp('/tmp/mira-tool-output-crash-'));
   try {
     const writer = new MemoryWriter(); let effects = 0;
     const options = { model: largeModel, tools: [effectTool(async () => { effects++; return { content: [{ type: 'text' as const, text: largeToolText }], details: { receipt: 'committed' } }; })], writeOverflowInput: outputSpool(path.join(root, 'spool')) };
@@ -152,7 +152,7 @@ test('outcome-before-transcript crash preserves exact known evidence and reconst
 });
 
 test('compaction sees bounded tool evidence and ordinary-file references while complete history remains unchanged', async () => {
-  const root = await mkdtemp('/tmp/mira-tool-output-compact-');
+  const root = await realpath(await mkdtemp('/tmp/mira-tool-output-compact-'));
   try {
     const writer = new MemoryWriter();
     await seed(writer, [input('older question'), toolCalls('old-large'), { role: 'toolResult', toolCallId: 'old-large', toolName: 'effect', content: [{ type: 'text', text: largeToolText }], isError: false, timestamp: 1001 }, assistant('Older answer'), input('Recent question'), assistant('Recent answer')]);
@@ -180,7 +180,7 @@ test('exact-limit and multibyte boundaries count aggregate text bytes without mo
 });
 
 test('native bash keeps its existing full-output reference and truncation metadata inside complete evidence', async () => {
-  const root = await mkdtemp('/tmp/mira-tool-output-bash-'); let nativePath: string | undefined;
+  const root = await realpath(await mkdtemp('/tmp/mira-tool-output-bash-')); let nativePath: string | undefined;
   try {
     const writer = new MemoryWriter(); const tools = createWorkspaceTools(root);
     const state = await runtime(writer, scripted([{ ...toolCalls('native-bash'), content: [{ type: 'toolCall', id: 'native-bash', name: 'bash', arguments: { command: "for i in $(seq 1 3000); do printf 'native-line-%04d ----------------------------------------\\n' \"$i\"; done" } }] }, assistant()]), {
@@ -222,7 +222,7 @@ test('actual history_read dispatch pages an oversized fixture and rejects a stal
 
 
 test('fresh recovery reconstructs fully compacted-out tool files once; active references still revalidate on every recovery', async () => {
-  const root = await mkdtemp('/tmp/mira-tool-output-archived-');
+  const root = await realpath(await mkdtemp('/tmp/mira-tool-output-archived-'));
   try {
     const writer = new MemoryWriter(); const writes: string[] = [];
     const spool = outputSpool(path.join(root, 'spool'));
@@ -254,7 +254,7 @@ test('fresh recovery reconstructs fully compacted-out tool files once; active re
 });
 
 for (const mode of ['unsupported', 'native', 'media-budget'] as const) test(`final ${mode} hydration stays inside the text cap and preserves exact canonical evidence and media slots`, async () => {
-  const root = await mkdtemp('/tmp/mira-tool-output-hydrated-');
+  const root = await realpath(await mkdtemp('/tmp/mira-tool-output-hydrated-'));
   try {
     const writer = new MemoryWriter(), bytes = Buffer.from('synthetic-native-video-do-not-persist');
     const reference = { id: randomUUID(), name: 'clip.mp4', mimeType: 'video/mp4', size: mode === 'media-budget' ? 13 * 1024 * 1024 : bytes.length,
@@ -306,7 +306,7 @@ for (const mode of ['unsupported', 'native', 'media-budget'] as const) test(`fin
 
 
 test('media annotations that cannot fit fail before provider dispatch without dropping slots or persisting hydrated bytes', async () => {
-  const root = await mkdtemp('/tmp/mira-tool-output-media-too-large-');
+  const root = await realpath(await mkdtemp('/tmp/mira-tool-output-media-too-large-'));
   try {
     const writer = new MemoryWriter(), bytes = Buffer.from('private-native-byte'); let requests = 0;
     const references = Array.from({ length: 8 }, (_, index) => ({ id: randomUUID(), name: `clip-${index}.mp4`, mimeType: 'video/mp4', size: bytes.length,
@@ -324,7 +324,7 @@ test('media annotations that cannot fit fail before provider dispatch without dr
 });
 
 test('unmergeable opaque text separators fail before dispatch without losing canonical blocks or replaying effects', async () => {
-  const root = await mkdtemp('/tmp/mira-tool-output-opaque-separators-');
+  const root = await realpath(await mkdtemp('/tmp/mira-tool-output-opaque-separators-'));
   try {
     const writer = new MemoryWriter(), spool = outputSpool(path.join(root, 'spool'));
     const content = Array.from({ length: 25_000 }, (_, index) => ({ type: 'text' as const, text: '', opaque: { index } }));

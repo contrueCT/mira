@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -14,7 +14,7 @@ const sourceDirectory = fileURLToPath(new URL('../../', import.meta.url));
 async function withRoot(run: (root: string, base: string) => Promise<void>): Promise<void> {
   // The suite runner sets TMPDIR inside its synthetic HOME; this adapter
   // deliberately rejects any user-home path, including that synthetic one.
-  const base = await mkdtemp('/tmp/mira-wake-input-test-');
+  const base = await realpath(await mkdtemp('/tmp/mira-wake-input-test-'));
   try { await run(path.join(base, 'spool'), base); }
   finally { await rm(base, { recursive: true, force: true }); }
 }

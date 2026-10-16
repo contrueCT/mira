@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, realpath } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { createReadTool } from '@earendil-works/pi-coding-agent';
@@ -27,7 +27,7 @@ function indexPointer(entry: unknown): {path:string;bytes:number} { return (entr
 
 test('oversized merged attachment History retains its existing spool through repeated compaction and ordinary read', async () => {
   // Deliberately outside the sanitized test HOME: production spool rules apply.
-  const root = await mkdtemp('/tmp/mira-compacted-big-refs-');
+  const root = await realpath(await mkdtemp('/tmp/mira-compacted-big-refs-'));
   try {
     const store = await AttachmentStore.open(path.join(root, ...Array(20).fill('nested'), 'attachments'), []);
     const staged = await Promise.all(Array.from({length:10}, (_, i) => store.stage('名'.repeat(250)+`${i}.pdf`, Buffer.from('%PDF-1.4\nsynthetic'))));
@@ -69,7 +69,7 @@ test('oversized merged attachment History retains its existing spool through rep
 
 
 test('large Memory checkpoint envelopes never obstruct previous ordinary-file attachment index nodes', async () => {
-  const root=await mkdtemp('/tmp/mira-large-memory-index-');
+  const root=await realpath(await mkdtemp('/tmp/mira-large-memory-index-'));
   try {
     const writer=new MemoryWriter();
     const writeOverflowInput=(runId:string,content:string)=>writeWakeInput({rootDirectory:root,sourceDirectory:process.cwd(),runId,content});
@@ -104,7 +104,7 @@ test('attachment compaction without an ordinary-file writer fails explicitly bef
 });
 
 for(const fault of ['write','cancel','ownership','cas','bytes'] as const) test(`attachment index ${fault} failure cannot publish a checkpoint`, async () => {
-  const root=await mkdtemp('/tmp/mira-index-fence-');
+  const root=await realpath(await mkdtemp('/tmp/mira-index-fence-'));
   try {
     const writer=new MemoryWriter();const cancellation=new AbortController();
     await seed(writer,[Object.assign(input('file'),{miraAttachments:[{id:randomUUID(),name:'file.pdf',mimeType:'application/pdf',size:1,sha256:'a'.repeat(64),path:'/immutable/file'}]}),assistant(),input('tail')]);

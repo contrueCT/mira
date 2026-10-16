@@ -3,7 +3,7 @@ import type { LocalWebService } from '@mira/server';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import type { HistoryEntry, HistoryEvent, HistoryTool, HistoryReader } from '@mira/life';
 import { resolveReply, replyPublication, createReplyTool, ReplyTargetError } from '../../apps/server/src/replies.ts';
@@ -25,7 +25,7 @@ test('reply resolver uses only public same-Mira targets, Unicode bounds and sour
   assert.ok(!JSON.stringify(sourced).includes('secret'));
 });
 test('send_reply publication requires immutable successful exact call linkage and strips paths', async t => {
-  const root = await mkdtemp('/tmp/mira-reply-unit-'); t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await realpath(await mkdtemp('/tmp/mira-reply-unit-')); t.after(() => rm(root, { recursive: true, force: true }));
   const store = await AttachmentStore.open(path.join(root, 'store'), []); const attachment = await store.stage('reply.txt', Buffer.from('bytes'));
   const target = event(); const tool = createReplyTool(history(target), visible, store);
   const result = await tool.execute('call', { replyToMessageId: target.id, text: 'sent', attachmentIds: [attachment.id] });

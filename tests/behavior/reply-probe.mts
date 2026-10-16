@@ -1,6 +1,6 @@
 /** Offline native-model probe. Only provider decisions and persistence are substituted.
  * No live API, database, HTTP listener, or claim about the configured user model. */
-import { mkdir, readFile, writeFile, access } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, access, realpath } from 'node:fs/promises';
 import { randomUUID, createHash } from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -40,6 +40,7 @@ class ProbeWriter extends LiveMemoryWriter {
 export async function runProbe(root: string, scenario: Scenario) {
   if (!path.isAbsolute(root) || !root.startsWith('/tmp/mira-reply-probe-')) throw Error('Use a fresh /tmp/mira-reply-probe-* directory');
   await mkdir(root, { recursive: false });
+  root = await realpath(root);
   const cwd = path.join(root, 'workspace'); await mkdir(cwd); const home = path.join(root, 'home'); await mkdir(home);
   const writer = new ProbeWriter(); const entries: HistoryEntry[] = [];
   const history: HistoryReader = {

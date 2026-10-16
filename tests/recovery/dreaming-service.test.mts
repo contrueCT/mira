@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { createAssistantMessageEventStream, getCurrentSystemMessage, getCurrentTools, getSystemMessageText, type ToolCall, type TranscriptContext } from '@earendil-works/pi-ai';
@@ -61,7 +61,7 @@ const call = (id: string, name: string, args: ToolCall['arguments']): ToolCall =
 const calls = (...content: ToolCall[]) => ({ ...assistant(), stopReason: 'toolUse' as const, content });
 
 test('real PostgreSQL Dreaming reads current Memory and original History, edits ordinary files, commits lineage silently and preserves the durable system snapshot until compaction', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-dreaming-tools-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-dreaming-tools-'));
   let service: LocalWebService | undefined; let requests = 0, summaries = 0;
   try {
     const configuration = options(db, root, 'dreaming-tools');
@@ -158,7 +158,7 @@ test('real PostgreSQL Dreaming reads current Memory and original History, edits 
 });
 
 test('real PostgreSQL Dreaming timer waits for continuous idle after completion and fresh Wake experiences, then stops when service closes', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-dreaming-idle-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-dreaming-idle-'));
   let service: LocalWebService | undefined; let requests = 0; const entered = deferred(); const release = deferred();
   try {
     const configuration = { ...options(db, root, 'dreaming-idle'), dreaming: { idleMs: 250, intervalMs: 1, minCompactions: 3 } };
@@ -186,7 +186,7 @@ test('real PostgreSQL Dreaming timer waits for continuous idle after completion 
 });
 
 test('real PostgreSQL failed Dreaming preserves its ordinary file effect and resumes the same run only after restart', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-dreaming-recovery-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-dreaming-recovery-'));
   let service: LocalWebService | undefined; let requests = 0;
   try {
     // This case drives eligibility with age()+settings(); the preceding case
@@ -229,7 +229,7 @@ test('real PostgreSQL failed Dreaming preserves its ordinary file effect and res
 });
 
 test('real PostgreSQL user arrivals during Dreaming resume its active Wake with ordered supplemental input', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-dreaming-arrivals-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-dreaming-arrivals-'));
   let service: LocalWebService | undefined; let requests = 0; const entered = deferred(); const release = deferred();
   try {
     service = await LocalWebService.open({ ...options(db, root, 'dreaming-arrivals'), syntheticStream: async (_model, context) => {
@@ -262,7 +262,7 @@ test('real PostgreSQL user arrivals during Dreaming resume its active Wake with 
 });
 
 test('real PostgreSQL restart claims a queued Dreaming and a newer user request together without a second cognitive stream', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-dreaming-mixed-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-dreaming-mixed-'));
   let service: LocalWebService | undefined; let requests = 0;
   try {
     const configuration = options(db, root, 'dreaming-mixed');
@@ -285,7 +285,7 @@ test('real PostgreSQL restart claims a queued Dreaming and a newer user request 
 });
 
 test('real PostgreSQL shutdown cancels active Dreaming, then restart resumes its exact persisted input', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-dreaming-close-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-dreaming-close-'));
   let service: LocalWebService | undefined; let requests = 0; const entered = deferred(); let original: unknown;
   try {
     const configuration = options(db, root, 'dreaming-close');
@@ -311,7 +311,7 @@ test('real PostgreSQL shutdown cancels active Dreaming, then restart resumes its
 });
 
 test('real PostgreSQL three actual automatic compactions unlock idle Dreaming before 24 hours, while two checkpoints and a failed summary do not', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-dreaming-compactions-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-dreaming-compactions-'));
   let service: LocalWebService | undefined; let naturalRequests = 0, summaryAttempts = 0, successfulSummaries = 0, dreamingRequests = 0;
   try {
     const checkpoints = async () => (await db.admin.query<{ n: number }>(

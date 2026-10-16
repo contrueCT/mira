@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import type { TranscriptContext } from '@earendil-works/pi-ai';
@@ -47,7 +47,7 @@ async function noCognition(db: Database): Promise<void> {
 }
 
 test('real PostgreSQL external service: silent events and notifications persist separately without cognition and retain History identity across restart', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-external-silent-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-external-silent-'));
   let service: LocalWebService | undefined; let calls = 0;
   try {
     const configuration = { ...options(db, root, 'external-silent'), syntheticStream: () => { calls++; return streamOf(assistant('Unexpected cognition')); } };
@@ -95,7 +95,7 @@ test('real PostgreSQL external service: silent events and notifications persist 
 });
 
 test('real PostgreSQL external service: sender-isolated Wakes continue the existing user context with complete external provenance', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-external-context-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-external-context-'));
   let service: LocalWebService | undefined; const contexts: TranscriptContext[] = [];
   try {
     const configuration = { ...options(db, root, 'external-context'), syntheticStream: (_model: unknown, context: TranscriptContext) => {
@@ -145,7 +145,7 @@ test('real PostgreSQL external service: sender-isolated Wakes continue the exist
 });
 
 test('real PostgreSQL external service: ordinary event types cannot forge notices and protocol envelopes cannot impersonate user sources', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-external-provenance-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-external-provenance-'));
   let service: LocalWebService | undefined; let calls = 0;
   try {
     service = await LocalWebService.open({ ...options(db, root, 'external-provenance'), syntheticStream: () => { calls++; return streamOf(assistant()); } });
@@ -167,7 +167,7 @@ test('real PostgreSQL external service: ordinary event types cannot forge notice
 });
 
 for (const outcome of ['saved', 'unknown'] as const) test(`real PostgreSQL external service: failed cognition preserves a ${outcome} tool effect, duplicate Wake stays stopped and restart resumes the original run without replay`, { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-external-recovery-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-external-recovery-'));
   let service: LocalWebService | undefined; let calls = 0;
   try {
     const effectsPath = path.join(root, 'synthetic-effects.jsonl'); const modulePath = path.join(root, 'synthetic-effect.mjs');

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { LocalWebService } from '@mira/server';
 import type { JsonObject, TranscriptContext } from '@earendil-works/pi-ai';
@@ -22,7 +22,7 @@ function outcome(context: TranscriptContext, id: string): TerminalResult {
 }
 
 test('real PG/service terminal survives completed wakes; close/restart preserves evidence and never replays', { timeout: 45_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-terminal-pg-'); let service: LocalWebService | undefined;
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-terminal-pg-')); let service: LocalWebService | undefined;
   let calls = 0; let session: TerminalResult | undefined; const effect = path.join(root, 'effect');
   const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'terminal-service', sourceDirectory: process.cwd(), workingDirectory: root, miraHome: root,
     spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true, autoCompaction: { enabled: false }, dreaming: { enabled: false },
@@ -56,7 +56,7 @@ test('real PG/service terminal survives completed wakes; close/restart preserves
 });
 
 test('real PG/service live input waits for the current bounded terminal call then skips old siblings', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-terminal-live-'); let service: LocalWebService | undefined;
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-terminal-live-')); let service: LocalWebService | undefined;
   let calls = 0; const entered = path.join(root, 'entered'); const forbidden = path.join(root, 'forbidden');
   const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'terminal-live', sourceDirectory: process.cwd(), workingDirectory: root, miraHome: root,
     spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true, autoCompaction: { enabled: false }, dreaming: { enabled: false },

@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AssistantMessage, TranscriptContext } from '@earendil-works/pi-ai';
@@ -57,7 +57,7 @@ const currentUserText = (context: TranscriptContext): string => {
 
 export async function openNativeReplay(name: NativeScenarioName) {
   const trace = nativeTrace(name);
-  const root = await mkdtemp('/tmp/mira-native-reply-pg-');
+  const root = await realpath(await mkdtemp('/tmp/mira-native-reply-pg-'));
   const db = await createTestDatabase().catch(async error => { await rm(root, { recursive: true, force: true }); throw error; });
   const miraId = `native-reply-${name}`;
   const history = db.store.history(miraId);

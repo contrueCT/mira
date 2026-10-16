@@ -184,7 +184,7 @@ test('real managed browser preserves page/cookie across handoff; rendered input,
     await expect.poll(() => service!.browser.list()[0]?.pressedButtons).toEqual([]);
     await bridge.focus();
     await page.keyboard.type('discard');
-    await page.keyboard.press('Control+a'); await page.keyboard.press('Backspace');
+    await page.keyboard.press('ControlOrMeta+a'); await page.keyboard.press('Backspace');
     await page.keyboard.type('Latin-');
     // Real Chromium composition events through CDP, then the production bridge,
     // authenticated WebSocket proxy, awaited official daemon input, and actual remote input.
@@ -257,6 +257,9 @@ test('real managed browser preserves page/cookie across handoff; rendered input,
     await page.screenshot({ path: testInfo.outputPath('first-failure.png'), fullPage: true }).catch(() => undefined);
     throw error;
   } finally {
+    // Release the live browser WebSocket before awaiting Fastify shutdown, so a
+    // failed assertion keeps its own diagnostics instead of timing out in cleanup.
+    await page.close();
     await app?.close(); await service?.close(); await db?.close();
     await new Promise<void>(resolve => website.close(() => resolve()));
     await rm(root, { recursive: true, force: true });

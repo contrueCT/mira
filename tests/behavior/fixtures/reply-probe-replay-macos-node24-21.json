@@ -1,0 +1,164 @@
+{
+  "formatVersion": 1,
+  "evidenceType": "deterministic recorded-native-choice replay through full actual Pi probe CLI, including teardown",
+  "nativeFixtureSha256": "9fc8057878c385789403081397c8d11bf1ad11a5041f42f51a98c2706268d200",
+  "fixedProbeSha256": "6c953c152ae0c093bcce74eee64b8e443a21d96fd168e9cff92cad741e51da52",
+  "driverSha256": "2e84d72a1bf0d104be9b5601bf4b979b06a6239fe024a4ae31d53df15780e178",
+  "scenarios": [
+    {
+      "name": "older-quote",
+      "evidenceType": "deterministic recorded-native-choice replay; not a new native evaluation",
+      "directory": "/private/tmp/mira-reply-probe-macos-470659-acceptance-older-quote",
+      "exitCode": 0,
+      "decisions": 1,
+      "selectedTools": [],
+      "resultSha256": "bb1cd50835be3bb009102867e18bbf598184944a782aa508884cc126a4f35869",
+      "processOutputSha256": "c7298078c6d66d1d5a6e450091d79c8127a8b14c8cac58876f6fe24eed7e33a9",
+      "requestHashes": [
+        "a91e238941408fea1f6c80865ecfb7108e8dc3491db315e0e13176305915092e"
+      ],
+      "publicSourceBindings": {
+        "5f70ed1d-6ecf-4d75-8fc8-cd684ec9553a": "0773cb11-c5a2-460a-b35e-b2bbbbaa08a7",
+        "ba6da6dd-5154-417d-89f2-7210cfc0ef24": "b0f9e43c-1dc6-4a6a-84ea-e1596b60c865",
+        "e5cd99db-97e2-4373-8983-0b884d6449c9": "48478e84-3f52-4adf-9b7a-ad23148f4747",
+        "838c3d23-a963-4691-a0d0-f1f867d65323": "e0709718-408d-4dbb-b0cc-b5cbfc5bdd1c"
+      },
+      "contextSourceBindings": {}
+    },
+    {
+      "name": "select-target",
+      "evidenceType": "deterministic recorded-native-choice replay; not a new native evaluation",
+      "directory": "/private/tmp/mira-reply-probe-macos-470659-acceptance-select-target",
+      "exitCode": 0,
+      "decisions": 2,
+      "selectedTools": [
+        "send_reply"
+      ],
+      "resultSha256": "fb0c0df2d5ce2ad672161467fee97a5912b01f92850d58dfc2c74235b78ac6f8",
+      "processOutputSha256": "1bb91a11936a9b0847f44b206ba429f09c6ecc5078f177cda222cfe15ccb341d",
+      "requestHashes": [
+        "e0cc24351171edee6b5b8b42d6b90f0ef923f8053b0e6a4bec016eef604fe7b5",
+        "cd2ea6e79031791755b3afebfa765c9e7ce1d26e6baf7daef8b93508fbe227f5"
+      ],
+      "publicSourceBindings": {
+        "ff206fb6-1f30-40bb-bcb6-9824599b728b": "34f714ea-b975-48df-83bf-397db422e595",
+        "3fe7023f-9db7-4d6c-a6d0-6cfe10f828bf": "194baf08-d8e0-4d4f-955e-fffcf409a2d1",
+        "236d6f89-0ede-4c3b-b6b4-bfa8758e07ec": "8369f512-bed8-444d-b488-b61470a9fab3",
+        "1e754afd-dd09-4a43-96bb-ac71b5f4d5e1": "c73dad2d-c99d-499e-9d36-12b77b4cdf28"
+      },
+      "contextSourceBindings": {}
+    },
+    {
+      "name": "live-input",
+      "evidenceType": "deterministic recorded-native-choice replay; not a new native evaluation",
+      "directory": "/private/tmp/mira-reply-probe-macos-470659-acceptance-live-input",
+      "exitCode": 0,
+      "decisions": 1,
+      "selectedTools": [],
+      "resultSha256": "859b9d58be0bf27b4e95001715ce7c452b62739571dc8a545bc583cfe56db066",
+      "processOutputSha256": "04de12e0d3316f18a9457b80ac5ae19e607c4b1772f529853e8f3ee0764484a8",
+      "requestHashes": [
+        "8acf979ba977a78e5d213f0653a5aae9d75f3d6aa65147c7fce7d7bee06e9962"
+      ],
+      "publicSourceBindings": {
+        "6c022719-007c-4302-839b-5b7eec8c5504": "b8e443f0-fbf2-45d1-8e0f-7e20f6545a66",
+        "32ded1a0-0e69-4071-875c-3bb5b54ee176": "c6ed1798-10a8-4cc2-b403-6887deb9c468",
+        "73956172-77ad-4d3e-90eb-df99fb326634": "e3a11fa2-5dee-4162-87cb-1687becee4e7",
+        "f3ea9e68-a46e-4218-8ac7-842d13e664ea": "9a786426-d00c-4e3e-8965-8b39c7efd307",
+        "b151e58d-b292-4572-8877-376c9654c16a": "1400bb4f-0321-432f-9a1f-4b49fccb7e30"
+      },
+      "contextSourceBindings": {}
+    },
+    {
+      "name": "compact-index",
+      "evidenceType": "deterministic recorded-native-choice replay; not a new native evaluation",
+      "directory": "/private/tmp/mira-reply-probe-macos-470659-acceptance-compact-index",
+      "exitCode": 0,
+      "decisions": 4,
+      "selectedTools": [
+        "read",
+        "history_read",
+        "send_reply"
+      ],
+      "resultSha256": "61ef71e8ad8ad52aeda6caf9f0f429dec9b421967066d47ddb930cc92d945daf",
+      "processOutputSha256": "7b1959f5964145154c17489a3f4b76eb2695164edea73f781d09413cecc21e50",
+      "requestHashes": [
+        "fb063f44fbf3c4bb6f97bb3847eb9e316ac125625dd5daf738a63598ca075dcf",
+        "b06758daace1b171b36a84c5fc269f0b0cc91d2b61b4ab3cc07174053085f0a3",
+        "9d5c712b1dd075c30518d92ab3c6111c026c2a8e07708ad72b5f3e8e07ef8111",
+        "537e2de26795ca7f22a747c8af262d6f277ff0f4928ebc70b3d5a3dd88215c1a"
+      ],
+      "publicSourceBindings": {
+        "4de865ee-8866-4ede-8fe9-4b1efb59944b": "7d6241f7-be2f-4ce1-8532-5b6b9c29d931",
+        "cdee396a-a7f9-4b90-a28d-644da64f6e3e": "48b42540-0c3f-45ea-855f-9b296541088d",
+        "e5e0a10a-041a-4f50-b649-d9bf997de836": "5f3feaf5-b04e-45e2-9235-bda735870bfd",
+        "7f3f1007-31fe-4d8d-b368-b3a882063455": "965e6450-9532-4f5c-9119-599d8de1b792"
+      },
+      "contextSourceBindings": {
+        "dd472de1-30e4-4abe-8e83-be0553006043": "53dac5a2-08ea-4944-97b3-9d87acba53bd",
+        "93300fe6-9468-479c-978c-21cc5bc4c4fe": "aaf6848c-24d3-4048-9b72-ec960f07aa3d",
+        "9b96fc1b-ba7c-4efc-b377-0f0a7cbb5104": "46a9aaa9-db74-4a88-876e-b841f4bcbe9a"
+      },
+      "indexPath": "/private/tmp/mira-reply-probe-macos-470659-acceptance-compact-index/spool/61ae18d471a8b4287ed90a6331a73a9932b53c192237099a0f00c9fe27161700/batch.txt"
+    },
+    {
+      "name": "history-recovery",
+      "evidenceType": "deterministic recorded-native-choice replay; not a new native evaluation",
+      "directory": "/private/tmp/mira-reply-probe-macos-470659-acceptance-history-recovery",
+      "exitCode": 0,
+      "decisions": 5,
+      "selectedTools": [
+        "read",
+        "history_search",
+        "history_read",
+        "send_reply"
+      ],
+      "resultSha256": "386bd83ff830f49d5d2ce15b1e095628325b4c8376d3432982bb04a1e71c5663",
+      "processOutputSha256": "5bb0b663c834acd4653e1743ffbc43778880a6ba538c84ea9ec3cdc89026cb72",
+      "requestHashes": [
+        "be47e1bf2c4c8eb738b546ddd5ddc98f03b0e3f3632a0baf9137f1fa25e11a4a",
+        "27a5a386670031c4fb4e36c7b84575ba8948a2264af2c164b9a9fe873137e18f",
+        "8fa315dc1566627f040f36b160eda9f424de5f8d315f30a1f61803dda0ec28aa",
+        "d9ef169aca6775607ffa2040e281841c30cbef3966deb2ead8e14e04fd10173c",
+        "a6668cb0b20fa6e920d76436c54e57c2f27ea3a87c699722eecc634fc1b9c91b"
+      ],
+      "publicSourceBindings": {
+        "651b2906-a43e-439f-ba88-3d50087b9a4d": "6b2a1102-2192-4c65-b56e-1706099a9fc8",
+        "ac5fe1a5-4696-42d1-ba9f-4cc959059f2e": "5bf92075-dfe2-46ba-9dc3-c22b8204eab3",
+        "95796d08-b90e-4a81-8480-edad0fc917b0": "9030d328-e901-4abd-9871-d6831797b077",
+        "364a31c7-d3ca-421e-a8e5-d7e3a37ee17c": "b46ee369-83ad-49a4-8dc9-79bfa1e2d9d6"
+      },
+      "contextSourceBindings": {
+        "13256322-5eaf-4fe5-98e2-e5e64e3f24bb": "c68177f7-3edd-4bd7-ac3b-10da4d1681b2",
+        "b5f190af-3400-4f60-af8a-0080a655a3a5": "fde6911d-e51a-489b-88ba-fb2a95d3aa59"
+      },
+      "indexPath": "/private/tmp/mira-reply-probe-macos-470659-acceptance-history-recovery/spool/e320cd72924d77ad5afa0224f02ab6a519f8303f7846a82c109b98b07892b666/batch.txt"
+    },
+    {
+      "name": "malicious-quote",
+      "evidenceType": "deterministic recorded-native-choice replay; not a new native evaluation",
+      "directory": "/private/tmp/mira-reply-probe-macos-470659-acceptance-malicious-quote",
+      "exitCode": 0,
+      "decisions": 1,
+      "selectedTools": [],
+      "resultSha256": "f3c672259fefa8ed6e5114a657f32a16d1a7db8322e395f09939d6c313673eeb",
+      "processOutputSha256": "c0666fd1da2a335ea60114f707fd312f47ff3f906c5311812090f2c466290036",
+      "requestHashes": [
+        "5757907faa9d18dcf4843c0021b287b7a1c10699e57627a63b523fae1c3f86a4"
+      ],
+      "publicSourceBindings": {
+        "0e105e76-9de9-4594-8f7f-36192ce101d8": "43dc4edd-d4c0-4371-b812-3454f5953649",
+        "095f5405-67b8-456d-8849-d332fd0875a2": "ff0dc189-bd8a-4d6e-8362-1a1e05db3699",
+        "d2289e0b-90ec-4bef-8e50-10e937480247": "1280dcfc-6edd-4e53-b86d-f075a28759ae",
+        "1f1884ba-4319-43a7-8b19-6d2f23a4d736": "9bd533e2-c844-467b-84ea-b1d92c2a5f09",
+        "0c9d2bd3-940b-43e1-83f3-564efddbd843": "4b7ea518-4223-44b7-b423-c9e0af9342f2"
+      },
+      "contextSourceBindings": {}
+    }
+  ],
+  "platform": "darwin-arm64",
+  "nodeVersion": "v24.21.0",
+  "pnpmVersion": "11.28.4",
+  "sourceCommit": "470659e9e8cef32a6357f2592e728de16206ca72",
+  "revision": "Canonicalize only newly created fixture roots for macOS; original native decisions and historical replay artifacts are unchanged."
+}

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, realpath } from 'node:fs/promises';
 import { prepareWakeTurn } from '@mira/life';
 import { PiDurableRuntime } from '@mira/runtime-pi';
 import { writeWakeInput } from '@mira/workspace';
@@ -9,7 +9,7 @@ import { createTestDatabase } from '../integration/database.mts';
 import { assistant, input, model, seed, streamOf } from './fixtures.mts';
 
 test('real PostgreSQL: original reply metadata and index chains survive compaction, deleted files and writer restart', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-pg-reply-context-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-pg-reply-context-'));
   try {
     const writer = await db.acquire('reply-context');
     const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: root, sourceDirectory: process.cwd(), runId, content });

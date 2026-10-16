@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, writeFile, readFile, rm, symlink, mkdir, chmod } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm, symlink, mkdir, chmod, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import type { HistoryEntry } from '@mira/life';
 import { AttachmentStore, AttachmentError, attachmentLimits, attachmentMime, attachmentPublication, createAttachmentTool } from '../../apps/server/src/attachments.ts';
 import { createLocalHttp, type WebBackend } from '../../apps/server/src/http.ts';
 
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
-  const root = await mkdtemp('/tmp/mira-attachments-'); t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await realpath(await mkdtemp('/tmp/mira-attachments-')); t.after(() => rm(root, { recursive: true, force: true }));
   return { root, store: await AttachmentStore.open(path.join(root, 'store'), [path.join(root, 'source')]) };
 }
 test('immutable copies survive source deletion, store reopening and original buffer mutation', async t => {

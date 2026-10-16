@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -232,7 +232,7 @@ test('real PostgreSQL server: model explicitly selects Chinese/literal substring
 });
 
 test('real PostgreSQL server: oversized history read reaches the model truthfully and a larger-budget new call preserves the complete original behind a bounded reference', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-history-large-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-history-large-'));
   const miraId = 'large-reader';
   const original = event('large-original', `${'完整原文 '.repeat(7000)}untruncated-tail-marker`);
   try {

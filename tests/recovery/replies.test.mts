@@ -1,7 +1,7 @@
 import { boundedFixtureWait, providerEntered } from './service-wait-fixture.mts';
 import type { Json } from '@mira/context';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
@@ -20,7 +20,7 @@ async function settled(service: LocalWebService): Promise<void> {
   const status = await service.status(); assert.equal(status.state, 'idle', JSON.stringify(status));
 }
 test('bidirectional replies persist canonical snapshots, attachments and exact publication IDs across PostgreSQL restart', { timeout: 45_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-reply-recovery-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-reply-recovery-'));
   let service: LocalWebService | undefined; let calls = 0; let target = ''; let attachmentId = ''; const requests: string[] = [];
   try {
     const syntheticStream: StreamFn = (_model, context) => {
@@ -59,7 +59,7 @@ test('bidirectional replies persist canonical snapshots, attachments and exact p
 });
 
 test('same-Mira public projection rejects cross-Mira, notices, Wake and internal events', { timeout: 45_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-reply-boundaries-'); let service: LocalWebService | undefined;
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-reply-boundaries-')); let service: LocalWebService | undefined;
   try {
     const main = await db.acquire('boundary-main');
     await main.receive({ id: 'internal', type: 'hidden', source: 'system', occurredAt: '2026-10-16T10:00:00.000Z', payload: { text: 'secret' } });
@@ -79,7 +79,7 @@ test('same-Mira public projection rejects cross-Mira, notices, Wake and internal
 });
 
 test('real child transcript IDs stay private and generic extension sources retain frozen reply provenance', { timeout: 45_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-reply-source-'); let service: LocalWebService | undefined;
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-reply-source-')); let service: LocalWebService | undefined;
   let mainCalls = 0; let childChecked = false;
   try {
     const writer = await db.acquire('source-main');
@@ -113,7 +113,7 @@ test('real child transcript IDs stay private and generic extension sources retai
 });
 
 test('live Web reply is admitted during a real tool and reaches the next model request with frozen metadata', { timeout: 45_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-reply-live-'); let service: LocalWebService | undefined; let calls = 0; let observed = ''; let target = '';
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-reply-live-')); let service: LocalWebService | undefined; let calls = 0; let observed = ''; let target = '';
   try {
     const stream: StreamFn = (_model, context) => {
       calls++;
@@ -141,7 +141,7 @@ test('live Web reply is admitted during a real tool and reaches the next model r
 });
 
 test('HTTP retries preserve old pending envelopes and actual history tools discover legacy reply targets', { timeout: 30_000 }, async t => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-reply-old-retry-'); let service: LocalWebService | undefined;
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-reply-old-retry-')); let service: LocalWebService | undefined;
   const release = deferred(); let entered = false; let providerFailure: unknown; let calls = 0; let discoveredId = '';
   try {
     const input = { id: 'old-pending', text: 'Original pending message', occurredAt: '2026-10-16T10:00:00.000Z' };
