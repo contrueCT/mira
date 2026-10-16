@@ -1232,3 +1232,79 @@ test('short desktop bubbles use their natural width while long messages stay bou
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   }
 });
+
+for (const intent of ['normal', 'loaded-quote', 'paged-quote', 'settings', 'settings-history', 'attachment', 'attachment-history'] as const) {
+  test(`late send completion respects newer ${intent} intent`, async ({ page }) => {
+    let releaseSend!: () => void; let releaseLookup!: () => void;
+    const heldSend = new Promise<void>(resolve => { releaseSend = resolve; });
+    const heldLookup = new Promise<void>(resolve => { releaseLookup = resolve; });
+    const bounded = async <T,>(promise: Promise<T>, label: string): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timed out`)), 10_000); })]); }
+      finally { clearTimeout(timer); }
+    };
+    const target = '11111111-1111-4111-8111-111111111111';
+    let sends = 0; let lookups = 0;
+    let routeFailure: unknown;
+    try {
+      const original = { id: target, role: 'assistant', text: '保留阅读焦点的原消息', occurredAt: '2026-10-15T03:00:00Z' };
+      const attachment = { id: '55555555-5555-4555-8555-555555555555', name: 'send-intent.txt', mimeType: 'text/plain', size: 7, sha256: 'a'.repeat(64) };
+      const items = [
+        ...(intent === 'paged-quote' ? [] : [original]),
+        ...Array.from({ length: 15 }, (_, index) => ({ id: `middle-${index}`, role: 'assistant', text: `合成阅读记录 ${index}`, occurredAt: new Date(Date.UTC(2026, 9, 16, 3, index)).toISOString() })),
+        { id: 'quoted-message', role: 'assistant', text: '可跳转的引用消息', occurredAt: '2026-10-16T04:00:00Z', reply: { messageId: target, role: 'assistant', text: original.text }, attachments: [attachment] },
+      ];
+      await page.route('**/api/attachments/*', route => route.fulfill({ body: 'fixture', contentType: 'text/plain' }));
+      await page.route('**/api/timeline', async route => {
+        if (route.request().method() !== 'POST') { await route.fulfill({ json: { items, nextCursor: intent === 'paged-quote' ? 'older' : null } }); return; }
+        lookups++;
+        try { await bounded(heldLookup, 'held quote page'); await route.fulfill({ json: { items: [original], nextCursor: null } }); }
+        catch (error) { routeFailure = error; await route.abort().catch(() => {}); }
+      });
+      await page.route('**/api/messages', async route => {
+        sends++;
+        try { await bounded(heldSend, 'held message receipt'); await route.fulfill({ json: { id: (route.request().postDataJSON() as { id: string }).id, receipt: 'inserted' } }); }
+        catch (error) { routeFailure = error; await route.abort().catch(() => {}); }
+      });
+      await page.goto('/');
+      const input = page.getByLabel('给 Mira 发消息', { exact: true });
+      const isOverlay = intent.startsWith('settings') || intent.startsWith('attachment');
+      const overlayControl = intent.startsWith('settings') ? page.getByRole('button', { name: '模型设置', exact: true }) : page.getByRole('button', { name: '查看附件 send-intent.txt', exact: true });
+      if (intent.endsWith('-history')) {
+        await overlayControl.click(); await expect(page.getByRole('dialog')).toBeVisible();
+        await page.goBack(); await expect(page.getByRole('dialog')).toHaveCount(0);
+      }
+      await input.fill('具有延迟回执的新消息'); await page.getByRole('button', { name: '发送消息', exact: true }).click();
+      await expect.poll(() => sends).toBe(1); await expect(input).toBeDisabled();
+      if (intent === 'loaded-quote' || intent === 'paged-quote') {
+        await page.getByRole('button', { name: '查看引用的消息' }).click();
+        if (intent === 'loaded-quote') await expect(page.locator(`[data-message-id="${target}"]`)).toBeFocused();
+        else { await expect.poll(() => lookups).toBe(1); await expect(page.getByRole('button', { name: '取消查找' })).toBeVisible(); }
+      } else if (isOverlay) {
+        if (intent.endsWith('-history')) await page.goForward(); else await overlayControl.click();
+        await expect(page.getByRole('dialog')).toBeVisible();
+        await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
+        await expect(overlayControl).toBeFocused();
+      }
+      const scrollBeforeReceipt = await page.locator('.timeline-scroll').evaluate(element => element.scrollTop);
+      releaseSend(); await expect(input).toBeEnabled();
+      await expect(page.getByText('已接收 · 等待处理', { exact: true })).toBeVisible();
+      if (intent === 'paged-quote') {
+        // A late send must neither steal focus nor abort the newer in-progress lookup.
+        await expect(input).not.toBeFocused();
+        await expect(page.getByRole('button', { name: '取消查找' })).toBeVisible();
+        releaseLookup(); await expect(page.locator(`[data-message-id="${target}"]`)).toBeFocused();
+      } else if (intent === 'loaded-quote') {
+        await expect(page.locator(`[data-message-id="${target}"]`)).toBeFocused();
+        expect(Math.abs(await page.locator('.timeline-scroll').evaluate(element => element.scrollTop) - scrollBeforeReceipt)).toBeLessThan(2);
+      } else if (isOverlay) {
+        await expect(overlayControl).toBeFocused();
+        expect(Math.abs(await page.locator('.timeline-scroll').evaluate(element => element.scrollTop) - scrollBeforeReceipt)).toBeLessThan(2);
+      } else await expect(input).toBeFocused();
+      expect(routeFailure).toBeUndefined();
+    } finally {
+      releaseSend(); releaseLookup();
+      await bounded(page.unrouteAll({ behavior: 'wait' }), 'late send route cleanup');
+    }
+  });
+}

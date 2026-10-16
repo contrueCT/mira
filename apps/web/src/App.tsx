@@ -71,7 +71,8 @@ export function App() {
   const itemsRef = useRef(items);
   const nearBottomRef = useRef(true);
   const sendingRef = useRef(false);
-  const restoreComposerFocusRef = useRef(false);
+  const userIntentGenerationRef = useRef(0);
+  const restoreComposerFocusRef = useRef<number | null>(null);
   const initializedRef = useRef(false);
   const paginationRef = useRef<HistoryPagination>({ latestCursor: null, oldestCursor: null, gaps: [] });
   const activeRef = useRef(true);
@@ -84,6 +85,8 @@ export function App() {
   const pollingRef = useRef<ReturnType<typeof createStatusPolling> | null>(null);
 
   const cancelQuoteNavigation = useCallback(() => {
+    // Every newer explicit intent invalidates late focus, even without a lookup.
+    userIntentGenerationRef.current++;
     const controller = quoteAbortRef.current;
     if (!controller) return;
     // Release only this lookup's ownership before abort callbacks can run.
@@ -164,7 +167,7 @@ export function App() {
   }, [refresh]);
 
   useEffect(() => {
-    const sync = () => { if (window.location.hash === '#settings' || window.location.hash.startsWith('#attachment=')) cancelQuoteNavigation(); closingSettingsRef.current = false; closingPreviewRef.current = false; setSettingsOpen(window.location.hash === '#settings'); setPreviewId(window.location.hash.startsWith('#attachment=') ? window.location.hash.slice(12) : null); };
+    const sync = () => { cancelQuoteNavigation(); closingSettingsRef.current = false; closingPreviewRef.current = false; setSettingsOpen(window.location.hash === '#settings'); setPreviewId(window.location.hash.startsWith('#attachment=') ? window.location.hash.slice(12) : null); };
     window.addEventListener('hashchange', sync); window.addEventListener('popstate', sync);
     return () => { window.removeEventListener('hashchange', sync); window.removeEventListener('popstate', sync); };
   }, [cancelQuoteNavigation]);
@@ -185,9 +188,10 @@ export function App() {
   }, [composer]);
 
   useLayoutEffect(() => {
-    if (!sending && restoreComposerFocusRef.current) {
-      restoreComposerFocusRef.current = false;
-      textareaRef.current?.focus();
+    if (!sending && restoreComposerFocusRef.current !== null) {
+      const generation = restoreComposerFocusRef.current;
+      restoreComposerFocusRef.current = null;
+      if (generation === userIntentGenerationRef.current) textareaRef.current?.focus({ preventScroll: true });
     }
   }, [sending]);
 
@@ -206,6 +210,7 @@ export function App() {
   const loadOlder = async () => {
     const request = nextHistoryRequest(paginationRef.current);
     if (!request || olderBusyRef.current) return;
+    cancelQuoteNavigation();
     olderBusyRef.current = true; setLoadingOlder(true); setOlderError(null);
     try {
       const page = await api<TimelinePage>('/api/timeline', { method: 'POST', body: JSON.stringify({ before: request.cursor }), signal: pollAbortRef.current!.signal });
@@ -217,6 +222,7 @@ export function App() {
   const sendEnvelope = async (envelope: MessageEnvelope, retry = false, fromMemory = memoryRequestRef.current?.id === envelope.id) => {
     if (sendingRef.current || recovered.error) return;
     cancelQuoteNavigation();
+    const generation = userIntentGenerationRef.current;
     sendingRef.current = true; setSending(true);
     const controller = new AbortController(); postAbortRef.current = controller;
     const timeout = setTimeout(() => controller.abort(), 20_000);
@@ -242,7 +248,7 @@ export function App() {
       clearTimeout(timeout);
       if (postAbortRef.current === controller) postAbortRef.current = null;
       sendingRef.current = false;
-      if (activeRef.current) { restoreComposerFocusRef.current = !fromMemory; setSending(false); }
+      if (activeRef.current) { restoreComposerFocusRef.current = !fromMemory && generation === userIntentGenerationRef.current ? generation : null; setSending(false); }
     }
   };
   const submitMemory = (text: string): boolean => {
@@ -271,6 +277,7 @@ export function App() {
   const openSettings = () => { if (window.location.hash === '#settings') return; cancelQuoteNavigation(); closingSettingsRef.current = false; window.history.pushState({ ...window.history.state, miraSettings: true }, '', '#settings'); setSettingsOpen(true); };
   const closeSettings = () => {
     if (closingSettingsRef.current) return;
+    cancelQuoteNavigation();
     closingSettingsRef.current = true;
     if (window.history.state?.miraSettings) window.history.back();
     else { window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}`); closingSettingsRef.current = false; setSettingsOpen(false); }
@@ -286,7 +293,7 @@ export function App() {
     window.history.pushState({ ...window.history.state, miraAttachment: true }, '', `#attachment=${attachment.id}`); setPreviewId(attachment.id);
   };
   const closePreview = () => {
-    if (closingPreviewRef.current) return; closingPreviewRef.current = true;
+    if (closingPreviewRef.current) return; cancelQuoteNavigation(); closingPreviewRef.current = true;
     if (window.history.state?.miraAttachment) window.history.back();
     else { window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}`); closingPreviewRef.current = false; setPreviewId(null); }
   };
@@ -398,9 +405,9 @@ export function App() {
       </main>
 
       <footer className="composer-section">
-        {(quoteSearch || quoteNotice) && <p className="quote-search-status" role="status">{quoteSearch ? '正在查找引用消息…' : quoteNotice}{quoteSearch && <button type="button" className="text-button" onClick={() => quoteAbortRef.current?.abort()}>取消查找</button>}</p>}
+        {(quoteSearch || quoteNotice) && <p className="quote-search-status" role="status">{quoteSearch ? '正在查找引用消息…' : quoteNotice}{quoteSearch && <button type="button" className="text-button" onClick={() => { cancelQuoteNavigation(); setQuoteNotice('查找已停止，引用内容仍保留。'); }}>取消查找</button>}</p>}
         {!nearBottom && <button className="latest-button" type="button" onClick={scrollToLatest}><ChevronDown />回到最新消息</button>}
-        {replyTarget && <div className="composer-reply" aria-label="回复预览"><span aria-hidden="true">↪</span><span className="composer-reply-text"><strong>回复 {replyTarget.source?.label ?? 'Mira'}</strong><span>{replySnippet(replyTarget)}</span></span><button type="button" aria-label="取消回复" title="取消回复" onClick={() => { setReplyTarget(null); textareaRef.current?.focus(); }}>×</button></div>}
+        {replyTarget && <div className="composer-reply" aria-label="回复预览"><span aria-hidden="true">↪</span><span className="composer-reply-text"><strong>回复 {replyTarget.source?.label ?? 'Mira'}</strong><span>{replySnippet(replyTarget)}</span></span><button type="button" aria-label="取消回复" title="取消回复" onClick={() => { cancelQuoteNavigation(); setReplyTarget(null); textareaRef.current?.focus(); }}>×</button></div>}
         <form className={`composer ${composer.includes('\n') || attachments.drafts.length ? 'expanded' : ''} ${dragging ? 'dragging' : ''}`} onSubmit={submit} onFocusCapture={cancelQuoteNavigation}
           onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDragging(true); } }}
           onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }}
