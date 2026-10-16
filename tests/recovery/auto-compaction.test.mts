@@ -107,9 +107,12 @@ async function settled(service: LocalWebService, providerFailure: () => unknown 
 
 test('real PostgreSQL: Web service request path automatically compacts, refreshes Memory, and restores its visible timeline', { timeout: 30_000 }, async () => {
   const db = await createTestDatabase();
-  const root = await mkdtemp(path.join(os.tmpdir(), 'mira-web-auto-'));
+  // run-tests deliberately sets TMPDIR=HOME. Reply compaction writes an
+  // ordinary spool, whose production boundary requires a root outside HOME.
+  const root = await mkdtemp('/tmp/mira-web-auto-');
   let service: LocalWebService | undefined;
   try {
+    assert.ok(!root.startsWith(path.resolve(os.homedir()) + path.sep), 'Web compaction spool must be outside the sanitized test HOME');
     let naturalRequests = 0, summaries = 0;
     let providerFailure: unknown;
     const memoryRoot = path.join(root, 'memory');
@@ -139,10 +142,18 @@ test('real PostgreSQL: Web service request path automatically compacts, refreshe
     await service.submit({ id: 'web-auto-second', text: 'Second Web question triggers compaction', occurredAt: '2026-10-08T09:01:00Z' });
     await settled(service, () => providerFailure); assert.equal(naturalRequests, 2); assert.ok(summaries >= 1);
     assert.deepEqual((await rawHistory(db, options.miraId)).slice(0, prefix.length), prefix);
-    assert.equal((await db.admin.query("SELECT count(*)::int AS n FROM context_records WHERE envelope->'payload'->>'type' = 'compaction'")).rows[0].n, 1);
+    const checkpoints = (await db.admin.query<{ pointer: { path: string; bytes: number } }>(
+      "SELECT envelope->'payload'->'miraReplyIndex' AS pointer FROM context_records WHERE envelope->'payload'->>'type' = 'compaction'")).rows;
+    assert.equal(checkpoints.length, 1);
+    const pointer = checkpoints[0]!.pointer; assert.ok(pointer?.path, 'Actual compaction must publish its ordinary-file reply index');
+    const indexText = await readFile(pointer.path, 'utf8'); assert.equal(Buffer.byteLength(indexText), pointer.bytes);
+    const index = JSON.parse(indexText) as { type: string; sources: Array<{ messages: Array<{ messageId: string }> }> };
+    assert.equal(index.type, 'reply-source-index');
     const timeline = await service.timeline();
     assert.equal(timeline.items.filter(item => item.role === 'user').length, 2);
     assert.equal(timeline.items.filter(item => item.role === 'assistant').length, 2);
+    const indexedIds = new Set(index.sources.flatMap(source => source.messages.map(message => message.messageId)));
+    for (const item of timeline.items.filter(item => item.role === 'user')) assert.ok(indexedIds.has(item.id), 'Reply index preserves canonical user History IDs');
     assert.doesNotMatch(JSON.stringify(timeline), /Synthetic Web checkpoint|WEB_MEMORY_REFRESHED/);
     await service.close(); service = undefined;
     await writeFile(path.join(memoryRoot, 'MEMORY.md'), 'WEB_DISK_CHANGED_LATER');

@@ -24,3 +24,5 @@
 PR49 的 `610701f` / run `38847221861`：本地完整检查通过（Node 1110 通过、1 项 socket 限制跳过；Web 66 通过），全新完整独立审查零 actionable findings。远端原生浏览器启动 probe 与 macOS 作业通过；真实 PostgreSQL 双向发布、目标隔离、子代理隔离、通用来源、实时插入和压缩索引恢复用例通过。
 
 主 verify 在集成阶段超出原有 30 分钟预算，尚未执行 UI 门禁，不能视为验收通过。旧 shutdown fixture 在校验旧输入格式时先抛错、随后无界等待 provider 进入，导致资源未清理；另有旧事件快照、极窄合成压缩阈值和新 legacy 用例误取尾部 CURRENT_TIME 为工具结果的测试假设。修复保留精确 canonical ID 断言和压缩次数要求，并为 barrier 增加有界等待/清理。集成日志改为 TAP 即时输出失败详情；生产超时、安全设置及门禁不放宽。下一精确提交仍需完整复审、检查和真实 CI。
+
+第二轮 `4a8da78` / run `38851024423` 正常退出：Node 1113、Web 66 全通过且无跳过；真实 PostgreSQL 254 项中 253 通过，包括全部新增引用用例。唯一失败为旧自动压缩 fixture 的 spool 目录：测试 runner 把 HOME 与 TMPDIR 设为同一隔离目录，fixture 使用 os.tmpdir，首次写引用索引时被既有“禁止在用户 home 写 Wake spool”保护拒绝。相同 HOME/TMPDIR 环境离线复现了原始错误，改为既有 `/tmp/` 测试模式即成功。仅校正 fixture 目录并断言实际索引文件；不调整其 0.008 压缩阈值或生产安全保护。浏览器验收仍等待后续完整 CI。
