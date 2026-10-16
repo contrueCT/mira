@@ -1118,7 +1118,7 @@ test('reply timeline keeps message sides and centered dividers on desktop and na
   }
 });
 
-for (const intent of ['latest', 'send', 'reply', 'compose', 'settings-history', 'attachment-history'] as const) {
+for (const intent of ['latest', 'send', 'reply', 'compose', 'settings-history', 'attachment-history', 'article-focus', 'timeline-focus', 'timeline-wheel'] as const) {
   test(`delayed quote lookup cannot steal scroll or focus after ${intent}`, async ({ page }) => {
     const target = '11111111-1111-4111-8111-111111111111';
     let releasePage!: () => void; let pageFinished!: () => void;
@@ -1167,6 +1167,9 @@ for (const intent of ['latest', 'send', 'reply', 'compose', 'settings-history', 
       if (intent === 'latest') await page.getByRole('button', { name: '回到最新消息' }).click();
       else if (intent === 'send') { await page.getByRole('button', { name: '发送消息', exact: true }).click(); await expect(input).toBeFocused(); }
       else if (intent === 'reply') { await page.locator('[data-message-id="visible-0"]').getByRole('button', { name: '回复这条消息' }).click(); await expect(input).toBeFocused(); }
+      else if (intent === 'article-focus') { await page.locator('[data-message-id="visible-1"]').click(); await expect(page.locator('[data-message-id="visible-1"]')).toBeFocused(); }
+      else if (intent === 'timeline-focus') { await page.locator('.timeline-scroll').focus(); await expect(page.locator('.timeline-scroll')).toBeFocused(); }
+      else if (intent === 'timeline-wheel') { await page.locator('.timeline-scroll').hover(); await page.mouse.wheel(0, 120); await expect.poll(() => page.locator('.timeline-scroll').evaluate(element => element.scrollTop)).toBeGreaterThan(100); }
       else if (historyModal) {
         // Forward activates the modal through popstate/hashchange, not its button handler.
         await page.goForward(); await expect(page.getByRole('dialog')).toBeVisible();
@@ -1184,6 +1187,11 @@ for (const intent of ['latest', 'send', 'reply', 'compose', 'settings-history', 
       await expect(page.locator(`[data-message-id="${target}"]`)).toHaveCount(0);
       await expect(page.getByText('查找已停止，引用内容仍保留。')).toHaveCount(0);
       if (intent === 'reply' || intent === 'send' || intent === 'compose') await expect(input).toBeFocused();
+      if (intent === 'article-focus' || intent === 'timeline-focus' || intent === 'timeline-wheel') {
+        if (intent === 'article-focus') await expect(page.locator('[data-message-id="visible-1"]')).toBeFocused();
+        if (intent === 'timeline-focus') await expect(page.locator('.timeline-scroll')).toBeFocused();
+        expect(Math.abs(await page.locator('.timeline-scroll').evaluate(element => element.scrollTop) - scrollAfterIntent)).toBeLessThan(2);
+      }
       if (historyModal) {
         await expect(modalControl).toBeFocused();
         expect(Math.abs(await page.locator('.timeline-scroll').evaluate(element => element.scrollTop) - scrollAfterIntent)).toBeLessThan(2);
@@ -1233,7 +1241,7 @@ test('short desktop bubbles use their natural width while long messages stay bou
   }
 });
 
-for (const intent of ['normal', 'loaded-quote', 'paged-quote', 'settings', 'settings-history', 'attachment', 'attachment-history'] as const) {
+for (const intent of ['normal', 'loaded-quote', 'paged-quote', 'settings', 'settings-history', 'attachment', 'attachment-history', 'article-focus', 'timeline-focus', 'timeline-wheel'] as const) {
   test(`late send completion respects newer ${intent} intent`, async ({ page }) => {
     let releaseSend!: () => void; let releaseLookup!: () => void;
     const heldSend = new Promise<void>(resolve => { releaseSend = resolve; });
@@ -1280,7 +1288,10 @@ for (const intent of ['normal', 'loaded-quote', 'paged-quote', 'settings', 'sett
         await page.getByRole('button', { name: '查看引用的消息' }).click();
         if (intent === 'loaded-quote') await expect(page.locator(`[data-message-id="${target}"]`)).toBeFocused();
         else { await expect.poll(() => lookups).toBe(1); await expect(page.getByRole('button', { name: '取消查找' })).toBeVisible(); }
-      } else if (isOverlay) {
+      } else if (intent === 'article-focus') { await page.locator('[data-message-id="middle-5"]').click(); await expect(page.locator('[data-message-id="middle-5"]')).toBeFocused(); }
+      else if (intent === 'timeline-focus') { await page.locator('.timeline-scroll').focus(); await expect(page.locator('.timeline-scroll')).toBeFocused(); }
+      else if (intent === 'timeline-wheel') { await page.locator('.timeline-scroll').hover(); const beforeWheel = await page.locator('.timeline-scroll').evaluate(element => element.scrollTop); await page.mouse.wheel(0, -120); await expect.poll(() => page.locator('.timeline-scroll').evaluate(element => element.scrollTop)).toBeLessThan(beforeWheel - 100); }
+      else if (isOverlay) {
         if (intent.endsWith('-history')) await page.goForward(); else await overlayControl.click();
         await expect(page.getByRole('dialog')).toBeVisible();
         await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -1299,6 +1310,11 @@ for (const intent of ['normal', 'loaded-quote', 'paged-quote', 'settings', 'sett
         expect(Math.abs(await page.locator('.timeline-scroll').evaluate(element => element.scrollTop) - scrollBeforeReceipt)).toBeLessThan(2);
       } else if (isOverlay) {
         await expect(overlayControl).toBeFocused();
+        expect(Math.abs(await page.locator('.timeline-scroll').evaluate(element => element.scrollTop) - scrollBeforeReceipt)).toBeLessThan(2);
+      } else if (intent === 'article-focus' || intent === 'timeline-focus' || intent === 'timeline-wheel') {
+        if (intent === 'article-focus') await expect(page.locator('[data-message-id="middle-5"]')).toBeFocused();
+        if (intent === 'timeline-focus') await expect(page.locator('.timeline-scroll')).toBeFocused();
+        await expect(input).not.toBeFocused();
         expect(Math.abs(await page.locator('.timeline-scroll').evaluate(element => element.scrollTop) - scrollBeforeReceipt)).toBeLessThan(2);
       } else await expect(input).toBeFocused();
       expect(routeFailure).toBeUndefined();

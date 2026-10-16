@@ -48,3 +48,5 @@
 - ADR0035：扩展私有设置路由复用全部Web鉴权，secret仅写入；模型工具不暴露settings status/授权链接/凭据。异常文字脱敏但保留unknown-outcome恢复语义。
 
 - Timeline replies: `replies.ts` resolves only same-Mira public main messages by canonical History UUID. Browser submits only `replyToMessageId`; frozen quote/source joins immutable Event/live input. Main-only `send_reply` publishes through successful durable tool outcome, never a channel send or mutable next-response flag. Both Timeline HTTP routes whitelist `reply`; child/internal/notice records remain unavailable as targets.
+
+- Web spool 写入显式使用 `miraHome` 为私有 managed data root，默认 `~/.mira/wake-input` 可存放输入及附件/回复索引；必须严格包含 spool，不能是 HOME/其祖先或与源码互相包含，保留链接、所有者和不可变发布保护。demo 仍要求显式源码/HOME 外 spool。

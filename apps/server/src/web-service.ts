@@ -157,7 +157,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     let browser: BrowserManager | undefined;
     try {
       const roots = options.memoryRoot ? await setupMemoryWorkspace({ memoryRoot: options.memoryRoot, sourceDirectory: options.sourceDirectory }) : undefined;
-      const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content });
+      const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, ...(options.miraHome === undefined ? {} : { managedDataRoot: options.miraHome }), runId, content });
       terminals = new TerminalManager({ cwd, writeOverflowInput });
       const terminalManager = terminals;
       browser = new BrowserManager({ cwd, mainOwner: writer.miraId, ...(options.miraHome === undefined ? {} : { miraHome: options.miraHome }) });

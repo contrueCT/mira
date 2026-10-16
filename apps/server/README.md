@@ -218,3 +218,5 @@ points, ten attachment display names and whitelisted source metadata; they expos
 no file paths. Quoted source content is not an instruction or grant of permission.
 The model sees canonical IDs and deterministic reply metadata through recovery
 and compaction, with ordinary History lookup for omitted originals.
+
+Web passes its explicit `miraHome` as the spool writer’s private managed data root, so the CLI default `~/.mira/wake-input` supports overflow, attachment indexes and reply indexes. Only strict descendants of that root are allowed; source overlap, HOME itself/ancestors, symlinks and non-private roots remain rejected. The synthetic demo keeps its explicitly configured outside-HOME spool contract.

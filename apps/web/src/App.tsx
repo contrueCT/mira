@@ -72,6 +72,7 @@ export function App() {
   const nearBottomRef = useRef(true);
   const sendingRef = useRef(false);
   const userIntentGenerationRef = useRef(0);
+  const internalTimelineFocusRef = useRef(false);
   const restoreComposerFocusRef = useRef<number | null>(null);
   const initializedRef = useRef(false);
   const paginationRef = useRef<HistoryPagination>({ latestCursor: null, oldestCursor: null, gaps: [] });
@@ -312,7 +313,11 @@ export function App() {
       const target = [...scrollRef.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? []].find(element => element.dataset['messageId'] === messageId);
       if (!target) return false;
       nearBottomRef.current = false; setNearBottom(false);
-      target.scrollIntoView({ block: 'center', behavior: 'instant' }); target.focus({ preventScroll: true }); setHighlightId(messageId);
+      target.scrollIntoView({ block: 'center', behavior: 'instant' });
+      // This synchronous focus belongs to the current navigation, not a newer reading intent.
+      internalTimelineFocusRef.current = true;
+      try { target.focus({ preventScroll: true }); } finally { internalTimelineFocusRef.current = false; }
+      setHighlightId(messageId);
       return true;
     };
     if (reveal()) return;
@@ -361,7 +366,11 @@ export function App() {
 
       {(connectionError || storageError || status?.error) && <div className="connection-notice" role="status" tabIndex={0} aria-label="运行状态与错误详情"><span>{!storageError && !connectionError && status?.error && <strong>运行错误 · </strong>}{storageError ?? connectionError ?? status?.error}</span>{connectionError && <button className="text-button" onClick={() => { void refresh(); }}>重新连接</button>}</div>}
 
-      <main ref={scrollRef} className="timeline-scroll" onScroll={onScroll} aria-label="与 Mira 的消息记录" tabIndex={0}>
+      <main ref={scrollRef} className="timeline-scroll" onScroll={onScroll}
+        onFocusCapture={() => { if (!internalTimelineFocusRef.current) cancelQuoteNavigation(); }}
+        onPointerDown={cancelQuoteNavigation} onWheel={cancelQuoteNavigation} onTouchMove={cancelQuoteNavigation}
+        onKeyDown={event => { if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Tab'].includes(event.key)) cancelQuoteNavigation(); }}
+        aria-label="与 Mira 的消息记录" tabIndex={0}>
         <div className={`timeline-content ${showEmpty ? 'is-empty' : ''}`}>
           {loading && <div className="timeline-loading" role="status"><span className="loading-mark" />正在找回我们的消息…</div>}
           {nextCursor && <div className="history-controls"><button className="text-button" onClick={() => { void loadOlder(); }} disabled={loadingOlder}>{loadingOlder ? '正在读取…' : hasHistoryGap ? '补齐尚未读取的消息' : '查看更早的消息'}</button>{hasHistoryGap && <p className="history-gap-note">有一段消息尚未读取，点击后可继续补齐</p>}{olderError && <p className="inline-error" role="alert">{olderError}</p>}</div>}
