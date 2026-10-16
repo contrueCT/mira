@@ -74,3 +74,13 @@ test('quiet output validator permits revised schema IDs without changing begun v
   assert.equal(old(42).valid, true); assert.equal(old('next').valid, false);
   assert.equal(next('next').valid, true); assert.equal(next(42).valid, false);
 });
+
+
+test('quiet output validator rejects IDs already used by dialect meta-schemas', () => {
+  const validator = createOutputSchemaValidator();
+  for (const $schema of ['https://json-schema.org/draft/2020-12/schema', 'https://json-schema.org/draft/2019-09/schema', 'http://json-schema.org/draft-07/schema#']) {
+    for (const pattern of ['^ok$', '[']) {
+      assert.throws(() => validator.getValidator({ $schema, $id: $schema, type: 'object', properties: { value: { type: 'string', pattern } }, required: ['value'], additionalProperties: false }), /^Error: Reserved MCP output schema ID$/);
+    }
+  }
+});
