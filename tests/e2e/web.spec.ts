@@ -1167,8 +1167,17 @@ test('quote navigation pages safely, has cancellation and preserves unavailable 
     await route.fallback();
   });
   await page.getByRole('button', { name: '查看引用的消息' }).click();
-  await page.getByRole('button', { name: '取消查找' }).click();
+  const cancel = page.getByRole('button', { name: '取消查找' });
+  await cancel.focus(); await expect(cancel).toBeFocused();
+  // Focus invalidates late send restoration but must not unmount this control before click.
+  await expect(cancel).toBeVisible(); await cancel.click();
   await expect(page.getByText('查找已停止，引用内容仍保留。')).toBeVisible();
+  await expect(cancel).toHaveCount(0);
+  // A subsequent lookup owns a fresh controller and can still be cancelled.
+  await page.getByRole('button', { name: '查看引用的消息' }).click();
+  await expect(cancel).toBeVisible(); await cancel.focus(); await cancel.click();
+  await expect(page.getByText('查找已停止，引用内容仍保留。')).toBeVisible();
+  await expect(cancel).toHaveCount(0);
 });
 
 test('touch viewport exposes a usable reply action without hover', async ({ browser }) => {
@@ -1386,7 +1395,7 @@ test('short desktop bubbles use their natural width while long messages stay bou
   }
 });
 
-for (const intent of ['normal', 'loaded-quote', 'paged-quote', 'settings', 'settings-history', 'attachment', 'attachment-history', 'article-focus', 'timeline-focus', 'timeline-wheel'] as const) {
+for (const intent of ['normal', 'loaded-quote', 'paged-quote', 'settings', 'settings-history', 'settings-focus', 'status-focus', 'footer-focus', 'attachment', 'attachment-history', 'article-focus', 'timeline-focus', 'timeline-wheel'] as const) {
   test(`late send completion respects newer ${intent} intent`, async ({ page }) => {
     let releaseSend!: () => void; let releaseLookup!: () => void; let releaseRefresh!: () => void;
     const heldSend = new Promise<void>(resolve => { releaseSend = resolve; });
@@ -1401,6 +1410,7 @@ for (const intent of ['normal', 'loaded-quote', 'paged-quote', 'settings', 'sett
     let sends = 0; let lookups = 0; let latestReads = 0;
     let routeFailure: unknown;
     try {
+      if (intent === 'status-focus') await page.route('**/api/status', route => route.fulfill({ json: { state: 'idle', mode: 'synthetic', model: 'Fixture model', error: '可聚焦的合成状态说明' } }));
       const original = { id: target, role: 'assistant', text: '保留阅读焦点的原消息', occurredAt: '2026-10-15T03:00:00Z' };
       const attachment = { id: '55555555-5555-4555-8555-555555555555', name: 'send-intent.txt', mimeType: 'text/plain', size: 7, sha256: 'a'.repeat(64) };
       const items = [
@@ -1429,7 +1439,7 @@ for (const intent of ['normal', 'loaded-quote', 'paged-quote', 'settings', 'sett
       });
       await page.goto('/');
       const input = page.getByLabel('给 Mira 发消息', { exact: true });
-      const isOverlay = intent.startsWith('settings') || intent.startsWith('attachment');
+      const isOverlay = intent === 'settings' || intent === 'settings-history' || intent.startsWith('attachment');
       const overlayControl = intent.startsWith('settings') ? page.getByRole('button', { name: '模型设置', exact: true }) : page.getByRole('button', { name: '查看附件 send-intent.txt', exact: true });
       if (intent.endsWith('-history')) {
         await overlayControl.click(); await expect(page.getByRole('dialog')).toBeVisible();
@@ -1444,6 +1454,14 @@ for (const intent of ['normal', 'loaded-quote', 'paged-quote', 'settings', 'sett
       } else if (intent === 'article-focus') { await page.locator('[data-message-id="middle-5"]').click(); await expect(page.locator('[data-message-id="middle-5"]')).toBeFocused(); }
       else if (intent === 'timeline-focus') { await page.locator('.timeline-scroll').focus(); await expect(page.locator('.timeline-scroll')).toBeFocused(); }
       else if (intent === 'timeline-wheel') { await page.locator('.timeline-scroll').hover(); const beforeWheel = await page.locator('.timeline-scroll').evaluate(element => element.scrollTop); await page.mouse.wheel(0, -120); await expect.poll(() => page.locator('.timeline-scroll').evaluate(element => element.scrollTop)).toBeLessThan(beforeWheel - 100); }
+      else if (intent === 'settings-focus') { await overlayControl.focus(); await expect(overlayControl).toBeFocused(); await expect(page.getByRole('dialog')).toHaveCount(0); }
+      else if (intent === 'status-focus') { await page.getByLabel('运行状态与错误详情').focus(); await expect(page.getByLabel('运行状态与错误详情')).toBeFocused(); }
+      else if (intent === 'footer-focus') {
+        // Change only scroll state, then isolate acquisition of footer keyboard focus.
+        await page.locator('.timeline-scroll').evaluate(element => { element.scrollTop = 0; });
+        const latest = page.getByRole('button', { name: '回到最新消息' });
+        await expect(latest).toBeVisible(); await latest.focus(); await expect(latest).toBeFocused();
+      }
       else if (isOverlay) {
         if (intent.endsWith('-history')) await page.goForward(); else await overlayControl.click();
         await expect(page.getByRole('dialog')).toBeVisible();
@@ -1466,6 +1484,12 @@ for (const intent of ['normal', 'loaded-quote', 'paged-quote', 'settings', 'sett
         expect(lookups).toBe(1);
       } else if (intent === 'loaded-quote') {
         await expect(page.locator(`[data-message-id="${target}"]`)).toBeFocused();
+        expect(Math.abs(await page.locator('.timeline-scroll').evaluate(element => element.scrollTop) - scrollBeforeReceipt)).toBeLessThan(2);
+      } else if (intent === 'settings-focus' || intent === 'status-focus' || intent === 'footer-focus') {
+        const focused = intent === 'settings-focus' ? overlayControl : intent === 'status-focus' ? page.getByLabel('运行状态与错误详情') : page.getByRole('button', { name: '回到最新消息' });
+        await expect(focused).toBeFocused();
+        await expect(page.getByRole('dialog')).toHaveCount(0);
+        await expect(input).not.toBeFocused();
         expect(Math.abs(await page.locator('.timeline-scroll').evaluate(element => element.scrollTop) - scrollBeforeReceipt)).toBeLessThan(2);
       } else if (isOverlay) {
         await expect(overlayControl).toBeFocused();

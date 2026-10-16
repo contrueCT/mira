@@ -355,7 +355,12 @@ export function App() {
   };
 
   return <>
-    <div className="mira-app" inert={settingsOpen || !!preview}>
+    <div className="mira-app" inert={settingsOpen || !!preview}
+      onFocusCapture={() => {
+        // All main-surface focus invalidates a late send's restoration. Keep lookup
+        // cancellation in its existing handlers so focusing Cancel cannot remove it.
+        if (!internalTimelineFocusRef.current) userIntentGenerationRef.current++;
+      }}>
       <header className="app-header">
         <div className="identity" aria-label="Mira">
           <div className="mira-ring" aria-hidden="true" />
