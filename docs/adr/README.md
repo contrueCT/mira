@@ -78,6 +78,7 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 - [0034：受管浏览器与界面内接管](0034-managed-browser-handoff.md) — 已批准，实现/验收中。
 - [0038 Delegation-first prompt](0038-delegation-first-prompt.md): approved 2026-10-15; responsive main Mira, substantial independent work delegated, explicit published-template identity and safe next-request upgrade with frozen Memory preserved.
+- [0044 Task communication prompt](0044-task-communication-prompt.md): approved 2026-10-17; brief execution acknowledgement and meaningful updates at natural model opportunities, existing Timeline delivery verified, published identities and frozen Memory preserved.
 - [0037: Live subagent results](0037-live-subagent-results.md): accepted single-tool boundary delivery, preserving sourced results and the sole main loop.
 
 - [0039 — Parent-to-child live followups](0039-live-child-followups.md): accepted scope; implementation under verification. Separate task inbox and child transcript boundary, no main Wake ownership.

@@ -154,6 +154,7 @@ test('unsafe source, user-home, relative, traversal and shared roots are rejecte
       await assert.rejects(materialize(rootDirectory, 'run', 'content'), /outside|absolute paths/);
     }
     await mkdir(root, { mode: 0o755 });
+    await chmod(root, 0o755); // Explicitly create the unsafe fixture even under a private umask.
     await assert.rejects(materialize(root, 'run', 'content'), /inaccessible to other users/);
   });
 });

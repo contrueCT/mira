@@ -547,13 +547,21 @@ exact values remain inside the lossless paged JSON text.
 [ADR 0038](../../docs/adr/0038-delegation-first-prompt.md) adds main-only guidance
 to delegate substantial independent work while remaining responsive and owning
 result review. New prompt snapshots include their `templateSha256`. Missing
-identity refers only to the hash-checked pre-delegation v0.2 resource; both known
+identity refers only to the hash-checked pre-delegation v0.2 resource; known
 revisions validate against their own immutable bytes, and unknown identities or
 mismatched text fail closed. Normal request preparation appends the current
 revision before provider execution using the existing frozen Memory. Recovery
 never rewrites history or reloads Memory, and compaction preserves the preceding
 template identity. A new process uses the new prompt on its first normal main
 request; editing source files does not hot-reload an already running process.
+
+[ADR 0044](../../docs/adr/0044-task-communication-prompt.md) adds brief execution
+acknowledgement and meaningful task updates. The pre-communication delegation
+template is also retained with its published hash. All three identities use the
+same validation/upgrade rules. Main assistant text accompanying tools is already
+persisted before execution and projected to Timeline; no token streaming or new
+messages during a single in-flight tool are introduced. See the separate
+[behavior and delivery evidence](../../docs/acceptance/task-communication-prompt.md).
 
 ## Quoted message replies
 

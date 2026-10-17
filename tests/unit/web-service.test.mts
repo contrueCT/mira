@@ -2,8 +2,74 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import { LocalWebService } from '@mira/server';
-import { encodeEntry, messageEntry } from '../../packages/runtime-pi/src/records.ts';
-import { assistant } from '../recovery/fixtures.mts';
+import { decodeRecords, encodeEntry, messageEntry } from '../../packages/runtime-pi/src/records.ts';
+import { assistant, deferred, effectTool, input, MemoryWriter, result, runtime, streamOf } from '../recovery/fixtures.mts';
+import { boundedFixtureWait } from '../recovery/service-wait-fixture.mts';
+
+test('completed assistant commentary is persisted before execution and readable while its tool is blocked', { timeout: 10_000 }, async () => {
+  const writer = new MemoryWriter();
+  const atAppend = deferred(), releaseAppend = deferred(), atTool = deferred(), releaseTool = deferred();
+  const atToolOnly = deferred(), releaseToolOnly = deferred();
+  const commentary = 'I will check the local evidence now.';
+  let requests = 0;
+  writer.beforeAppend = async record => {
+    const [entry] = decodeRecords([record], record.parentId);
+    if (entry?.type === 'message' && entry.message.role === 'assistant' && entry.message.content.some(block => block.type === 'toolCall' && block.id === 'commentary-tool')) {
+      atAppend.resolve(); await releaseAppend.promise;
+    }
+  };
+  const history = {
+    page: async () => ({ hits: writer.state.records.map(record => ({ id: record.id, kind: 'context', occurredAt: record.occurredAt })), nextCursor: null }),
+    read: async ({ id }: { id: string }) => {
+      const record = writer.state.records.find(record => record.id === id);
+      return record ? { id, kind: 'context', miraId: writer.miraId, record, occurredAt: record.occurredAt } : null;
+    },
+  };
+  // Real Pi runtime and Timeline projection; persistence and History reads are
+  // explicitly in-memory fixtures, not a PostgreSQL or browser verification.
+  const service = Reflect.construct(LocalWebService, [{ dreaming: { enabled: false } }, { signal: new AbortController().signal, onLiveInput: () => () => {} }, history]) as LocalWebService;
+  const instance = runtime(writer, () => {
+    requests++;
+    if (requests === 3) return streamOf(assistant('Evidence checked.'));
+    return streamOf({ ...assistant(), stopReason: 'toolUse', content: [
+      { type: 'thinking', thinking: 'PRIVATE_COMMENTARY_THINKING' },
+      ...(requests === 1 ? [{ type: 'text' as const, text: commentary }] : []),
+      { type: 'toolCall', id: requests === 1 ? 'commentary-tool' : 'PRIVATE_TOOL_ONLY_CALL', name: 'effect', arguments: {} },
+    ] });
+  }, { tools: [effectTool(async id => {
+    const execution = writer.state.executions.find(execution => execution.intent.callId === id);
+    const source = writer.state.records.find(record => record.id === execution?.intent.assistantRecordId);
+    assert.ok(source, 'the exact assistant record is durable before tool execution starts');
+    const [entry] = decodeRecords([source], source.parentId);
+    assert.ok(entry?.type === 'message' && entry.message.role === 'assistant');
+    assert.ok(entry.message.content.some(block => block.type === 'toolCall' && block.id === id));
+    if (id === 'commentary-tool') {
+      assert.ok(entry.message.content.some(block => block.type === 'text' && block.text === commentary));
+      atTool.resolve(); await releaseTool.promise;
+    } else { atToolOnly.resolve(); await releaseToolOnly.promise; }
+    return result;
+  })] });
+  const work = instance.run(input());
+  try {
+    await boundedFixtureWait(atAppend.promise, 'assistant append');
+    assert.equal(writer.state.executions.length, 0, 'an uncommitted assistant cannot execute tools');
+    assert.deepEqual((await service.timeline()).items, [], 'nothing is published before complete assistant persistence');
+    releaseAppend.resolve(); await boundedFixtureWait(atTool.promise, 'commentary tool started');
+    assert.equal(requests, 1); assert.equal(writer.state.executions[0]!.outcome, null);
+    const duringTool = await service.timeline();
+    assert.deepEqual(duringTool.items.map(item => item.text), [commentary]);
+    assert.equal(duringTool.items[0]!.id, writer.state.executions[0]!.intent.assistantRecordId);
+    assert.doesNotMatch(JSON.stringify(duringTool), /PRIVATE_COMMENTARY_THINKING|commentary-tool/);
+    releaseTool.resolve(); await boundedFixtureWait(atToolOnly.promise, 'tool-only execution started');
+    assert.equal(requests, 2); assert.equal(writer.state.executions[1]!.outcome, null);
+    assert.deepEqual((await service.timeline()).items, duringTool.items, 'thinking and tool-only messages publish no empty bubbles');
+    releaseToolOnly.resolve(); await work;
+    assert.deepEqual((await service.timeline()).items.map(item => item.text), [commentary, 'Evidence checked.']);
+  } finally {
+    releaseAppend.resolve(); releaseTool.resolve(); releaseToolOnly.resolve();
+    await work; await writer.close();
+  }
+});
 
 // Exercise the real service projection with a read-only history fixture, without
 // claiming PostgreSQL execution. Durable associations remain in run management.

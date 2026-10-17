@@ -16,11 +16,11 @@
     {
       "path": "../../packages/runtime-pi/prompts/mira-system-v0.2.md",
       "source_name": "Mira System Prompt v0.2.md",
-      "bytes": 22436,
-      "sha256": "a3ea5a98735089138296892ee0c30f47439c044b44a6e9bde0409724cbf22fe1",
+      "bytes": 23674,
+      "sha256": "5e520269ae889045e06dd158b4c2c47ada2cb94fa4f28577e3bcb0f688292892",
       "original_bytes": 17095,
       "original_sha256": "ea1d1286ec4de9c875b3a1ce6455fcc8a4b9b0a5f5d202ddd5044793dfc205ee",
-      "revision_note": "User-approved 2026-10-06: plain-text normal conversation and concrete global-ID History/Memory provenance usage; unrelated supplied prompt text unchanged; user-approved 2026-10-15: delegation-first substantial independent work with responsive parent ownership; original attachment hashes retained"
+      "revision_note": "User-approved 2026-10-06: plain-text normal conversation and concrete global-ID History/Memory provenance usage; unrelated supplied prompt text unchanged; user-approved 2026-10-15: delegation-first substantial independent work with responsive parent ownership; user-approved 2026-10-17: brief acknowledgement before execution and meaningful task updates; original attachment hashes retained"
     },
     {
       "path": "original-v0.4.md",

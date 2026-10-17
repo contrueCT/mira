@@ -15,11 +15,12 @@ interface Scenario {
 }
 const evidence = JSON.parse(await readFile(new URL('../behavior/fixtures/reply-native-traces.json', import.meta.url), 'utf8')) as { formatVersion: number; firstAttemptsOnly: boolean; evidenceType: string; scenarios: Scenario[] };
 const calls = (scenario: Scenario) => scenario.steps.flatMap(step => step.decision.content.filter((block): block is Extract<Block, { type: 'toolCall' }> => block.type === 'toolCall'));
-// Historical hashes describe the scripts that actually produced those replays.
+// Historical hashes describe the sources that actually produced those replays.
 // Keep those exact bytes separate from the current portable entry points.
 const historicalReplaySource = (file: string) => ({
   'tests/behavior/reply-probe.mts': 'tests/behavior/archive/pre-macos-canonical/reply-probe.mts.txt',
   'tests/behavior/replay-reply-probe.mts': 'tests/behavior/archive/pre-macos-canonical/replay-reply-probe.mts.txt',
+  'packages/runtime-pi/prompts/mira-system-v0.2.md': 'packages/runtime-pi/prompts/mira-system-v0.2-pre-communication.md',
 } as Record<string, string>)[file] ?? file;
 
 test('native reply evidence preserves all six first attempts and every actually executed chosen call', () => {

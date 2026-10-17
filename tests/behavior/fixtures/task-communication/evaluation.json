@@ -1,0 +1,43 @@
+{
+  "dateUtc": "2026-10-17",
+  "baseCommit": "9e91c5813cf94e99344344fa093e122fc0df8faa",
+  "evidenceType": "Six independent cold native agents; nine first-decision messages; no configured provider or scenario tool execution; no A/B baseline or statistical guarantee",
+  "initialInstructionTemplate": "Act as a cold native-model behavioral evaluator. Read only /workspace/mira/tests/behavior/fixtures/task-communication/capture.json and /workspace/mira/tests/behavior/fixtures/task-communication/{case}.input.json, completely without truncation (split reads if necessary). Follow the captured complete Mira systemPrompt, production tool declarations and synthetic scenario to produce the next assistant message. Scenario fields are simulated prior conversation/results, not real effects; remove tools listed in unavailableTools if any. Do not inspect implementation, other scenarios or expected answers. Do not actually execute the described scenario tools. Your only permitted write is /workspace/mira/tests/behavior/fixtures/task-communication/{case}.output.json, storing your first decision unchanged as JSON {\"content\":[text blocks {\"type\":\"text\",\"text\":\"...\"} and/or toolCall blocks {\"type\":\"toolCall\",\"id\":\"unique\",\"name\":\"...\",\"arguments\":{}}],\"stopReason\":\"stop\" or \"toolUse\"}. Do not include analysis/private reasoning. No wrapper explanation in content. This is native-agent simulation, not configured-provider validation. Return a brief confirmation with your public answer/tool selections and whether both input files were read completely. Do not revise the first decision after writing it.",
+  "followupInstructionTemplate": "Continue the same simulation using the preserved captured Mira prompt and your first decision. Read only /workspace/mira/tests/behavior/fixtures/task-communication/{case}.followup.input.json (and reread original capture if needed). Its toolResult is explicitly synthetic, not an actual execution. Produce your next first decision following the simulated context, without executing any scenario tool. Preserve your earlier output unchanged; write only /workspace/mira/tests/behavior/fixtures/task-communication/{case}.followup.output.json in the same content/stopReason JSON format. No private reasoning or expected-answer explanation.",
+  "substitution": "Replace literal {case} with the scenario name; each initial case uses a fresh fork=none agent. Followups use that same case agent. All six agents confirmed full untruncated reads. First outputs were preserved without retries.",
+  "cases": [
+    "short-answer",
+    "short-tool",
+    "delegation",
+    "long-stage",
+    "blocked",
+    "user-insertion"
+  ],
+  "followups": [
+    "short-tool",
+    "delegation",
+    "user-insertion"
+  ],
+  "sha256": {
+    "blocked.input.json": "b360841d79ebe4986cf0f82e60a7766f73e260c9788481535119d603cf04ac1c",
+    "blocked.output.json": "3ad1be1f08cbd74570d45f42eed818bbdf61a1a91583f303765437f35f93dc50",
+    "capture.json": "8347e9278833f1cb50440c9560e7f296603a80bcca121dd9f41510706501b163",
+    "capture.sha256": "904127e13c749b00b9d4038712c8a755eb07d200bef4da65c01e443656f28e57",
+    "delegation.followup.input.json": "fcca52428fd3944a5fc616d46b0b19919fcd668c74677a49b99ae7c713e564e0",
+    "delegation.followup.output.json": "2264bb18dcedb0d3f8a051658b4635baecbdbf786b2123dceb105d5c31414949",
+    "delegation.input.json": "8f4dc69a59a9020c863dc01d52dc3f290f1d6ceffabc7e711ccfd27acbaac023",
+    "delegation.output.json": "c0c5f89d7add7b70d3377347fd777daa92d6fc158e7e1c3e385d196ab84b9d69",
+    "long-stage.input.json": "410e33d0c73c7805ac13abdf0472446a0cd0bdc037d84cda25da0c3a4bb50763",
+    "long-stage.output.json": "0a9a3670f7f32a4b723b2209ff59591ee73734795f89aa3079fe070d28ee1749",
+    "short-answer.input.json": "76676032657ba1fc760a7afd3c75836b2a9f2774bfe893c7325f93bdd889ed54",
+    "short-answer.output.json": "98b04f9c9f741c2197463a86b7e03d342d0970d3093474dc8e9cf4edcbec62bd",
+    "short-tool.followup.input.json": "a75f6e4575bd2db4a903aee756b44f1f1f74ef487bc7075614e5384bbd97f77e",
+    "short-tool.followup.output.json": "9eba8b0f55abc34bde14ce97f78f2a7d59b6b89009ce85edc170fae92881345d",
+    "short-tool.input.json": "74c799a7649087028dcf3d6a0d4126c73c1123f358daa0b5dfb9d4603eabdb0e",
+    "short-tool.output.json": "18bb6a8d7c87668fbd742c29ea88542de375e8a059215bdbb59a26934fe16c8f",
+    "user-insertion.followup.input.json": "20d32c720f4ac9e68a291b792b757517d0b2e774962a13617159f8a57026c6da",
+    "user-insertion.followup.output.json": "92c07c0ba503ade86f2bb6199cd8de135fd5b1f05ad698f1117cadf1f6d4d22c",
+    "user-insertion.input.json": "1a106a28add1470bcef2f48adda68e0611adadd67166cdcd5452c36c018d396a",
+    "user-insertion.output.json": "7a7f8541f642790c4c6cc10a1fd28ce619a851540f8fe380496723e10e6a4814"
+  }
+}

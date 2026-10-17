@@ -1,0 +1,17 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "好，我读一下 package.json，看看项目名。"
+    },
+    {
+      "type": "toolCall",
+      "id": "read_package_name_1",
+      "name": "read",
+      "arguments": {
+        "path": "/tmp/mira-synthetic-workspace/package.json"
+      }
+    }
+  ],
+  "stopReason": "toolUse"
+}

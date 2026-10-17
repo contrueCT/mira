@@ -1,0 +1,19 @@
+{
+  "evidenceType": "Synthetic conversation/tool outcomes; unavailableTools removes named production declarations for this case only",
+  "history": [
+    {
+      "role": "user",
+      "content": "读取 /tmp/mira-synthetic-workspace/private.csv 并汇总。"
+    },
+    {
+      "role": "assistant",
+      "content": "我先读取文件，再汇总内容。"
+    },
+    {
+      "role": "toolResult",
+      "toolName": "read",
+      "content": "Synthetic settled result: EACCES permission denied /tmp/mira-synthetic-workspace/private.csv. No data read. No alternative copy is known."
+    }
+  ],
+  "user": null
+}

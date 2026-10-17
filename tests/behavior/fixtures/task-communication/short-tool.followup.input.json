@@ -1,0 +1,25 @@
+{
+  "evidenceType": "Synthetic followup to preserved native first decision; no actual scenario tool executed",
+  "previousDecision": {
+    "content": [
+      {
+        "type": "text",
+        "text": "好，我读一下 package.json，看看项目名。"
+      },
+      {
+        "type": "toolCall",
+        "id": "read_package_name_1",
+        "name": "read",
+        "arguments": {
+          "path": "/tmp/mira-synthetic-workspace/package.json"
+        }
+      }
+    ],
+    "stopReason": "toolUse"
+  },
+  "toolResult": {
+    "toolName": "read",
+    "content": "Synthetic settled result: {\"name\":\"mira-synthetic-project\"}"
+  },
+  "newUserInput": null
+}
