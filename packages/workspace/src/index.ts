@@ -78,9 +78,8 @@ async function ensureRoot(rootDirectory: string, sourceDirectory: string, manage
     }
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Wake input path cannot contain symlinks or non-directories');
     if (current === managedDataRoot) assertPrivate(stat, 'Wake input managed data root');
-    // Shared sticky temp ancestors are safe; a non-sticky writable ancestor
-    // lets another OS user replace a private descendant directory.
-    if ((stat.mode & 0o022n) !== 0n && (stat.mode & 0o1000n) === 0n) throw new Error('Wake input ancestor is writable by other users');
+    // Ancestor write bits do not gate spool access. The managed/spool roots
+    // and published artifacts still require private permissions below.
     if (process.getuid && stat.uid !== 0n && stat.uid !== BigInt(process.getuid()) && (stat.mode & 0o1000n) === 0n) {
       throw new Error('Wake input ancestor must be owned by the current user or root');
     }
