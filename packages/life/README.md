@@ -53,3 +53,11 @@ The same `history_read` tool exposes this through optional offset/revision field
 single-tool admission and final arbitration. It is not a WakeWriter and does not
 create a second Life/WakeLoop. Parent receipt state remains separate from whether
 the worker has acted on an instruction (ADR 0039).
+
+New Web submissions carry `payload.messageFormatVersion: 1`. Their ordinary text
+headers include the canonical Event History UUID; replies render original role
+and target ID separately from a JSON-quoted untrusted excerpt. The turn retains
+ordered source snapshots and reply links alongside attachments, including when
+full text is offloaded. Unversioned durable events keep their exact prior
+rendering and metadata shape so active runs, consumed live input and immutable
+overflow files can resume without rewriting history.

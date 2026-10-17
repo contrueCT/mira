@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, realpath } from 'node:fs/promises';
 import { writeWakeInput } from '@mira/workspace';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -62,7 +62,7 @@ test('invalid reference metadata, corrupted bytes and request-size overflows fai
  const huge={...reference,size:13*1024*1024}; const over=await hydrateAttachments([Object.assign(input(),{miraAttachments:[huge]})],{...model,input:['image']},async()=>{throw Error('must not read');},signal);assert.match(JSON.stringify(over),/bytes were NOT provided/);
 });
 test('repeated compaction preserves immutable references even when summary model omits them',async t=>{
- const root=await mkdtemp('/tmp/mira-attachment-index-');t.after(()=>rm(root,{recursive:true,force:true}));
+ const root=await realpath(await mkdtemp('/tmp/mira-attachment-index-'));t.after(()=>rm(root,{recursive:true,force:true}));
  const writeOverflowInput=(runId:string,content:string)=>writeWakeInput({rootDirectory:root,sourceDirectory:process.cwd(),runId,content});
  const writer=new MemoryWriter(); const reference=ref();
  const {seed}=await import('../recovery/fixtures.mts');
@@ -100,7 +100,7 @@ test('overflow document references remain spooled and request-local projection i
 });
 
 test('attachment source indexes remain bounded across repeated compaction and chain back to original IDs',async t=>{
- const root=await mkdtemp('/tmp/mira-attachment-chain-');t.after(()=>rm(root,{recursive:true,force:true}));
+ const root=await realpath(await mkdtemp('/tmp/mira-attachment-chain-'));t.after(()=>rm(root,{recursive:true,force:true}));
  const writeOverflowInput=(runId:string,content:string)=>writeWakeInput({rootDirectory:root,sourceDirectory:process.cwd(),runId,content});
  const writer=new MemoryWriter();const {seed}=await import('../recovery/fixtures.mts');let previous:string|undefined;
  await seed(writer,[Object.assign(input('first refs'),{miraAttachments:[ref('application/pdf')]}),assistant('reply'),input('tail')]);

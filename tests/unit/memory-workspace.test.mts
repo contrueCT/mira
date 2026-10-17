@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, unlink, writeFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
@@ -20,7 +20,7 @@ async function git(root: string, ...args: string[]): Promise<string> {
 }
 interface Fixture { base: string; memoryRoot: string; sourceDirectory: string }
 async function withWorkspace(run: (fixture: Fixture) => Promise<void>): Promise<void> {
-  const base = await mkdtemp('/tmp/mira-memory-workspace-');
+  const base = await realpath(await mkdtemp('/tmp/mira-memory-workspace-'));
   const fixture = { base, memoryRoot: path.join(base, 'Memory'), sourceDirectory: path.join(base, 'source') };
   try { await mkdir(fixture.sourceDirectory); await run(fixture); }
   finally { await rm(base, { recursive: true, force: true }); }

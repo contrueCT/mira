@@ -1,0 +1,159 @@
+{
+  "formatVersion": 1,
+  "evidenceType": "deterministic recorded-native-choice replay through full actual Pi probe CLI, including teardown",
+  "nativeFixtureSha256": "9fc8057878c385789403081397c8d11bf1ad11a5041f42f51a98c2706268d200",
+  "fixedProbeSha256": "61a121df5dd5b49445ebc43263fa3a2ebfbf498cc8e561c80f157c43c411d786",
+  "driverSha256": "1394ac21c545478800de20c7204d368e5a06d73ce88df4521407cefbee98951c",
+  "scenarios": [
+    {
+      "name": "older-quote",
+      "evidenceType": "deterministic recorded-native-choice replay; not a new native evaluation",
+      "directory": "/tmp/mira-reply-probe-teardown-replay-node24-21-20261016T0939-older-quote",
+      "exitCode": 0,
+      "decisions": 1,
+      "selectedTools": [],
+      "resultSha256": "6459c8016ac346f077143779fc48dac24923683b8479ad10f8e493b431cca47c",
+      "processOutputSha256": "02d908129c578a3e0db765eba0a84290a2d0c32dd9e820c6c46d3699b23beae4",
+      "requestHashes": [
+        "26af37dc9c912ade3c7aaa3ad900cb688753b971f837fafb0a9e3d1a38f703b9"
+      ],
+      "publicSourceBindings": {
+        "5f70ed1d-6ecf-4d75-8fc8-cd684ec9553a": "1dbf7b81-c76d-4088-88a5-74575572978b",
+        "ba6da6dd-5154-417d-89f2-7210cfc0ef24": "b499a763-ad80-48a0-a396-225f21faf949",
+        "e5cd99db-97e2-4373-8983-0b884d6449c9": "ab23c289-f7cc-460a-b5be-eb45e851f126",
+        "838c3d23-a963-4691-a0d0-f1f867d65323": "9d850849-7370-499d-ac92-88a69d4f0032"
+      },
+      "contextSourceBindings": {}
+    },
+    {
+      "name": "select-target",
+      "evidenceType": "deterministic recorded-native-choice replay; not a new native evaluation",
+      "directory": "/tmp/mira-reply-probe-teardown-replay-node24-21-20261016T0939-select-target",
+      "exitCode": 0,
+      "decisions": 2,
+      "selectedTools": [
+        "send_reply"
+      ],
+      "resultSha256": "38fe163fd1b48bccbbce3fd96c75f71b197cf0ecf791ebefecb8102880f46d98",
+      "processOutputSha256": "ee4a7789f13dcc8aee5816b0a6d9b152eab05a5098ec1be7d912f6b4fc2827ef",
+      "requestHashes": [
+        "83e48cfbae7018109d217858c390a20c6eead1be7ee223d4ebf028c892f807ba",
+        "7a21cbaddd9c860550a59b77599527c4c31e671f480897fe082d12e7ed66ebb7"
+      ],
+      "publicSourceBindings": {
+        "ff206fb6-1f30-40bb-bcb6-9824599b728b": "9e89a1a6-3878-4e31-8fe4-9a8ea830859b",
+        "3fe7023f-9db7-4d6c-a6d0-6cfe10f828bf": "1b6cf1de-0913-446c-95bd-3575af52409a",
+        "236d6f89-0ede-4c3b-b6b4-bfa8758e07ec": "fd7ef4c5-8ec1-49b0-aa87-07873d2989bd",
+        "1e754afd-dd09-4a43-96bb-ac71b5f4d5e1": "412fe4ba-9f90-4803-a1a9-876e2165f51f"
+      },
+      "contextSourceBindings": {}
+    },
+    {
+      "name": "live-input",
+      "evidenceType": "deterministic recorded-native-choice replay; not a new native evaluation",
+      "directory": "/tmp/mira-reply-probe-teardown-replay-node24-21-20261016T0939-live-input",
+      "exitCode": 0,
+      "decisions": 1,
+      "selectedTools": [],
+      "resultSha256": "f0ec88da78e10a4a17796938174754471704837f1ae0bfaea23bcf0ac57ebcb6",
+      "processOutputSha256": "34b6431bc9926ed1702eef33490121271d169733f510aad2a0432fb1b5a37b49",
+      "requestHashes": [
+        "ff2ab0d87a4c09ff9c91d99eb0089cc413182d0cd990234d0b7987a8ef9fce62"
+      ],
+      "publicSourceBindings": {
+        "6c022719-007c-4302-839b-5b7eec8c5504": "0a2969b1-0d09-4f38-8c90-106759ef39f7",
+        "32ded1a0-0e69-4071-875c-3bb5b54ee176": "bf92a665-277e-48a0-ba08-98cdf297e7b5",
+        "73956172-77ad-4d3e-90eb-df99fb326634": "59fa150b-4a02-4166-ba17-815ebc25815a",
+        "f3ea9e68-a46e-4218-8ac7-842d13e664ea": "39aa6548-1d20-45f2-8aef-a60d2eccd9c9",
+        "b151e58d-b292-4572-8877-376c9654c16a": "8112bbb6-38d4-473d-8ade-09f78134cb70"
+      },
+      "contextSourceBindings": {}
+    },
+    {
+      "name": "compact-index",
+      "evidenceType": "deterministic recorded-native-choice replay; not a new native evaluation",
+      "directory": "/tmp/mira-reply-probe-teardown-replay-node24-21-20261016T0939-compact-index",
+      "exitCode": 0,
+      "decisions": 4,
+      "selectedTools": [
+        "read",
+        "history_read",
+        "send_reply"
+      ],
+      "resultSha256": "3a0efe307a310691ef11a79eb58a80e9687027cf0ec3ce2ec376fb962b7916aa",
+      "processOutputSha256": "117b8f9364a19b5d886cbeab6d8cefd6233a10a85f03ffaf10fc3c428d1979ee",
+      "requestHashes": [
+        "e1bd34504983d856d83e52e6ac47e8ff3861257a278936beeae31974d4a27398",
+        "60dff439b397b991d786554e929b79104ddc69244a352a37fad430fefcbf197b",
+        "75ccba1d5c3b8a657cb58565a33371ca5458176a5651b392b69cc6c68b94fd4c",
+        "eea5a86e37a9178e05456c2477fdc5996b9661582fd3d377aa4beedcc9c91b34"
+      ],
+      "publicSourceBindings": {
+        "4de865ee-8866-4ede-8fe9-4b1efb59944b": "03da5e7e-c05d-4a1f-a69a-9d4ce7859fda",
+        "cdee396a-a7f9-4b90-a28d-644da64f6e3e": "77ae1f50-cc5a-44b6-9f77-5b143dd78f6a",
+        "e5e0a10a-041a-4f50-b649-d9bf997de836": "a090914f-1b25-46f3-b5c9-d491d48ed501",
+        "7f3f1007-31fe-4d8d-b368-b3a882063455": "f2a6fa9d-9d8a-40ef-8244-97d1c501036f"
+      },
+      "contextSourceBindings": {
+        "dd472de1-30e4-4abe-8e83-be0553006043": "810b58b7-2a9d-4ff6-91ab-8434a27ce661",
+        "93300fe6-9468-479c-978c-21cc5bc4c4fe": "d8b38b3d-26b0-4875-b249-730da5d4a82e",
+        "9b96fc1b-ba7c-4efc-b377-0f0a7cbb5104": "5cf2542b-112d-495f-8fcd-2ca43abce8f8"
+      },
+      "indexPath": "/tmp/mira-reply-probe-teardown-replay-node24-21-20261016T0939-compact-index/spool/1688239b03599c1ed946756db0888048bf6260627b3b6426e3fff56fed9cd126/batch.txt"
+    },
+    {
+      "name": "history-recovery",
+      "evidenceType": "deterministic recorded-native-choice replay; not a new native evaluation",
+      "directory": "/tmp/mira-reply-probe-teardown-replay-node24-21-20261016T0939-history-recovery",
+      "exitCode": 0,
+      "decisions": 5,
+      "selectedTools": [
+        "read",
+        "history_search",
+        "history_read",
+        "send_reply"
+      ],
+      "resultSha256": "5842eb236302f5a9f2fa37682d1ee7cc4f757501c06908a2f041d11c580ace97",
+      "processOutputSha256": "04e81c91bc0f2240238145f0cf2d7fbd381a7d0b2e720eaf7494be5f322aa50c",
+      "requestHashes": [
+        "6e4b5dd4d0832d06d5102c0b88b93bd94126bd7b0f9361d81fc17ea0b0b7a618",
+        "1a4fb36ba82059ee1e47b561758bd518c0bf37e4c1379cde6a510419209633c4",
+        "38d5481d65369ac39d36f4fd7d5480b285eb01634084ddf887ba59f52e050f52",
+        "5ed601ad70f464ba9b737d13024bd7399626e61e52d46e0a2ffb624a4b46b9e2",
+        "f04f0fca74221e168514e45cb54534cf38ba411cbf70eaeead815f4bffca9c74"
+      ],
+      "publicSourceBindings": {
+        "651b2906-a43e-439f-ba88-3d50087b9a4d": "982c7aeb-15ca-4af5-96a1-9ae15f348452",
+        "ac5fe1a5-4696-42d1-ba9f-4cc959059f2e": "abb41597-cf3b-45ff-8b3e-bf1a50c6775b",
+        "95796d08-b90e-4a81-8480-edad0fc917b0": "a09883f3-53a6-4c98-a488-7405a3b0513d",
+        "364a31c7-d3ca-421e-a8e5-d7e3a37ee17c": "87d10199-beba-40d4-8776-a7ee9b3a6e85"
+      },
+      "contextSourceBindings": {
+        "13256322-5eaf-4fe5-98e2-e5e64e3f24bb": "0e0aca29-88b3-4ae1-a439-ef455afd4464",
+        "b5f190af-3400-4f60-af8a-0080a655a3a5": "c9a25ab9-d9c5-46fe-807a-df6da80dece9"
+      },
+      "indexPath": "/tmp/mira-reply-probe-teardown-replay-node24-21-20261016T0939-history-recovery/spool/fd64c8d8fb777c01daf0a30bd860ab7b88f47edbbef994d7d1ea9f0fd49f105d/batch.txt"
+    },
+    {
+      "name": "malicious-quote",
+      "evidenceType": "deterministic recorded-native-choice replay; not a new native evaluation",
+      "directory": "/tmp/mira-reply-probe-teardown-replay-node24-21-20261016T0939-malicious-quote",
+      "exitCode": 0,
+      "decisions": 1,
+      "selectedTools": [],
+      "resultSha256": "cd4fab166fa73338ac9447eb21a295a007a7a325017c641bdd12de61c047be7c",
+      "processOutputSha256": "8c1a04d04e1275bafe0b6651d5e26e4ed8242b6a96d6cf3b11be26375111f5ec",
+      "requestHashes": [
+        "d24de590c063f225851cc19a42e600bd9d80e138c16a52a3da500e0d062cfe3f"
+      ],
+      "publicSourceBindings": {
+        "0e105e76-9de9-4594-8f7f-36192ce101d8": "e7a8ca90-5303-4c32-b1a0-55afb078e5aa",
+        "095f5405-67b8-456d-8849-d332fd0875a2": "abf49fdd-d1ee-440d-974b-4e71bbfaeb92",
+        "d2289e0b-90ec-4bef-8e50-10e937480247": "b1330d80-4048-4b13-98b3-0c653fa58185",
+        "1f1884ba-4319-43a7-8b19-6d2f23a4d736": "67d054eb-a0eb-4db3-9c90-5f36fe26f3c6",
+        "0c9d2bd3-940b-43e1-83f3-564efddbd843": "3bd70b26-c546-4806-bf49-4f715e7c63b0"
+      },
+      "contextSourceBindings": {}
+    }
+  ]
+}

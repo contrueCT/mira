@@ -49,3 +49,8 @@
 - writer ownership abort与显式close共用joinable清理；先fence/cancel再并行drain，任一cleanup失败不跳过其他资源/关闭writer。CLI同样绑定Host ownerSignal；unknown副作用不自动重放。
 
 - ADR 0041：发现只导入明确且有效的能力元数据；custom reasoningFormat 只适用 Chat Completions，使用 Pi 原生 compat，旧 profile 不静默关闭推理。
+
+
+- Timeline replies: `replies.ts` resolves only same-Mira public main messages by canonical History UUID. Browser submits only `replyToMessageId`; frozen quote/source joins immutable Event/live input. Main-only `send_reply` publishes through successful durable tool outcome, never a channel send or mutable next-response flag. Both Timeline HTTP routes whitelist `reply`; child/internal/notice records remain unavailable as targets.
+
+- Web spool 写入显式使用 `miraHome` 为私有 managed data root，默认 `~/.mira/wake-input` 可存放输入及附件/回复索引；必须严格包含 spool，不能是 HOME/其祖先或与源码互相包含，保留链接、所有者和不可变发布保护。demo 仍要求显式源码/HOME 外 spool。

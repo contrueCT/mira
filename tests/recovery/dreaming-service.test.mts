@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { createAssistantMessageEventStream, getCurrentSystemMessage, getCurrentTools, getSystemMessageText, type ToolCall, type TranscriptContext } from '@earendil-works/pi-ai';
 import type { HistorySearchResult, LifeEvent } from '@mira/life';
 import { LocalWebService } from '@mira/server';
+import { demoModel } from '../../apps/server/src/index.ts';
+import { estimateRequestTokens } from '../../packages/runtime-pi/src/budget.ts';
 import { dreamingInstruction, dreamingDefaults } from '../../apps/server/src/dreaming.ts';
 import { createTestDatabase } from '../integration/database.mts';
 import { assistant, deferred, streamOf } from './fixtures.mts';
@@ -59,7 +61,7 @@ const call = (id: string, name: string, args: ToolCall['arguments']): ToolCall =
 const calls = (...content: ToolCall[]) => ({ ...assistant(), stopReason: 'toolUse' as const, content });
 
 test('real PostgreSQL Dreaming reads current Memory and original History, edits ordinary files, commits lineage silently and preserves the durable system snapshot until compaction', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-dreaming-tools-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-dreaming-tools-'));
   let service: LocalWebService | undefined; let requests = 0, summaries = 0;
   try {
     const configuration = options(db, root, 'dreaming-tools');
@@ -87,7 +89,7 @@ test('real PostgreSQL Dreaming reads current Memory and original History, edits 
       if (requests === 3) return streamOf(calls(call('dream-read-original', 'history_read', { id: found.hits[0]!.id })));
       const original = JSON.parse(resultText(context, 'dream-read-original')) as { kind: string; event: LifeEvent };
       assert.equal(original.kind, 'event'); assert.equal(original.event.source, 'user');
-      assert.deepEqual(original.event.payload, { text: 'NEPTUNE_SOURCE_FACT: Project Neptune uses PostgreSQL.' });
+      assert.deepEqual(original.event.payload, { text: 'NEPTUNE_SOURCE_FACT: Project Neptune uses PostgreSQL.', messageFormatVersion: 1 });
       if (requests === 4) return streamOf(calls(
         call('dream-write-detail', 'write', { path: detail, content: 'Project Neptune uses PostgreSQL.\n' }),
         call('dream-edit-memory', 'edit', { path: file, edits: [{ oldText: 'CURRENT_MEMORY_ON_DISK', newText: 'REMEMBERED_NEPTUNE: Project Neptune uses PostgreSQL. See projects/neptune.md.' }] }),
@@ -156,7 +158,7 @@ test('real PostgreSQL Dreaming reads current Memory and original History, edits 
 });
 
 test('real PostgreSQL Dreaming timer waits for continuous idle after completion and fresh Wake experiences, then stops when service closes', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-dreaming-idle-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-dreaming-idle-'));
   let service: LocalWebService | undefined; let requests = 0; const entered = deferred(); const release = deferred();
   try {
     const configuration = { ...options(db, root, 'dreaming-idle'), dreaming: { idleMs: 250, intervalMs: 1, minCompactions: 3 } };
@@ -184,7 +186,7 @@ test('real PostgreSQL Dreaming timer waits for continuous idle after completion 
 });
 
 test('real PostgreSQL failed Dreaming preserves its ordinary file effect and resumes the same run only after restart', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-dreaming-recovery-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-dreaming-recovery-'));
   let service: LocalWebService | undefined; let requests = 0;
   try {
     // This case drives eligibility with age()+settings(); the preceding case
@@ -227,7 +229,7 @@ test('real PostgreSQL failed Dreaming preserves its ordinary file effect and res
 });
 
 test('real PostgreSQL user arrivals during Dreaming resume its active Wake with ordered supplemental input', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-dreaming-arrivals-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-dreaming-arrivals-'));
   let service: LocalWebService | undefined; let requests = 0; const entered = deferred(); const release = deferred();
   try {
     service = await LocalWebService.open({ ...options(db, root, 'dreaming-arrivals'), syntheticStream: async (_model, context) => {
@@ -260,7 +262,7 @@ test('real PostgreSQL user arrivals during Dreaming resume its active Wake with 
 });
 
 test('real PostgreSQL restart claims a queued Dreaming and a newer user request together without a second cognitive stream', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-dreaming-mixed-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-dreaming-mixed-'));
   let service: LocalWebService | undefined; let requests = 0;
   try {
     const configuration = options(db, root, 'dreaming-mixed');
@@ -283,7 +285,7 @@ test('real PostgreSQL restart claims a queued Dreaming and a newer user request 
 });
 
 test('real PostgreSQL shutdown cancels active Dreaming, then restart resumes its exact persisted input', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-dreaming-close-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-dreaming-close-'));
   let service: LocalWebService | undefined; let requests = 0; const entered = deferred(); let original: unknown;
   try {
     const configuration = options(db, root, 'dreaming-close');
@@ -309,16 +311,20 @@ test('real PostgreSQL shutdown cancels active Dreaming, then restart resumes its
 });
 
 test('real PostgreSQL three actual automatic compactions unlock idle Dreaming before 24 hours, while two checkpoints and a failed summary do not', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-dreaming-compactions-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-dreaming-compactions-'));
   let service: LocalWebService | undefined; let naturalRequests = 0, summaryAttempts = 0, successfulSummaries = 0, dreamingRequests = 0;
   try {
     const checkpoints = async () => (await db.admin.query<{ n: number }>(
       "SELECT count(*)::int AS n FROM context_records WHERE envelope->>'kind' = 'checkpoint'")).rows[0]!.n;
+    const longAnswer = 'Long natural answer for automatic compaction. '.repeat(4000);
+    const threshold = 0.025;
+    const thresholdTokens = (demoModel.contextWindow - 512) * threshold;
     const configuration = { ...options(db, root, 'dreaming-real-compactions'),
       dreaming: { idleMs: 60, intervalMs: dreamingDefaults.intervalMs, minCompactions: 3 },
-      // The static system fits below this budget, while each large ordinary
-      // reply forces one genuine Pi compaction at the next natural request.
-      autoCompaction: { threshold: 0.02, reserveTokens: 512, keepRecentTokens: 1 },
+      // Current full Web prompt/tools and the reply index cost about 20k
+      // estimated tokens. Keep short/compacted turns below ~25k, while each
+      // long answer exceeds it. The callback verifies both sides of this gap.
+      autoCompaction: { threshold, reserveTokens: 512, keepRecentTokens: 1 },
       syntheticStream: (_model: unknown, context: TranscriptContext) => {
         if (systemText(context).startsWith('你负责压缩 Mira 的 Working Context')) {
           summaryAttempts++;
@@ -326,13 +332,24 @@ test('real PostgreSQL three actual automatic compactions unlock idle Dreaming be
           successfulSummaries++;
           return streamOf(assistant(`Successful automatic continuity summary ${successfulSummaries}.`));
         }
+        // Use the actual prepared declarations and runtime estimator; these
+        // declaration-only adapters are never executed. This checks the budget
+        // assumption rather than silently accepting a newly oversized baseline.
+        const declaredTools = getCurrentTools(context.messages).map(tool => ({ ...tool, label: tool.name,
+          execute: async () => { throw Error('Budget-only declaration must not execute'); } }));
+        const preparedTokens = estimateRequestTokens(context.messages, declaredTools, demoModel);
+        assert.ok(preparedTokens < thresholdTokens, `Short prepared request ${preparedTokens} must remain below ${thresholdTokens}`);
         const latest = JSON.stringify(context.messages.filter(message => message.role === 'user').at(-1));
         if (latest.includes('memory.dreaming')) {
           dreamingRequests++; assert.equal(successfulSummaries, 3);
           return streamOf(assistant(''));
         }
         naturalRequests++;
-        return streamOf(assistant(naturalRequests <= 3 ? 'Long natural answer for automatic compaction. '.repeat(4000) : 'Short answer after the recovered third checkpoint.'));
+        if (naturalRequests <= 3) {
+          const longTokens = estimateRequestTokens([...context.messages, assistant(longAnswer)], declaredTools, demoModel);
+          assert.ok(longTokens > thresholdTokens, `Long answer context ${longTokens} must exceed ${thresholdTokens}`);
+        }
+        return streamOf(assistant(naturalRequests <= 3 ? longAnswer : 'Short answer after the recovered third checkpoint.'));
       },
     };
     service = await LocalWebService.open(configuration); await settled(service);

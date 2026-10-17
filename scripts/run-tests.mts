@@ -21,7 +21,9 @@ try {
     ...hostCapabilityTestEnvironment(process.env),
     ...(integration ? { MIRA_TEST_DATABASE_URL: process.env['MIRA_TEST_DATABASE_URL'] } : {}),
   };
-  const child = spawn(process.execPath, ['--test', '--test-concurrency=1', '--test-timeout=60000', ...files], { stdio: 'inherit', env });
+  // Emit integration failures with their diagnostics immediately, even if a
+  // later resource-cleanup failure prevents the suite's final summary.
+  const child = spawn(process.execPath, ['--test', ...(integration ? ['--test-reporter=tap'] : []), '--test-concurrency=1', '--test-timeout=60000', ...files], { stdio: 'inherit', env });
   process.exitCode = await new Promise<number>((resolve, reject) => {
     child.once('error', reject);
     child.once('exit', (code) => resolve(code ?? 1));

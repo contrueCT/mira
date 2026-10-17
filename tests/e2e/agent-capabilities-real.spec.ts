@@ -1,5 +1,5 @@
 import { retryConfiguration, retrySelection, retryResponse, retryFailure, syntheticRetryKey } from '../recovery/model-retry-fixtures.mts';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
@@ -33,7 +33,7 @@ async function closeSettings(page: Page) {
 }
 
 test('chat stays conversation-only while settings show child activity; child result and user steering enter at one real tool boundary while due reminder stays queued and never repeat after restart', async ({ page }, testInfo) => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-capabilities-browser-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-capabilities-browser-'));
   const previousHome = process.env['HOME'];
   const userHome = path.join(root, 'user-home');
   const globalSkill = path.join(userHome, '.agents', 'skills', 'global-capabilities-fixture', 'SKILL.md');
@@ -224,7 +224,7 @@ test('chat stays conversation-only while settings show child activity; child res
 });
 
 test('long child compacts through real tools and PostgreSQL, remains inspectable after service restart', async ({ page }, testInfo) => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-child-compaction-browser-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-child-compaction-browser-'));
   const evidence = path.join(root, 'evidence.txt'); await writeFile(evidence, 'read-only evidence line\n'.repeat(520));
   let app: ReturnType<typeof createLocalHttp> | undefined; let service: LocalWebService | undefined;
   let childCalls = 0, summaries = 0, parentCalls = 0;
@@ -296,7 +296,7 @@ test('long child compacts through real tools and PostgreSQL, remains inspectable
 
 
 test('reasoning saved in the real browser reaches credential-bound SDK payloads and survives restart', async ({ page }, testInfo) => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-reasoning-browser-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-reasoning-browser-'));
   const originalFetch = globalThis.fetch; const levels: unknown[] = [];
   let service: LocalWebService | undefined, app: ReturnType<typeof createLocalHttp> | undefined;
   const settingsFile = path.join(root, 'models.json');
@@ -349,7 +349,7 @@ test('reasoning saved in the real browser reaches credential-bound SDK payloads 
 });
 
 test('oversized extension output remains bounded and readable through ordinary file tools across a real browser/service restart', async ({ page }, testInfo) => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-output-browser-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-output-browser-'));
   let service: LocalWebService | undefined, app: ReturnType<typeof createLocalHttp> | undefined;
   const modulePath = path.join(root, 'large-extension.mjs'), counter = path.join(root, 'effects');
   const sdk = pathToFileURL(path.join(sourceDirectory, 'packages/extension-sdk/src/index.ts')).href;
@@ -406,7 +406,7 @@ export default defineExtension({ name: 'large-output', apply(api) { api.register
 });
 
 test('real browser observes request retry through PG and the credential-bound SDK without duplicate effects', async ({ page }, testInfo) => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-retry-browser-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-retry-browser-'));
   let service: LocalWebService | undefined; let app: ReturnType<typeof createLocalHttp> | undefined;
   let calls = 0; const effect = path.join(root, 'effect');
   const firstResponse = deferred(), finalResponse = deferred();
@@ -491,7 +491,7 @@ test('real browser observes request retry through PG and the credential-bound SD
 });
 
 test('terminal process spans browser messages and restart invalidates its handle without replay or terminal UI', async ({ page }, testInfo) => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-terminal-browser-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-terminal-browser-'));
   let service: LocalWebService | undefined, app: ReturnType<typeof createLocalHttp> | undefined;
   let calls = 0; let sessionId = ''; let offset = 0; const effect = path.join(root, 'effect');
   const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'terminal-browser', sourceDirectory,

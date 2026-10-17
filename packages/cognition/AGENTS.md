@@ -17,3 +17,5 @@
 ## 验证
 
 从仓库根运行 `pnpm check`。依赖或 exports 改动必须同时检查 `scripts/boundaries.json`，并添加允许/拒绝反例。执行验收由 life 离线循环测试及 runtime-pi 恢复测试覆盖。
+
+- ReplyReference 是服务端解析的有界历史快照，保留全局 History UUID/角色/来源；quoted text 绝不构成新指令或授权。

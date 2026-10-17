@@ -9,7 +9,7 @@
 - 只强制 `MEMORY.md`；其余 Memory 是自由组织的普通文件；只维护当前 Memory-only 设计，不提供 State 配置或迁移兼容层
 - 由 runtime 在首次上下文初始化及成功压缩的刷新阶段读取 `MEMORY.md`；不实现变更通知、自动回注、autoWake 或固定 taxonomy/FSM
 - 管理页复用 `loadMemoryBootstrap` 的可选 maxBytes 只读上限；超限明确失败且防读取中增长，不改变 runtime 默认读取或冻结快照。
-- 测试使用源码及 HOME 外的独立临时目录，测试夹具结束后清理；生产写入函数不自动删除文件
+- 默认 spool 拒绝源码和 HOME；Web 显式 `managedDataRoot=miraHome` 仅允许私有数据根的严格子目录（默认 `~/.mira/wake-input`），不能放宽源码、符号链接、所有者或不可变发布边界。测试使用隔离目录/HOME，结束后清理；生产写入函数不自动删除文件
 
 ## 本地约束与跨包陷阱
 

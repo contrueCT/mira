@@ -16,8 +16,7 @@ export function mergeTimeline(current: TimelineItem[], incoming: TimelineItem[])
   });
 }
 export function reconcilePending(pending: PendingMessage[], items: TimelineItem[]): PendingMessage[] {
-  const known = new Set(items.filter(item => item.role === 'user').map(item => item.externalEventId));
-  return pending.filter(message => !known.has(message.id));
+  return pending.filter(message => !items.some(item => confirmsPending(message, item)));
 }
 export function readPending(storage: Pick<Storage, 'getItem'>): PendingMessage[] {
   const raw = storage.getItem(PENDING_KEY);
@@ -28,13 +27,15 @@ export function readPending(storage: Pick<Storage, 'getItem'>): PendingMessage[]
     if (!value || typeof value !== 'object') throw new Error('无法读取尚未确认的消息');
     const item = value as Record<string, unknown>;
     const attachmentIds = item['attachmentIds'];
+    const replyToMessageId = item['replyToMessageId'];
+    if (replyToMessageId !== undefined && (typeof replyToMessageId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(replyToMessageId))) throw new Error('无法读取尚未确认的消息引用');
     if (attachmentIds !== undefined && (!Array.isArray(attachmentIds) || attachmentIds.length > 10 || attachmentIds.some(id => typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(id)) || new Set(attachmentIds).size !== attachmentIds.length)) throw new Error('无法读取尚未确认的消息附件');
     if (typeof item['id'] !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(item['id']) || typeof item['text'] !== 'string' || (!item['text'].trim() && !(attachmentIds as string[] | undefined)?.length) || typeof item['occurredAt'] !== 'string' || !Number.isFinite(Date.parse(item['occurredAt']))) throw new Error('无法读取尚未确认的消息');
-    return { id: item['id'], text: item['text'], occurredAt: item['occurredAt'], ...(attachmentIds !== undefined ? { attachmentIds: [...attachmentIds as string[]] } : {}), state: item['state'] === 'queued' ? 'queued' : 'uncertain' };
+    return { ...(replyToMessageId !== undefined ? { replyToMessageId: replyToMessageId as string } : {}), id: item['id'], text: item['text'], occurredAt: item['occurredAt'], ...(attachmentIds !== undefined ? { attachmentIds: [...attachmentIds as string[]] } : {}), state: item['state'] === 'queued' ? 'queued' : 'uncertain' };
   });
 }
 export function writePending(storage: Pick<Storage, 'setItem' | 'removeItem'>, messages: PendingMessage[]): void {
-  if (messages.length) storage.setItem(PENDING_KEY, JSON.stringify(messages.map(({ id, text, occurredAt, attachmentIds, state }) => ({ id, text, occurredAt, ...(attachmentIds !== undefined ? { attachmentIds: [...attachmentIds] } : {}), state }))));
+  if (messages.length) storage.setItem(PENDING_KEY, JSON.stringify(messages.map(({ id, text, occurredAt, attachmentIds, replyToMessageId, state }) => ({ id, text, occurredAt, ...(replyToMessageId !== undefined ? { replyToMessageId } : {}), ...(attachmentIds !== undefined ? { attachmentIds: [...attachmentIds] } : {}), state }))));
   else storage.removeItem(PENDING_KEY);
 }
 
@@ -68,4 +69,21 @@ export function olderPagination(current: HistoryPagination, request: HistoryRequ
     const reachedBoundary = page.items.some(item => gap.boundaryIds.includes(item.id));
     return reachedBoundary ? [] : [{ ...gap, cursor: page.nextCursor! }];
   }) };
+}
+
+/** A conflicting server identity must not silently discard a retained reply. */
+export function confirmsPending(message: PendingMessage | import('./types.ts').MessageEnvelope, item: TimelineItem): boolean {
+  return item.role === 'user' && item.externalEventId === message.id && item.reply?.messageId === message.replyToMessageId;
+}
+/** Local calendar boundaries deliberately use the viewer's timezone. */
+export function timelineSpacing(previous: TimelineItem | undefined, current: TimelineItem): { divider: boolean; compact: boolean } {
+  const now = new Date(current.occurredAt); const before = previous ? new Date(previous.occurredAt) : null;
+  if (!Number.isFinite(now.getTime())) return { divider: false, compact: false };
+  const validPrevious = before !== null && Number.isFinite(before.getTime());
+  const divider = !validPrevious || now.toDateString() !== before.toDateString() || now.getTime() - before.getTime() > 5 * 60_000;
+  const sameSource = previous?.source?.extensionId === current.source?.extensionId && previous?.source?.senderId === current.source?.senderId && previous?.source?.direction === current.source?.direction;
+  return { divider, compact: !divider && previous?.role === current.role && current.role !== 'notice' && sameSource };
+}
+export function replySnippet(reply: import('./types.ts').ReplyReference): string {
+  return (reply.text.trim() || reply.attachmentNames?.join('、') || '原消息').replace(/\s+/gu, ' ');
 }

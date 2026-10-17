@@ -226,16 +226,35 @@ test('extension settings apply real lifecycle/configuration and staged update/ro
     await page.getByRole('button', { name: '模型设置', exact: true }).click();
     await page.getByRole('tab', { name: '扩展', exact: true }).click();
     const card = page.getByLabel('扩展 fixture', { exact: true });
+    const reload = card.getByRole('button', { name: '重载', exact: true });
+    const applyCount = async () => (await readFile(log, 'utf8')).split('\n').filter(line => line === 'apply:one:initial').length;
     await expect(card).toContainText('fixture_effect');
     await expect(card).toContainText('fixture-fact');
     expect(await page.content()).not.toContain('PRIVATE_CONFIG_SENTINEL');
     await card.getByRole('button', { name: '停用', exact: true }).click();
     await expect.poll(async () => JSON.parse(await readFile(config, 'utf8')).entries[0].enabled).toBe(false);
-    await card.getByRole('button', { name: '启用', exact: true }).click();
+    await expect(card.getByRole('button', { name: '启用', exact: true })).toBeEnabled();
+    const beforeEnable = await applyCount();
+    const [enableResponse] = await Promise.all([
+      page.waitForResponse(response => response.url() === `${origin}/api/extensions/fixture` && response.request().method() === 'POST' && response.request().postDataJSON().action === 'enable'),
+      card.getByRole('button', { name: '启用', exact: true }).click(),
+    ]);
+    expect(enableResponse.status()).toBe(200);
+    expect(await enableResponse.json()).toMatchObject({ action: 'enable', status: 'applied', runtime: { enabled: true, status: 'active' } });
     await expect.poll(async () => JSON.parse(await readFile(config, 'utf8')).entries[0].enabled).toBe(true);
-    const beforeReload = (await readFile(log, 'utf8')).split('\n').filter(line => line === 'apply:one:initial').length;
-    await card.getByRole('button', { name: '重载', exact: true }).click();
-    await expect.poll(async () => (await readFile(log, 'utf8')).split('\n').filter(line => line === 'apply:one:initial').length).toBe(beforeReload + 1);
+    // Desired configuration is saved before apply. The real receipt and ready
+    // controls establish completion before recording the next operation's baseline.
+    await expect(reload).toBeEnabled();
+    await expect.poll(applyCount).toBe(beforeEnable + 1);
+    const beforeReload = await applyCount();
+    const [reloadResponse] = await Promise.all([
+      page.waitForResponse(response => response.url() === `${origin}/api/extensions/fixture` && response.request().method() === 'POST' && response.request().postDataJSON().action === 'reload'),
+      reload.click(),
+    ]);
+    expect(reloadResponse.status()).toBe(200);
+    expect(await reloadResponse.json()).toMatchObject({ action: 'reload', status: 'applied', runtime: { enabled: true, status: 'active' } });
+    await expect(reload).toBeEnabled();
+    await expect.poll(applyCount).toBe(beforeReload + 1);
     // Lose one response only after production HTTP/lifecycle has applied it.
     // route.fetch reaches the real server; no response body is fabricated.
     let droppedReload = false;
@@ -246,12 +265,12 @@ test('extension settings apply real lifecycle/configuration and staged update/ro
         await route.abort('connectionreset');
       } else await route.continue();
     });
-    await card.getByRole('button', { name: '重载', exact: true }).click();
+    await reload.click();
     await expect(page.getByRole('dialog')).toContainText('尚未确认此次操作的结果');
-    await expect.poll(async () => (await readFile(log, 'utf8')).split('\n').filter(line => line === 'apply:one:initial').length).toBe(beforeReload + 2);
+    await expect.poll(applyCount).toBe(beforeReload + 2);
     await page.getByRole('button', { name: '重新读取并核对', exact: true }).click();
-    await expect(card.getByRole('button', { name: '重载', exact: true })).toBeEnabled();
-    expect((await readFile(log, 'utf8')).split('\n').filter(line => line === 'apply:one:initial').length).toBe(beforeReload + 2);
+    await expect(reload).toBeEnabled();
+    expect(await applyCount()).toBe(beforeReload + 2);
     await page.unroute(`${origin}/api/extensions/fixture`);
     await card.getByRole('button', { name: '替换配置', exact: true }).click();
     await card.getByLabel('完整扩展配置', { exact: true }).fill('{"label":"updated","secret":"REPLACED_CONFIG_SENTINEL"}');

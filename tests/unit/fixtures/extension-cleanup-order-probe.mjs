@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, realpath } from 'node:fs/promises';
 import { ExtensionHost } from '@mira/extension-host';
-const directory = await mkdtemp('/tmp/mira-dependent-hmr-');
+const directory = await realpath(await mkdtemp('/tmp/mira-dependent-hmr-'));
 const sdk = import.meta.resolve('@mira/extension-sdk');
 const state = globalThis.dependentHmrState = { version: 0, listeners: 0, trace: [] };
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));

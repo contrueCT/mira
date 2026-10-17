@@ -154,3 +154,39 @@ test('pending acknowledgement uses original request identity, never a History UU
   assert.deepEqual(reconcilePending(pending, [{ ...item('other-history-id', envelope.occurredAt), role: 'assistant', externalEventId: envelope.id }]), pending);
   assert.deepEqual(reconcilePending(pending, [{ ...item('other-history-id', envelope.occurredAt), role: 'user', externalEventId: envelope.id }]), []);
 });
+
+test('reply target survives exact durable retry storage alongside ordered attachments', () => {
+  const storage = memoryStorage();
+  const replyToMessageId = '11111111-1111-4111-8111-111111111111';
+  const message: PendingMessage = { ...envelope, replyToMessageId, attachmentIds: ['22222222-2222-4222-8222-222222222222'], state: 'sending' };
+  writePending(storage, [message]);
+  assert.deepEqual(readPending(storage), [{ ...message, state: 'uncertain' }]);
+  const confirmed: TimelineItem = { ...item('server', envelope.occurredAt), externalEventId: envelope.id };
+  assert.equal(reconcilePending([message], [confirmed]).length, 1);
+  assert.equal(reconcilePending([message], [{ ...confirmed, reply: { messageId: replyToMessageId, role: 'assistant', text: 'original' } }]).length, 0);
+  storage.setItem(PENDING_KEY, JSON.stringify([{ ...message, replyToMessageId: 'bad target' }]));
+  assert.throws(() => readPending(storage), /消息引用/u);
+});
+
+test('sparse timestamps use strictly more than five minutes and local calendar days', async () => {
+  const { timelineSpacing } = await import('../src/timeline.ts');
+  const first = item('first', new Date(2026, 9, 16, 12, 0).toISOString());
+  const boundary = item('boundary', new Date(2026, 9, 16, 12, 5).toISOString());
+  assert.deepEqual(timelineSpacing(first, boundary), { divider: false, compact: true });
+  assert.deepEqual(timelineSpacing(first, { ...boundary, occurredAt: new Date(new Date(boundary.occurredAt).getTime() + 1).toISOString() }), { divider: true, compact: false });
+  assert.equal(timelineSpacing(item('night', new Date(2026, 9, 16, 23, 59).toISOString()), item('morning', new Date(2026, 9, 17, 0, 0).toISOString())).divider, true);
+  assert.deepEqual(timelineSpacing(first, { ...boundary, role: 'assistant' }), { divider: false, compact: false });
+  assert.deepEqual(timelineSpacing(first, { ...boundary, occurredAt: 'invalid' }), { divider: false, compact: false });
+  assert.deepEqual(timelineSpacing({ ...first, occurredAt: 'invalid' }, boundary), { divider: true, compact: false });
+  assert.deepEqual(timelineSpacing(undefined, first), { divider: true, compact: false });
+});
+
+test('local day divider follows timezone rather than the timestamp UTC date', async () => {
+  const { timelineSpacing } = await import('../src/timeline.ts');
+  const original = process.env['TZ'];
+  try {
+    process.env['TZ'] = 'Asia/Shanghai';
+    assert.equal(timelineSpacing(item('a', '2026-10-16T15:59:00Z'), item('b', '2026-10-16T16:01:00Z')).divider, true);
+    assert.equal(timelineSpacing(item('a', '2026-10-16T23:59:00Z'), item('b', '2026-10-17T00:01:00Z')).divider, false);
+  } finally { if (original === undefined) delete process.env['TZ']; else process.env['TZ'] = original; }
+});

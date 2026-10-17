@@ -1,3 +1,4 @@
+import { createReplyTool, replyDescriptor, replyPublication, resolveReply, ReplyTargetError } from './replies.ts';
 import { BrowserManager } from './browser-manager.ts';
 import { createBrowserTools } from './browser-tools.ts';
 import { extensionMessage } from './extension-messages.ts';
@@ -65,7 +66,7 @@ const syntheticStream: StreamFn = () => {
 const publicFailure = '运行中断，请检查终端与配置。已保存的消息仍在；未确认的工具结果不会自动重放。';
 type Timeline = Awaited<ReturnType<WebBackend['timeline']>>;
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
-function visible(entry: HistoryEntry): Timeline['items'][number] | null {
+export function visible(entry: HistoryEntry): Timeline['items'][number] | null {
   const sourced = extensionMessage(entry); if (sourced) return sourced;
   if (entry.kind === 'event') {
     const payload = entry.event.payload;
@@ -76,9 +77,9 @@ function visible(entry: HistoryEntry): Timeline['items'][number] | null {
       return { id: entry.id, role: 'notice', text: `外部程序 ${payload['senderId']}\n${payload['text']}`, occurredAt: entry.occurredAt };
     }
     if (entry.event.source !== 'user' || entry.event.type !== 'web.message' || !object(entry.event.payload) || typeof entry.event.payload['text'] !== 'string') return null;
-    return { id: entry.id, externalEventId: entry.event.id, role: 'user', text: entry.event.payload['text'], ...(Array.isArray(entry.event.payload['attachments']) ? { attachments: entry.event.payload['attachments'].map(attachmentDescriptor) } : {}), occurredAt: entry.occurredAt };
+    return { id: entry.id, externalEventId: entry.event.id, role: 'user', text: entry.event.payload['text'], ...(entry.event.payload['reply'] ? { reply: replyDescriptor(entry.event.payload['reply']) } : {}), ...(Array.isArray(entry.event.payload['attachments']) ? { attachments: entry.event.payload['attachments'].map(attachmentDescriptor) } : {}), occurredAt: entry.occurredAt };
   }
-  const publication = attachmentPublication(entry);
+  const publication = replyPublication(entry) ?? attachmentPublication(entry);
   if (publication) return { id: entry.id, role: 'assistant', ...publication, occurredAt: entry.occurredAt };
   if (entry.kind !== 'context') return null;
   const [record] = decodeRecords([entry.record], entry.record.parentId);
@@ -161,13 +162,13 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     let browser: BrowserManager | undefined;
     try {
       const roots = options.memoryRoot ? await setupMemoryWorkspace({ memoryRoot: options.memoryRoot, sourceDirectory: options.sourceDirectory }) : undefined;
-      const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, runId, content });
+      const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, ...(options.miraHome === undefined ? {} : { managedDataRoot: options.miraHome }), runId, content });
       terminals = new TerminalManager({ cwd, writeOverflowInput });
       const terminalManager = terminals;
       browser = new BrowserManager({ cwd, mainOwner: writer.miraId, ...(options.miraHome === undefined ? {} : { miraHome: options.miraHome }) });
       const browserManager = browser;
       writer.signal.throwIfAborted();
-      const baseTools = [...createBrowserTools(browserManager, writer.miraId), ...createTerminalTools(terminalManager, writer.miraId), createAttachmentTool(attachments, cwd), ...createWorkspaceTools(cwd).map(tool => withVideoRead(tool, attachments, cwd)), ...createHistoryTools(persistence.history(writer.miraId))];
+      const baseTools = [...createBrowserTools(browserManager, writer.miraId), ...createTerminalTools(terminalManager, writer.miraId), createAttachmentTool(attachments, cwd), createReplyTool(persistence.history(writer.miraId), visible, attachments), ...createWorkspaceTools(cwd).map(tool => withVideoRead(tool, attachments, cwd)), ...createHistoryTools(persistence.history(writer.miraId))];
       if (options.extensions) {
         host = new ExtensionHost({ ...options.extensions, ownerSignal: writer.signal, privateStorageExcludedDirectories: [options.sourceDirectory, ...options.memoryRoot ? [options.memoryRoot] : []], schedules: extensionScheduling(writer), onSchedulesChanged: () => { if (service) service.#deliveries?.schedule(); }, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage', 'subagent_spawn', 'subagent_status', 'subagent_send', 'subagent_wait', 'subagent_cancel'], receive: async (extensionId, event, wake) => {
           const receipt = await extensionReceiver(writer)(extensionId, event, wake);
@@ -288,14 +289,23 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     return this.#attachments.stage(name, bytes);
   }
   async readAttachment(id: string) { return this.#attachments.read(id); }
-  async submit(input: { id: string; text: string; occurredAt: string; attachmentIds?: string[] }): Promise<{ id: string; receipt: 'inserted' | 'duplicate' }> {
+  async submit(input: { id: string; text: string; occurredAt: string; attachmentIds?: string[]; replyToMessageId?: string }): Promise<{ id: string; receipt: 'inserted' | 'duplicate' }> {
     if (this.#closed || this.#writer.signal.aborted) throw new WebHttpError('unavailable');
     if (this.#configurationWrite) throw new WebHttpError('busy');
     if (!this.#options.synthetic && !hasSelectedWebApiKey(this.#settingsValue)) throw new WebHttpError('invalid_input');
+    let reply;
+    try { reply = input.replyToMessageId === undefined ? undefined : await resolveReply(this.#history, visible, input.replyToMessageId); }
+    catch (error) { if (error instanceof ReplyTargetError || error instanceof HistoryError) throw new WebHttpError('invalid_input'); throw error; }
     const attachments = await this.#attachments.resolve(input.attachmentIds ?? []);
     if (!input.text.trim() && !attachments.length) throw new WebHttpError('invalid_input');
+    // A retry of an older immutable Web envelope retains its original format.
+    // The fenced writer still compares every supplied field and rejects changes.
+    const existing = await this.#history.findEventRun(input.id);
+    const prior = existing ? await this.#history.read({ id: existing.eventId, maxBytes: 1_048_576 }) : null;
+    const legacy = prior?.kind === 'event' && prior.event.source === 'user' && prior.event.type === 'web.message'
+      && object(prior.event.payload) && !Object.hasOwn(prior.event.payload, 'messageFormatVersion');
     let receipt: 'inserted' | 'duplicate';
-    try { receipt = await this.#writer.receiveLiveInput({ id: input.id, type: 'web.message', source: 'user', occurredAt: input.occurredAt, payload: { text: input.text, ...(attachments.length ? { attachments: attachments.map(item => ({ ...item })) } : {}) } }, { id: `web:${input.id}`, reason: 'User message from the local web interface' });
+    try { receipt = await this.#writer.receiveLiveInput({ id: input.id, type: 'web.message', source: 'user', occurredAt: input.occurredAt, payload: { text: input.text, ...(!legacy ? { messageFormatVersion: 1 } : {}), ...(reply ? { reply: { ...reply } } : {}), ...(attachments.length ? { attachments: attachments.map(item => ({ ...item })) } : {}) } }, { id: `web:${input.id}`, reason: 'User message from the local web interface' });
     } catch (error) {
       if (error instanceof PersistenceError && error.code === 'duplicate') throw new WebHttpError('conflict');
       throw error;

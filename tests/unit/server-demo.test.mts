@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
 import { createWorkspaceTools } from '@mira/server';
 import { MemoryWriter, runtime, scripted, assistant, input } from '../recovery/fixtures.mts';
 
 test('ordinary read accepts absolute paths and symlinks outside its default cwd', async () => {
-  const root = await mkdtemp('/tmp/mira-demo-file-');
-  const outside = await mkdtemp('/tmp/mira-demo-outside-');
+  const root = await realpath(await mkdtemp('/tmp/mira-demo-file-'));
+  const outside = await realpath(await mkdtemp('/tmp/mira-demo-outside-'));
   try {
     const file = path.join(root, 'ordinary.txt'); await writeFile(file, 'ordinary UTF-8 text 😀\nsecond line');
     const tool = createWorkspaceTools(root).find(tool => tool.name === 'read')!;
@@ -33,8 +33,8 @@ test('CLI help works without database/model credentials', () => {
 
 
 test('native Pi tools write, edit, search and run harmless shell outside cwd without app isolation', async () => {
-  const root = await mkdtemp('/tmp/mira-tools-');
-  const outside = await mkdtemp('/tmp/mira-tools-outside-');
+  const root = await realpath(await mkdtemp('/tmp/mira-tools-'));
+  const outside = await realpath(await mkdtemp('/tmp/mira-tools-outside-'));
   try {
     const tools = new Map(createWorkspaceTools(root).map(tool => [tool.name, tool]));
     assert.deepEqual([...tools.keys()], ['read', 'write', 'edit', 'grep', 'find', 'ls', 'bash']);
@@ -52,7 +52,7 @@ test('native Pi tools write, edit, search and run harmless shell outside cwd wit
 
 
 test('the durable runtime accepts native registry and records canonical edit before executing it', async () => {
-  const root = await mkdtemp('/tmp/mira-native-registry-');
+  const root = await realpath(await mkdtemp('/tmp/mira-native-registry-'));
   try {
     const target = path.join(root, 'synthetic.txt'); await writeFile(target, 'before');
     const writer = new MemoryWriter(); const tools = createWorkspaceTools(root);

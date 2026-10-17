@@ -14,7 +14,7 @@ const cli = fileURLToPath(new URL('../../apps/server/src/web-cli.mts', import.me
 const hook = fileURLToPath(new URL('./fixtures/web-cli-capture-hook.mjs', import.meta.url));
 const guard = fileURLToPath(new URL('../deny-model-network.mts', import.meta.url));
 const receive = async () => 'inserted' as const;
-interface CapturedOptions { miraHome: string; memoryRoot: string; synthetic: boolean; extensions: ExtensionConfiguration }
+interface CapturedOptions { miraHome: string; memoryRoot: string; spoolDirectory: string; settingsFile: string; synthetic: boolean; extensions: ExtensionConfiguration }
 
 async function fixture(run: (root: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mira-web-extension-startup-'));
@@ -23,14 +23,14 @@ async function fixture(run: (root: string) => Promise<void>): Promise<void> {
 async function absent(file: string): Promise<void> {
   await assert.rejects(stat(file), (error: NodeJS.ErrnoException) => error.code === 'ENOENT');
 }
-async function runCli(root: string, explicitFile?: string): Promise<{ code: number | null; stdout: string; stderr: string; capture: string }> {
+async function runCli(root: string, explicitFile?: string, defaultHome = false): Promise<{ code: number | null; stdout: string; stderr: string; capture: string }> {
   const capture = path.join(root, `cli-${randomUUID()}.json`);
   // No inherited provider keys, database variables, proxies, NODE_OPTIONS, or
   // MIRA_EXTENSIONS. Supplying '' must be distinguishable from omitting it.
   const env: NodeJS.ProcessEnv = {
     PATH: process.env['PATH'], HOME: root, TMPDIR: root,
     XDG_CACHE_HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root,
-    MIRA_HOME: path.join(root, 'home'), MIRA_CWD: root,
+    ...(!defaultHome ? { MIRA_HOME: path.join(root, 'home') } : {}), MIRA_CWD: root,
     MIRA_DATABASE_URL: 'postgres://localhost/mira_test',
     MIRA_TEST_CLI_CAPTURE: capture,
     ...(explicitFile === undefined ? {} : { MIRA_EXTENSIONS: explicitFile }),
@@ -138,6 +138,18 @@ test('actual CLI concurrent startups without MIRA_EXTENSIONS all pass the same p
     assert.notEqual(option.extensions.artifactsDirectory, option.memoryRoot);
   }
   assert.deepEqual(await readdir(home), ['extensions.json']);
+}));
+
+test('actual CLI without MIRA_HOME resolves all managed storage under the isolated HOME/.mira', async () => fixture(async root => {
+  const child = await runCli(root, undefined, true);
+  assert.equal(child.code, 0, child.stderr);
+  const options = JSON.parse(await readFile(child.capture, 'utf8')) as CapturedOptions;
+  const home = await realpath(path.join(root, '.mira'));
+  assert.equal(options.miraHome, home);
+  assert.equal(options.spoolDirectory, path.join(home, 'wake-input'));
+  assert.equal(options.memoryRoot, path.join(home, 'memory'));
+  assert.equal(options.settingsFile, path.join(home, 'models.json'));
+  assert.equal(options.extensions.configurationFile, path.join(home, 'extensions.json'));
 }));
 
 test('CLI-created default host stages, installs disabled, activates and restores a generated extension across restarts', { timeout: 30_000 }, async () => fixture(async root => {

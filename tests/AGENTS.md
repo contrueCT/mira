@@ -16,6 +16,8 @@
 
 从仓库根运行 `pnpm test` 或 `pnpm check`。离线测试不需要服务或模型；`pnpm test:integration` 必须配置本地独立 `mira_test` PostgreSQL。CI 通过 `pnpm check:all` 跑真实数据库。使用独立临时目录，`finally` 清理，不使用用户 Memory 或生产数据库。
 
+macOS 的 `/tmp` 是符号链接；新建测试临时根后先 `realpath`，再派生受保护路径与精确路径断言。只规范夹具自己创建的根，不规范被测不可信符号链接来绕过拒绝。socket 验收使用短临时根，见 [工具链](../docs/development/toolchain.md)。
+
 Prompt 测试检查原始模板 hash、单次转义、实际请求上下文、当前上下文追加更新与恢复/压缩、能力更新同代一致、静默 Wake，以及普通请求/重启不重读 Memory、成功压缩原子刷新最新快照。ADR 0016 增加阈值/预算/工具 schema、实际输出上限、工具批次后压缩、单次溢出恢复、候选不能缩小/不能容纳、Memory 读取失败、CAS/取消/重启和未知结果不重放覆盖。
 
 ADR 0007 回归直接工具调用与模型普通澄清，保留 schema/参数、intent 先于执行、来源/去重/恢复/CAS 边界；不重新引入 authorize stub、合成批准证据或额外授权模型调用。
@@ -49,3 +51,7 @@ ADR 0007 回归直接工具调用与模型普通澄清，保留 schema/参数、
 - 扩展私有设置：extension-settings.test.mts验证真实Cordis/文件生命周期；management-real.spec.ts增加真实PG/HTTP/浏览器设置和二维码截图。离线通过不代表真实外部认证。
 - ownership：真实PG backend终止→Web service→扩展清理/动作取消/unknown接管；不能用手动service.close或仅mock AbortController替代这条恢复链。
 - MCP：mcp-plugin/http/runtime/oauth/generated-install 与 extension-toolsets 使用真实官方 SDK 和合成 server/auth；test:mcp:e2e 贯穿普通 artifact tools→Host→HTTP→PG→浏览器，保留未知结果不重放及桌面/窄屏截图。不是 live provider 验收。
+
+
+- ADR0043：replies 的离线边界、真实PG/recovery与 `test:replies:e2e` 分开报告；验证双向 canonical History 引用、插话/压缩/重启、子任务隔离、旧待确认请求幂等和真实桌面/触屏布局。引用文字是数据，不能构成权限；私人参考图不进源码。
+- `behavior/reply-probe.mts` 捕获真实请求交给冷启动 native 模型作首次选择，`behavior/fixtures/reply-native-traces.json` 保留其实际决策和工具结果；PG/browser 回放只允许按唯一来源绑定新 UUID/索引路径，不得重写所选对象、正文或工具顺序。生产工具 schema 必须核对一致。行为模拟、录制回放、真实用户配置模型的质量结论必须区分，任何失败首轮不可删除或冒充成功。

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { getCurrentSystemPrompt } from '@earendil-works/pi-ai';
@@ -20,7 +20,7 @@ function options(db: Awaited<ReturnType<typeof createTestDatabase>>, root: strin
 }
 
 test('committed live user input releases subagent_wait and enters the model before its old sibling without cancelling child', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-capability-wait-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-capability-wait-'));
   const release = deferred(); let service: LocalWebService | undefined; let parentCalls = 0; let childId = '';
   try {
     service = await LocalWebService.open(options(db, root, async (_m, context) => {
@@ -59,7 +59,7 @@ test('committed live user input releases subagent_wait and enters the model befo
 });
 
 test('child completion persists behind a failed main run without silently clearing its error or retrying inference', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-capability-error-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-capability-error-'));
   const release = deferred(); let service: LocalWebService | undefined; let parentCalls = 0;
   try {
     service = await LocalWebService.open(options(db, root, async (_m, context) => {
@@ -81,7 +81,7 @@ test('child completion persists behind a failed main run without silently cleari
 
 
 test('real service child provider completion enters main after current bash, before old siblings and without an extra Wake', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-child-insert-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-child-insert-'));
   const childRelease = deferred(); let service: LocalWebService | undefined; let parentCalls = 0; let childCalls = 0;
   const gate = path.join(root, 'release');
   try {

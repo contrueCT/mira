@@ -1,3 +1,11 @@
+import os from 'node:os';
+import path from 'node:path';
+
+/** Shared CLI path resolution; startup still validates the source boundary. */
+export function resolveWebMiraHome(value: string | undefined): string {
+  return path.resolve(value ?? path.join(os.homedir(), '.mira'));
+}
+
 /** Validate before migration or any connection. Never echo a credential-bearing
  * URL in an exception, and never let pg fall back to an ambient database. */
 export function localDatabaseUrl(value: string | undefined): string {

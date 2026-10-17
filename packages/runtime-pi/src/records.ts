@@ -4,6 +4,7 @@ import type { AgentMessage, AgentToolResult } from '@earendil-works/pi-agent-cor
 import type { SystemMessage } from '@earendil-works/pi-ai';
 import { validateWakeInputArtifact, type WakeInputArtifact } from '@mira/cognition';
 import { messageAttachments } from './attachments.ts';
+import { checkpointReplyIndex, messageReplySources, messageReplies, replyPublication } from './replies.ts';
 import { validateObservation } from './observations.ts';
 import { validateMiraPromptSnapshot } from './system-prompt.ts';
 import type { SessionEntry, SessionMessageEntry } from '@earendil-works/pi-coding-agent';
@@ -95,6 +96,7 @@ export function decodeRecords(records: readonly RuntimeRecord[], initialParent: 
     if (seen.has(record.id) || record.parentId !== parentId || entry.id !== record.id || entry.parentId !== record.parentId || entry.timestamp !== record.occurredAt) throw new Error('Broken Pi record chain');
     if ((entry.type === 'compaction' ? 'checkpoint' : 'message') !== record.kind) throw new Error('Pi record kind mismatch');
     checkpointAttachmentIndex(entry);
+    checkpointReplyIndex(entry);
     if (entry.type !== 'compaction' && Object.hasOwn(entry, 'miraMemoryConfigured')) throw new Error('Invalid Memory configuration marker placement');
     if (entry.type === 'message') {
       validateMessage(entry.message);
@@ -158,6 +160,9 @@ export function validateMessage(value: unknown): asserts value is AgentMessage {
       throw new Error('Invalid parent instruction provenance');
   }
   messageAttachments(value);
+  messageReplySources(value);
+  messageReplies(value);
+  replyPublication(value);
   messageOverflowInput(value);
   if (Object.hasOwn(value, 'miraNativeVideos')) throw new Error('Hydrated media must never be persisted');
   if (role !== 'system' && (Object.hasOwn(value, 'miraMemory') || Object.hasOwn(value, 'miraPrompt') || Object.hasOwn(value, 'miraMemoryConfigured'))) throw new Error('Invalid Mira metadata placement');

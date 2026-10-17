@@ -28,11 +28,11 @@
 
 ## 超限 Wake 输入
 
-另导出 `writeWakeInput({ rootDirectory, sourceDirectory, runId, content })`，返回普通 UTF-8 文本文件的 `{ path, bytes }`。`content` 是调用方从 PostgreSQL 规范记录序列化的完整合并 Wake 输入；本包不筛选事件、不截断内容、不决定批次成员，也不保存第二份权威运行状态。
+另导出 `writeWakeInput({ rootDirectory, sourceDirectory, managedDataRoot?, runId, content })`，返回普通 UTF-8 文本文件的 `{ path, bytes }`。`content` 是调用方从 PostgreSQL 规范记录序列化的完整合并 Wake 输入；本包不筛选事件、不截断内容、不决定批次成员，也不保存第二份权威运行状态。
 
 ### 使用与恢复
 
-- `rootDirectory` 与 `sourceDirectory` 必须显式配置为绝对路径；文件根目录必须在源码和用户 HOME 之外，由当前用户独占（目录 `0700`）
+- `rootDirectory` 与 `sourceDirectory` 必须显式配置为绝对路径；默认文件根目录必须在源码和用户 HOME 之外，由当前用户独占（目录 `0700`）。Web 显式传入实际 `miraHome` 为 `managedDataRoot`，允许其严格子目录（默认 `~/.mira/wake-input`）；此根必须私有、不能是 HOME 或其祖先、文件系统根，也不能与源码互相包含。未指定此选项仍拒绝任何 HOME 子目录；选项不会允许指定根外的任意 HOME 路径。路径遍历、符号链接、所有者和原子不可变发布检查不变
 - 同一稳定 `runId` 对应同一路径，完整内容保存在 `SHA256(runId)/batch.txt`，普通文件工具即可读取；没有专用读取、分段、分页或 Memory API
 - 模型内联预算、路径/数量/来源提示由调用方处理；预算溢出不在这里拆分 Wake 或丢弃正文
 - 每次恢复都从 PostgreSQL 重新提供相同 `runId` 与完整内容；文件缺失时重建，现存相同内容直接复用

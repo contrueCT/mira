@@ -1,11 +1,10 @@
 import { WebAccessAuth } from './web-auth.ts';
 import path from 'node:path';
-import os from 'node:os';
 import { mkdir, realpath } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { browserLaunchEnvironment } from './browser-launch.ts';
-import { localDatabaseUrl, subagentConcurrency, webListenHost, webPublicOrigin } from './web-config.ts';
+import { localDatabaseUrl, resolveWebMiraHome, subagentConcurrency, webListenHost, webPublicOrigin } from './web-config.ts';
 import { readWebExtensionConfiguration } from './web-extensions.ts';
 import { createLocalHttp } from './http.ts';
 import { LocalWebService } from './web-service.ts';
@@ -35,7 +34,7 @@ if (args.includes('--help')) {
   const schema = process.env['MIRA_SCHEMA'] ?? 'mira';
   if (!/^[a-z_][a-z0-9_]{0,62}$/.test(schema)) throw Error('Invalid MIRA_SCHEMA');
   const sourceDirectory = await realpath(fileURLToPath(new URL('../../../', import.meta.url)));
-  const home = path.resolve(process.env['MIRA_HOME'] ?? path.join(os.homedir(), '.mira'));
+  const home = resolveWebMiraHome(process.env['MIRA_HOME']);
   // Check the existing parent before creating data. setupMemoryWorkspace also
   // enforces independent repository identity and disjoint data roots.
   const lexical = path.relative(sourceDirectory, home);

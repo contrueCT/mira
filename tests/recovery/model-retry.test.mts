@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { LocalWebService, WebSettingsStore, createLocalHttp } from '@mira/server';
 import { createTestDatabase } from '../integration/database.mts';
@@ -16,7 +16,7 @@ async function settings(file: string): Promise<void> {
 }
 
 test('real PG/service/SDK retries after one committed effect, exposes actual status, and does not repeat after restart', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-model-retry-pg-'); let service: LocalWebService | undefined;
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-model-retry-pg-')); let service: LocalWebService | undefined;
   let calls = 0; const bodies: string[] = []; const effect = path.join(root, 'effect');
   const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'retry-service', sourceDirectory: process.cwd(), workingDirectory: root, miraHome: root,
     spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), autoCompaction: { enabled: false }, dreaming: { enabled: false },
@@ -52,7 +52,7 @@ test('real PG/service/SDK retries after one committed effect, exposes actual sta
 });
 
 test('real PG shutdown during backoff cancels its timer and recovery preserves the settled tool outcome', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-model-retry-close-'); let service: LocalWebService | undefined;
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-model-retry-close-')); let service: LocalWebService | undefined;
   let calls = 0; const effect = path.join(root, 'effect'); let recovering = false;
   const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'retry-close', sourceDirectory: process.cwd(), workingDirectory: root, miraHome: root,
     spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), autoCompaction: { enabled: false }, dreaming: { enabled: false },
@@ -77,7 +77,7 @@ test('real PG shutdown during backoff cancels its timer and recovery preserves t
 });
 
 test('real PG service keeps first-last HTTP diagnostics separate from its persisted terminal error', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-retry-terminal-pg-'); let service: LocalWebService | undefined;
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-retry-terminal-pg-')); let service: LocalWebService | undefined;
   let calls = 0;
   const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'retry-terminal', sourceDirectory: process.cwd(), workingDirectory: root, miraHome: root,
     spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), autoCompaction: { enabled: false }, dreaming: { enabled: false },

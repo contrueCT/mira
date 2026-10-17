@@ -104,16 +104,46 @@ test('Feishu generic settings QR and explicit pairing reach the same durable Mir
     await expect(page.locator('.message-source').filter({ hasText: '普通插件 · ordinary' })).toHaveCount(1);
     await expect(page.locator('.message-source').filter({ hasText: '飞书 · feishu · 收到' })).toHaveCount(1);
     await expect(page.locator('.message-source').first()).toHaveCSS('font-size', '10px');
-    for (const meta of await page.locator('.message-meta').filter({ has: page.locator('.message-source') }).all()) {
-      const source = await meta.locator('.message-source').boundingBox(); const time = await meta.locator('time').boundingBox();
-      expect(Math.abs(source!.y - time!.y)).toBeLessThan(3);
-    }
+    const checkSourceMetadata = async (narrow: boolean) => {
+      for (const row of await page.locator('.message-row').filter({ has: page.locator('.message-source') }).all()) {
+        const meta = row.locator('.message-meta');
+        if (narrow) await row.focus();
+        else {
+          await page.getByRole('button', { name: '模型设置', exact: true }).focus();
+          await page.mouse.move(0, 0);
+          await expect(meta).toHaveCSS('opacity', '0');
+          await row.hover();
+        }
+        // Source and time are revealed together outside the bubble, not a permanent footer.
+        await expect(meta).toHaveCSS('opacity', '1');
+        await expect(meta.locator('.message-source')).toBeVisible();
+        await expect(meta.locator('time')).toBeVisible();
+        const source = (await meta.locator('.message-source').boundingBox())!;
+        const time = (await meta.locator('time').boundingBox())!;
+        const block = (await meta.boundingBox())!;
+        const bubble = (await row.locator('.message-bubble').boundingBox())!;
+        if (narrow) {
+          await expect(meta).toHaveCSS('flex-direction', 'column');
+          expect(time.y).toBeGreaterThanOrEqual(source.y + source.height);
+          expect(time.y - source.y - source.height).toBeLessThan(5);
+        } else {
+          await expect(meta).toHaveCSS('flex-direction', 'row');
+          expect(Math.abs(source.y - time.y)).toBeLessThan(3);
+          expect(time.x).toBeGreaterThanOrEqual(source.x + source.width);
+        }
+        if (await row.evaluate(element => element.classList.contains('user'))) expect(block.x + block.width).toBeLessThanOrEqual(bubble.x + 1);
+        else expect(block.x).toBeGreaterThanOrEqual(bubble.x + bubble.width - 1);
+        expect(block.x).toBeGreaterThanOrEqual(0);
+        expect(block.x + block.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+        expect(source.x).toBeGreaterThanOrEqual(block.x - 1);
+        expect(time.x + time.width).toBeLessThanOrEqual(block.x + block.width + 1);
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    };
+    await checkSourceMetadata(false);
     await page.screenshot({ path: testInfo.outputPath('feishu-connected-desktop.png'), fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
-    for (const meta of await page.locator('.message-meta').filter({ has: page.locator('.message-source') }).all()) {
-      const source = await meta.locator('.message-source').boundingBox(); const time = await meta.locator('time').boundingBox();
-      expect(Math.abs(source!.y - time!.y)).toBeLessThan(3);
-    }
+    await checkSourceMetadata(true);
     await page.screenshot({ path: testInfo.outputPath('feishu-inbound-narrow.png'), fullPage: true });
     const outbound = page.getByText('（合成测试）已收到你的飞书消息，任务进度会在这里同步。', { exact: true });
     await outbound.scrollIntoViewIfNeeded(); await expect(outbound).toBeInViewport({ ratio: 1 });

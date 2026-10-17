@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, mkdir, writeFile, realpath } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
@@ -35,7 +35,7 @@ function assertMira(context: TranscriptContext): string {
 const event = (id: string): LifeEvent => ({ id, type: 'synthetic-message', source: 'user', occurredAt: '2026-10-05T00:00:00.000Z', payload: { text: `Synthetic message ${id}` } });
 
 test('server composition coalesces, restarts same Mira, deduplicates and leaves event-only history asleep', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const spool = await mkdtemp('/tmp/mira-demo-pg-');
+  const db = await createTestDatabase(); const spool = await realpath(await mkdtemp('/tmp/mira-demo-pg-'));
   try {
     const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'demo-mira', sourceDirectory: process.cwd(), spoolDirectory: spool };
     const events = ['a', 'b', 'c'].map(id => ({ event: event(id), wake: { id: `wake-${id}`, reason: 'message' } }));
@@ -53,7 +53,7 @@ test('server composition coalesces, restarts same Mira, deduplicates and leaves 
 });
 
 test('overflow is one run and the model can read the ordinary file through the ordinary tool', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const spool = await mkdtemp('/tmp/mira-demo-overflow-');
+  const db = await createTestDatabase(); const spool = await realpath(await mkdtemp('/tmp/mira-demo-overflow-'));
   let calls = 0; let filePath = ''; let observedToolText = '';
   try {
     const outcome = await runDemo({ connectionString: db.connectionString, schema: db.schema, miraId: 'overflow-mira', sourceDirectory: process.cwd(), spoolDirectory: spool, maxInlineBytes: 1,
@@ -83,7 +83,7 @@ test('overflow is one run and the model can read the ordinary file through the o
 
 
 test('Memory-only bootstrap survives restart and file edits stay silent', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const data = await mkdtemp('/tmp/mira-memory-demo-');
+  const db = await createTestDatabase(); const data = await realpath(await mkdtemp('/tmp/mira-memory-demo-'));
   try {
     const memoryRoot = path.join(data, 'memory');
     await mkdir(memoryRoot);
@@ -122,7 +122,7 @@ test('Memory-only bootstrap survives restart and file edits stay silent', { time
 
 
 for (const replaceRepository of [false, true]) test(`Git-before-PG crash ${replaceRepository ? 'rejects replaced repository identity' : 'resumes without model or recapturing later edits'}`, { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const data = await mkdtemp('/tmp/mira-memory-crash-');
+  const db = await createTestDatabase(); const data = await realpath(await mkdtemp('/tmp/mira-memory-crash-'));
   let writer: Awaited<ReturnType<PostgresPersistence['acquire']>> | undefined;
   try {
     const memory = await setupMemoryWorkspace({ memoryRoot: path.join(data, 'memory'), sourceDirectory: process.cwd() });
@@ -163,7 +163,7 @@ for (const replaceRepository of [false, true]) test(`Git-before-PG crash ${repla
 
 
 test('inline wake uses an existing ordinary cwd and native shell without needing an overflow directory', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const data = await mkdtemp('/tmp/mira-inline-shell-');
+  const db = await createTestDatabase(); const data = await realpath(await mkdtemp('/tmp/mira-inline-shell-'));
   let calls = 0;
   try {
     const result = await runDemo({ connectionString: db.connectionString, schema: db.schema, miraId: 'inline-shell', sourceDirectory: process.cwd(), spoolDirectory: path.join(data, 'does-not-exist'), workingDirectory: data,
@@ -181,7 +181,7 @@ test('inline wake uses an existing ordinary cwd and native shell without needing
 
 
 test('empty terminal assistant output durably completes a silent wake and is not replayed', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const spool = await mkdtemp('/tmp/mira-silent-wake-');
+  const db = await createTestDatabase(); const spool = await realpath(await mkdtemp('/tmp/mira-silent-wake-'));
   try {
     const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'silent-mira', sourceDirectory: process.cwd(), spoolDirectory: spool };
     const events = [{ event: event('silent'), wake: { id: 'wake-silent', reason: 'nothing worth saying' } }];

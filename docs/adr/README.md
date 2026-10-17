@@ -86,3 +86,5 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 - [0040 MCP 普通扩展消费者](0040-mcp-extension-consumer.md)：Accepted，2026-10-15；独立安装复用既有生命周期，通用动态工具集/已知错误契约，官方 MCP SDK、显式本地协议、私有 OAuth 和无隐式工具重放。
 - [0041 自定义模型发现与推理格式](0041-custom-model-discovery-and-reasoning-format.md)：明确目录元数据预填、手动兜底与 Pi Chat Completions 格式选择；不推断未知代理、不静默丢弃已配置强度。
+
+- [0043：紧凑时间线与双向指定消息回复](0043-message-replies-timeline.md)：2026-10-16 授权实现；稳定 History 引用、有界服务端快照、主 Mira 显式发布及紧凑浅色聊天 UI。

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile, access } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, access, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
@@ -13,7 +13,7 @@ const port = 3215; const origin = `http://127.0.0.1:${port}`;
 const exists = (file: string) => access(file).then(() => true, () => false);
 
 test('ordinary send interrupts model streaming and waits for just the active real tool, including restart and duplicate receipts', async ({ page }, testInfo) => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-live-browser-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-live-browser-'));
   const started = path.join(root, 'started'), release = path.join(root, 'release'), effect = path.join(root, 'effect'), forbidden = path.join(root, 'forbidden');
   let service: LocalWebService | undefined; let app: ReturnType<typeof createLocalHttp> | undefined;
   const streaming = deferred(); const contexts: TranscriptContext[] = []; const posts: Array<{ id: string; text: string; occurredAt: string }> = [];

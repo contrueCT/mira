@@ -24,3 +24,5 @@
 ## 验证
 
 从仓库根运行 `pnpm check`。依赖或 exports 改动必须同时检查 `scripts/boundaries.json`，并添加允许/拒绝反例。契约测试见 `tests/unit/`，真实写入与恢复验收见 `tests/integration/`、`tests/recovery/`。
+
+- 新 Web payload.messageFormatVersion=1 在正文头暴露 Event History UUID，独立保留 replySources/replies；未版本化历史保持原渲染与元数据，原 Wake/live/overflow 不重写。

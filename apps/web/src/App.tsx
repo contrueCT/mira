@@ -1,4 +1,5 @@
 import { browserUuid } from './uuid.ts';
+import { flushSync } from 'react-dom';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent } from 'react';
 import { AttachmentList, AttachmentPreview } from './Attachments.tsx';
@@ -10,9 +11,9 @@ import { ArrowUp, ChevronDown, SettingsIcon } from './icons.tsx';
 import { SettingsDialog } from './SettingsDialog.tsx';
 import { createMemoryRequest, readMemoryRequest, recoverMemoryRequest, writeMemoryRequest } from './management.ts';
 import type { MemoryRequestIdentity } from './management.ts';
-import { latestPagination, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
+import { confirmsPending, replySnippet, timelineSpacing, latestPagination, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
 import type { HistoryPagination, HistoryRequest } from './timeline.ts';
-import type { Attachment, MessageEnvelope, PendingMessage, ServerStatus, TimelineItem, TimelinePage } from './types.ts';
+import type { Attachment, MessageEnvelope, PendingMessage, ReplyReference, ServerStatus, TimelineItem, TimelinePage } from './types.ts';
 
 const timeFormat = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' });
 function timeLabel(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? '' : timeFormat.format(date); }
@@ -54,6 +55,11 @@ export function App() {
   const previewFocusRef = useRef<HTMLElement | null>(null);
   const [dragging, setDragging] = useState(false);
   const [composer, setComposer] = useState('');
+  const [replyTarget, setReplyTarget] = useState<ReplyReference | null>(null);
+  const [quoteSearch, setQuoteSearch] = useState(false);
+  const [quoteNotice, setQuoteNotice] = useState<string | null>(null);
+  const quoteAbortRef = useRef<AbortController | null>(null);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
   const [composerError, setComposerError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [nearBottom, setNearBottom] = useState(true);
@@ -66,6 +72,9 @@ export function App() {
   const itemsRef = useRef(items);
   const nearBottomRef = useRef(true);
   const sendingRef = useRef(false);
+  const userIntentGenerationRef = useRef(0);
+  const internalTimelineFocusRef = useRef(false);
+  const restoreComposerFocusRef = useRef<number | null>(null);
   const initializedRef = useRef(false);
   const paginationRef = useRef<HistoryPagination>({ latestCursor: null, oldestCursor: null, gaps: [] });
   const activeRef = useRef(true);
@@ -76,6 +85,17 @@ export function App() {
   const postAbortRef = useRef<AbortController | null>(null);
   const inFlightRef = useRef<Promise<void> | null>(null);
   const pollingRef = useRef<ReturnType<typeof createStatusPolling> | null>(null);
+
+  const cancelQuoteNavigation = useCallback(() => {
+    // Every newer explicit intent invalidates late focus, even without a lookup.
+    userIntentGenerationRef.current++;
+    const controller = quoteAbortRef.current;
+    if (!controller) return;
+    // Release only this lookup's ownership before abort callbacks can run.
+    quoteAbortRef.current = null;
+    controller.abort(); olderBusyRef.current = false;
+    setQuoteSearch(false); setLoadingOlder(false); setQuoteNotice(null);
+  }, []);
 
   const updatePending = useCallback((change: (current: PendingMessage[]) => PendingMessage[], mustPersist = false) => {
     if (recovered.error) return false; // Never overwrite a queue we could not recover.
@@ -142,17 +162,17 @@ export function App() {
     document.addEventListener('visibilitychange', polling.visibilityChanged);
     return () => {
       polling.stop(); pollingRef.current = null;
-      activeRef.current = false; controller.abort(); postAbortRef.current?.abort();
+      activeRef.current = false; controller.abort(); postAbortRef.current?.abort(); quoteAbortRef.current?.abort();
       inFlightRef.current = null;
       document.removeEventListener('visibilitychange', polling.visibilityChanged);
     };
   }, [refresh]);
 
   useEffect(() => {
-    const sync = () => { closingSettingsRef.current = false; closingPreviewRef.current = false; setSettingsOpen(window.location.hash === '#settings'); setPreviewId(window.location.hash.startsWith('#attachment=') ? window.location.hash.slice(12) : null); };
+    const sync = () => { cancelQuoteNavigation(); closingSettingsRef.current = false; closingPreviewRef.current = false; setSettingsOpen(window.location.hash === '#settings'); setPreviewId(window.location.hash.startsWith('#attachment=') ? window.location.hash.slice(12) : null); };
     window.addEventListener('hashchange', sync); window.addEventListener('popstate', sync);
     return () => { window.removeEventListener('hashchange', sync); window.removeEventListener('popstate', sync); };
-  }, []);
+  }, [cancelQuoteNavigation]);
 
   useLayoutEffect(() => {
     const container = scrollRef.current;
@@ -169,6 +189,14 @@ export function App() {
     if (textarea) { textarea.style.height = 'auto'; textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`; }
   }, [composer]);
 
+  useLayoutEffect(() => {
+    if (!sending && restoreComposerFocusRef.current !== null) {
+      const generation = restoreComposerFocusRef.current;
+      restoreComposerFocusRef.current = null;
+      if (generation === userIntentGenerationRef.current) textareaRef.current?.focus({ preventScroll: true });
+    }
+  }, [sending]);
+
   const onScroll = () => {
     const container = scrollRef.current;
     if (!container) return;
@@ -177,12 +205,14 @@ export function App() {
     setNearBottom(isNear);
   };
   const scrollToLatest = () => {
+    cancelQuoteNavigation();
     nearBottomRef.current = true; setNearBottom(true);
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   };
   const loadOlder = async () => {
     const request = nextHistoryRequest(paginationRef.current);
     if (!request || olderBusyRef.current) return;
+    cancelQuoteNavigation();
     olderBusyRef.current = true; setLoadingOlder(true); setOlderError(null);
     try {
       const page = await api<TimelinePage>('/api/timeline', { method: 'POST', body: JSON.stringify({ before: request.cursor }), signal: pollAbortRef.current!.signal });
@@ -193,6 +223,8 @@ export function App() {
 
   const sendEnvelope = async (envelope: MessageEnvelope, retry = false, fromMemory = memoryRequestRef.current?.id === envelope.id) => {
     if (sendingRef.current || recovered.error) return;
+    cancelQuoteNavigation();
+    const generation = userIntentGenerationRef.current;
     sendingRef.current = true; setSending(true);
     const controller = new AbortController(); postAbortRef.current = controller;
     const timeout = setTimeout(() => controller.abort(), 20_000);
@@ -202,11 +234,11 @@ export function App() {
         const page = await api<TimelinePage>('/api/timeline', { signal: controller.signal });
         if (!activeRef.current) return;
         acceptPage(page);
-        if (itemsRef.current.some(item => item.role === 'user' && item.externalEventId === envelope.id)) return;
+        if (itemsRef.current.some(item => confirmsPending(envelope, item))) return;
       }
       if (!updatePending(current => [...current.filter(message => message.id !== envelope.id), { ...envelope, state: 'sending' }], true)) return;
       if (fromMemory) writeMemoryRequest(window.sessionStorage, envelope);
-      if (!retry && !fromMemory) { setComposer(''); attachments.clear(); }
+      if (!retry && !fromMemory) { setComposer(''); setReplyTarget(null); attachments.clear(); }
       const receipt = await api<{ id: string; receipt: 'inserted' | 'duplicate' }>('/api/messages', { method: 'POST', body: JSON.stringify(envelope), signal: controller.signal });
       if (!activeRef.current) return;
       if (receipt.id !== envelope.id || !['inserted', 'duplicate'].includes(receipt.receipt)) throw new Error('无法确认服务端的接收回执');
@@ -218,7 +250,7 @@ export function App() {
       clearTimeout(timeout);
       if (postAbortRef.current === controller) postAbortRef.current = null;
       sendingRef.current = false;
-      if (activeRef.current) { setSending(false); if (!fromMemory) textareaRef.current?.focus(); }
+      if (activeRef.current) { restoreComposerFocusRef.current = !fromMemory && generation === userIntentGenerationRef.current ? generation : null; setSending(false); }
     }
   };
   const submitMemory = (text: string): boolean => {
@@ -235,7 +267,7 @@ export function App() {
     event?.preventDefault();
     const text = composer.trim();
     if ((!text && !attachments.drafts.length) || !attachments.ready || sendingRef.current || recovered.error) return;
-    const envelope: MessageEnvelope = { id: browserUuid(), text, occurredAt: new Date().toISOString(), ...(attachments.attachments.length ? { attachmentIds: attachments.attachments.map(item => item.id) } : {}) };
+    const envelope: MessageEnvelope = { ...(replyTarget ? { replyToMessageId: replyTarget.messageId } : {}), id: browserUuid(), text, occurredAt: new Date().toISOString(), ...(attachments.attachments.length ? { attachmentIds: attachments.attachments.map(item => item.id) } : {}) };
     if (new TextEncoder().encode(JSON.stringify(envelope)).byteLength > 65_536) { setComposerError('消息太长，请缩短后再发送（上限约 64 KB）'); return; }
     setComposerError(null);
     scrollToLatest();
@@ -244,33 +276,91 @@ export function App() {
   const onComposerKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); submit(); }
   };
-  const openSettings = () => { if (window.location.hash === '#settings') return; closingSettingsRef.current = false; window.history.pushState({ ...window.history.state, miraSettings: true }, '', '#settings'); setSettingsOpen(true); };
+  const openSettings = () => { if (window.location.hash === '#settings') return; cancelQuoteNavigation(); closingSettingsRef.current = false; window.history.pushState({ ...window.history.state, miraSettings: true }, '', '#settings'); setSettingsOpen(true); };
   const closeSettings = () => {
     if (closingSettingsRef.current) return;
+    cancelQuoteNavigation();
     closingSettingsRef.current = true;
     if (window.history.state?.miraSettings) window.history.back();
     else { window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}`); closingSettingsRef.current = false; setSettingsOpen(false); }
   };
-  const addFiles = (files: File[]) => { if (sendingRef.current || recovered.error) return; setComposerError(attachments.add(files)); };
+  const addFiles = (files: File[]) => { if (sendingRef.current || recovered.error) return; cancelQuoteNavigation(); setComposerError(attachments.add(files)); };
   for (const item of items) for (const attachment of item.attachments ?? []) previewRegistry.current.set(attachment.id, attachment);
   for (const attachment of attachments.attachments) previewRegistry.current.set(attachment.id, attachment);
   const preview = previewId ? previewRegistry.current.get(previewId) : undefined;
   const openPreview = (attachment: Attachment) => {
+    cancelQuoteNavigation();
     previewRegistry.current.set(attachment.id, attachment); closingPreviewRef.current = false;
     previewFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     window.history.pushState({ ...window.history.state, miraAttachment: true }, '', `#attachment=${attachment.id}`); setPreviewId(attachment.id);
   };
   const closePreview = () => {
-    if (closingPreviewRef.current) return; closingPreviewRef.current = true;
+    if (closingPreviewRef.current) return; cancelQuoteNavigation(); closingPreviewRef.current = true;
     if (window.history.state?.miraAttachment) window.history.back();
     else { window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}`); closingPreviewRef.current = false; setPreviewId(null); }
   };
   const stateLabel = connectionError ? '连接中断' : !status ? '正在连接' : ({ idle: '在这里', working: '正在处理', error: '需要留意', stopped: '已停止' } as const)[status.state];
   const showEmpty = !loading && !items.length && !pending.length && !connectionError;
-  let lastDate = '';
+  const beginReply = (item: TimelineItem) => {
+    if (item.role !== 'assistant' || sendingRef.current) return;
+    cancelQuoteNavigation();
+    setReplyTarget({ messageId: item.id, role: item.role, text: item.text, ...(item.attachments?.length ? { attachmentNames: item.attachments.map(file => file.name) } : {}), ...(item.source ? { source: item.source } : {}) });
+    textareaRef.current?.focus();
+  };
+  const jumpToReply = async (messageId: string) => {
+    cancelQuoteNavigation();
+    setQuoteNotice(null);
+    const reveal = () => {
+      const target = [...scrollRef.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? []].find(element => element.dataset['messageId'] === messageId);
+      if (!target) return false;
+      nearBottomRef.current = false; setNearBottom(false);
+      target.scrollIntoView({ block: 'center', behavior: 'instant' });
+      // This synchronous focus belongs to the current navigation, not a newer reading intent.
+      internalTimelineFocusRef.current = true;
+      try { target.focus({ preventScroll: true }); } finally { internalTimelineFocusRef.current = false; }
+      setHighlightId(messageId);
+      return true;
+    };
+    if (reveal()) return;
+    if (olderBusyRef.current) { setQuoteNotice('历史消息正在读取，请稍后再点引用。'); return; }
+    const controller = new AbortController(); quoteAbortRef.current = controller;
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    olderBusyRef.current = true; setLoadingOlder(true); setQuoteSearch(true);
+    nearBottomRef.current = false;
+    const cursors = new Set<string>();
+    try {
+      for (let pageCount = 0; pageCount < 8; pageCount++) {
+        const request = nextHistoryRequest(paginationRef.current);
+        if (!request || cursors.has(request.cursor)) break;
+        cursors.add(request.cursor);
+        const page = await api<TimelinePage>('/api/timeline', { method: 'POST', body: JSON.stringify({ before: request.cursor }), signal: controller.signal });
+        if (!activeRef.current || quoteAbortRef.current !== controller || controller.signal.aborted) return;
+        // The next step reads/focuses this page's DOM. A frame is not a React
+        // commit guarantee: finish this insertion and its anchor layout effect first.
+        flushSync(() => acceptPage(page, request));
+        if (!activeRef.current || quoteAbortRef.current !== controller) return;
+        if (controller.signal.aborted) { setQuoteNotice('查找已停止，引用内容仍保留。'); return; }
+        if (reveal()) return;
+      }
+      setQuoteNotice('暂未找到原消息。可以继续查看更早的消息，再点引用。');
+    } catch (error) {
+      if (activeRef.current && quoteAbortRef.current === controller) setQuoteNotice(isAbort(error) ? '查找已停止，引用内容仍保留。' : '暂时无法读取原消息，请稍后重试。');
+    } finally {
+      clearTimeout(timeout);
+      if (quoteAbortRef.current === controller) {
+        quoteAbortRef.current = null; olderBusyRef.current = false;
+        if (activeRef.current) { setQuoteSearch(false); setLoadingOlder(false); }
+      }
+    }
+  };
 
   return <>
-    <div className="mira-app" inert={settingsOpen || !!preview}>
+    <div className="mira-app" inert={settingsOpen || !!preview}
+      onFocusCapture={() => {
+        // All main-surface focus invalidates a late send's restoration. Keep lookup
+        // cancellation in its existing handlers so focusing Cancel cannot remove it.
+        if (!internalTimelineFocusRef.current) userIntentGenerationRef.current++;
+      }}>
       <header className="app-header">
         <div className="identity" aria-label="Mira">
           <div className="mira-ring" aria-hidden="true" />
@@ -282,32 +372,45 @@ export function App() {
 
       {(connectionError || storageError || status?.error) && <div className="connection-notice" role="status" tabIndex={0} aria-label="运行状态与错误详情"><span>{!storageError && !connectionError && status?.error && <strong>运行错误 · </strong>}{storageError ?? connectionError ?? status?.error}</span>{connectionError && <button className="text-button" onClick={() => { void refresh(); }}>重新连接</button>}</div>}
 
-      <main ref={scrollRef} className="timeline-scroll" onScroll={onScroll} aria-label="与 Mira 的消息记录" tabIndex={0}>
+      <main ref={scrollRef} className="timeline-scroll" onScroll={onScroll}
+        onFocusCapture={() => { if (!internalTimelineFocusRef.current) cancelQuoteNavigation(); }}
+        onPointerDown={cancelQuoteNavigation} onWheel={cancelQuoteNavigation} onTouchMove={cancelQuoteNavigation}
+        onKeyDown={event => { if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Tab'].includes(event.key)) cancelQuoteNavigation(); }}
+        aria-label="与 Mira 的消息记录" tabIndex={0}>
         <div className={`timeline-content ${showEmpty ? 'is-empty' : ''}`}>
           {loading && <div className="timeline-loading" role="status"><span className="loading-mark" />正在找回我们的消息…</div>}
           {nextCursor && <div className="history-controls"><button className="text-button" onClick={() => { void loadOlder(); }} disabled={loadingOlder}>{loadingOlder ? '正在读取…' : hasHistoryGap ? '补齐尚未读取的消息' : '查看更早的消息'}</button>{hasHistoryGap && <p className="history-gap-note">有一段消息尚未读取，点击后可继续补齐</p>}{olderError && <p className="inline-error" role="alert">{olderError}</p>}</div>}
           {showEmpty && <div className="empty-state"><span className="eyebrow">每一句，都会留在这里</span><h2>和 Mira 说点什么</h2><p>一个想法、一件小事，或今天的心情。</p><p className="empty-note">从这里开始，慢慢聊。</p></div>}
           <div className="message-list" role="log" aria-live="polite" aria-relevant="additions text" aria-label="消息">
-            {items.map(item => {
-              const date = dateLabel(item.occurredAt); const showDate = date !== lastDate; lastDate = date;
-              return <div key={item.id}>
-                {showDate && <p className="date-divider">{date}</p>}
-                <article data-message-id={item.id} className={`message-row ${item.role}`} aria-label={item.source ? `${item.source.label} 扩展消息` : item.role === 'user' ? '你的消息' : item.role === 'assistant' ? 'Mira 的消息' : '服务通知'}>
+            {items.map((item, index) => {
+              const spacing = timelineSpacing(items[index - 1], item);
+              return <div key={item.id} className={`message-group ${spacing.compact ? 'compact' : ''}`}>
+                {spacing.divider && <p className="date-divider">{dateLabel(item.occurredAt)} {timeLabel(item.occurredAt)}</p>}
+                <article tabIndex={0} data-message-id={item.id} className={`message-row ${item.role} ${highlightId === item.id ? 'quote-highlight' : ''}`} aria-label={item.source ? `${item.source.label} 扩展消息` : item.role === 'user' ? '你的消息' : item.role === 'assistant' ? 'Mira 的消息' : '服务通知'}>
+                  {item.reply && <button type="button" className="reply-quote" aria-label="查看引用的消息" title={replySnippet(item.reply)} disabled={quoteSearch} onClick={() => { void jumpToReply(item.reply!.messageId); }}><span aria-hidden="true">↪</span><span>{replySnippet(item.reply)}</span></button>}
+                  <div className="message-content-line">
+                  <div className="message-payload">
                   {item.text && <div className="message-bubble">{item.text}</div>}
                   {!!item.attachments?.length && <AttachmentList attachments={item.attachments} onPreview={openPreview} />}
+                  </div>
+                  <div className="message-side">
+                  {item.role === 'assistant' && <button className="reply-action" type="button" aria-label="回复这条消息" title="回复这条消息" disabled={sending} onClick={() => beginReply(item)}>↩</button>}
                   <div className="message-meta">
-                  {item.source && <span className="message-source" title={`扩展 ${item.source.extensionId}${item.source.senderId ? ` · 来源身份 ${item.source.senderId}${item.source.senderVerified ? '（由扩展验证）' : ''}` : ''}`}>{item.source.label} · {item.source.extensionId} · {item.source.direction === 'inbound' ? '收到' : '已发送'}</span>}
+                  {item.source && <span className="message-source" title={`${item.source.label} · ${item.source.direction === 'inbound' ? '收到' : '已发送'} · 扩展 ${item.source.extensionId}${item.source.senderId ? ` · 来源身份 ${item.source.senderId}${item.source.senderVerified ? '（由扩展验证）' : ''}` : ''}`}>{item.source.label} · {item.source.extensionId} · {item.source.direction === 'inbound' ? '收到' : '已发送'}</span>}
                   <time className="message-time" dateTime={item.occurredAt}>{timeLabel(item.occurredAt)}</time>
+                  </div>
+                  </div>
                   </div>
                 </article>
               </div>;
             })}
             {pending.map(message => <article className="message-row user pending-message" key={message.id} aria-label="待确认的消息">
+              {message.replyToMessageId && <p className="reply-quote pending-quote"><span aria-hidden="true">↪</span><span>{(() => { const target = items.find(item => item.id === message.replyToMessageId); return target ? replySnippet({ messageId: target.id, role: 'assistant', text: target.text, attachmentNames: target.attachments?.map(file => file.name) ?? [] }) : '回复原消息'; })()}</span></p>}
               {message.text && <div className="message-bubble">{message.text}</div>}
               {!!message.attachmentIds?.length && <p className="pending-attachments">{message.attachmentIds.length} 个附件 · 已保留，等待消息确认</p>}
               <div className={`message-receipt ${message.state === 'uncertain' ? 'uncertain' : ''}`}>
                 {message.state === 'sending' ? '正在发送…' : message.state === 'queued' ? '已接收 · 等待处理' : '接收结果待确认'}
-                {message.state === 'uncertain' && <button className="text-button" disabled={sending} onClick={() => { void sendEnvelope({ id: message.id, text: message.text, occurredAt: message.occurredAt, ...(message.attachmentIds !== undefined ? { attachmentIds: [...message.attachmentIds] } : {}) }, true); }}>核对并重试</button>}
+                {message.state === 'uncertain' && <button className="text-button" disabled={sending} onClick={() => { void sendEnvelope({ id: message.id, text: message.text, occurredAt: message.occurredAt, ...(message.replyToMessageId ? { replyToMessageId: message.replyToMessageId } : {}), ...(message.attachmentIds !== undefined ? { attachmentIds: [...message.attachmentIds] } : {}) }, true); }}>核对并重试</button>}
               </div>
               {message.state === 'uncertain' && <p className="pending-help">{message.error ?? '刷新前的发送尚未确认'}。不会自动重发</p>}
             </article>)}
@@ -317,8 +420,10 @@ export function App() {
       </main>
 
       <footer className="composer-section">
+        {(quoteSearch || quoteNotice) && <p className="quote-search-status" role="status">{quoteSearch ? '正在查找引用消息…' : quoteNotice}{quoteSearch && <button type="button" className="text-button" onClick={() => { cancelQuoteNavigation(); setQuoteNotice('查找已停止，引用内容仍保留。'); }}>取消查找</button>}</p>}
         {!nearBottom && <button className="latest-button" type="button" onClick={scrollToLatest}><ChevronDown />回到最新消息</button>}
-        <form className={`composer ${composer.includes('\n') || attachments.drafts.length ? 'expanded' : ''} ${dragging ? 'dragging' : ''}`} onSubmit={submit}
+        {replyTarget && <div className="composer-reply" aria-label="回复预览"><span aria-hidden="true">↪</span><span className="composer-reply-text"><strong>回复 {replyTarget.source?.label ?? 'Mira'}</strong><span>{replySnippet(replyTarget)}</span></span><button type="button" aria-label="取消回复" title="取消回复" onClick={() => { cancelQuoteNavigation(); setReplyTarget(null); textareaRef.current?.focus(); }}>×</button></div>}
+        <form className={`composer ${composer.includes('\n') || attachments.drafts.length ? 'expanded' : ''} ${dragging ? 'dragging' : ''}`} onSubmit={submit} onFocusCapture={cancelQuoteNavigation}
           onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDragging(true); } }}
           onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }}
           onDrop={event => { event.preventDefault(); setDragging(false); addFiles([...event.dataTransfer.files]); }}
@@ -331,7 +436,7 @@ export function App() {
           </div>)}</div>}
           <button className="add-attachment-button icon-button" type="button" disabled={sending || !!recovered.error} onClick={() => fileInputRef.current?.click()} aria-label="添加附件" title="添加图片、视频或文件">+</button>
           <label className="sr-only" htmlFor="message-input">给 Mira 发消息</label>
-          <textarea ref={textareaRef} id="message-input" placeholder="给 Mira 发消息…" value={composer} onChange={event => { setComposer(event.target.value); setComposerError(null); }} onKeyDown={onComposerKey} rows={1} disabled={sending || !!recovered.error} maxLength={50_000} />
+          <textarea ref={textareaRef} id="message-input" placeholder="给 Mira 发消息…" value={composer} onChange={event => { cancelQuoteNavigation(); setComposer(event.target.value); setComposerError(null); }} onKeyDown={onComposerKey} rows={1} disabled={sending || !!recovered.error} maxLength={50_000} />
           <button className="send-button" type="submit" disabled={(!composer.trim() && !attachments.drafts.length) || !attachments.ready || sending || !!recovered.error} aria-label={sending ? '正在发送' : '发送消息'} title="发送消息"><ArrowUp /></button>
         </form>
         {composerError && <p className="composer-error" role="alert">{composerError}</p>}

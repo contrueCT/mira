@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import type { ToolResultMessage } from '@earendil-works/pi-ai';
 import { createModelTransport } from '@mira/server';
@@ -30,7 +30,7 @@ function wireText(api: string, body: Record<string, any>): string {
 for (const api of ['openai-completions', 'openai-responses', 'google-generative-ai'] as const) {
   for (const mode of ['empty', 'short', 'single', ...(api === 'google-generative-ai' ? ['native-mixed'] : [])]) {
     test(`actual ${api} wire bounds ${mode} text separators before and after recovery`, async t => {
-      const root = await mkdtemp('/tmp/mira-tool-output-wire-');
+      const root = await realpath(await mkdtemp('/tmp/mira-tool-output-wire-'));
       try {
         const writer = new MemoryWriter(), bytes = Buffer.from('synthetic video bytes');
         const references = Array.from({ length: 2 }, (_, index) => ({ id: randomUUID(), name: `clip-${index}.mp4`, mimeType: 'video/mp4', size: bytes.length,

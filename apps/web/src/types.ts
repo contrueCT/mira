@@ -1,6 +1,8 @@
 /** Read DTOs contain no runtime trace, raw tool data or stored credentials. */
 export interface Attachment { id: string; name: string; mimeType: string; size: number; sha256: string }
+export interface ReplyReference { messageId: string; role: 'user' | 'assistant'; text: string; attachmentNames?: string[]; source?: TimelineItem['source'] }
 export interface TimelineItem {
+  reply?: ReplyReference;
   source?: { kind: 'extension'; extensionId: string; label: string; direction: 'inbound' | 'outbound'; senderId?: string; senderVerified?: boolean };
   attachments?: Attachment[];
   /** Original request identity for pending-message acknowledgement only. */
@@ -13,7 +15,7 @@ export interface TimelineItem {
 export interface TimelinePage { items: TimelineItem[]; nextCursor: string | null }
 export interface ModelRetryStatus { phase: 'waiting' | 'requesting'; attempt: number; maxAttempts: number; delayMs: number; reason: 'rate-limit' | 'server' | 'timeout' | 'connection' }
 export interface ServerStatus { modelRetry?: ModelRetryStatus | null; state: 'idle' | 'working' | 'error' | 'stopped'; mode: 'synthetic' | 'live'; model: string | null; error: string | null }
-export interface MessageEnvelope { id: string; text: string; occurredAt: string; attachmentIds?: string[] }
+export interface MessageEnvelope { id: string; text: string; occurredAt: string; attachmentIds?: string[]; replyToMessageId?: string }
 export interface PendingMessage extends MessageEnvelope { state: 'sending' | 'uncertain' | 'queued'; error?: string }
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type CustomProtocol = 'openai-completions' | 'openai-responses' | 'anthropic-messages';

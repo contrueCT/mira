@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { getSupportedThinkingLevels, type Model, type Api } from '@earendil-works/pi-ai';
@@ -115,7 +115,7 @@ test('explicit runtime default is present on every normal request and summary lo
 });
 
 test('private settings persist reasoning preference without a key leak, adapt a changed model, preserve CAS and reject malformed levels', async () => {
-  const root = await mkdtemp('/tmp/mira-reasoning-settings-'); const source = path.join(root, 'source'); await mkdir(source);
+  const root = await realpath(await mkdtemp('/tmp/mira-reasoning-settings-')); const source = path.join(root, 'source'); await mkdir(source);
   try {
     const store = new WebSettingsStore(path.join(root, 'data', 'models.json'), source); const initial = await store.get();
     const { apiKeyEnv: _env, ...connection } = configuration('openai-completions').customConnections[0]!;
@@ -150,7 +150,7 @@ test('actual Google SDK serializes configured reasoning budgets and explicit off
 
 for (const api of ['openai-completions', 'openai-responses', 'anthropic-messages'] as const) {
   test(`saved Web reasoning settings dispatch through real ${api} serialization while stale or forged snapshots cannot resolve a key`, async () => {
-    const root = await mkdtemp('/tmp/mira-web-reasoning-transport-'); const source = path.join(root, 'source'); await mkdir(source);
+    const root = await realpath(await mkdtemp('/tmp/mira-web-reasoning-transport-')); const source = path.join(root, 'source'); await mkdir(source);
     try {
       const file = path.join(root, 'data', 'models.json'); const store = new WebSettingsStore(file, source);
       const { apiKeyEnv: _env, ...connection } = configuration(api).customConnections[0]!;

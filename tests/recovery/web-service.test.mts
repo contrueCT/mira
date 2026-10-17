@@ -1,5 +1,6 @@
+import { providerEntered } from './service-wait-fixture.mts';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
@@ -18,7 +19,7 @@ async function settled(service: LocalWebService): Promise<void> {
   }
 }
 test('default web extension configuration exposes real management dispatch and restores it with PostgreSQL', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-default-extensions-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-default-extensions-'));
   let service: LocalWebService | undefined; let requests = 0;
   try {
     const extensions = await readWebExtensionConfiguration(root);
@@ -56,7 +57,7 @@ test('default web extension configuration exposes real management dispatch and r
 });
 
 test('local web composition persists one timeline, hides system/thinking, deduplicates uncertain submits and restores after restart', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-service-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-service-'));
   let service: LocalWebService | undefined; let calls = 0;
   try {
     const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'web-mira', sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true,
@@ -91,7 +92,7 @@ test('local web composition persists one timeline, hides system/thinking, dedupl
 });
 
 test('tool activity stays out of both timeline routes while durable execution and protocol pairs survive restart', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-hidden-tools-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-hidden-tools-'));
   let service: LocalWebService | undefined; let app: ReturnType<typeof createLocalHttp> | undefined;
   let calls = 0; const contexts: TranscriptContext[] = [];
   try {
@@ -169,7 +170,7 @@ function oversizedPrivateReadPng(): Buffer {
 }
 
 test('oversized ordinary image read stays private in both HTTP timeline routes and after PostgreSQL restart', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-private-large-image-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-private-large-image-'));
   let service: LocalWebService | undefined; let app: ReturnType<typeof createLocalHttp> | undefined; let calls = 0;
   try {
     const file = path.join(root, 'PRIVATE_OVERSIZED_IMAGE.png'); const png = oversizedPrivateReadPng();
@@ -238,7 +239,7 @@ test('oversized ordinary image read stays private in both HTTP timeline routes a
 });
 
 test('missing live model is a setup state and cannot enqueue or call a model', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-unconfigured-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-unconfigured-'));
   let service: LocalWebService | undefined;
   try {
     service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'unconfigured', sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json') });
@@ -248,23 +249,27 @@ test('missing live model is a setup state and cannot enqueue or call a model', {
   } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('shutdown cancels an active model run, retains user receipt and resumes the same wake on restart', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-shutdown-');
-  let service: LocalWebService | undefined; let entered!: () => void; const started = new Promise<void>(resolve => { entered = resolve; });
+test('shutdown cancels an active model run, retains user receipt and resumes the same wake on restart', { timeout: 30_000 }, async t => {
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-shutdown-'));
+  let service: LocalWebService | undefined; let started = false; let providerFailure: unknown;
   let originalInput: TranscriptContext['messages'][number] | undefined;
   try {
     const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'cancelled', sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true };
     service = await LocalWebService.open({ ...options, syntheticStream: (_model, context, streamOptions) => {
-      originalInput = structuredClone(context.messages.find(message => message.role === 'user'));
-      assert.ok(originalInput?.role === 'user'); assert.match(String(originalInput.content), /\[user \| "2026-10-06T08:00:00.000Z"\]\nKeep my receipt$/);
-      assert.doesNotMatch(String(originalInput.content), /cancel-input|web.message|Wake reason|"payload"|"event"/);
-      const stream = createAssistantMessageEventStream(); entered();
-      const abort = () => { stream.push({ type: 'error', reason: 'aborted', error: { ...assistant(), stopReason: 'aborted', errorMessage: 'Cancelled fixture' } }); };
-      streamOptions?.signal?.addEventListener('abort', abort, { once: true });
-      if (streamOptions?.signal?.aborted) abort();
-      return stream;
+      try {
+        originalInput = structuredClone(context.messages.find(message => message.role === 'user'));
+        assert.ok(originalInput?.role === 'user'); assert.match(String(originalInput.content), /\[user \| "2026-10-06T08:00:00.000Z" \| History ID "[0-9a-f-]{36}"\]\nKeep my receipt$/);
+        assert.doesNotMatch(String(originalInput.content), /cancel-input|web.message|Wake reason|"payload"|"event"/);
+        const stream = createAssistantMessageEventStream(); started = true;
+        const abort = () => { stream.push({ type: 'error', reason: 'aborted', error: { ...assistant(), stopReason: 'aborted', errorMessage: 'Cancelled fixture' } }); };
+        streamOptions?.signal?.addEventListener('abort', abort, { once: true });
+        if (streamOptions?.signal?.aborted) abort();
+        return stream;
+      } catch (error) { providerFailure = error; throw error; }
     } });
-    await service.submit({ id: 'cancel-input', text: 'Keep my receipt', occurredAt: '2026-10-06T08:00:00.000Z' }); await started;
+    await service.submit({ id: 'cancel-input', text: 'Keep my receipt', occurredAt: '2026-10-06T08:00:00.000Z' }); await providerEntered(service, () => started, () => providerFailure, t.signal);
+    const link = await db.store.history('cancelled').findEventRun('cancel-input'); assert.ok(link);
+    assert.ok(String(originalInput!.content).includes(`History ID "${link.eventId}"`), 'provider sees the exact committed user Event History UUID');
     await assert.rejects(service.saveSettings(await service.settings()), WebHttpError);
     await service.close(); service = undefined;
     service = await LocalWebService.open({ ...options, syntheticStream: (_model, context) => {
@@ -278,7 +283,7 @@ test('shutdown cancels an active model run, retains user receipt and resumes the
 });
 
 test('extension wake arriving during settings save is drained afterward and never displayed as a user message', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-save-wake-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-save-wake-'));
   const originalSave = WebSettingsStore.prototype.save; let release!: () => void; let started!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; }); const saving = new Promise<void>(resolve => { started = resolve; });
   let service: LocalWebService | undefined; let calls = 0;
@@ -303,7 +308,7 @@ test('extension wake arriving during settings save is drained afterward and neve
 });
 
 test('settings reload sees an external revision instead of trapping the UI in a stale conflict', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-settings-reload-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-settings-reload-'));
   let service: LocalWebService | undefined;
   try {
     const settingsFile = path.join(root, 'models.json');
@@ -322,7 +327,7 @@ test('settings reload sees an external revision instead of trapping the UI in a 
 });
 
 test('a stale settings read cannot replace a successfully saved model selection', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-settings-race-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-settings-race-'));
   const originalGet = WebSettingsStore.prototype.get; let service: LocalWebService | undefined;
   let release!: () => void; let entered!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; }); const started = new Promise<void>(resolve => { entered = resolve; });
@@ -343,7 +348,7 @@ test('a stale settings read cannot replace a successfully saved model selection'
 });
 
 test('live WebService resolves saved dummy keys after restart and never records them in PostgreSQL or timeline', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-key-recovery-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-key-recovery-'));
   const key = 'synthetic-server-only-recovery-key'; const originalFetch = globalThis.fetch;
   const oldAmbient = process.env['MIRA_WEB_EXPLICIT_KEY']; let requests = 0; let service: LocalWebService | undefined;
   try {
@@ -393,7 +398,7 @@ const diagnosticConnection = (key: string) => ({ id: 'diagnostic-fixture', baseU
   models: [{ id: 'offline-model', contextWindow: 65536, maxTokens: 1024, reasoning: false, input: ['text'] }] });
 
 for (const recovery of ['restart', 'new-message'] as const) test(`live model HTTP failures persist safe diagnostics and preserve the failed Wake until ${recovery} recovery`, { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-model-failure-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-model-failure-'));
   const originalFetch = globalThis.fetch; const key = 'synthetic-private-diagnostic-key';
   let service: LocalWebService | undefined; let app: ReturnType<typeof createLocalHttp> | undefined; let requests = 0;
   let release!: () => void; let entered!: () => void;
@@ -489,7 +494,7 @@ for (const recovery of ['restart', 'new-message'] as const) test(`live model HTT
 });
 
 test('a PostgreSQL failure saving a provider error shows only a fixed temporary persistence notice', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-web-model-db-failure-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-model-db-failure-'));
   const originalFetch = globalThis.fetch; const key = 'synthetic-database-diagnostic-key';
   let service: LocalWebService | undefined; let app: ReturnType<typeof createLocalHttp> | undefined; let requests = 0;
   try {

@@ -8,12 +8,13 @@ import { testDatabaseUrl } from '../tests/integration/database.mts';
 
 // Fail, rather than skip, when the isolated real-database gate is unconfigured.
 const suite = process.argv[2];
-if (suite !== 'browser' && suite !== 'auth' && suite !== 'external' && suite !== 'management' && suite !== 'attachments' && suite !== 'live-input' && suite !== 'agent-capabilities' && suite !== 'feishu' && suite !== 'mcp') throw Error('Choose browser, auth, external, management, attachments, live-input agent-capabilities, feishu or mcp real-browser suite');
+if (suite !== 'replies' && suite !== 'browser' && suite !== 'auth' && suite !== 'external' && suite !== 'management' && suite !== 'attachments' && suite !== 'live-input' && suite !== 'agent-capabilities' && suite !== 'feishu' && suite !== 'mcp') throw Error('Choose replies, browser, auth, external, management, attachments, live-input agent-capabilities, feishu or mcp real-browser suite');
 const connectionString = testDatabaseUrl();
 // Resolve the installed browser before replacing HOME. CI always uses the
-// official Playwright installation for the UI. The managed-browser gate may
-// separately select runner-installed official Chrome with its supported sandbox.
-const executablePath = process.env['CI'] ? chromium.executablePath()
+// official Playwright installation for existing UI gates. The replies gate
+// requires Chromium's sandbox, supported by CI's installed official Chrome
+// (downloaded Chromium is restricted by the runner's AppArmor policy).
+const executablePath = process.env['CI'] ? (suite === 'replies' ? '/usr/bin/google-chrome' : chromium.executablePath())
   : process.env['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'] ?? chromium.executablePath();
 const home = await mkdtemp(path.join(os.tmpdir(), `mira-${suite}-web-e2e-`));
 try {

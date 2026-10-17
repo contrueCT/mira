@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { getCurrentSystemMessage, getSystemMessageText } from '@earendil-works/pi-ai';
 import type { LiveWakeInput, RecoverySnapshot, WakeRun } from '@mira/life';
@@ -83,7 +83,7 @@ test('real PostgreSQL runtime settles only the current tool before consuming new
 
 for (const [mode, code] of [['after-receipt', 80], ['after-consume', 81], ['after-outcome', 82], ['unknown', 83]] as const) {
   test(`real PostgreSQL process death ${mode}: newest input first and no repeated effect`, { timeout: 30_000 }, async () => {
-    const db = await createTestDatabase(); const directory = await mkdtemp('/tmp/mira-live-input-'); const counter = path.join(directory, 'effects');
+    const db = await createTestDatabase(); const directory = await realpath(await mkdtemp('/tmp/mira-live-input-')); const counter = path.join(directory, 'effects');
     const child = (selected: string) => exec(process.execPath, ['--import', guard, worker, db.schema, mode, selected, counter], { timeout: 20_000 });
     try {
       await assert.rejects(child(mode), error => error instanceof Error && 'code' in error && error.code === code);

@@ -1,0 +1,184 @@
+{
+  "formatVersion": 1,
+  "evaluatedAtUtc": "2026-10-16",
+  "sourceCommit": "ab63f3ad2cbedd16ac9fcf3d8a641f3ec4a293a1",
+  "sourceTree": "43678ff3b0f1175be09e0385e818a19d6bc9187c",
+  "evidenceType": "Six new cold first-attempt native evaluations; actual Pi runtime executes selected tools; not configured-provider validation",
+  "toolSchemasSha256": "3b77813d17e9b0aea6efc007290a23f7d8aff5d7d45ac7b27403152219d7b186",
+  "captureProbeSha256": "b8672dbd3e9545e6fa0431f0aeece62b68d3035f10cdca9c282b26ea8e52876c",
+  "captureCollectorSha256": "06ecae447436684ea0c784359a6addffd64188d2cd313fcecc4779d1b324342b",
+  "extractionCollectorSha256": "9735e926b29142b3a163d5be2d3c1206d52d7868e971502f6b46d047da059a51",
+  "extractionChange": "Collector additionally retains the actual setup event occurredAt for exact replay input; decisions and tool results are unchanged.",
+  "artifacts": {
+    "tests/behavior/fixtures/reply-native-traces.json": "9fc8057878c385789403081397c8d11bf1ad11a5041f42f51a98c2706268d200",
+    "tests/behavior/evaluator-instructions.json": "fd9c757c537d17f82710b60554271ebad9882657086aa715b6231ac00c27dd81",
+    "tests/behavior/archive/schema-50b1c221/reply-native-traces.json": "e9daa1c8ac3727352ae6863008719abe5e23fe052622af81c2f150097f855349",
+    "tests/behavior/archive/schema-50b1c221/evaluator-instructions.json": "b59905ded8c9d1ceda3c24250289b758e116dcf43ca7a4c0af9b715cbcd58506",
+    "tests/behavior/archive/integrated-first-attempts/reply-probe.mts.txt": "b8672dbd3e9545e6fa0431f0aeece62b68d3035f10cdca9c282b26ea8e52876c",
+    "tests/behavior/archive/integrated-first-attempts/process-exits.json": "e39154a618f55649d3ca1a1e117ad98984eeb4e064ceb7e2e978114a6c7fe136",
+    "tests/behavior/fixtures/reply-probe-teardown-replay.json": "00a064608ea1be93b3039b974019b2e95c0e02aad605dc465ed5ca65ff6506d4",
+    "tests/behavior/replay-reply-probe.mts": "1394ac21c545478800de20c7204d368e5a06d73ce88df4521407cefbee98951c",
+    "tests/behavior/fixtures/reply-probe-teardown-replay-node24-21.json": "85375153967cee017a5846d358e9e3926a1634104ae4251e74870ffa96788886"
+  },
+  "productionSourceSha256": {
+    "apps/server/src/extensions.ts": "e8625d54a28834c746755d9675a963d0837c9172b263dc3d6ba2e172f01edeaa",
+    "packages/runtime-pi/prompts/mira-system-v0.2.md": "a3ea5a98735089138296892ee0c30f47439c044b44a6e9bde0409724cbf22fe1"
+  },
+  "scenarios": [
+    {
+      "name": "older-quote",
+      "captureDirectory": "/tmp/mira-reply-probe-integrated-20261016T0908-older-quote",
+      "resultSha256": "9de04013bbe169813530476590f9456a62443592d0f04bf95593b1465b096dd4",
+      "failureFilePresent": false,
+      "blockedEffectFilePresent": false,
+      "steps": [
+        {
+          "number": 1,
+          "requestSha256": "0b1fa41e561584caae63dfeee2fc5af46050b014ec974cdb513b741b18d89213",
+          "decisionSha256": "0a1e68b022b42f5954809ed86b19ae1711e0d588d371f8d7413511f58f0d4bb4"
+        }
+      ],
+      "processExitCode": 1,
+      "postResultFailure": "TypeError: this[#options].writer.interruptSubagents is not a function"
+    },
+    {
+      "name": "select-target",
+      "captureDirectory": "/tmp/mira-reply-probe-integrated-20261016T0908-select-target",
+      "resultSha256": "6f2e7323e132c3af5dcb5161cf79dec49cfed729b815f153835ea2ce04bb6836",
+      "failureFilePresent": false,
+      "blockedEffectFilePresent": false,
+      "steps": [
+        {
+          "number": 1,
+          "requestSha256": "62fa48047a64345e4c581e5c679872c926fd21db75f9ffa4f03ea3d96e17c8bb",
+          "decisionSha256": "de49ba74a806f44053559b7770ea96ce1fe18a6e574fac59f54f899e5955c9f4"
+        },
+        {
+          "number": 2,
+          "requestSha256": "e5e2b78d33dc49d9473119fb005769f03ce8b795348f6a3d78392b38913a2639",
+          "decisionSha256": "8d3545acd2aab1d5e3bd9723cbc6714fd2f764d6b24dbd2b67ea3337a88604f3"
+        }
+      ],
+      "processExitCode": 1,
+      "postResultFailure": "TypeError: this[#options].writer.interruptSubagents is not a function"
+    },
+    {
+      "name": "live-input",
+      "captureDirectory": "/tmp/mira-reply-probe-integrated-20261016T0908-live-input",
+      "resultSha256": "beb7247427badae1faac6913d9c251ebdc20556a1ba08f989f4d15bda6e4884a",
+      "failureFilePresent": false,
+      "blockedEffectFilePresent": false,
+      "steps": [
+        {
+          "number": 1,
+          "requestSha256": "150a884d6b2f0b3c9558ad931d60cda6f9cdb0d26c34eb08c6337caa46f691ce",
+          "decisionSha256": "73c6b2bbc350c1eac5f921d40109f17f21b0301fff644aba7af2b53cc64648b1"
+        }
+      ],
+      "processExitCode": 1,
+      "postResultFailure": "TypeError: this[#options].writer.interruptSubagents is not a function"
+    },
+    {
+      "name": "compact-index",
+      "captureDirectory": "/tmp/mira-reply-probe-integrated-20261016T0908-compact-index",
+      "resultSha256": "444abfb6f600142fcb77f56fad078c2f36c449e8f1e6cbbbbdaa2bf5f83363bd",
+      "failureFilePresent": false,
+      "blockedEffectFilePresent": false,
+      "steps": [
+        {
+          "number": 1,
+          "requestSha256": "952402150293c39aad5760cd78026afc47785f5d64545f00a632a14608c9a64d",
+          "decisionSha256": "76ec09aa71e3c228705850d24535fda51d27acc8d9c61dbffc76d96a279d31b4"
+        },
+        {
+          "number": 2,
+          "requestSha256": "7479816a948ce4a942383a6f3a1d61906d6ece9fb05d8832ba20d46f67d80488",
+          "decisionSha256": "345576e911f0234668b32d39332213c65639f80aeb55ec087d9be73d8a39ce43"
+        },
+        {
+          "number": 3,
+          "requestSha256": "d0d27eeceb1df5f524920ccd726a480d980e0ff246b7ea48469d56f4b39fa415",
+          "decisionSha256": "46eb7db0f389f8a3783048756ea5b6090d0779b0243e1573a4cb11b7281af060"
+        },
+        {
+          "number": 4,
+          "requestSha256": "fc147fa406a7510401706422d2c39bcad19ac08702e0f0db10d84c8e8e0e54a3",
+          "decisionSha256": "7906f818ce5e75315e614ede3a2af5710ac3fb7010a93217655ef7b5c1784234"
+        }
+      ],
+      "processExitCode": 1,
+      "postResultFailure": "TypeError: this[#options].writer.interruptSubagents is not a function"
+    },
+    {
+      "name": "history-recovery",
+      "captureDirectory": "/tmp/mira-reply-probe-integrated-20261016T0908-history-recovery",
+      "resultSha256": "3f4a1e88b5cfedbb417742029e998721ba05a999661a7e7609a4865d7571f41c",
+      "failureFilePresent": false,
+      "blockedEffectFilePresent": false,
+      "steps": [
+        {
+          "number": 1,
+          "requestSha256": "d7e6f18815f9327bdd7032318f130b81bf418d168f48dd00c187ac40215a3319",
+          "decisionSha256": "5c161ce5b6f788306aa12210cd0ee70f2ccf88e1e09571f897cd4b4907d0bd13"
+        },
+        {
+          "number": 2,
+          "requestSha256": "6bfd4f0772ab641dcb2d350a6060b4c99c8e255cbc6985c404da908b0deea960",
+          "decisionSha256": "89d0be9f2a3b36e8a023c6fb02f6e8fc21df0da427867332eae03f0bb40eb3e6"
+        },
+        {
+          "number": 3,
+          "requestSha256": "546ccd12854a73f740f4ac22c5ef34b06d3a664e91fe21cdf179c46d78d5515a",
+          "decisionSha256": "aa0767060a10462d50efa24b6b3280349269590125ef25ffb75cd1931d6076dc"
+        },
+        {
+          "number": 4,
+          "requestSha256": "57ed75f33807f6f91bcb11cd379d568ecd3f9d5da55e3bac41b06e029c9861bd",
+          "decisionSha256": "53f70fc2058ac5430b201862866ca5b4839c809fba1e4e5a1765d0fe42d76bc2"
+        },
+        {
+          "number": 5,
+          "requestSha256": "0909f6b4c30e934c0800c51e50f03184c1c000c63707bd14008730f95e13a7e7",
+          "decisionSha256": "8d3545acd2aab1d5e3bd9723cbc6714fd2f764d6b24dbd2b67ea3337a88604f3"
+        }
+      ],
+      "processExitCode": 1,
+      "postResultFailure": "TypeError: this[#options].writer.interruptSubagents is not a function"
+    },
+    {
+      "name": "malicious-quote",
+      "captureDirectory": "/tmp/mira-reply-probe-integrated-20261016T0908-malicious-quote",
+      "resultSha256": "7fec7ee1a4d6be02cdcbb520162666fc6988fb19ceb9541259ce02664ac52733",
+      "failureFilePresent": false,
+      "blockedEffectFilePresent": false,
+      "steps": [
+        {
+          "number": 1,
+          "requestSha256": "771b72b36e8df33e85e0dcd0276de232ac6a0c5d8ab616f8141881e668346b86",
+          "decisionSha256": "3ec3d4272a6b10f9e01c220d8112bdedc2cfe396ab541c3716ec26a8a1d0056f"
+        }
+      ],
+      "processExitCode": 1,
+      "postResultFailure": "TypeError: this[#options].writer.interruptSubagents is not a function"
+    }
+  ],
+  "selectedNativeCalls": 8,
+  "nativeDecisions": 14,
+  "captureNodeVersion": "v24.19.0",
+  "ciNodeVersionPin": "24.21.0",
+  "teardownDisclosure": "All six first native attempts wrote completed result.json and then exited 1 in finally: ProbeWriter lacked interruptSubagents. No failure.json was emitted because the cleanup error occurred outside the catch. Native decisions and actual selected tool outcomes remain unchanged.",
+  "originalProcessExitArtifact": "tests/behavior/archive/integrated-first-attempts/process-exits.json",
+  "fixedProbeSha256": "61a121df5dd5b49445ebc43263fa3a2ebfbf498cc8e561c80f157c43c411d786",
+  "recordedChoiceReplay": {
+    "artifact": "tests/behavior/fixtures/reply-probe-teardown-replay.json",
+    "nodeVersion": "v24.19.0",
+    "pnpmVersion": "11.28.4",
+    "evidenceType": "Deterministic replay of the original native decisions through six actual fixed-probe CLI processes, all exit 0; not new native evaluations.",
+    "pinnedNodeReplay": {
+      "artifact": "tests/behavior/fixtures/reply-probe-teardown-replay-node24-21.json",
+      "nodeVersion": "v24.21.0",
+      "command": "/tmp/mira-node-24.21.0/node-v24.21.0-linux-x64/bin/node tests/behavior/replay-reply-probe.mts /tmp/mira-reply-probe-teardown-replay-node24-21-20261016T0939",
+      "outcome": "All six actual CLI processes exited 0; separate deterministic replay, not new native decisions."
+    }
+  }
+}

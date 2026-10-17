@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import os from 'node:os';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -20,7 +19,9 @@ const calls = (...content: AssistantMessage['content']): AssistantMessage => ({ 
 type Witness = { extensionId: string; version: string; label: string; callId: string; serial: number; arguments: Json };
 
 async function fixture() {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'mira-generated-runtime-'));
+  // Lifecycle assertions are independent of the runner's nested temporary HOME;
+  // keep incidental artifact paths short without changing the model budget.
+  const root = await realpath(await mkdtemp('/tmp/mira-generated-runtime-'));
   const artifactsDirectory = path.join(root, 'artifacts');
   const configurationFile = path.join(root, 'extensions.json');
   const effectsPath = path.join(root, 'effects.jsonl');

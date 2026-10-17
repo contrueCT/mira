@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
 import { LocalWebService, createLocalHttp } from '@mira/server';
@@ -17,7 +17,7 @@ async function settled(service: LocalWebService): Promise<void> {
 }
 
 test('management current Memory reads do not refresh frozen context; exact request receipts survive restart and unrelated failures', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-management-service-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-management-service-'));
   let service: LocalWebService | undefined; let calls = 0; let fail = false; const prompts: string[] = [];
   try {
     const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'management',

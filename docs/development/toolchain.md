@@ -54,6 +54,10 @@ exports 仅支持明确子路径映射到普通相对路径/null，或一层 `ty
 
 `pnpm test:integration` 要求显式 `MIRA_TEST_DATABASE_URL`；`pnpm check:all` 运行全部检查。连接限制、故障范围和执行记录见 [验收](../acceptance/durable-context.md)。测试 runner 为每次运行创建临时 HOME，子进程继承合成测试环境，不继承模型凭据。无数据库时应运行 `pnpm check` 并明确报告数据库阶段未执行，不能把它称作完整通过。
 
+macOS 的 `/tmp` 是 `/private/tmp` 的符号链接。测试夹具对自己刚创建的临时根使用 `realpath(await mkdtemp(...))`，再构造附件、Memory 与 Wake spool 路径；保留产品对符号链接、所有权和权限的拒绝断言。全量本地验收可显式设置 `TMPDIR=/private/tmp`，避免默认长临时路径或多层隔离目录超过 Unix socket 路径长度，也避免合成生命周期测试被无关路径长度推入上下文预算门禁。此设置不放宽浏览器 sandbox、socket 必须可用或真实 PostgreSQL 的要求。
+
+受管浏览器键盘门禁使用 Playwright `ControlOrMeta`，分别发送 macOS Command 或 Linux Control；后续提交值仍须精确相等，不能以事件已发送代替远端选择与编辑真正生效。真实 PG 门禁应串行运行：唯一 schema 隔离数据，但各 schema 的 owner sequence 可能分配相同数据库级 advisory key，并发独立套件会互相拒绝 writer。
+
 ## Pi 声明文件兼容例外
 
 2026-10-05 用户确认声明检查例外。Pi 1.0.2 发布的 `.d.ts` 中 JSON 导入缺少 NodeNext 所需 import attribute，Google 传递依赖的声明还引用未安装的可选 MCP SDK。未修改上游包，也未添加无用途的 MCP 依赖。
@@ -89,3 +93,5 @@ An unavailable native module produces an explicit PTY setup error; ordinary pipe
 execution and the existing synchronous Pi bash tool do not require a native addon.
 CI executes actual pipe/PTY/lifecycle tests on Linux and macOS. Windows is outside
 this first terminal implementation.
+
+`pnpm test:replies:e2e` 为双向指定消息回复的独立真实浏览器链路门禁；需先构建页面、安装 Chromium 并配置隔离的 `MIRA_TEST_DATABASE_URL`。它使用生产 HTTP/service/runtime 与真实 PostgreSQL，只有模型返回为合成，不代表真实模型回复选择质量。CI 保留原有门禁并执行此命令。

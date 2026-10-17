@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -14,7 +14,7 @@ const sourceDirectory = fileURLToPath(new URL('../../', import.meta.url));
 async function withRoot(run: (root: string, base: string) => Promise<void>): Promise<void> {
   // The suite runner sets TMPDIR inside its synthetic HOME; this adapter
   // deliberately rejects any user-home path, including that synthetic one.
-  const base = await mkdtemp('/tmp/mira-wake-input-test-');
+  const base = await realpath(await mkdtemp('/tmp/mira-wake-input-test-'));
   try { await run(path.join(base, 'spool'), base); }
   finally { await rm(base, { recursive: true, force: true }); }
 }
@@ -247,5 +247,43 @@ test('a tampered readonly artifact is preserved as a conflict instead of silentl
     await chmod(artifact.path, 0o400);
     await assert.rejects(materialize(root, 'tampered-run', 'canonical content'), /content conflict/);
     assert.equal(await readFile(artifact.path, 'utf8'), 'different content');
+  });
+});
+
+
+test('explicit private managed data root permits only its strict HOME descendant spool', async () => {
+  await withRoot(async (_root, base) => {
+    const oldHome = process.env['HOME'];
+    const home = path.join(base, 'home'); await mkdir(home, { mode: 0o700 });
+    process.env['HOME'] = home;
+    try {
+      const managedDataRoot = path.join(home, '.mira');
+      const rootDirectory = path.join(managedDataRoot, 'wake-input');
+      const options = { rootDirectory, managedDataRoot, sourceDirectory, runId: 'managed', content: 'canonical reply index' };
+      await assert.rejects(materialize(rootDirectory, 'managed', options.content), /outside/);
+      const file = await writeWakeInput(options);
+      assert.equal(await readFile(file.path, 'utf8'), options.content);
+      assert.deepEqual(await writeWakeInput(options), file);
+      await assert.rejects(writeWakeInput({ ...options, content: 'changed' }), /conflict/);
+      await unlink(file.path); assert.deepEqual(await writeWakeInput(options), file);
+      for (const bad of [home, base, '/', sourceDirectory, path.dirname(sourceDirectory), path.join(sourceDirectory, 'data'), `${managedDataRoot}/../escape`, 'relative']) {
+        await assert.rejects(writeWakeInput({ ...options, managedDataRoot: bad }), /managed data root|outside|absolute paths/);
+      }
+      for (const bad of [managedDataRoot, home, path.join(home, 'arbitrary'), '/']) {
+        await assert.rejects(writeWakeInput({ ...options, rootDirectory: bad }), /managed data root|outside/);
+      }
+      await chmod(managedDataRoot, 0o755);
+      await assert.rejects(writeWakeInput(options), /inaccessible/);
+      await chmod(managedDataRoot, 0o700);
+      const alias = path.join(home, 'alias'); await symlink(managedDataRoot, alias);
+      await assert.rejects(writeWakeInput({ ...options, managedDataRoot: alias, rootDirectory: path.join(alias, 'spool') }), /symlinks/);
+      const sourceAlias = path.join(base, 'source-alias'); await symlink(managedDataRoot, sourceAlias);
+      await assert.rejects(writeWakeInput({ ...options, sourceDirectory: sourceAlias }), /outside|managed data root/);
+      const childAlias = path.join(managedDataRoot, 'child-alias'); await symlink(base, childAlias);
+      await assert.rejects(writeWakeInput({ ...options, rootDirectory: path.join(childAlias, 'escape') }), /symlinks/);
+      assert.equal(await readFile(file.path, 'utf8'), options.content);
+    } finally {
+      if (oldHome === undefined) delete process.env['HOME']; else process.env['HOME'] = oldHome;
+    }
   });
 });

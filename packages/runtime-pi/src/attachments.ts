@@ -9,10 +9,10 @@ export function messageAttachments(message: unknown): AttachmentReference[] {
   if (value['miraAttachmentsInInput'] !== undefined && (value['miraAttachmentsInInput'] !== true || value['role'] !== 'user' || value['miraAttachments'] === undefined)) throw new Error('Invalid rendered attachment marker');
   if (value['miraAttachments'] === undefined) {
     const details = value['details'];
-    if (value['role'] === 'toolResult' && (value['toolName'] === 'send_attachment' || value['toolName'] === 'read') && value['isError'] === false
+    if (value['role'] === 'toolResult' && (value['toolName'] === 'send_attachment' || value['toolName'] === 'send_reply' || value['toolName'] === 'read') && value['isError'] === false
       && details && typeof details === 'object' && !Array.isArray(details)) {
       const publication = details as Record<string, unknown>;
-      if (publication['version'] === 1 && ((value['toolName'] === 'send_attachment' && publication['type'] === 'attachment-publication') || (value['toolName'] === 'read' && publication['type'] === 'attachment-read'))) {
+      if (publication['version'] === 1 && ((value['toolName'] === 'send_attachment' && publication['type'] === 'attachment-publication') || (value['toolName'] === 'send_reply' && publication['type'] === 'reply-publication') || (value['toolName'] === 'read' && publication['type'] === 'attachment-read'))) {
         validateAttachmentReferences(publication['attachments']);
         return publication['attachments'];
       }

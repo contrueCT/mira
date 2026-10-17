@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { getCurrentSystemMessage, getSystemMessageText } from '@earendil-works/pi-ai';
@@ -14,7 +14,7 @@ async function until(check: () => boolean | Promise<boolean>): Promise<void> {
 }
 
 test('PostgreSQL Web settings drive main, child and Dreaming reasoning and remain authoritative after restart', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-reasoning-service-'); let service: LocalWebService | undefined;
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-reasoning-service-')); let service: LocalWebService | undefined;
   const requests: { kind: string; level: string | undefined }[] = []; let spawned = false;
   try {
     const stream: StreamFn = (_model, context, options) => {
@@ -56,7 +56,7 @@ test('PostgreSQL Web settings drive main, child and Dreaming reasoning and remai
 });
 
 test('real Web service refuses settings saves while a child outlives an idle main, then preserves its next authenticated model request', { timeout: 30_000 }, async t => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-child-reasoning-settings-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-child-reasoning-settings-'));
   const release = deferred(); let service: LocalWebService | undefined; let childCalls = 0; let parentCalls = 0;
   const key = 'sk-synthetic-child-reasoning'; const levels: { child: boolean; level: unknown }[] = [];
   const response = (text: string, call?: { id: string; name: string; arguments: Record<string, string> }): Response => new Response([

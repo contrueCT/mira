@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { createAssistantMessageEventStream } from '@earendil-works/pi-ai';
@@ -30,7 +30,7 @@ async function setup(db: Database, root: string) {
 // Real PostgreSQL, host, ordinary tool persistence, timer and WakeLoop. Only the
 // provider is synthetic. A queued deadline cannot join or preempt an active run.
 test('scheduled Wake enqueues during active cognition and executes only in the next run', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-scheduling-service-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-scheduling-service-'));
   const gate = deferred(); let service: LocalWebService | undefined; let requests = 0;
   try {
     const { common, config } = await setup(db, root);
@@ -64,7 +64,7 @@ test('scheduled Wake enqueues during active cognition and executes only in the n
 });
 
 test('service restart catches up once, skips expired deadlines and preserves installation identity', { timeout: 30_000 }, async () => {
-  const db = await createTestDatabase(); const root = await mkdtemp('/tmp/mira-scheduling-restart-');
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-scheduling-restart-'));
   let service: LocalWebService | undefined; let requests = 0;
   try {
     const { common, config } = await setup(db, root);
