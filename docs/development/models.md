@@ -168,8 +168,14 @@ never modified to suppress SDK logging.
 
 ## 自定义推理参数格式
 
-模型设置中的推理 Chat Completions 模型默认在保存时自动测试参数格式：先发送 `reasoning_effort`，仅在服务明确拒绝这个参数时改试 `reasoning.effort`，成功后保存对应 `reasoningFormat: "openai" | "openrouter"`。每种格式最多一个请求，总计最多两个、30 秒、每次输出不超过 1024 token 和模型上限，会产生少量模型调用费用。探针使用当前推理强度，偏好 off 时测试 low，保留保存偏好。请求接受仅说明格式可用，不证明代理实际应用了强度。
+模型设置中的推理 Chat Completions 模型默认在保存时自动测试参数格式：先发送 `reasoning_effort`，服务明确拒绝后，依据主错误选择 LiteLLM 允许列表兼容或 OpenRouter `reasoning.effort`，成功后保存对应 `reasoningFormat: "openai" | "openrouter" | "litellm"`。每种格式最多一个请求，总计最多两个、30 秒、每次输出不超过 1024 token 和模型上限，会产生少量模型调用费用。探针使用当前推理强度，偏好 off 时测试 low，保留保存偏好。请求接受仅说明格式可用，不证明代理实际应用了强度。
 
 测试失败保留草稿；关闭设置取消测试和后续保存。鉴权、限流、网络及非参数兼容错误停止测试。也可按服务文档手动选择格式。编辑连接地址/协议或模型 ID 后重新测试当前所选模型。其他模型选中保存时才测试；无批量付费探测。
 
 正常聊天使用已保存格式。旧配置或 CLI 缺字段仍沿用 Pi 原生默认；普通请求不自动切换或剥离字段。Responses/Anthropic 使用原生适配。详见 [ADR 0041](../adr/0041-custom-model-discovery-and-reasoning-format.md)。
+
+### LiteLLM 推理参数兼容
+
+Chat Completions 的 `reasoningFormat: "litellm"` 保留标准 `reasoning_effort`，并在它存在时附加固定的 `allowed_openai_params: ["reasoning_effort"]`，适用于代理未正确识别新模型能力的情况。设置的自动测试先发标准请求，只有明确的 LiteLLM 参数拒绝及允许列表提示才尝试此配置，成功后保存；最多两次请求。若已保存其他格式，可编辑模型能力，把推理参数格式改回“自动测试并保存”后保存。已有配置不会在部署时自动改写；正常聊天不探测、不移除推理参数。
+
+此兼容方式依照 [LiteLLM 官方请求参数说明](https://docs.litellm.ai/docs/completion/drop_params#dynamically-pass-allowed_openai_params-in-a-request)。请求成功证明接口接受参数；实际推理强度仍由上游执行。

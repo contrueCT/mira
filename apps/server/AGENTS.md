@@ -48,7 +48,7 @@
 - ADR0035：扩展私有设置路由复用全部Web鉴权，secret仅写入；模型inspect仅暴露settings固定state/code，不暴露details/授权链接/凭据。异常文字脱敏但保留unknown-outcome恢复语义。
 - writer ownership abort与显式close共用joinable清理；先fence/cancel再并行drain，任一cleanup失败不跳过其他资源/关闭writer。CLI同样绑定Host ownerSignal；unknown副作用不自动重放。
 
-- ADR 0041：发现只导入明确且有效的能力元数据；custom reasoningFormat 只适用 Chat Completions；设置探针最多两个 Pi 请求，仅明确参数拒绝换格式，失败/取消不保存、不改主轮错误；正常聊天不探测。
+- ADR 0041：发现只导入明确且有效的能力元数据；custom reasoningFormat 只适用 Chat Completions；设置探针最多两个 Pi 请求，仅明确参数拒绝换格式；LiteLLM 依主错误提示选择固定 reasoning_effort 允许列表，失败/取消不保存、不改主轮错误；正常聊天不探测。
 
 
 - Timeline replies: `replies.ts` resolves only same-Mira public main messages by canonical History UUID. Browser submits only `replyToMessageId`; frozen quote/source joins immutable Event/live input. Main-only `send_reply` publishes through successful durable tool outcome, never a channel send or mutable next-response flag. Both Timeline HTTP routes whitelist `reply`; child/internal/notice records remain unavailable as targets.

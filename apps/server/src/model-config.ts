@@ -10,7 +10,7 @@ export interface CustomModelConfiguration {
   maxTokens: number;
   reasoning: boolean;
   /** Chat Completions wire format; absent preserves Pi’s protocol/URL defaults. */
-  reasoningFormat?: 'openai' | 'openrouter';
+  reasoningFormat?: 'openai' | 'openrouter' | 'litellm';
   input: ('text' | 'image')[];
 }
 export interface CustomConnection {
@@ -84,10 +84,10 @@ export function parseModelConfiguration(value: unknown): ModelConfiguration {
       const contextWindow = positive(model['contextWindow']); const maxTokens = positive(model['maxTokens']);
       if (maxTokens > contextWindow) throw Error('maxTokens cannot exceed contextWindow');
       if (typeof model['reasoning'] !== 'boolean') throw Error('Custom model reasoning must be explicitly true or false');
-      if (model['reasoningFormat'] !== undefined && (!['openai', 'openrouter'].includes(String(model['reasoningFormat'])) || typeof model['reasoningFormat'] !== 'string' || api !== 'openai-completions')) throw Error('Reasoning format is only supported for Chat Completions and must name an explicit format');
+      if (model['reasoningFormat'] !== undefined && (!['openai', 'openrouter', 'litellm'].includes(String(model['reasoningFormat'])) || typeof model['reasoningFormat'] !== 'string' || api !== 'openai-completions')) throw Error('Reasoning format is only supported for Chat Completions and must name an explicit format');
       const input = model['input'];
       if (!Array.isArray(input) || input.length === 0 || input.length > 2 || !input.every(kind => kind === 'text' || kind === 'image') || new Set(input).size !== input.length) throw Error('Custom model input must explicitly list text and/or image');
-      return { id: modelId, ...(model['name'] === undefined ? {} : { name: text(model['name']) }), contextWindow, maxTokens, reasoning: model['reasoning'], ...(model['reasoningFormat'] === undefined ? {} : { reasoningFormat: model['reasoningFormat'] as 'openai' | 'openrouter' }), input: input as ('text' | 'image')[] };
+      return { id: modelId, ...(model['name'] === undefined ? {} : { name: text(model['name']) }), contextWindow, maxTokens, reasoning: model['reasoning'], ...(model['reasoningFormat'] === undefined ? {} : { reasoningFormat: model['reasoningFormat'] as 'openai' | 'openrouter' | 'litellm' }), input: input as ('text' | 'image')[] };
     });
     const baseUrl = validateBaseUrl(item['baseUrl']);
     if (item['modelsUrl'] !== undefined) validateBaseUrl(item['modelsUrl']);

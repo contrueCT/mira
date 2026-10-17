@@ -85,6 +85,6 @@ no external QR service receives the link.
 
 ## 配置测试与错误提示
 
-推理 Chat Completions 模型可在保存时自动测试参数格式，保留推理强度。界面说明测试会调用模型并可能产生少量费用；失败保留草稿，关闭取消后续保存。详情见 [ADR 0041](../../docs/adr/0041-custom-model-discovery-and-reasoning-format.md)。
+推理 Chat Completions 模型可在保存时自动测试参数格式，保留推理强度；提供 OpenAI、OpenRouter 和 LiteLLM 兼容三种预设，单次保存最多测试两次。界面说明测试会调用模型并可能产生少量费用；失败保留草稿，关闭取消后续保存。详情见 [ADR 0041](../../docs/adr/0041-custom-model-discovery-and-reasoning-format.md)。
 
 运行错误可关闭当前一次提示，或通过“查看运行错误”展开；顶部继续显示异常状态。关闭记录只保存该次错误 ID，刷新/轮询不重复弹出，同样文字的新错误会重新出现。网络和待确认消息存储故障仍保持可见。

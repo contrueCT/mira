@@ -191,6 +191,7 @@ export function createModelTransport(configuration: ModelConfiguration, selectio
   const builtins = createBuiltinCatalog();
   for (const id of Object.keys(config.builtinCredentials)) if (!builtins.getProvider(id)) throw Error('Unknown built-in credential provider');
   let model: Model<Api>; let provider: Provider; let apiKeyEnv: string;
+  let allowLiteLLMReasoning = false;
   if (selection.kind === 'builtin') {
     const selected = builtins.getProvider(selection.provider); const selectedModel = builtins.getModel(selection.provider, selection.model);
     if (!selected || !selectedModel) throw Error('Unknown built-in provider/model');
@@ -208,11 +209,12 @@ export function createModelTransport(configuration: ModelConfiguration, selectio
     const selected = connection?.models.find(item => item.id === selection.model);
     if (!connection || !selected) throw Error('Unknown custom connection/model');
     apiKeyEnv = connection.apiKeyEnv;
+    allowLiteLLMReasoning = selected.reasoningFormat === 'litellm';
     const id = `custom:${connection.id}`;
     if (builtins.getProvider(id)) throw Error('Custom provider ID collides with a built-in provider');
     model = { id: selected.id, name: selected.name ?? selected.id, api: connection.api, provider: id, baseUrl: connection.baseUrl,
       contextWindow: selected.contextWindow, maxTokens: selected.maxTokens, reasoning: selected.reasoning,
-      ...(selected.reasoningFormat ? { compat: { thinkingFormat: selected.reasoningFormat, supportsReasoningEffort: selected.reasoningFormat === 'openai' } } : {}), input: [...selected.input],
+      ...(selected.reasoningFormat ? { compat: { thinkingFormat: selected.reasoningFormat === 'openrouter' ? 'openrouter' : 'openai', supportsReasoningEffort: selected.reasoningFormat !== 'openrouter' } } : {}), input: [...selected.input],
       // Pi requires numeric rates; these are calculation placeholders, not prices.
       // Mira's public connection descriptor reports unknown, never free.
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
@@ -289,6 +291,11 @@ export function createModelTransport(configuration: ModelConfiguration, selectio
           if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw Error('Invalid model request payload');
           const body = payload as Record<string, unknown>;
           nativeVideo.apply(body);
+          // LiteLLM may not recognize a new model ID even when its upstream
+          // accepts standard effort. Allow only the actual Pi-generated field.
+          if (allowLiteLLMReasoning && canonicalModel.api === 'openai-completions' && typeof body['reasoning_effort'] === 'string') {
+            body['allowed_openai_params'] = ['reasoning_effort'];
+          }
           // Pi's budget-based Anthropic adapter adds thinking to maxTokens. Mira's
           // existing cap covers the entire output, including thinking, not just text.
           if (canonicalModel.api === 'anthropic-messages' && body['thinking'] && typeof body['thinking'] === 'object') {

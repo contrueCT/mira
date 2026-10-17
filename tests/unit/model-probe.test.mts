@@ -9,6 +9,7 @@ import { normalizeContext } from '@earendil-works/pi-ai';
 const key = 'synthetic-probe-private-key';
 const completion = () => new Response('data: {"id":"probe","choices":[{"index":0,"delta":{"role":"assistant","content":"OK"},"finish_reason":null}]}\n\ndata: {"id":"probe","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
 const rejected = (status: number, message: string) => new Response(JSON.stringify({ error: { message } }), { status, headers: { 'content-type': 'application/json' } });
+const liteLLMRejection = "litellm.UnsupportedParamsError: openai does not support parameters: ['reasoning_effort'], for model=gpt-6-luna. To drop these, set `litellm.drop_params=True` or for proxy: `litellm_settings: drop_params: true` . If you want to use these params dynamically send allowed_openai_params=['reasoning_effort'] in your request.. Received Model Group=gpt-6-luna Available Model Group Fallbacks=None";
 async function fixture(t: test.TestContext) {
   const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-probe-')));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -24,7 +25,7 @@ test('probe switches only after explicit rejection, preserves effort, redacts an
   const result = await store.probe(saved, { fetch: async (_url, init) => {
     assert.equal(new Headers(init?.headers).get('authorization'), `Bearer ${key}`);
     bodies.push(JSON.parse(String(init?.body)));
-    return bodies.length === 1 ? rejected(400, `litellm.UnsupportedParamsError: openai does not support parameters: ['reasoning_effort']; ${key}`) : completion();
+    return bodies.length === 1 ? rejected(400, `openai does not support parameters: ['reasoning_effort']; ${key}`) : completion();
   } });
   assert.equal(result.status, 'supported'); if (result.status !== 'supported') return;
   assert.equal(result.format, 'openrouter');
@@ -100,4 +101,53 @@ test('field-first parameter rejection switches format, network errors stop immed
   calls = 0;
   const failed = await store.probe(saved, { fetch: async () => { calls++; throw Object.assign(new Error('Synthetic timeout'), { code: 'ETIMEDOUT' }); } });
   assert.equal(failed.status, 'failed'); assert.equal(calls, 1);
+});
+
+test('LiteLLM rejection probes its allowlist, persists it and reuses the actual Pi wire format after restart', async t => {
+  const { store, saved } = await fixture(t); const bodies: Record<string, unknown>[] = [];
+  const result = await store.probe(saved, { fetch: async (_url, init) => {
+    const body = JSON.parse(String(init?.body)); bodies.push(body);
+    assert.equal(body.reasoning_effort, 'high'); assert.equal(body.reasoning, undefined);
+    assert.equal(body.drop_params, undefined); assert.equal(body.max_completion_tokens, 1024);
+    return bodies.length === 1 ? rejected(400, `${liteLLMRejection} ${key}`) : completion();
+  } });
+  assert.equal(result.status, 'supported'); if (result.status !== 'supported') return;
+  assert.equal(result.format, 'litellm'); assert.equal(bodies.length, 2);
+  assert.equal(bodies[0]!['allowed_openai_params'], undefined);
+  assert.deepEqual(bodies[1]!['allowed_openai_params'], ['reasoning_effort']);
+  assert.ok(!JSON.stringify(result).includes(key));
+  assert.deepEqual(await store.get(), saved);
+  saved.configuration.customConnections[0]!.models[0]!.reasoningFormat = result.format;
+  await store.save(saved);
+  const restarted = new WebSettingsStore(store.file, store.sourceDirectory);
+  for (const effort of ['low', 'medium', 'high', undefined] as const) {
+    let calls = 0;
+    const transport = restarted.transport(await restarted.get(), { fetch: async (_url, init) => {
+      calls++; const body = JSON.parse(String(init?.body));
+      assert.equal(body.reasoning_effort, effort); assert.equal(body.reasoning, undefined);
+      assert.deepEqual(body.allowed_openai_params, effort ? ['reasoning_effort'] : undefined);
+      assert.equal(body.drop_params, undefined); return completion();
+    } });
+    const stream = await transport.streamFn(transport.model, normalizeContext({ messages: [{ role: 'user', content: 'Fixture', timestamp: 0 }] }), { ...(effort ? { reasoning: effort } : {}) });
+    assert.equal((await stream.result()).stopReason, 'stop'); assert.equal(calls, 1);
+  }
+});
+
+for (const second of ["Unknown parameter: allowed_openai_params", "Unsupported parameter: reasoning_effort", 'Invalid value for reasoning_effort: high']) {
+  test(`LiteLLM compatibility rejection stops without trying OpenRouter: ${second}`, async t => {
+    const { store, saved } = await fixture(t); let calls = 0;
+    const result = await store.probe(saved, { fetch: async () => rejected(400, ++calls === 1 ? liteLLMRejection : second) });
+    assert.equal(result.status, 'failed'); assert.equal(calls, 2);
+    assert.deepEqual(result.attempts.map(attempt => attempt.format), ['openai', 'litellm']);
+    assert.deepEqual(await store.get(), saved);
+  });
+}
+
+test('LiteLLM without an allowlist hint stops and unrelated rejection cannot activate the hint', async t => {
+  const { store, saved } = await fixture(t);
+  for (const message of ["litellm.UnsupportedParamsError: openai does not support parameters: ['reasoning_effort']", liteLLMRejection.replace("parameters: ['reasoning_effort']", "parameters: ['temperature']")]) {
+    let calls = 0;
+    const result = await store.probe(saved, { fetch: async () => { calls++; return rejected(400, message); } });
+    assert.equal(result.status, 'failed'); assert.equal(calls, 1);
+  }
 });

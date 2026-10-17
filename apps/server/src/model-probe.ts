@@ -3,7 +3,7 @@ import { createModelTransport, type ModelSelection, type ModelTransportOptions }
 import type { ModelConfiguration } from './model-config.ts';
 import type { ModelRequestFailure } from './model-errors.ts';
 
-export type ReasoningFormat = 'openai' | 'openrouter';
+export type ReasoningFormat = 'openai' | 'openrouter' | 'litellm';
 export interface ModelProbeAttempt { format: ReasoningFormat; status: 'accepted' | 'unsupported' | 'failed'; message?: string }
 export type ModelProbeResult = { status: 'supported'; format: ReasoningFormat; attempts: ModelProbeAttempt[] }
   | { status: 'failed'; attempts: ModelProbeAttempt[] };
@@ -17,7 +17,7 @@ function unsupportedParameter(failure: ModelRequestFailure | undefined, format: 
   // Capture the rejected name or bracketed list immediately after the rejection,
   // never a later suggestion, accepted-parameter list, request ID or bad value.
   const rejected = /(?:\b(?:unsupported|unknown|unrecognized)\s+(?:(?:request|keyword)\s+)?(?:parameters?|arguments?|fields?)|\bdoes not support\s+(?:the\s+)?(?:parameters?|arguments?|fields?))\s*[:=]?\s*(\[[^\]]{1,256}\]|["'`][\w.]+["'`]|[\w.]+)/giu;
-  const expected = format === 'openai' ? ['reasoning_effort'] : ['reasoning', 'reasoning.effort'];
+  const expected = format !== 'openrouter' ? ['reasoning_effort'] : ['reasoning', 'reasoning.effort'];
   for (const match of text.matchAll(rejected)) {
     const names = match[1]!.replace(/[\[\]"'`\s]/gu, '').split(',');
     if (names.some(name => expected.includes(name))) return true;
@@ -33,7 +33,8 @@ export async function probeReasoningFormat(configuration: ModelConfiguration, se
   if (!connection || connection.api !== 'openai-completions' || !selected?.reasoning) throw Error('Reasoning probe requires a reasoning Chat Completions model');
   const signal = AbortSignal.any([AbortSignal.timeout(30_000), ...(options.signal ? [options.signal] : [])]);
   const attempts: ModelProbeAttempt[] = [];
-  for (const format of ['openai', 'openrouter'] as const) {
+  const formats: ReasoningFormat[] = ['openai'];
+  for (const format of formats) {
     signal.throwIfAborted();
     let failure: ModelRequestFailure | undefined;
     const transport = createModelTransport({ ...configuration, customConnections: [{ ...connection, models: [{ ...selected, reasoningFormat: format }] }] }, selection,
@@ -51,7 +52,14 @@ export async function probeReasoningFormat(configuration: ModelConfiguration, se
     }
     const unsupported = unsupportedParameter(failure, format);
     attempts.push({ format, status: unsupported ? 'unsupported' : 'failed', message: failure?.message ?? 'Model probe failed without a supported diagnostic' });
-    if (!unsupported) break;
+    if (!unsupported || format !== 'openai') break;
+    // Only the primary, sanitized provider error can identify this compatibility
+    // path. Do not switch a LiteLLM rejection to OpenRouter's different wire field.
+    const liteLLM = /\blitellm\.UnsupportedParamsError\b/u.test(failure?.providerMessage ?? '');
+    if (liteLLM) {
+      if (!/\ballowed_openai_params\s*=\s*\[\s*['"`]reasoning_effort['"`]\s*\]/u.test(failure?.providerMessage ?? '')) break;
+      formats.push('litellm');
+    } else formats.push('openrouter');
   }
   return { status: 'failed', attempts };
 }

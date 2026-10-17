@@ -1088,10 +1088,10 @@ test('endpoint edits invalidate formats and probe the selected model again', asy
   await expect(page.getByLabel('推理参数格式', { exact: true })).toHaveValue('');
 });
 
-test('new reasoning models automatically probe before saving the accepted format', async ({ page }) => {
+test('new reasoning models automatically probe before saving LiteLLM compatibility', async ({ page }, testInfo) => {
   const { writes } = await mockSettings(page);
   let probes = 0;
-  await page.route('**/api/models/probe', route => { probes++; expect(writes).toHaveLength(0); return route.fulfill({ json: { status: 'supported', format: 'openrouter', attempts: [] } }); });
+  await page.route('**/api/models/probe', route => { probes++; expect(writes).toHaveLength(0); return route.fulfill({ json: { status: 'supported', format: 'litellm', attempts: [] } }); });
   await openSettings(page); await page.getByRole('button', { name: '自定义连接', exact: true }).click();
   await page.getByRole('button', { name: '手动添加', exact: true }).click();
   await page.getByLabel('模型 ID', { exact: true }).fill('new-reasoning-model');
@@ -1101,8 +1101,17 @@ test('new reasoning models automatically probe before saving the accepted format
   await expect(page.getByLabel('推理参数格式', { exact: true })).toHaveValue('');
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await expect(page.getByText(/配置已保存/u)).toBeVisible();
-  expect(writes[0]!.configuration.customConnections[0]!.models.find(entry => entry.id === 'new-reasoning-model')!.reasoningFormat).toBe('openrouter');
+  expect(writes[0]!.configuration.customConnections[0]!.models.find(entry => entry.id === 'new-reasoning-model')!.reasoningFormat).toBe('litellm');
   expect(probes).toBe(1);
+  await expect(page.getByText(/接口已接受 LiteLLM/u)).toBeVisible();
+  await page.getByRole('button', { name: '编辑模型能力', exact: true }).click();
+  await expect(page.getByLabel('推理参数格式', { exact: true })).toHaveValue('litellm');
+  await page.getByLabel('推理参数格式', { exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath('litellm-desktop.png') });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByLabel('推理参数格式', { exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath('litellm-narrow.png') });
 });
 
 test('switching away from Chat Completions removes incompatible formats from saved models and the open draft', async ({ page }) => {

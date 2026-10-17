@@ -17,7 +17,7 @@ import type { BuiltinCatalog, CustomConnection, CustomConnectionWrite, CustomMod
 interface Props { synthetic: boolean; onClose: () => void; onSaved: () => void; returnFocus: RefObject<HTMLButtonElement | null>; memoryRequest: MemoryPanelProps['request']; memoryPending: MemoryPanelProps['pending']; sending: boolean; storageError: string | null; onMemorySubmit: MemoryPanelProps['onSubmit']; onMemoryRetry: MemoryPanelProps['onRetry'] }
 type SettingsTab = 'model' | 'memory' | 'extensions' | 'runs' | 'access' | 'browser';
 const tabs: { id: SettingsTab; label: string }[] = [{ id: 'model', label: '模型' }, { id: 'memory', label: 'Memory' }, { id: 'extensions', label: '扩展' }, { id: 'runs', label: '运行记录' }, { id: 'access', label: '访问' }, { id: 'browser', label: '浏览器' }];
-interface ModelDraft { originalId: string | null; id: string; name: string; contextWindow: string; maxTokens: string; reasoning: '' | 'true' | 'false'; reasoningFormat: '' | 'openai' | 'openrouter'; input: '' | 'text' | 'image' | 'text-image' }
+interface ModelDraft { originalId: string | null; id: string; name: string; contextWindow: string; maxTokens: string; reasoning: '' | 'true' | 'false'; reasoningFormat: '' | 'openai' | 'openrouter' | 'litellm'; input: '' | 'text' | 'image' | 'text-image' }
 const blankModel = (id = '', name = ''): ModelDraft => ({ originalId: null, id, name, contextWindow: '', maxTokens: '', reasoning: 'false', reasoningFormat: '', input: 'text' });
 function modelDraftFrom(model: CustomModel): ModelDraft {
   return { originalId: model.id, id: model.id, name: model.name ?? '', contextWindow: String(model.contextWindow), maxTokens: String(model.maxTokens), reasoning: model.reasoning ? 'true' : 'false', reasoningFormat: model.reasoningFormat ?? '', input: model.input.length === 2 ? 'text-image' : model.input[0] ?? '' };
@@ -274,14 +274,14 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
       const model = target?.models.find(item => item.id === selected?.model);
       if (target?.api === 'openai-completions' && model?.reasoning && !model.reasoningFormat) {
         setProbing(true); setProbeNotice(null);
-        const probe = await api<{ status: 'supported' | 'failed'; format?: 'openai' | 'openrouter'; attempts: { format: string; message?: string }[] }>('/api/models/probe', { method: 'POST', body: JSON.stringify(next), signal: controller.signal });
+        const probe = await api<{ status: 'supported' | 'failed'; format?: 'openai' | 'openrouter' | 'litellm'; attempts: { format: string; message?: string }[] }>('/api/models/probe', { method: 'POST', body: JSON.stringify(next), signal: controller.signal });
         controller.signal.throwIfAborted();
         if (!aliveRef.current || version !== editVersionRef.current) return;
-        if (probe.status !== 'supported' || !['openai', 'openrouter'].includes(probe.format ?? '')) {
+        if (probe.status !== 'supported' || !['openai', 'openrouter', 'litellm'].includes(probe.format ?? '')) {
           throw new Error(`推理参数测试未通过，配置尚未保存。${probe.attempts.map(attempt => `${attempt.format}：${attempt.message ?? '请求失败'}`).join('；')}`);
         }
         model.reasoningFormat = probe.format!;
-        setProbeNotice(`接口已接受 ${probe.format === 'openai' ? 'reasoning_effort' : 'reasoning.effort'}；实际推理强度由服务端执行。`);
+        setProbeNotice(`接口已接受 ${probe.format === 'litellm' ? 'LiteLLM reasoning_effort 兼容参数' : probe.format === 'openai' ? 'reasoning_effort' : 'reasoning.effort'}；实际推理强度由服务端执行。`);
         setProbing(false);
       }
       controller.signal.throwIfAborted();
@@ -348,7 +348,7 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
                 <label className="field-label" htmlFor="model-name">显示名称 <span className="optional">可选</span></label><input id="model-name" value={modelDraft.name} onChange={event => updateModelDraft({ name: event.target.value })} />
                 <div className="field-grid"><div><label className="field-label" htmlFor="context-window">上下文窗口</label><input id="context-window" type="number" min="1" step="1" placeholder="tokens" value={modelDraft.contextWindow} onChange={event => updateModelDraft({ contextWindow: event.target.value })} /></div><div><label className="field-label" htmlFor="max-tokens">最大输出</label><input id="max-tokens" type="number" min="1" step="1" placeholder="tokens" value={modelDraft.maxTokens} onChange={event => updateModelDraft({ maxTokens: event.target.value })} /></div></div>
                 <div className="field-grid"><div><label className="field-label" htmlFor="reasoning">推理能力</label><select id="reasoning" value={modelDraft.reasoning} onChange={event => updateModelDraft({ reasoning: event.target.value as ModelDraft['reasoning'] })}><option value="" disabled>请选择</option><option value="false">未声明或不支持</option><option value="true">支持</option></select></div><div><label className="field-label" htmlFor="model-input">输入类型</label><select id="model-input" value={modelDraft.input} onChange={event => updateModelDraft({ input: event.target.value as ModelDraft['input'] })}><option value="" disabled>请选择</option><option value="text">文本</option><option value="image">图片</option><option value="text-image">文本和图片</option></select></div></div>
-                {modelDraft.reasoning === 'true' && connection.api === 'openai-completions' && <><label className="field-label" htmlFor="reasoning-format">推理参数格式</label><select id="reasoning-format" value={modelDraft.reasoningFormat} onChange={event => updateModelDraft({ reasoningFormat: event.target.value as ModelDraft['reasoningFormat'] })}><option value="">自动测试并保存</option><option value="openai">OpenAI · reasoning_effort</option><option value="openrouter">OpenRouter · reasoning.effort</option></select><p className="field-hint">自动模式在保存时用简短请求测试两种格式，仅在明确不支持参数时换下一种。会调用模型，可能产生少量费用；失败保留草稿。手动选择按服务文档填写。</p></> }
+                {modelDraft.reasoning === 'true' && connection.api === 'openai-completions' && <><label className="field-label" htmlFor="reasoning-format">推理参数格式</label><select id="reasoning-format" value={modelDraft.reasoningFormat} onChange={event => updateModelDraft({ reasoningFormat: event.target.value as ModelDraft['reasoningFormat'] })}><option value="">自动测试并保存</option><option value="openai">OpenAI · reasoning_effort</option><option value="openrouter">OpenRouter · reasoning.effort</option><option value="litellm">LiteLLM · reasoning_effort 兼容</option></select><p className="field-hint">自动模式在保存时先测试标准参数，明确拒绝后按服务提示尝试 LiteLLM 兼容或 OpenRouter 格式，最多两次。会调用模型，可能产生少量费用；失败保留草稿。手动选择按服务文档填写。</p></> }
               </div>}
             </>}
           </section>}

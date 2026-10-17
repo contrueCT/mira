@@ -25,7 +25,7 @@ export interface CustomModel {
   contextWindow: number;
   maxTokens: number;
   reasoning: boolean;
-  reasoningFormat?: 'openai' | 'openrouter';
+  reasoningFormat?: 'openai' | 'openrouter' | 'litellm';
   input: ('text' | 'image')[];
 }
 export interface CustomConnection {
