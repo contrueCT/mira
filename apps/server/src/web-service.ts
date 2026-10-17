@@ -8,7 +8,7 @@ import type { SubagentWriter, SubagentReader } from '@mira/life';
 import { withVideoRead } from './video-read-tool.ts';
 import path from 'node:path';
 import { AttachmentStore, attachmentDescriptor, attachmentPublication, createAttachmentTool } from './attachments.ts';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { assertJson } from '@mira/context';
 import { realpath, stat } from 'node:fs/promises';
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Api } from '@earendil-works/pi-ai';
@@ -106,12 +106,13 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   readonly #abort = new AbortController();
   #drain: Promise<void> | undefined;
   #error: string | ModelRequestFailure | PersistenceFailureNotice | null = null;
+  #errorId: string | null = null;
   #modelFailure: ModelRequestFailure | null = null;
   #modelRetry: ModelRetryStatus | null = null;
   #closed = false;
   #closeTask: Promise<void> | undefined;
   readonly #ownershipLost = (): void => {
-    void this.close().catch(() => { this.#error ??= publicFailure; });
+    void this.close().catch(() => { if (!this.#error) { this.#error = publicFailure; this.#errorId = randomUUID(); } });
   };
   #settingsValue: WebSettings;
   #configurationWrite = false;
@@ -233,14 +234,14 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     // A durable write fault aborts ownership before its rejection reaches us.
     // Keep its safe notice after fencing; ordinary shutdown errors stay silent.
     const notice = PersistenceFailureNotice.from(error);
-    if (notice || !this.#closed) this.#error = notice ?? fallback;
+    if (notice || !this.#closed) { this.#error = notice ?? fallback; this.#errorId = randomUUID(); }
   }
   #kick(): void {
     if (this.#closed || this.#writer.signal.aborted) return;
     if (this.#configurationWrite || (!this.#options.synthetic && !hasSelectedWebApiKey(this.#settingsValue))) { this.#kickRequested = true; return; }
     if (this.#drain) { this.#kickRequested = true; return; }
     this.#kickRequested = false;
-    this.#error = null; this.#modelFailure = null;
+    this.#error = null; this.#errorId = null; this.#modelFailure = null;
     this.#drain = this.#loop.drain(this.#abort.signal).then(() => {}).catch((error: unknown) => {
       this.#recordFailure(error, error instanceof Error && error.message === this.#modelFailure?.terminalMessage ? this.#modelFailure : publicFailure);
     }).finally(() => {
@@ -256,7 +257,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   async status(): Promise<Awaited<ReturnType<WebBackend['status']>>> {
     const selection = this.#settingsValue.selection;
     return { state: this.#closed || this.#writer.signal.aborted ? 'stopped' : this.#error ? 'error' : this.#drain ? 'working' : 'idle',
-      mode: this.#options.synthetic ? 'synthetic' : 'live', model: this.#options.synthetic ? '模拟模型' : selection?.model ?? null, error: this.#error, modelRetry: this.#closed || this.#writer.signal.aborted ? null : this.#modelRetry };
+      mode: this.#options.synthetic ? 'synthetic' : 'live', model: this.#options.synthetic ? '模拟模型' : selection?.model ?? null, error: this.#error, errorId: this.#errorId, modelRetry: this.#closed || this.#writer.signal.aborted ? null : this.#modelRetry };
   }
   async settings(): Promise<WebSettings> {
     const generation = ++this.#settingsGeneration;
@@ -276,6 +277,16 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     try { const saved = await this.#settings.save(value); this.#settingsGeneration++; this.#settingsValue = saved; return structuredClone(saved); }
     finally {
       this.#configurationWrite = false; this.#settingsGeneration++;
+      if (this.#kickRequested && !this.#error) this.#kick();
+      else this.#dreaming?.schedule();
+    }
+  }
+  async probe(value: unknown, signal?: AbortSignal) {
+    if (this.#closed || this.#drain || this.#configurationWrite || this.#subagents.hasActiveWork) throw new WebHttpError('busy');
+    this.#configurationWrite = true;
+    try { return await this.#settings.probe(value, { ...(this.#options.modelFetch ? { fetch: this.#options.modelFetch } : {}), signal: signal ? AbortSignal.any([signal, this.#abort.signal, this.#writer.signal]) : AbortSignal.any([this.#abort.signal, this.#writer.signal]) }); }
+    finally {
+      this.#configurationWrite = false;
       if (this.#kickRequested && !this.#error) this.#kick();
       else this.#dreaming?.schedule();
     }

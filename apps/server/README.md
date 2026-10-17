@@ -243,3 +243,7 @@ The model sees canonical IDs and deterministic reply metadata through recovery
 and compaction, with ordinary History lookup for omitted originals.
 
 Web passes its explicit `miraHome` as the spool writer’s private managed data root, so the CLI default `~/.mira/wake-input` supports overflow, attachment indexes and reply indexes. Only strict descendants of that root are allowed; source overlap, HOME itself/ancestors, symlinks and non-private roots remain rejected. The synthetic demo keeps its explicitly configured outside-HOME spool contract.
+
+`POST /api/models/probe` 接收与模型设置保存相同的草稿和 revision，验证所选推理 Chat Completions 模型的参数格式，不写配置。接口沿用 Web 同源/认证/写请求限制、单个在途测试和每分钟六次发现/测试上限；返回脱敏的逐格式结果。接受格式由浏览器随普通设置保存。正常 runtime 不触发探测。
+
+`GET /api/status` 在错误存在时返回 `errorId`，由服务端每次记录错误生成 UUID，轮询保持稳定。浏览器关闭横幅不清除后端状态、不启动新 Wake。

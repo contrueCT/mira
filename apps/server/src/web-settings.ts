@@ -1,3 +1,4 @@
+import { probeReasoningFormat, type ModelProbeResult } from './model-probe.ts';
 import { constants } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises';
@@ -278,6 +279,27 @@ export class WebSettingsStore {
     rejectSecretMetadata(webConnectionMetadata(connection), [key]);
     const custom = webTransportConfiguration({ builtinCredentials: {}, customConnections: [connection] }).customConnections[0]!;
     return discoverModels(custom, { env: { [custom.apiKeyEnv]: key }, ...(options.fetch ? { fetch: options.fetch } : {}), ...(options.signal ? { signal: options.signal } : {}) });
+  }
+  /** Validate the same revision and credential binding as a save, without writing. */
+  async probe(value: unknown, options: Pick<ModelTransportOptions, 'fetch'> & { signal?: AbortSignal } = {}): Promise<ModelProbeResult> {
+    const parsed = parseWebSettingsWrite(value);
+    if (parsed.selection?.kind !== 'custom') return invalid();
+    const current = await this.snapshot();
+    if (current.revision !== parsed.revision) throw new WebSettingsError('settings_conflict');
+    const data = mergeStored(current.data, parsed);
+    const selection = parsed.selection;
+    const connection = data.configuration.customConnections.find(entry => entry.id === selection.connection);
+    if (!connection?.apiKey || connection.api !== 'openai-completions' || !connection.models.find(model => model.id === selection.model)?.reasoning) return invalid();
+    const result = await probeReasoningFormat(webTransportConfiguration(project(data, current.revision).configuration), selection, {
+      ...options, resolveApiKey: async signal => {
+        signal.throwIfAborted();
+        if ((await this.snapshot()).revision !== current.revision) throw new WebSettingsError('settings_conflict');
+        return connection.apiKey!;
+      },
+    });
+    options.signal?.throwIfAborted();
+    if ((await this.snapshot()).revision !== current.revision) throw new WebSettingsError('settings_conflict');
+    return result;
   }
   async save(value: unknown): Promise<WebSettings> {
     const parsed = parseWebSettingsWrite(value);

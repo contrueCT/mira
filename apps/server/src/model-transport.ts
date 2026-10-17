@@ -14,6 +14,8 @@ import { parseModelConfiguration, validateBaseUrl, type CustomProtocol, type Mod
 
 export type ModelSelection = { kind: 'builtin'; provider: string; model: string } | { kind: 'custom'; connection: string; model: string };
 export interface ModelTransportOptions {
+  /** Configuration probes make one attempt per format. Normal requests retain bounded retries. */
+  maxAttempts?: 1;
   /** Terminal sanitized failure; null clears the earlier request diagnostic. */
   onFailure?: (failure: ModelRequestFailure | null) => void;
   /** Ephemeral request retry status; null clears it on completion/cancellation. */
@@ -63,7 +65,7 @@ function scopedModelFetch(baseUrl: string, fetch: typeof globalThis.fetch, heade
       }
       if (response.status >= 300 && response.status < 400) { void response.body?.cancel().catch(() => undefined); throw Error('Redirect rejected'); }
       if (!response.ok) {
-        failure.providerReason = await providerFailureReason(response, secret());
+        failure.providerReason = await providerFailureReason(response, secret(), message => { failure.providerMessage = message; });
         // The SDK receives only selected, sanitized error text, never a huge raw
         // body whose truncation could erase the useful provider message/code.
         return new Response(JSON.stringify({ error: { message: failure.providerReason } }), { status: response.status, headers: { 'content-type': 'application/json' } });
@@ -317,7 +319,7 @@ export function createModelTransport(configuration: ModelConfiguration, selectio
           return undefined;
         };
         return maskProviderErrors(collection.streamSimple(structuredClone(canonicalModel), structuredClone(nativeVideo.context), requestOptions), canonicalModel, () => key, requestSettings.signal, failure, onFailure);
-      }, requestSettings.signal, options.onRetry, options.onFailure);
+      }, requestSettings.signal, options.onRetry, options.onFailure, options.maxAttempts);
     },
   };
 }

@@ -370,3 +370,30 @@ test('HTTP discovery preserves only the validated capability metadata needed by 
   assert.deepEqual(response.json().models, [{ id: 'rich', name: 'Rich', contextWindow: 100000, maxTokens: 4096, reasoning: true, input: ['text', 'image'] }, { id: 'id-only' }]);
   assert.ok(!response.body.includes('private-sentinel')); assert.ok(!response.body.includes('reasoningFormat'));
 });
+
+test('reasoning probe uses private write protections, serializes requests and projects only its result', async t => {
+  let calls = 0; let release!: () => void; let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const app = createLocalHttp({ port, backend: backend({ probe: async (_value, signal) => {
+    calls++; assert.ok(signal); entered(); await pending;
+    return { status: 'supported', format: 'openai', attempts: [{ format: 'openai', status: 'accepted' }] };
+  } }) }); t.after(() => app.close());
+  assert.equal((await app.inject({ method: 'POST', url: '/api/models/probe', headers: readHeaders, payload: settings() })).statusCode, 403);
+  assert.equal(calls, 0);
+  const first = app.inject({ method: 'POST', url: '/api/models/probe', headers: writeHeaders, payload: settings() });
+  void first.then(() => {}); await started;
+  assert.equal((await app.inject({ method: 'POST', url: '/api/models/probe', headers: writeHeaders, payload: settings() })).statusCode, 409);
+  release(); const response = await first;
+  assert.equal(calls, 1); assert.equal(response.statusCode, 200); assert.equal(response.json().format, 'openai');
+});
+
+test('status exposes one error occurrence identity without changing the error diagnostic', async t => {
+  const errorId = '76de5684-be9c-4bb7-9c5f-ea39039caa63';
+  const app = createLocalHttp({ port, backend: backend({ status: async () => ({ state: 'error', mode: 'live', model: 'fixture', error: 'protected failure', errorId }) }) });
+  t.after(() => app.close());
+  const first = (await app.inject({ url: '/api/status', headers: readHeaders })).json();
+  const second = (await app.inject({ url: '/api/status', headers: readHeaders })).json();
+  assert.equal(first.errorId, errorId); assert.deepEqual(first, second);
+  assert.ok(!first.error.includes('protected failure'));
+});

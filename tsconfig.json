@@ -104,6 +104,7 @@
     "tests/unit/mcp-runtime.test.mts",
     "tests/unit/mcp-oauth-host.test.mts",
     "tests/unit/mcp-generated-install.test.mts",
-    "tests/unit/mcp-catalog.test.mts"
+    "tests/unit/mcp-catalog.test.mts",
+    "tests/unit/model-probe.test.mts"
   ]
 }

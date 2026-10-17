@@ -790,6 +790,7 @@ test('reasoning stays inside settings, adapts model capabilities and survives ca
 
 test('reasoning settings retain an unsaved edit on revision conflict and discard it on reload', async ({ page }) => {
   const initial = settingsFixture(); initial.configuration.customConnections[0]!.models[0]!.reasoning = true;
+  initial.configuration.customConnections[0]!.models[0]!.reasoningFormat = 'openai';
   initial.selection = { kind: 'custom', connection: 'existing-local', model: 'original-model' }; initial.configuration.defaultThinkingLevel = 'low';
   await mockSettings(page, initial);
   await page.route('**/api/settings', route => route.request().method() === 'PUT' ? route.fulfill({ status: 409, json: { error: 'Settings changed; reload before saving' } }) : route.fulfill({ json: initial }));
@@ -804,6 +805,7 @@ test('reasoning settings retain an unsaved edit on revision conflict and discard
 
 test('reasoning edit stays retryable when active child work makes settings temporarily busy', async ({ page }) => {
   const initial = settingsFixture(); initial.configuration.customConnections[0]!.models[0]!.reasoning = true;
+  initial.configuration.customConnections[0]!.models[0]!.reasoningFormat = 'openai';
   initial.selection = { kind: 'custom', connection: 'existing-local', model: 'original-model' }; initial.configuration.defaultThinkingLevel = 'low';
   await mockSettings(page, initial); let writes = 0;
   await page.route('**/api/settings', route => {
@@ -984,7 +986,7 @@ test('custom discovery prefills supplied metadata, keeps unknown limits blank an
   await page.setViewportSize({ width: 1440, height: 1100 });
   await openSettings(page); await page.getByRole('button', { name: '自定义连接', exact: true }).click();
   await expect(page.getByLabel('默认推理强度', { exact: true })).toBeEnabled();
-  await expect(page.getByText('推理参数：自动（沿用接口适配）。', { exact: false })).toBeVisible();
+  await expect(page.getByText('推理参数：保存时自动测试。', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: '获取可用模型', exact: true }).click();
   await page.getByLabel('发现的候选模型', { exact: true }).selectOption('rich-model');
   await expect(page.getByLabel('模型 ID', { exact: true })).toHaveValue('rich-model');
@@ -1059,34 +1061,37 @@ test('a single discovered candidate can be selected again after manual entry, ca
   }
 });
 
-test('endpoint edits preserve explicit formats for open drafts and all saved models', async ({ page }) => {
+test('endpoint edits invalidate formats and probe the selected model again', async ({ page }) => {
   const initial = settingsFixture(); const connection = initial.configuration.customConnections[0]!;
   const model = connection.models[0]!; model.reasoning = true; model.reasoningFormat = 'openrouter';
   connection.models.push({ ...model, id: 'second-model' });
   const { writes } = await mockSettings(page, initial);
+  await page.route('**/api/models/probe', route => route.fulfill({ json: { status: 'supported', format: 'openai', attempts: [{ format: 'openai', status: 'accepted' }] } }));
   await openSettings(page); await page.getByRole('button', { name: '自定义连接', exact: true }).click();
   await page.getByRole('button', { name: '编辑模型能力', exact: true }).click();
   const address = page.getByLabel('服务地址', { exact: true });
   await address.fill('http://127.0.0.1:9998/v1');
   await address.fill(connection.baseUrl);
-  await expect(page.getByLabel('推理参数格式', { exact: true })).toHaveValue('openrouter');
+  await expect(page.getByLabel('推理参数格式', { exact: true })).toHaveValue('');
   await page.getByLabel('API Key', { exact: true }).fill('synthetic-original-route-key');
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await expect(page.getByText(/配置已保存/u)).toBeVisible();
-  expect(writes[0]!.configuration.customConnections[0]!.models.every(entry => entry.reasoningFormat === 'openrouter')).toBe(true);
+  expect(writes[0]!.configuration.customConnections[0]!.models.map(entry => entry.reasoningFormat)).toEqual([undefined, 'openai']);
   await address.fill('http://127.0.0.1:9998/v1');
   await page.getByLabel('API Key', { exact: true }).fill('synthetic-new-route-key');
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await expect(page.getByText(/配置已保存/u)).toBeVisible();
   expect(writes).toHaveLength(2);
-  expect(writes[1]!.configuration.customConnections[0]!.models.every(entry => entry.reasoningFormat === 'openrouter')).toBe(true);
+  expect(writes[1]!.configuration.customConnections[0]!.models.map(entry => entry.reasoningFormat)).toEqual([undefined, 'openai']);
   await page.getByLabel('已配置模型', { exact: true }).selectOption('second-model');
   await page.getByRole('button', { name: '编辑模型能力', exact: true }).click();
-  await expect(page.getByLabel('推理参数格式', { exact: true })).toHaveValue('openrouter');
+  await expect(page.getByLabel('推理参数格式', { exact: true })).toHaveValue('');
 });
 
-test('new reasoning models can save the automatic format without a confirmation gate', async ({ page }) => {
+test('new reasoning models automatically probe before saving the accepted format', async ({ page }) => {
   const { writes } = await mockSettings(page);
+  let probes = 0;
+  await page.route('**/api/models/probe', route => { probes++; expect(writes).toHaveLength(0); return route.fulfill({ json: { status: 'supported', format: 'openrouter', attempts: [] } }); });
   await openSettings(page); await page.getByRole('button', { name: '自定义连接', exact: true }).click();
   await page.getByRole('button', { name: '手动添加', exact: true }).click();
   await page.getByLabel('模型 ID', { exact: true }).fill('new-reasoning-model');
@@ -1096,7 +1101,8 @@ test('new reasoning models can save the automatic format without a confirmation 
   await expect(page.getByLabel('推理参数格式', { exact: true })).toHaveValue('');
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await expect(page.getByText(/配置已保存/u)).toBeVisible();
-  expect(writes[0]!.configuration.customConnections[0]!.models.find(entry => entry.id === 'new-reasoning-model')!.reasoningFormat).toBeUndefined();
+  expect(writes[0]!.configuration.customConnections[0]!.models.find(entry => entry.id === 'new-reasoning-model')!.reasoningFormat).toBe('openrouter');
+  expect(probes).toBe(1);
 });
 
 test('switching away from Chat Completions removes incompatible formats from saved models and the open draft', async ({ page }) => {
@@ -1507,3 +1513,60 @@ for (const intent of ['normal', 'loaded-quote', 'paged-quote', 'settings', 'sett
     }
   });
 }
+
+test('runtime error dismissal survives polling and reload but a new identical error reappears', async ({ page }, testInfo) => {
+  let errorId = '00000000-0000-4000-8000-000000000001'; let polls = 0;
+  await page.route('**/api/status', route => { polls++; return route.fulfill({ json: { state: 'error', mode: 'live', model: 'gpt-6-luna', error: 'HTTP 400: Unsupported parameter reasoning_effort. '.repeat(8), errorId } }); });
+  await page.goto('/');
+  const notice = page.getByLabel('运行状态与错误详情', { exact: true });
+  const close = page.getByRole('button', { name: '关闭此次运行错误提示', exact: true });
+  await expect(notice).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('runtime-error-desktop.png'), fullPage: true });
+  await close.click(); await expect(notice).toHaveCount(0);
+  await expect(page.locator('.identity-detail')).toContainText('需要留意');
+  const previousPolls = polls; await expect.poll(() => polls, { timeout: 8000 }).toBeGreaterThan(previousPolls);
+  await expect(notice).toHaveCount(0); await page.reload(); await expect(page.getByRole('button', { name: '查看运行错误' })).toBeVisible();
+  await expect(notice).toHaveCount(0);
+  await page.getByRole('button', { name: '查看运行错误' }).click(); await expect(notice).toBeVisible();
+  await close.click(); errorId = '00000000-0000-4000-8000-000000000002';
+  await expect(notice).toBeVisible({ timeout: 8000 });
+  await page.setViewportSize({ width: 390, height: 844 }); await expect(close).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('runtime-error-narrow.png'), fullPage: true });
+});
+
+for (const closeControl of ['header', 'footer', 'escape', 'access'] as const) test(`failed reasoning probe retains draft and ${closeControl} cancellation cannot save a late result`, async ({ page }) => {
+  const initial = settingsFixture(); initial.configuration.customConnections[0]!.models[0]!.reasoning = true;
+  const { writes } = await mockSettings(page, initial); let probes = 0; let finish!: () => void;
+  await page.route('**/api/models/probe', async route => {
+    probes++;
+    if (probes === 1) return route.fulfill({ json: { status: 'failed', attempts: [{ format: 'openai', message: 'HTTP 401 invalid credentials' }] } });
+    await new Promise<void>(resolve => { finish = resolve; });
+    await route.fulfill({ json: { status: 'supported', format: 'openrouter', attempts: [] } }).catch(() => {});
+  });
+  await openSettings(page); await page.getByRole('button', { name: '自定义连接', exact: true }).click();
+  await page.getByLabel('连接名称', { exact: false }).fill('Keep this draft');
+  await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('HTTP 401'); expect(writes).toHaveLength(0);
+  await expect(page.getByLabel('连接名称', { exact: false })).toHaveValue('Keep this draft');
+  await page.getByRole('button', { name: '保存设置', exact: true }).evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
+  await expect(page.getByRole('button', { name: '正在测试推理参数…', exact: true })).toBeDisabled();
+  await expect.poll(() => probes).toBe(2);
+  // Hold the history transition open: cancellation must happen on the click,
+  // before React unmount and before the late probe result is delivered.
+  await page.evaluate(() => { history.back = () => {}; });
+  if (closeControl === 'access') {
+    await page.route('**/api/auth/settings', route => route.fulfill({ json: { revision: '00000000-0000-4000-8000-000000000001', enabled: false, authenticated: true } }));
+    await page.getByRole('tab', { name: '访问', exact: true }).click();
+    await page.getByRole('button', { name: '关闭', exact: true }).click();
+  } else if (closeControl === 'escape') await page.keyboard.press('Escape');
+  else await page.getByRole('button', { name: closeControl === 'header' ? '关闭设置' : '取消', exact: true }).click();
+  finish();
+  if (closeControl === 'access') await page.getByRole('tab', { name: '模型', exact: true }).click();
+  await expect(page.getByRole('button', { name: '保存设置', exact: true })).toBeEnabled();
+  expect(writes).toHaveLength(0);
+  await page.evaluate(() => { history.go(-1); });
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await openSettings(page); await page.getByRole('button', { name: '自定义连接', exact: true }).click();
+  await expect(page.getByLabel('连接名称', { exact: false })).not.toHaveValue('Keep this draft'); expect(writes).toHaveLength(0);
+});

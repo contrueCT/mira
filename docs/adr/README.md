@@ -88,3 +88,5 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 - [0041 自定义模型发现与推理格式](0041-custom-model-discovery-and-reasoning-format.md)：明确目录元数据预填、手动兜底与 Pi Chat Completions 格式选择；不推断未知代理、不静默丢弃已配置强度。
 
 - [0043：紧凑时间线与双向指定消息回复](0043-message-replies-timeline.md)：2026-10-16 授权实现；稳定 History 引用、有界服务端快照、主 Mira 显式发布及紧凑浅色聊天 UI。
+
+- [0044 关闭单次运行错误提示](0044-dismissible-runtime-errors.md)：Accepted，按错误 ID 隐藏横幅，保留异常状态，新错误重新显示。

@@ -168,4 +168,8 @@ never modified to suppress SDK logging.
 
 ## 自定义推理参数格式
 
-模型设置内可为 Chat Completions 明确选择 `reasoningFormat: "openai"`（`reasoning_effort`）或 `"openrouter"`（`reasoning.effort`）。按实际服务文档选择，不能仅因模型有推理能力就确定格式。未指定的已有配置继续沿用 Pi 协议/URL默认，保留推理强度；UI显示“自动（沿用接口适配）”，新旧模型均不强制另选格式。更改服务地址保留显式格式，仅切换至非 Chat Completions 协议时移除不适用字段。此字段不能用于 Responses/Anthropic，后二者仍使用各自原生适配。400错误不自动切换、丢弃字段或重试。详见 [ADR 0041](../adr/0041-custom-model-discovery-and-reasoning-format.md)。
+模型设置中的推理 Chat Completions 模型默认在保存时自动测试参数格式：先发送 `reasoning_effort`，仅在服务明确拒绝这个参数时改试 `reasoning.effort`，成功后保存对应 `reasoningFormat: "openai" | "openrouter"`。每种格式最多一个请求，总计最多两个、30 秒、每次输出不超过 1024 token 和模型上限，会产生少量模型调用费用。探针使用当前推理强度，偏好 off 时测试 low，保留保存偏好。请求接受仅说明格式可用，不证明代理实际应用了强度。
+
+测试失败保留草稿；关闭设置取消测试和后续保存。鉴权、限流、网络及非参数兼容错误停止测试。也可按服务文档手动选择格式。编辑连接地址/协议或模型 ID 后重新测试当前所选模型。其他模型选中保存时才测试；无批量付费探测。
+
+正常聊天使用已保存格式。旧配置或 CLI 缺字段仍沿用 Pi 原生默认；普通请求不自动切换或剥离字段。Responses/Anthropic 使用原生适配。详见 [ADR 0041](../adr/0041-custom-model-discovery-and-reasoning-format.md)。

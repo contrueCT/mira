@@ -54,6 +54,7 @@ export function retryModelRequest(
   signal: AbortSignal | undefined,
   onRetry: ((status: ModelRetryStatus | null) => void) | undefined,
   onFailure: ((failure: ModelRequestFailure | null) => void) | undefined,
+  attemptLimit: number = maxAttempts,
 ): AssistantMessageEventStream {
   const output = createAssistantMessageEventStream();
   onRetry?.(null); onFailure?.(null);
@@ -62,7 +63,7 @@ export function retryModelRequest(
     let attemptNumber = 0;
     let terminal: Extract<AssistantMessageEvent, { type: 'error' }> | undefined;
     try {
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      for (let attempt = 1; attempt <= attemptLimit; attempt++) {
         attemptNumber = attempt;
         const failure: ModelFailureContext = {};
         let diagnostic: ModelRequestFailure | undefined;
@@ -73,7 +74,7 @@ export function retryModelRequest(
           terminal = event;
           first ??= diagnostic;
           if (event.reason === 'aborted' || signal?.aborted) { output.push(event); return; }
-          if (!failure.retryReason || attempt === maxAttempts) {
+          if (!failure.retryReason || attempt === attemptLimit) {
             if (diagnostic) {
               const final = ModelRequestFailure.afterAttempts(first ?? diagnostic, diagnostic, attempt);
               // Runtime/Pi classification must see only the terminal failure;
@@ -84,7 +85,7 @@ export function retryModelRequest(
             output.push(event); return;
           }
           const delayMs = Math.max(delays[attempt - 1]!, failure.retryAfterMs ?? 0);
-          const status = { phase: 'waiting' as const, attempt: attempt + 1, maxAttempts, delayMs, reason: failure.retryReason };
+          const status = { phase: 'waiting' as const, attempt: attempt + 1, maxAttempts: attemptLimit, delayMs, reason: failure.retryReason };
           onRetry?.(status);
           await wait(delayMs, signal);
           signal?.throwIfAborted();

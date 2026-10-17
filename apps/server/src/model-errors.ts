@@ -57,21 +57,23 @@ function reason(value: unknown, secret?: string): string {
   if (containsHtml(json)) return 'Provider returned an HTML error page';
   return value;
 }
-export interface ModelFailureContext { status?: number; requestId?: string; transportReason?: string; providerReason?: string; retryReason?: ModelRetryReason; retryAfterMs?: number }
+export interface ModelFailureContext { status?: number; requestId?: string; transportReason?: string; providerReason?: string; providerMessage?: string; retryReason?: ModelRetryReason; retryAfterMs?: number }
 /** Minted at the credential-owning transport; never a raw Error or response. */
 export class ModelRequestFailure {
   readonly message: string;
   /** Last failure only, for matching the runtime error without altering its classification. */
   readonly terminalMessage: string;
-  private constructor(message: string, terminalMessage = message) { this.message = message; this.terminalMessage = terminalMessage; Object.freeze(this); }
+  readonly httpStatus: number | undefined;
+  readonly providerMessage: string | undefined;
+  private constructor(message: string, terminalMessage = message, httpStatus?: number, providerMessage?: string) { this.providerMessage = providerMessage; this.httpStatus = httpStatus; this.message = message; this.terminalMessage = terminalMessage; Object.freeze(this); }
   static afterAttempts(first: ModelRequestFailure, last: ModelRequestFailure, attempts: number): ModelRequestFailure {
     if (attempts === 1) return last;
-    return new ModelRequestFailure(bounded(`Model request failed after ${attempts} attempts · First: ${clip(first.message, 850)} · Last: ${clip(last.message, 850)}`), last.terminalMessage);
+    return new ModelRequestFailure(bounded(`Model request failed after ${attempts} attempts · First: ${clip(first.message, 850)} · Last: ${clip(last.message, 850)}`), last.terminalMessage, last.httpStatus, last.providerMessage);
   }
   static from(value: unknown, context: ModelFailureContext, secret?: string): ModelRequestFailure {
     const details = [context.status === undefined ? '' : `HTTP ${context.status}`,
       context.requestId ? `request ID: ${clip(redact(context.requestId, secret), 128)}` : '', context.transportReason ?? context.providerReason ?? reason(value, secret)].filter(Boolean);
-    return new ModelRequestFailure(bounded(`Model request failed${details.length ? ` · ${details.join(' · ')}` : '; the provider supplied no diagnostic details'}`, secret));
+    return new ModelRequestFailure(bounded(`Model request failed${details.length ? ` · ${details.join(' · ')}` : '; the provider supplied no diagnostic details'}`, secret), undefined, context.status, context.providerMessage === undefined ? undefined : bounded(context.providerMessage, secret));
   }
 }
 /** Select cause messages/codes only, never stack, request, response or headers. */
@@ -88,7 +90,7 @@ export function transportFailureReason(error: unknown, secret?: string): string 
 }
 
 /** Consume an HTTP error once, with a hard byte bound before SDK truncation. */
-export async function providerFailureReason(response: Response, secret?: string): Promise<string> {
+export async function providerFailureReason(response: Response, secret?: string, onMessage?: (message: string) => void): Promise<string> {
   const reader = response.body?.getReader();
   if (!reader) return 'Provider returned an empty error response';
   const chunks: Uint8Array[] = []; let bytes = 0;
@@ -104,5 +106,14 @@ export async function providerFailureReason(response: Response, secret?: string)
   const contentType = response.headers.get('content-type') ?? '';
   if (/html/iu.test(contentType)) return 'Provider returned an HTML error page';
   const body = Buffer.concat(chunks).toString('utf8');
+  // Keep the primary provider message separate from codes and request IDs.
+  // Only this field may guide the configuration probe's parameter switch.
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (record(parsed)) {
+      const error = record(parsed['error']) ? parsed['error'] : parsed;
+      if (typeof error['message'] === 'string' && !containsHtml(error['message'])) onMessage?.(bounded(error['message'], secret));
+    }
+  } catch { if (!body.trimStart().startsWith('{') && !body.trimStart().startsWith('[') && !containsHtml(body)) onMessage?.(bounded(body, secret)); }
   return bounded(reason(body, secret) || 'Provider returned an empty error response', secret);
 }
