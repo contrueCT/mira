@@ -37,3 +37,5 @@ python3 -m venv "$TOOLS_HOME/documents-venv"
 显式 `MIRA_AGENT_BROWSER_EXECUTABLE` 优先；未设置时先查服务的 miraHome/tools/agent-browser/node_modules/agent-browser/bin/agent-browser.js，再查 PATH，官方 launcher 解析到同包 native binary。按 skill 在标准目录安装并核对版本后，运行中的 Mira 下一次 browser_open 即可发现，无需改 PATH 或重启。该配置属于启动环境，不是模型参数。保持依赖安装脚本关闭，首次启动前核对 `--version` 为 0.39.1。
 
 `MIRA_BROWSER_EXECUTABLE_PATH` 可显式指定已安装 Chrome/Chromium 的可执行文件。未设置时复用上游发现：agent-browser 下载缓存优先，其次系统 Chrome，再查 Puppeteer/Playwright 缓存。Ubuntu AppArmor 不支持下载版 Chromium sandbox 时，选系统正常安装的官方 Chrome 路径（如 /usr/bin/google-chrome），不移动二进制、不修改 OS 策略、不默认禁用 sandbox。CI 的受管浏览器选择 runner 预装官方 Chrome、记录版本并隔离 HOME；UI 测试仍用固定 Playwright Chromium。`pnpm test:browser:e2e` 要求隔离 PostgreSQL、官方 agent-browser native binary 与 Chromium，不以 UI fixture 代替。
+
+CLI 版本检查、Chrome 下载或版本输出成功均不证明浏览器能够启动。Linux 上先核对服务实际选择的 Chrome ELF 文件，再用 `ldd` 检查缺失库；`error while loading shared libraries` / 退出 127 属于启动依赖问题，单独的 `DevToolsActivePort` 缺失或 unknown outcome 尚不能确定原因。具体步骤见内置 skill 的[启动故障排查](../../skills/agent-browser/SKILL.md#browser-downloaded-but-cannot-start-linux)。更换启动环境中的浏览器路径后需授权重启；已有安装授权沿用，需要交互 sudo 密码时由用户在终端输入。修复后必须实际 `browser_open` 并取得 snapshot，交互与人工交还分别验收。
