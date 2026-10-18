@@ -174,3 +174,33 @@ test('reading far into older history keeps the latest window cached in least-rec
   }
   assert.equal(history.calls.originals, 8_000, 'every hidden original was read exactly once');
 });
+
+test('timeline passes raw cursors through, bounds latest polls and fills older requests to visible messages', async () => {
+  // 1,000 records: the newest 400 hidden, then one visible message every tenth record.
+  const { history, service, ids } = pagedHistory(1_000, index => index < 600 && index % 10 === 0);
+  const latest = await service.timeline();
+  assert.deepEqual(latest, { items: [], nextCursor: 'raw-700' }, 'a latest poll scans three raw pages, then returns its exact continuation');
+  assert.deepEqual(history.calls.pages, [{ before: undefined, limit: 100 }, { before: 'raw-900', limit: 100 }, { before: 'raw-800', limit: 100 }]);
+  assert.equal(history.calls.snapshots, 1);
+  history.calls.pages.length = 0;
+  const older = await service.timeline(latest.nextCursor!);
+  // Pages 600-699 (hidden) and 0-599 (60 visible) are consumed whole: 50 is reached
+  // inside the 100-199 page, so 10 visible rows remain behind cursor raw-100.
+  assert.deepEqual(history.calls.pages.map(page => page.before), ['raw-700', 'raw-600', 'raw-500', 'raw-400', 'raw-300', 'raw-200']);
+  assert.equal(older.nextCursor, 'raw-100');
+  assert.deepEqual(older.items.map(item => item.id), ids.filter((_, index) => index >= 100 && index < 600 && index % 10 === 0));
+  assert.equal(older.items.length, 50);
+  const oldest = await service.timeline(older.nextCursor!);
+  assert.equal(oldest.nextCursor, null);
+  assert.deepEqual(oldest.items.map(item => item.text), Array.from({ length: 10 }, (_, i) => `Visible ${i * 10}`));
+  assert.equal(history.calls.snapshots, 3, 'one snapshot per response');
+});
+
+test('timeline stops between raw pages once visible text reaches the response budget', async () => {
+  const { history, service } = pagedHistory(500, index => index % 5 < 2, () => 'x'.repeat(110_000));
+  const page = await service.timeline('raw-500');
+  // 40 visible rows of 110 kB pass the 4 MiB budget within the first page, below
+  // the 50-row target; the whole page is returned with its exact continuation.
+  assert.equal(page.items.length, 40); assert.equal(page.nextCursor, 'raw-400');
+  assert.equal(history.calls.pages.length, 1);
+});

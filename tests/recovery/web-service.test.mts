@@ -101,25 +101,33 @@ test('HTTP timeline fills visible pages across hidden history without truncating
   } finally { await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('timeline scan cap returns an empty resumable page without rereading hidden originals on refresh', { timeout: 90_000 }, async t => {
+test('latest and older scan caps return empty resumable pages without rereading hidden originals', { timeout: 120_000 }, async t => {
   const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-scan-cap-'));
   let service: LocalWebService | undefined; let originalReads = 0;
   try {
-    const expected = await seedTimelineEvents(db, 'scan-cap', 2005, index => index < 5);
+    const expected = await seedTimelineEvents(db, 'scan-cap', 2305, index => index < 5);
     instrumentBatches(t, 'scan-cap', async (request, readBatch) => { originalReads += request.ids.length; return readBatch(request); });
     service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'scan-cap', sourceDirectory: process.cwd(),
       spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true,
       syntheticStream: () => { throw Error('History scanning must not create a model request'); } }); await settled(service);
-    const history = db.store.history('scan-cap'); let rawCursor: string | undefined;
-    for (let scanned = 0; scanned < 2000; scanned += 100) {
+    const history = db.store.history('scan-cap'); const rawCursors: string[] = []; let rawCursor: string | undefined;
+    for (let scanned = 0; scanned < 2300; scanned += 100) {
       const raw = await history.page({ kinds: ['event', 'context', 'tool'], limit: 100, ...(rawCursor ? { before: rawCursor } : {}) });
-      assert.equal(raw.hits.length, 100); assert.ok(raw.nextCursor); rawCursor = raw.nextCursor;
+      assert.equal(raw.hits.length, 100); assert.ok(raw.nextCursor); rawCursor = raw.nextCursor; rawCursors.push(rawCursor);
     }
-    const capped = await service.timeline();
-    assert.deepEqual(capped.items, []); assert.equal(capped.nextCursor, rawCursor, 'the cap must stop at exactly 2000 raw records');
-    assert.equal(originalReads, 2000);
-    assert.deepEqual(await service.timeline(), capped, 'refresh retains the exact empty page and continuation');
-    assert.equal(originalReads, 2000, 'refresh must reuse the full scan window without fetching hidden originals again');
+    // The polled latest window is bounded to 300 raw records.
+    const latest = await service.timeline();
+    assert.deepEqual(latest.items, []); assert.equal(latest.nextCursor, rawCursors[2], 'the latest cap must stop at exactly 300 raw records');
+    assert.equal(originalReads, 300);
+    assert.deepEqual(await service.timeline(), latest, 'refresh retains the exact empty page and continuation');
+    assert.equal(originalReads, 300, 'refresh must reuse the latest window without fetching hidden originals again');
+    // An explicit older request scans up to 2000 raw records from that cursor.
+    const capped = await service.timeline(latest.nextCursor!);
+    assert.deepEqual(capped.items, []); assert.equal(capped.nextCursor, rawCursors[22], 'the older cap must stop at exactly 2000 raw records');
+    assert.equal(originalReads, 2300);
+    assert.deepEqual(await service.timeline(latest.nextCursor!), capped, 'an older retry retains the exact empty page and continuation');
+    assert.deepEqual(await service.timeline(), latest);
+    assert.equal(originalReads, 2300, 'retries and polls reuse both cached windows');
     const older = await service.timeline(capped.nextCursor!);
     assert.deepEqual(older.items, expected); assert.equal(older.nextCursor, null);
     assert.deepEqual(await service.timeline(capped.nextCursor!), older, 'a retry must retain every visible item exactly once');

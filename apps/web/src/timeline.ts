@@ -51,6 +51,13 @@ export function latestPagination(current: HistoryPagination, known: { id: string
   const updated = { ...current, latestCursor: page.nextCursor };
   const ids = new Set(known.map(item => item.id));
   if (page.items.some(item => ids.has(item.id)) || page.nextCursor === null || current.gaps.some(gap => gap.id === page.nextCursor || gap.cursor === page.nextCursor)) return updated;
+  // A latest window without visible messages over the same boundary as the
+  // newest gap: the new gap's range contains the old one. Replace it rather
+  // than add a gap per poll during a long private tool interval; at worst the
+  // replaced gap's partial progress is reread.
+  if (!page.items.length && current.gaps[0]?.boundaryIds.length === ids.size) {
+    return { ...updated, gaps: [{ id: page.nextCursor, cursor: page.nextCursor, boundaryIds: [...ids] }, ...current.gaps.slice(1)] };
+  }
   return { ...updated, gaps: [{ id: page.nextCursor, cursor: page.nextCursor, boundaryIds: [...ids] }, ...current.gaps] };
 }
 export function nextHistoryRequest(pagination: HistoryPagination): HistoryRequest | null {

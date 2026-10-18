@@ -32,12 +32,22 @@ import { DeliveryTimer, extensionScheduling } from './scheduling.ts';
 import { DreamingScheduler, dreamingInstruction, dreamingPolicy, type DreamingOptions } from './dreaming.ts';
 import { createExternalIngress, type ExternalIngress } from './external-ingress.ts';
 
-// Raw History records one timeline request may scan before returning a
-// resumable page, even when a long tool/internal interval has no messages.
+// Raw History records an explicit older-history request may scan before
+// returning a resumable page, even when a long tool/internal interval has no
+// messages.
 const TIMELINE_SCAN_LIMIT = 2000;
+// The latest window is polled every 1.2s while Mira works, when recent records
+// are mostly private tools/context. Keep that path to three metadata pages; an
+// older click fills from the returned cursor instead.
+const LATEST_SCAN_LIMIT = 300;
+const TIMELINE_PAGE_SIZE = 100;
+const TIMELINE_TARGET = 50;
+// Soft per-response bound on visible text, checked between whole raw pages so
+// the raw continuation stays exact. One page can still exceed it.
+const TIMELINE_RESPONSE_BYTES = 4 * 1_048_576;
 // Projected records kept in least-recently-used order. Room for the latest
-// window plus one complete older scan, so reading old history does not evict
-// the records every latest poll needs.
+// window plus complete older scans, so reading old history does not evict the
+// records every latest poll needs; independent of either scan budget.
 const TIMELINE_CACHE_LIMIT = 2 * TIMELINE_SCAN_LIMIT;
 
 export interface WebServiceOptions {
@@ -330,11 +340,11 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   }
   async #scanTimeline(history: RunHistoryReader, before: string | undefined): Promise<Timeline> {
     const items: Timeline['items'] = [];
-    let cursor = before;
-    // Target visible messages rather than raw events. Bound each request's work
-    // even when a long tool/internal interval contains no public messages.
-    for (let scanned = 0; scanned < TIMELINE_SCAN_LIMIT; scanned += 100) {
-      const page = await history.page({ kinds: ['event', 'context', 'tool'], limit: 100, ...(cursor ? { before: cursor } : {}) });
+    let cursor = before; let bytes = 0;
+    // Target visible messages rather than raw events, within a raw scan budget.
+    const limit = before === undefined ? LATEST_SCAN_LIMIT : TIMELINE_SCAN_LIMIT;
+    for (let scanned = 0; scanned < limit; scanned += TIMELINE_PAGE_SIZE) {
+      const page = await history.page({ kinds: ['event', 'context', 'tool'], limit: TIMELINE_PAGE_SIZE, ...(cursor ? { before: cursor } : {}) });
       // Freeze this page's cache hits: inserting older entries may evict hits
       // needed later in this same page (or by a concurrent latest read).
       const cachedPage = new Map(page.hits.map(ref => [ref.id, this.#cached(ref.id)]));
@@ -361,12 +371,12 @@ export class LocalWebService implements WebBackend, ManagementBackend {
               if (entry?.kind !== 'tool' || entry.outcome !== null) this.#remember(key, cached);
             }
           }
-          if (cached.item) chunk.push(cached.item);
+          if (cached.item) { chunk.push(cached.item); bytes += Buffer.byteLength(cached.item.text); }
         }
       }
       items.unshift(...chunk);
       cursor = page.nextCursor ?? undefined;
-      if (items.length >= 50 || !cursor) break;
+      if (items.length >= TIMELINE_TARGET || bytes >= TIMELINE_RESPONSE_BYTES || !cursor) break;
     }
     return { items, nextCursor: cursor ?? null };
   }

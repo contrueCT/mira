@@ -140,11 +140,31 @@ test('finishing an older gap keeps a newer gap added during the outstanding requ
   const first = item('first', '2026-10-06T01:00:00Z');
   let pagination = latestPagination({ latestCursor: 'before-50', oldestCursor: 'before-50', gaps: [] }, [first], { items: [], nextCursor: 'before-150' }, true);
   const outstanding = nextHistoryRequest(pagination)!;
-  pagination = latestPagination(pagination, [first], { items: [], nextCursor: 'before-250' }, true);
+  pagination = latestPagination(pagination, [first], { items: [item('newer', '2026-10-06T03:00:00Z')], nextCursor: 'before-250' }, true);
   pagination = olderPagination(pagination, outstanding, { items: [], nextCursor: null });
   assert.equal(pagination.oldestCursor, null);
   assert.equal(pagination.gaps.length, 1);
   assert.equal(nextHistoryRequest(pagination)?.cursor, 'before-250');
+});
+
+test('repeated hidden-only latest windows replace the newest gap instead of adding one per poll', () => {
+  const first = item('first', '2026-10-06T01:00:00Z');
+  let pagination = latestPagination({ latestCursor: 'before-50', oldestCursor: 'before-50', gaps: [] }, [first], { items: [], nextCursor: 'before-150' }, true);
+  const outstanding = nextHistoryRequest(pagination)!;
+  for (const cursor of ['before-160', 'before-170', 'before-900']) pagination = latestPagination(pagination, [first], { items: [], nextCursor: cursor }, true);
+  assert.deepEqual(pagination.gaps, [{ id: 'before-900', cursor: 'before-900', boundaryIds: ['first'] }], 'one gap spans everything newer than the boundary');
+  assert.equal(pagination.oldestCursor, 'before-50');
+  // A late result for the replaced gap cannot skip the wider replacement range.
+  pagination = olderPagination(pagination, outstanding, { items: [], nextCursor: null });
+  assert.equal(nextHistoryRequest(pagination)?.cursor, 'before-900');
+  // Visible rows in a disconnected window change the boundary and keep both gaps.
+  const second = item('second', '2026-10-06T04:00:00Z');
+  pagination = latestPagination(pagination, [first], { items: [second], nextCursor: 'before-1000' }, true);
+  pagination = latestPagination(pagination, [first, second], { items: [], nextCursor: 'before-1100' }, true);
+  assert.deepEqual(pagination.gaps.map(gap => gap.cursor), ['before-1100', 'before-1000', 'before-900']);
+  // Reading the newest gap down to its boundary leaves the older gap reachable.
+  pagination = olderPagination(pagination, nextHistoryRequest(pagination)!, { items: [second], nextCursor: 'before-999' });
+  assert.deepEqual(pagination.gaps.map(gap => gap.cursor), ['before-1000', 'before-900']);
 });
 
 
