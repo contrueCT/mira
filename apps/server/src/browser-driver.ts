@@ -1,5 +1,5 @@
 import { BrowserProcesses } from './browser-processes.ts';
-import { browserLaunchEnvironment } from './browser-launch.ts';
+import { browserLaunchEnvironment, managedBrowserExecutable } from './browser-launch.ts';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, lstat, readFile, rm, realpath, access } from 'node:fs/promises';
@@ -120,6 +120,7 @@ export class AgentBrowserDriver implements BrowserDriver {
     await this.#resolveExecutable();
     const version = (await this.#run(['--version'], this.#env)).trim();
     if (version !== 'agent-browser 0.39.1') throw Error('Install the pinned agent-browser 0.39.1 explicitly');
+    const browserExecutable = await managedBrowserExecutable(this.#browserExecutable);
     const directory = await mkdtemp(path.join(tmpdir(), 'mira-ab-'));
     const child = spawn(this.#resolved!, [], { cwd: this.#cwd, env: { ...this.#env, AGENT_BROWSER_DAEMON: '1', AGENT_BROWSER_SESSION: session, AGENT_BROWSER_SOCKET_DIR: directory, AGENT_BROWSER_PIN_TAB: '1' }, shell: false, detached: true, stdio: 'ignore' });
     const owned = child.pid ? new BrowserProcesses(child.pid) : undefined;
@@ -140,7 +141,6 @@ export class AgentBrowserDriver implements BrowserDriver {
       stage = 'initial process ownership';
       await owned!.capture();
       stage = 'native launch';
-      const browserExecutable = this.#browserExecutable;
       await this.#request(session, { action: 'launch', headless: true, engine: 'chrome', pinTab: true, plugins: [], ...(browserExecutable ? { executablePath: browserExecutable } : {}) });
       await owned!.capture(true);
       stage = 'initial navigation';
