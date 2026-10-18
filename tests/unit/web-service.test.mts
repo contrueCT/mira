@@ -20,10 +20,10 @@ test('completed assistant commentary is persisted before execution and readable 
   };
   const history = {
     page: async () => ({ hits: writer.state.records.map(record => ({ id: record.id, kind: 'context', occurredAt: record.occurredAt })), nextCursor: null }),
-    read: async ({ id }: { id: string }) => {
+    readBatch: async ({ ids }: { ids: string[] }) => ids.map(id => {
       const record = writer.state.records.find(record => record.id === id);
-      return record ? { id, kind: 'context', miraId: writer.miraId, record, occurredAt: record.occurredAt } : null;
-    },
+      return { id, entry: record ? { id, kind: 'context', miraId: writer.miraId, record, occurredAt: record.occurredAt } : null, tooLarge: false };
+    }),
   };
   // Real Pi runtime and Timeline projection; persistence and History reads are
   // explicitly in-memory fixtures, not a PostgreSQL or browser verification.
@@ -73,7 +73,7 @@ test('completed assistant commentary is persisted before execution and readable 
 
 // Exercise the real service projection with a read-only history fixture, without
 // claiming PostgreSQL execution. Durable associations remain in run management.
-test('chat omits delegation-only rows and reads while preserving text, attachments and history cursors', async () => {
+test('chat omits delegation-only rows and reads while preserving text and attachments', async () => {
   const at = '2026-10-14T00:00:00.000Z';
   const attachment = { id: randomUUID(), name: 'evidence.txt', mimeType: 'text/plain', size: 5, sha256: 'a'.repeat(64) };
   const record = encodeEntry(messageEntry(assistant('Mira keeps the conversation going.'), null));
@@ -86,26 +86,26 @@ test('chat omits delegation-only rows and reads while preserving text, attachmen
   const entries = [user, reply, spawn, followup, publication];
   const cursors: Array<string | undefined> = [];
   const history = {
-    page: async ({ before }: { before?: string }) => { cursors.push(before); return { hits: entries.map(({ id, kind, occurredAt }) => ({ id, kind, occurredAt })), nextCursor: 'older-history' }; },
-    read: async ({ id }: { id: string }) => entries.find(value => value.id === id),
+    page: async ({ before }: { before?: string }) => { cursors.push(before); return { hits: entries.map(({ id, kind, occurredAt }) => ({ id, kind, occurredAt })), nextCursor: null }; },
+    readBatch: async ({ ids }: { ids: string[] }) => ids.map(id => ({ id, entry: entries.find(value => value.id === id) ?? null, tooLarge: false })),
   };
   let childReads = 0;
   const reader = { readSubagentCalls: async () => { childReads++; return [{ callId: 'spawn', runId: randomUUID(), childId: randomUUID() }]; } };
   const service = Reflect.construct(LocalWebService, [{ dreaming: { enabled: false } }, { signal: new AbortController().signal, onLiveInput: () => () => {} }, history, {}, {}, {}, {}, {}, reader]) as LocalWebService;
   const first = await service.timeline();
-  assert.equal(first.nextCursor, 'older-history');
+  assert.equal(first.nextCursor, null);
   assert.deepEqual(first.items.map(item => item.id), [user.id, reply.id]);
   assert.equal(first.items[0]!.externalEventId, 'user-request');
   assert.deepEqual(first.items[0]!.attachments, [attachment]);
   assert.equal(first.items[1]!.text, 'Mira keeps the conversation going.');
   publication.outcome = { callId: 'publish', payload: { role: 'toolResult', toolName: 'send_attachment', toolCallId: 'publish', isError: false,
     details: { version: 1, type: 'attachment-publication', text: '', attachments: [attachment] } } };
-  const next = await service.timeline('older-history');
+  const next = await service.timeline();
   assert.deepEqual(next.items.map(item => item.id), [user.id, reply.id, publication.id]);
   assert.deepEqual(next.items.at(-1)!.attachments, [attachment], 'pending tool cache still admits an explicit later attachment publication');
   assert.ok(next.items.every(item => !Object.hasOwn(item, 'child')));
   assert.equal(childReads, 0, 'chat does not request child metadata or start child polling');
-  assert.deepEqual(cursors, [undefined, 'older-history']);
+  assert.deepEqual(cursors, [undefined, undefined]);
 });
 
 test('automatic ownership close retains a safe persistence notice but suppresses ordinary shutdown errors', async () => {

@@ -210,15 +210,35 @@ export function App() {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   };
   const loadOlder = async () => {
-    const request = nextHistoryRequest(paginationRef.current);
-    if (!request || olderBusyRef.current) return;
+    if (!nextHistoryRequest(paginationRef.current) || olderBusyRef.current) return;
     cancelQuoteNavigation();
     olderBusyRef.current = true; setLoadingOlder(true); setOlderError(null);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    const signal = AbortSignal.any([pollAbortRef.current!.signal, controller.signal]);
+    let added = 0;
+    const cursors = new Set<string>();
     try {
-      const page = await api<TimelinePage>('/api/timeline', { method: 'POST', body: JSON.stringify({ before: request.cursor }), signal: pollAbortRef.current!.signal });
-      if (activeRef.current) acceptPage(page, request);
-    } catch (error) { if (!isAbort(error) && activeRef.current) setOlderError(errorText(error)); }
-    finally { olderBusyRef.current = false; if (activeRef.current) setLoadingOlder(false); }
+      for (let pageCount = 0; pageCount < 8; pageCount++) {
+        const request = nextHistoryRequest(paginationRef.current);
+        if (!request || cursors.has(request.cursor)) break;
+        cursors.add(request.cursor);
+        const page = await api<TimelinePage>('/api/timeline', { method: 'POST', body: JSON.stringify({ before: request.cursor }), signal });
+        if (!activeRef.current || signal.aborted) return;
+        // Commit each successful frontier, including empty pages, so retries
+        // resume from it and consecutive insertions preserve the reading anchor.
+        const known = new Set(itemsRef.current.map(item => item.id));
+        for (const item of page.items) if (!known.has(item.id)) { known.add(item.id); added++; }
+        flushSync(() => acceptPage(page, request));
+        if (added >= 50) return;
+      }
+      if (nextHistoryRequest(paginationRef.current)) setOlderError('这段历史较长，已保留读取进度，请继续加载。');
+    } catch (error) {
+      if (activeRef.current && !pollAbortRef.current?.signal.aborted) setOlderError(controller.signal.aborted ? '读取较久，已保留进度，请再试一次。' : errorText(error));
+    } finally {
+      clearTimeout(timeout); olderBusyRef.current = false;
+      if (activeRef.current) setLoadingOlder(false);
+    }
   };
 
   const sendEnvelope = async (envelope: MessageEnvelope, retry = false, fromMemory = memoryRequestRef.current?.id === envelope.id) => {

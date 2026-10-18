@@ -108,6 +108,8 @@ jobs:
         run: pnpm test:attachments:e2e
       - name: Verify bidirectional message replies through browser, PostgreSQL and runtime
         run: pnpm test:replies:e2e
+      - name: Verify visible history pagination through browser, HTTP and PostgreSQL
+        run: pnpm test:pagination:e2e
       - name: Verify live user steering through browser, PostgreSQL and single-tool execution
         run: pnpm test:live-input:e2e
       - name: Verify joined scheduling, subagents, skills and live user input

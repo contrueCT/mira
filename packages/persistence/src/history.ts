@@ -44,7 +44,7 @@ const sources: Record<HistoryKind, Source> = {
     integrity: 'true',
   },
 };
-function originalSql(): string {
+function originalSql(idParameter = '$2::uuid'): string {
   return kinds.map(sourceKind => {
     const source = sources[sourceKind];
     return `SELECT json_build_object('kind', h.kind, 'id', h.id, 'miraId', h.mira_id,
@@ -52,7 +52,7 @@ function originalSql(): string {
       (s.${source.id} IS NOT NULL AND (${source.integrity})) AS valid
       FROM history_records AS h LEFT JOIN ${source.table} AS s ON
         s.${source.id} = h.id AND s.mira_id = h.mira_id
-      WHERE h.mira_id = $1 AND h.id = $2::uuid AND h.kind = '${sourceKind}'`;
+      WHERE h.mira_id = $1 AND h.id = ${idParameter} AND h.kind = '${sourceKind}'`;
   }).join('\nUNION ALL\n');
 }
 /** Fixed management metadata, independent of coalesced membership size. */
@@ -433,6 +433,29 @@ export class PostgresHistoryReader implements RunHistoryReader {
     const entry = response<HistoryEntry>(await this.#query(bound(originalSql(), '$3'), [this.miraId, request.id, maxBytes]));
     if (entry) validateEntry(entry, this.miraId, request);
     return entry;
+  }
+  async readBatch(request: { ids: string[]; maxBytes?: number }): Promise<Array<{ id: string; entry: HistoryEntry | null; tooLarge: boolean }>> {
+    object(request);
+    if (Object.keys(request).some(key => key !== 'ids' && key !== 'maxBytes') || !Array.isArray(request.ids) || request.ids.length > 10) invalid('Invalid history batch');
+    request.ids.forEach(historyId);
+    const maxBytes = request.maxBytes ?? 65_536; integer(maxBytes, 1, 1_048_576, 'read budget');
+    if (!request.ids.length) return [];
+    // Each original is bounded inside SQL, before transfer. The lateral lookup
+    // retains read's registry/type/integrity checks and current-Mira scope.
+    const sql = `SELECT json_build_object('items', json_agg(json_build_object('id', ids.id,
+        'entry', CASE WHEN octet_length(original.body::text) <= $3 THEN original.body ELSE NULL END,
+        'tooLarge', coalesce(octet_length(original.body::text) > $3, false)) ORDER BY ids.n)) AS body,
+        bool_and(CASE WHEN original.body IS NULL THEN true ELSE original.valid IS TRUE END) AS valid
+      FROM unnest($2::uuid[]) WITH ORDINALITY ids(id, n)
+      LEFT JOIN LATERAL (${originalSql('ids.id')}) original ON true`;
+    const result = response<{ items: Array<{ id: string; entry: HistoryEntry | null; tooLarge: boolean }> }>(await this.#query(bound(sql, '$4'),
+      [this.miraId, request.ids, maxBytes, request.ids.length * (maxBytes + 1024)]));
+    if (!result || !Array.isArray(result.items) || result.items.length !== request.ids.length) throw new HistoryError('corrupt', 'Invalid history batch response');
+    for (const [index, item] of result.items.entries()) {
+      if (item.id !== request.ids[index] || typeof item.tooLarge !== 'boolean' || (item.tooLarge && item.entry !== null)) throw new HistoryError('corrupt', 'Invalid history batch entry');
+      if (item.entry) validateEntry(item.entry, this.miraId, { id: item.id, maxBytes });
+    }
+    return result.items;
   }
   async readText(request: HistoryTextRequest): Promise<HistoryTextPage | null> {
     object(request); historyId(request.id);

@@ -298,3 +298,120 @@ test('lossless History text paging reads over 1 MiB, preserves Unicode and scope
     await assert.rejects(mutable.readText({ id: run.id, offset: 4, revision: first.revision }), /changed.*restart/);
   } finally { await db.close(); }
 });
+
+
+test('history batch validates IDs, fields, count and per-original budgets before reading', async () => {
+  const db = await createTestDatabase();
+  try {
+    const reader = db.store.history('batch-validation');
+    const invalidRequests: unknown[] = [null, [], {}, { ids: null }, { ids: 'not-an-array' }, { ids: [null] },
+      { ids: ['not-a-uuid'] }, { ids: [uuid('uppercase').toUpperCase()] }, { ids: [uuid('valid'), 'bad'] },
+      { ids: Array.from({ length: 11 }, (_, i) => uuid(`over-limit-${i}`)) },
+      { ids: [], kind: 'event' }, { ids: [], maxBytes: 0 }, { ids: [], maxBytes: -1 },
+      { ids: [], maxBytes: 1.5 }, { ids: [], maxBytes: NaN }, { ids: [], maxBytes: Infinity },
+      { ids: [], maxBytes: '1024' }, { ids: [], maxBytes: 1_048_577 }];
+    for (const request of invalidRequests) {
+      await assert.rejects(reader.readBatch(request as Parameters<typeof reader.readBatch>[0]),
+        (error: unknown) => error instanceof HistoryError && error.code === 'invalid', JSON.stringify(request));
+    }
+    assert.deepEqual(await reader.readBatch({ ids: [] }), []);
+    assert.deepEqual(await reader.readBatch({ ids: [], maxBytes: 1 }), []);
+    assert.deepEqual(await reader.readBatch({ ids: [], maxBytes: 1_048_576 }), []);
+    const ids = Array.from({ length: 10 }, (_, i) => uuid(`at-limit-${i}`));
+    assert.deepEqual(await reader.readBatch({ ids, maxBytes: 1 }), ids.map(id => ({ id, entry: null, tooLarge: false })));
+    assert.equal((await db.admin.query('SELECT count(*)::integer AS n FROM mira_owners')).rows[0].n, 0);
+  } finally { await db.close(); }
+});
+
+test('history batch preserves requested order and duplicates with read-equivalent originals across all four kinds', async () => {
+  const db = await createTestDatabase();
+  try {
+    const writer = await db.acquire('batch-a'), other = await db.acquire('batch-b');
+    await writer.receive(event('batch-event', 'original event'), { id: 'batch-wake', reason: 'original wake' });
+    await other.receive(event('batch-foreign', 'private foreign event'));
+    await writer.append(0, record('batch-context', null, 'original opaque context'));
+    await writer.beginTool(1, { callId: 'batch-tool', assistantRecordId: uuid('batch-context'), toolName: 'synthetic', requestedArguments: { raw: true }, arguments: {}, occurredAt: now });
+    await writer.finishTool({ callId: 'batch-tool', occurredAt: now, payload: { text: 'original outcome' } });
+    const run = await writer.claimWakeBatch(); assert.ok(run);
+    const reader = db.store.history(writer.miraId);
+    const toolId = (await reader.page({ kinds: ['tool'] })).hits[0]!.id;
+    const externalId = await eventId(db, 'batch-event', writer.miraId);
+    const foreignId = await eventId(db, 'batch-foreign', other.miraId);
+    const ids = [toolId, foreignId, run.id, externalId, uuid('batch-missing'), uuid('batch-context'), toolId];
+    const before = await writer.load(), epoch = writer.epoch;
+    const expected = await Promise.all(ids.map(async id => ({ id, entry: await reader.read({ id }), tooLarge: false })));
+    assert.deepEqual(await reader.readBatch({ ids }), expected);
+    assert.equal(expected[1]!.entry, null); assert.equal(expected[4]!.entry, null);
+    assert.deepEqual(await writer.load(), before); assert.equal(writer.epoch, epoch); await writer.verifyActive();
+  } finally { await db.close(); }
+});
+
+test('history batch bounds each original independently without truncation or blocking its smaller neighbors', async () => {
+  const db = await createTestDatabase();
+  try {
+    const writer = await db.acquire(), reader = db.store.history(writer.miraId);
+    await writer.receive(event('batch-small', 'complete 😀 original'));
+    await writer.receive(event('batch-large', '单😀'.repeat(20_000)));
+    await writer.receive(event('batch-huge', 'x'.repeat(1_100_000)));
+    const small = await eventId(db, 'batch-small'), large = await eventId(db, 'batch-large'), huge = await eventId(db, 'batch-huge');
+    const completeSmall = await reader.read({ id: small });
+    assert.deepEqual(await reader.readBatch({ ids: [large, small, huge, small] }), [
+      { id: large, entry: null, tooLarge: true }, { id: small, entry: completeSmall, tooLarge: false },
+      { id: huge, entry: null, tooLarge: true }, { id: small, entry: completeSmall, tooLarge: false },
+    ]);
+    for (const id of [large, huge]) await assert.rejects(reader.read({ id }), (error: unknown) => error instanceof HistoryError && error.code === 'too_large');
+    const size = await reader.readText({ id: small, offset: 0 }); assert.ok(size);
+    await assert.rejects(reader.read({ id: small, maxBytes: size.totalBytes - 1 }), (error: unknown) => error instanceof HistoryError && error.code === 'too_large');
+    assert.deepEqual(await reader.readBatch({ ids: [small], maxBytes: size.totalBytes - 1 }), [{ id: small, entry: null, tooLarge: true }]);
+    assert.deepEqual(await reader.readBatch({ ids: [small], maxBytes: size.totalBytes }), [{ id: small, entry: completeSmall, tooLarge: false }]);
+    const completeLarge = await reader.read({ id: large, maxBytes: 1_048_576 }); assert.ok(completeLarge);
+    assert.deepEqual(await reader.readBatch({ ids: [huge, large, large, small], maxBytes: 1_048_576 }), [
+      { id: huge, entry: null, tooLarge: true }, { id: large, entry: completeLarge, tooLarge: false },
+      { id: large, entry: completeLarge, tooLarge: false }, { id: small, entry: completeSmall, tooLarge: false },
+    ]);
+    assert.deepEqual(await reader.readBatch({ ids: [small, uuid('tiny-budget-missing')], maxBytes: 1 }), [
+      { id: small, entry: null, tooLarge: true }, { id: uuid('tiny-budget-missing'), entry: null, tooLarge: false },
+    ]);
+  } finally { await db.close(); }
+});
+
+test('history batch rejects corrupt source identity and missing detail just as read does, even below the byte budget', async () => {
+  const db = await createTestDatabase();
+  try {
+    const writer = await db.acquire(), reader = db.store.history(writer.miraId);
+    await writer.receive(event('batch-valid', 'valid neighbor'));
+    const valid = await eventId(db, 'batch-valid');
+    const corruptId = uuid('batch-corrupt'), orphanId = uuid('batch-orphan');
+    // Deliberately malformed fixture rows in this test's disposable schema;
+    // no production trigger or integrity constraint is disabled.
+    for (const id of [corruptId, orphanId]) await db.admin.query("INSERT INTO history_records(id,mira_id,kind) VALUES ($1,$2,'context')", [id, writer.miraId]);
+    await db.admin.query('INSERT INTO context_records(mira_id,record_id,version,envelope) VALUES ($1,$2,1,$3)',
+      [writer.miraId, corruptId, JSON.stringify(record('mismatched-envelope-id', null, 'x'.repeat(100_000)))]);
+    const corrupt = (error: unknown) => error instanceof HistoryError && error.code === 'corrupt';
+    for (const id of [corruptId, orphanId]) {
+      await assert.rejects(reader.read({ id }), corrupt);
+      await assert.rejects(reader.readBatch({ ids: [valid, id, valid] }), corrupt);
+      await assert.rejects(reader.readBatch({ ids: [id], maxBytes: 1 }), corrupt);
+      assert.deepEqual(await db.store.history('foreign-reader').readBatch({ ids: [id] }), [{ id, entry: null, tooLarge: false }]);
+    }
+  } finally { await db.close(); }
+});
+
+test('history batch observes a pending tool and its later durable outcome without replay or stale caching', async () => {
+  const db = await createTestDatabase();
+  try {
+    const writer = await db.acquire(), reader = db.store.history(writer.miraId);
+    await writer.append(0, record('batch-pending-assistant', null, 'tool invocation'));
+    const intent: ToolIntent = { callId: 'batch-pending', assistantRecordId: uuid('batch-pending-assistant'), toolName: 'synthetic', requestedArguments: {}, arguments: {}, occurredAt: now };
+    await writer.beginTool(1, intent);
+    const id = (await reader.page({ kinds: ['tool'] })).hits[0]!.id;
+    const pending = await reader.read({ id }); assert.ok(pending?.kind === 'tool'); assert.equal(pending.outcome, null);
+    assert.deepEqual(await reader.readBatch({ ids: [id] }), [{ id, entry: pending, tooLarge: false }]);
+    const outcome = { callId: intent.callId, occurredAt: now, payload: { text: 'completed once' } };
+    await writer.finishTool(outcome);
+    const complete = await reader.read({ id }); assert.ok(complete?.kind === 'tool'); assert.deepEqual(complete.outcome, outcome);
+    assert.deepEqual(await reader.readBatch({ ids: [id, id] }), [{ id, entry: complete, tooLarge: false }, { id, entry: complete, tooLarge: false }]);
+    assert.equal((await db.admin.query('SELECT count(*)::integer AS n FROM tool_executions')).rows[0].n, 1);
+    await writer.verifyActive();
+  } finally { await db.close(); }
+});

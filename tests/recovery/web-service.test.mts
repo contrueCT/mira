@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import { crc32, deflateSync } from 'node:zlib';
 import { createLocalHttp, LocalWebService, WebHttpError, WebSettingsStore, listBuiltinCatalog, type WebSettings } from '@mira/server';
 import { createAssistantMessageEventStream, getCurrentTools, type TranscriptContext } from '@earendil-works/pi-ai';
+import { PostgresPersistence } from '@mira/persistence';
 import { readWebExtensionConfiguration } from '../../apps/server/src/web-extensions.ts';
 import { createTestDatabase } from '../integration/database.mts';
 import { assistant, deferred, streamOf } from './fixtures.mts';
@@ -21,6 +22,195 @@ async function settled(service: LocalWebService): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 10));
   }
 }
+
+type TimelinePage = Awaited<ReturnType<LocalWebService['timeline']>>;
+async function seedTimelineEvents(db: Awaited<ReturnType<typeof createTestDatabase>>, miraId: string, count: number,
+  isVisible: (index: number) => boolean): Promise<TimelinePage['items']> {
+  const writer = await db.acquire(miraId);
+  const expected: Omit<TimelinePage['items'][number], 'id'>[] = [];
+  try {
+    for (let index = 0; index < count; index++) {
+      const visible = isVisible(index); const id = `timeline-${index}`;
+      const occurredAt = new Date(Date.UTC(2026, 9, 1) + index).toISOString();
+      const text = visible ? `Visible message ${index}` : `PRIVATE_PAGINATION_EVENT_${index}`;
+      // Real durable event-only receipts avoid thousands of synthetic model
+      // turns. No raw SQL inserts or fabricated History pages are involved.
+      await writer.receive({ id, source: visible ? 'user' : 'system', type: visible ? 'web.message' : 'internal.observation', occurredAt, payload: { text } });
+      if (visible) expected.push({ externalEventId: id, role: 'user', text, occurredAt });
+    }
+  } finally { await writer.close(); }
+  const ids = new Map((await db.admin.query<{ event_id: string; history_id: string }>(
+    'SELECT event_id, history_id FROM life_events WHERE mira_id = $1', [miraId])).rows.map(row => [row.event_id, row.history_id]));
+  assert.equal(ids.size, count);
+  return expected.map(item => ({ ...item, id: ids.get(item.externalEventId!)! }));
+}
+
+test('HTTP timeline fills visible pages across hidden history without truncating or losing the raw continuation', { timeout: 60_000 }, async () => {
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-visible-pages-'));
+  let service: LocalWebService | undefined; let app: ReturnType<typeof createLocalHttp> | undefined;
+  try {
+    const expected = await seedTimelineEvents(db, 'visible-pages', 400, index => index < 100 || (index >= 140 && index < 200));
+    const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'visible-pages', sourceDirectory: process.cwd(),
+      spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true,
+      syntheticStream: () => { throw Error('Timeline reads must not create a model request'); } };
+    service = await LocalWebService.open(options); await settled(service);
+    const history = db.store.history(options.miraId);
+    const rawFirst = await history.page({ kinds: ['event', 'context', 'tool'], limit: 100 }); assert.ok(rawFirst.nextCursor);
+    const rawSecond = await history.page({ kinds: ['event', 'context', 'tool'], limit: 100, before: rawFirst.nextCursor }); assert.ok(rawSecond.nextCursor);
+    const rawThird = await history.page({ kinds: ['event', 'context', 'tool'], limit: 100, before: rawSecond.nextCursor }); assert.ok(rawThird.nextCursor);
+    app = createLocalHttp({ backend: service, port: httpPort });
+    const response = await app.inject({ url: '/api/timeline', headers: readHeaders }); assert.equal(response.statusCode, 200, response.body);
+    const latest = response.json<TimelinePage>();
+    assert.deepEqual(latest.items, expected.slice(100));
+    assert.equal(latest.items.length, 60, 'keep the whole raw page instead of cutting off visible messages beyond the target');
+    assert.equal(latest.nextCursor, rawThird.nextCursor, 'continue after all scanned raw records, including hidden ones');
+    const olderResponse = await app.inject({ method: 'POST', url: '/api/timeline', headers: writeHeaders, payload: { before: latest.nextCursor } });
+    assert.equal(olderResponse.statusCode, 200, olderResponse.body);
+    const older = olderResponse.json<TimelinePage>(); assert.equal(older.nextCursor, null);
+    const combined = [...older.items, ...latest.items];
+    assert.deepEqual(combined, expected); assert.equal(new Set(combined.map(item => item.id)).size, expected.length);
+    assert.doesNotMatch(response.body + olderResponse.body, /PRIVATE_PAGINATION_EVENT/);
+    await app.close(); app = undefined; await service.close(); service = undefined;
+    service = await LocalWebService.open(options); await settled(service);
+    assert.deepEqual(await service.timeline(), latest);
+    assert.deepEqual(await service.timeline(latest.nextCursor!), older);
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_runs')).rows[0].n, 0);
+  } finally { await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('timeline scan cap returns an empty resumable page without rereading hidden originals on refresh', { timeout: 90_000 }, async t => {
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-scan-cap-'));
+  let service: LocalWebService | undefined; let originalReads = 0;
+  try {
+    const expected = await seedTimelineEvents(db, 'scan-cap', 2005, index => index < 5);
+    const realHistory = PostgresPersistence.prototype.history;
+    t.mock.method(PostgresPersistence.prototype, 'history', function (this: PostgresPersistence, miraId: string) {
+      const history = realHistory.call(this, miraId);
+      if (miraId === 'scan-cap') {
+        const readBatch = history.readBatch.bind(history);
+        t.mock.method(history, 'readBatch', async (request: Parameters<typeof readBatch>[0]) => {
+          originalReads += request.ids.length;
+          return readBatch(request);
+        });
+      }
+      return history;
+    });
+    service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'scan-cap', sourceDirectory: process.cwd(),
+      spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true,
+      syntheticStream: () => { throw Error('History scanning must not create a model request'); } }); await settled(service);
+    const history = db.store.history('scan-cap'); let rawCursor: string | undefined;
+    for (let scanned = 0; scanned < 2000; scanned += 100) {
+      const raw = await history.page({ kinds: ['event', 'context', 'tool'], limit: 100, ...(rawCursor ? { before: rawCursor } : {}) });
+      assert.equal(raw.hits.length, 100); assert.ok(raw.nextCursor); rawCursor = raw.nextCursor;
+    }
+    const capped = await service.timeline();
+    assert.deepEqual(capped.items, []); assert.equal(capped.nextCursor, rawCursor, 'the cap must stop at exactly 2000 raw records');
+    assert.equal(originalReads, 2000);
+    assert.deepEqual(await service.timeline(), capped, 'refresh retains the exact empty page and continuation');
+    assert.equal(originalReads, 2000, 'refresh must reuse the full scan window without fetching hidden originals again');
+    const older = await service.timeline(capped.nextCursor!);
+    assert.deepEqual(older.items, expected); assert.equal(older.nextCursor, null);
+    assert.deepEqual(await service.timeline(capped.nextCursor!), older, 'a retry must retain every visible item exactly once');
+  } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('concurrent latest and older PostgreSQL reads retain complete pages during cache eviction', { timeout: 90_000 }, async t => {
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-cache-pages-'));
+  let service: LocalWebService | undefined; let pendingLatest: Promise<TimelinePage> | undefined; let pauseNextCachedBatch = false;
+  const entered = deferred(); const release = deferred(); const batchSizes: number[] = [];
+  try {
+    const expected = await seedTimelineEvents(db, 'cache-pages', 2100, () => true);
+    const realHistory = PostgresPersistence.prototype.history;
+    t.mock.method(PostgresPersistence.prototype, 'history', function (this: PostgresPersistence, miraId: string) {
+      const history = realHistory.call(this, miraId);
+      if (miraId === 'cache-pages') {
+        const readBatch = history.readBatch.bind(history);
+        t.mock.method(history, 'readBatch', async (request: Parameters<typeof readBatch>[0]) => {
+          batchSizes.push(request.ids.length);
+          assert.ok(request.ids.length <= 10); assert.equal(request.maxBytes, 1_048_576);
+          // Only schedule the real reader; metadata and missing originals still
+          // come from PostgreSQL. The empty batch yields after the cache snapshot.
+          if (pauseNextCachedBatch && request.ids.length === 0) {
+            pauseNextCachedBatch = false; entered.resolve();
+            await boundedFixtureWait(release.promise, 'concurrent older page evicts cached latest records', t.signal, 30_000);
+          }
+          return readBatch(request);
+        });
+      }
+      return history;
+    });
+    service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'cache-pages', sourceDirectory: process.cwd(),
+      spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true,
+      syntheticStream: () => { throw Error('Cache reads must not create a model request'); } }); await settled(service);
+    const latest = await service.timeline(); assert.deepEqual(latest.items, expected.slice(2000));
+    let page = latest;
+    for (let index = 18; index >= 0; index--) {
+      assert.ok(page.nextCursor); page = await service.timeline(page.nextCursor);
+      assert.deepEqual(page.items, expected.slice((index + 1) * 100, (index + 2) * 100));
+    }
+    assert.ok(page.nextCursor, '100 older records remain outside the full 2000-entry cache');
+    pauseNextCachedBatch = true; pendingLatest = service.timeline();
+    await boundedFixtureWait(entered.promise, 'latest page captures its cached metadata', t.signal);
+    const oldest = await service.timeline(page.nextCursor);
+    assert.deepEqual(oldest.items, expected.slice(0, 100)); assert.equal(oldest.nextCursor, null);
+    release.resolve(); assert.deepEqual(await pendingLatest, latest); pendingLatest = undefined;
+    assert.deepEqual(await service.timeline(), latest, 'a fresh latest request also survives the older-page eviction');
+    assert.ok(batchSizes.includes(10)); assert.ok(batchSizes.includes(0));
+  } finally {
+    release.resolve(); await pendingLatest?.catch(() => {});
+    await service?.close(); await db.close(); await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a pending real publication is reread after its durable outcome instead of being cached as hidden', { timeout: 60_000 }, async t => {
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-pending-publication-'));
+  let service: LocalWebService | undefined; let calls = 0;
+  const entered = deferred(); const release = deferred();
+  try {
+    const file = path.join(root, 'published.txt'); await writeFile(file, 'Immutable pending publication bytes');
+    const realAcquire = PostgresPersistence.prototype.acquire;
+    t.mock.method(PostgresPersistence.prototype, 'acquire', async function (this: PostgresPersistence, miraId: string) {
+      const writer = await realAcquire.call(this, miraId);
+      if (miraId === 'pending-publication') {
+        const finishTool = writer.finishTool.bind(writer);
+        t.mock.method(writer, 'finishTool', async (outcome: Parameters<typeof finishTool>[0]) => {
+          if (outcome.callId === 'pending-publication-tool') {
+            entered.resolve();
+            await boundedFixtureWait(release.promise, 'allow real publication outcome to commit', t.signal, 30_000);
+          }
+          return finishTool(outcome);
+        });
+      }
+      return writer;
+    });
+    const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'pending-publication', sourceDirectory: process.cwd(),
+      spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true,
+      syntheticStream: () => { calls++; return streamOf(calls === 1 ? { ...assistant(), stopReason: 'toolUse', content: [
+        { type: 'toolCall', id: 'pending-publication-tool', name: 'send_attachment', arguments: { paths: [file], text: 'Published after pending reads' } },
+      ] } : assistant('')); } };
+    service = await LocalWebService.open(options); await settled(service);
+    await service.submit({ id: 'publish-request', text: 'Publish the local fixture file.', occurredAt: '2026-10-01T00:00:00.000Z' });
+    await boundedFixtureWait(entered.promise, 'real attachment tool reaches outcome persistence', t.signal);
+    const execution = (await db.admin.query<{ history_id: string; outcome: unknown }>(
+      'SELECT history_id, outcome FROM tool_executions WHERE mira_id = $1', [options.miraId])).rows[0];
+    assert.ok(execution); assert.equal(execution.outcome, null);
+    for (let read = 0; read < 2; read++) {
+      const pending = await service.timeline();
+      assert.ok(!pending.items.some(item => item.id === execution.history_id || item.attachments?.length));
+    }
+    release.resolve(); await settled(service); assert.equal((await service.status()).state, 'idle'); assert.equal(calls, 2);
+    const published = await service.timeline();
+    const item = published.items.find(item => item.id === execution.history_id); assert.ok(item);
+    assert.equal(item.text, 'Published after pending reads'); assert.equal(item.attachments?.length, 1);
+    assert.equal((await service.readAttachment(item.attachments![0]!.id)).bytes.toString(), 'Immutable pending publication bytes');
+    assert.equal(published.items.filter(candidate => candidate.id === item.id).length, 1);
+    assert.doesNotMatch(JSON.stringify(published), /pending-publication-tool|requestedArguments/);
+    await service.close(); service = undefined;
+    service = await LocalWebService.open(options); await settled(service);
+    assert.equal(calls, 2, 'completed publication must not replay on restart');
+    assert.deepEqual(await service.timeline(), published);
+  } finally { release.resolve(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
 
 test('HTTP timeline reads committed commentary while its real Bash tool is still in flight', { timeout: 30_000 }, async t => {
   const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-commentary-'));

@@ -153,6 +153,10 @@ export interface HistoryRunPage {
   nextCursor: string | null;
 }
 export interface RunHistoryReader extends HistoryReader {
+  /** Ordered, Mira-scoped originals in one snapshot, at most 10 IDs. The
+   * per-original byte budget has read's bounds; oversized originals are marked
+   * individually so one private record cannot block a display page. */
+  readBatch(request: { ids: string[]; maxBytes?: number }): Promise<Array<{ id: string; entry: HistoryEntry | null; tooLarge: boolean }>>;
   findEventRun(externalEventId: string): Promise<HistoryEventRun | null>;
   pageRuns(request?: Pick<HistoryPageRequest, 'before' | 'limit'>): Promise<{ items: HistoryRunHeader[]; nextCursor: string | null }>;
   readRunRequests(request: HistoryRunPageRequest): Promise<HistoryRunRequestsPage | null>;
