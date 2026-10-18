@@ -1,6 +1,9 @@
-import { providerEntered } from './service-wait-fixture.mts';
+import { boundedFixtureWait, providerEntered } from './service-wait-fixture.mts';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile, realpath } from 'node:fs/promises';
+import { mkdtemp, open, readFile, rm, writeFile, realpath, type FileHandle } from 'node:fs/promises';
+import { constants, watch, type FSWatcher } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
@@ -9,7 +12,7 @@ import { createLocalHttp, LocalWebService, WebHttpError, WebSettingsStore, listB
 import { createAssistantMessageEventStream, getCurrentTools, type TranscriptContext } from '@earendil-works/pi-ai';
 import { readWebExtensionConfiguration } from '../../apps/server/src/web-extensions.ts';
 import { createTestDatabase } from '../integration/database.mts';
-import { assistant, streamOf } from './fixtures.mts';
+import { assistant, deferred, streamOf } from './fixtures.mts';
 
 async function settled(service: LocalWebService): Promise<void> {
   const end = Date.now() + 10_000;
@@ -18,6 +21,65 @@ async function settled(service: LocalWebService): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 10));
   }
 }
+
+test('HTTP timeline reads committed commentary while its real Bash tool is still in flight', { timeout: 30_000 }, async t => {
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-commentary-'));
+  let service: LocalWebService | undefined; let app: ReturnType<typeof createLocalHttp> | undefined;
+  let fifo: FileHandle | undefined; let watcher: FSWatcher | undefined; let released = false; let requests = 0;
+  const release = async () => { if (fifo && !released) { released = true; await fifo.write('continue\n'); } };
+  try {
+    const fifoPath = path.join(root, 'release.fifo'); const started = deferred();
+    await promisify(execFile)('mkfifo', [fifoPath]);
+    // Keeping both FIFO ends open makes release safe even if an earlier assertion
+    // fails before Bash reaches its read; cleanup never waits for a new reader.
+    fifo = await open(fifoPath, constants.O_RDWR | constants.O_NONBLOCK);
+    watcher = watch(root, (_event, filename) => { if (filename?.toString() === 'tool-started') started.resolve(); });
+    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+    const command = [`exec 3< ${quote(fifoPath)}`, `mkdir ${quote(path.join(root, 'tool-started'))}`, 'IFS= read -r release <&3', "printf 'PRIVATE_COMMENTARY_TOOL_RESULT'"].join('\n');
+    const commentary = 'I will inspect the local evidence before reporting the result.';
+    const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'live-commentary', sourceDirectory: process.cwd(),
+      spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true,
+      syntheticStream: () => {
+        requests++;
+        return streamOf(requests === 1 ? { ...assistant(), stopReason: 'toolUse', content: [
+          { type: 'thinking', thinking: 'PRIVATE_COMMENTARY_THINKING' }, { type: 'text', text: commentary },
+          { type: 'toolCall', id: 'PRIVATE_COMMENTARY_CALL', name: 'bash', arguments: { command } },
+        ] } : assistant('The local evidence has been checked.'));
+      } };
+    service = await LocalWebService.open(options); await settled(service);
+    const http = createLocalHttp({ backend: service, port: httpPort }); app = http;
+    const submitted = await http.inject({ method: 'POST', url: '/api/messages', headers: writeHeaders,
+      payload: { id: 'live-commentary-input', text: 'Check the local evidence.', occurredAt: '2026-10-17T08:00:00.000Z' } });
+    assert.equal(submitted.statusCode, 201, submitted.body);
+    await boundedFixtureWait(started.promise, 'real Bash reached its FIFO read', t.signal);
+    assert.equal(requests, 1, 'the next model request cannot have started during the blocked tool');
+    const executions = (await db.admin.query('SELECT t.intent, t.outcome, c.envelope FROM tool_executions t JOIN context_records c ON c.mira_id = t.mira_id AND c.record_id = t.assistant_record_id')).rows;
+    assert.equal(executions.length, 1); assert.equal(executions[0].outcome, null, 'real tool intent exists while its outcome is still pending');
+    assert.equal(executions[0].envelope.id, executions[0].intent.assistantRecordId);
+    assert.match(JSON.stringify(executions[0].envelope), /I will inspect the local evidence/);
+    assert.match(JSON.stringify(executions[0].envelope), /PRIVATE_COMMENTARY_CALL/);
+    const cursor = (await db.store.history('live-commentary').page({ kinds: ['event', 'context', 'tool'], limit: 1 })).nextCursor;
+    assert.ok(cursor);
+    for (const request of [{ url: '/api/timeline', headers: readHeaders },
+      { method: 'POST' as const, url: '/api/timeline', headers: writeHeaders, payload: { before: cursor } }]) {
+      const response = await http.inject(request); assert.equal(response.statusCode, 200, response.body);
+      const item = response.json().items.find((item: { text: string }) => item.text === commentary);
+      assert.ok(item, 'commentary is readable before the real Bash tool is released');
+      assert.equal(item.id, executions[0].intent.assistantRecordId);
+      assert.doesNotMatch(response.body, /PRIVATE_COMMENTARY_|release\.fifo|requestedArguments|Mira System Prompt/);
+      assert.equal(requests, 1); assert.equal((await service.status()).state, 'working');
+    }
+    await release(); await settled(service);
+    assert.equal(requests, 2); assert.equal((await service.status()).state, 'idle');
+    const final = await http.inject({ url: '/api/timeline', headers: readHeaders });
+    assert.equal(final.statusCode, 200); assert.match(final.body, /The local evidence has been checked/);
+    assert.equal(final.json().items.filter((item: { text: string }) => item.text === commentary).length, 1);
+    assert.ok((await db.admin.query('SELECT outcome FROM tool_executions')).rows[0].outcome);
+  } finally {
+    await release(); watcher?.close();
+    await app?.close(); await service?.close(); await fifo?.close(); await db.close(); await rm(root, { recursive: true, force: true });
+  }
+});
 test('default web extension configuration exposes real management dispatch and restores it with PostgreSQL', { timeout: 30_000 }, async () => {
   const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-default-extensions-'));
   let service: LocalWebService | undefined; let requests = 0;

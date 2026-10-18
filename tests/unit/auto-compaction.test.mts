@@ -18,13 +18,16 @@ function systemText(context: Pick<TranscriptContext, 'messages'>): string {
   return system ? getSystemMessageText(system) : '';
 }
 const disabled = { enabled: false };
+// Full-persona Memory fixtures exercise checkpoint integrity, not the 8K limit.
+// Keep the shared small model and all explicit budget-rejection cases unchanged.
+const memoryModel = { ...model, contextWindow: 16_384 };
 
 async function preparedMemoryWriter() {
   const writer = new MemoryWriter();
   await runtime(writer, () => streamOf(assistant('Older response '.repeat(250))), {
-    autoCompaction: disabled, miraPrompt: { ...prompt, loadMemory: async () => 'OLD_MEMORY' },
+    model: memoryModel, autoCompaction: disabled, miraPrompt: { ...prompt, loadMemory: async () => 'OLD_MEMORY' },
   }).run(input('Older question '.repeat(250)));
-  await runtime(writer, () => streamOf(assistant('Recent answer')), { autoCompaction: disabled }).run(input('Recent question'));
+  await runtime(writer, () => streamOf(assistant('Recent answer')), { model: memoryModel, autoCompaction: disabled }).run(input('Recent question'));
   return writer;
 }
 
@@ -35,12 +38,12 @@ test('manual compaction refreshes an initially empty Memory file atomically and 
     let loads = 0;
     const miraPrompt = { ...prompt, memoryRoot: directory, loadMemory: async () => { loads++; return readFile(file, 'utf8'); } };
     const writer = new MemoryWriter();
-    await runtime(writer, () => streamOf(assistant('Older response '.repeat(250))), { autoCompaction: disabled, miraPrompt }).run(input('Older question '.repeat(250)));
+    await runtime(writer, () => streamOf(assistant('Older response '.repeat(250))), { model: memoryModel, autoCompaction: disabled, miraPrompt }).run(input('Older question '.repeat(250)));
     await writeFile(file, 'NEW_MEMORY_AFTER_EMPTY');
     await runtime(writer, (_model, context) => {
       assert.doesNotMatch(systemText(context), /NEW_MEMORY_AFTER_EMPTY/);
       return streamOf(assistant('Recent response'));
-    }, { autoCompaction: disabled, miraPrompt }).run(input('Recent question'));
+    }, { model: memoryModel, autoCompaction: disabled, miraPrompt }).run(input('Recent question'));
     assert.equal(loads, 1);
     const before = await writer.load();
     // The full persona plus the dedicated summary instructions exceed this fixture's 8k model.

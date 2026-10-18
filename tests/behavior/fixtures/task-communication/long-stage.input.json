@@ -1,0 +1,26 @@
+{
+  "evidenceType": "Synthetic conversation/tool outcomes; unavailableTools removes named production declarations for this case only",
+  "unavailableTools": [
+    "subagent_spawn",
+    "subagent_status",
+    "subagent_send",
+    "subagent_wait",
+    "subagent_cancel"
+  ],
+  "history": [
+    {
+      "role": "user",
+      "content": "检查 /tmp/mira-synthetic-workspace 的 CSV 导出缺陷，修复并完整验证，不提交。"
+    },
+    {
+      "role": "assistant",
+      "content": "我先定位导出问题，再修复并验证。"
+    },
+    {
+      "role": "toolResult",
+      "toolName": "bash",
+      "content": "Synthetic settled result: targeted reproduction confirmed duplicate column names overwrite data. Minimal patch applied in csv.ts. Focused regression passed. Full validation has not run; local pnpm check typically takes several minutes."
+    }
+  ],
+  "user": null
+}

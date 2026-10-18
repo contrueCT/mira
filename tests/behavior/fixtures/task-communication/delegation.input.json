@@ -1,0 +1,5 @@
+{
+  "evidenceType": "Synthetic conversation/tool outcomes; unavailableTools removes named production declarations for this case only",
+  "history": [],
+  "user": "帮我比较 /tmp/mira-synthetic-workspace/reports 下 12 份评测，写一份有来源、可复核的数据库选型报告到 /tmp/mira-synthetic-workspace/comparison.md。预计需要一段时间，你自己安排，别提交或联网。"
+}

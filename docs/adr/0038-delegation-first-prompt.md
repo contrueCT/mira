@@ -1,5 +1,9 @@
 # ADR 0038: Delegation-first substantial work
 
+Subsequent revision: [ADR 0044](0044-task-communication-prompt.md) adds task
+communication guidance and retains this published delegation template as a third
+hash-checked identity. The upgrade and frozen-snapshot mechanism below is unchanged.
+
 Status: User-approved and implemented, 2026-10-15; exact-head CI remains separate
 from local and native prompt-effect verification.
 
