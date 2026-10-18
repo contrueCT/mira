@@ -130,3 +130,47 @@ test('automatic ownership close retains a safe persistence notice but suppresses
     assert.doesNotMatch(JSON.stringify(status), /private/);
   }
 });
+
+// In-memory History fixture with real cursor semantics: ascending hits within a
+// page, newest page first. Visible rows are user messages; others are hidden.
+function pagedHistory(count: number, isVisible: (index: number) => boolean, text: (index: number) => string = index => `Visible ${index}`) {
+  const at = (index: number) => new Date(Date.UTC(2026, 9, 1) + index * 1000).toISOString();
+  const ids: string[] = Array.from({ length: count }, () => randomUUID());
+  const index = new Map(ids.map((id, position) => [id, position]));
+  const calls = { pages: [] as Array<{ before: string | undefined; limit: number | undefined }>, originals: 0, snapshots: 0 };
+  const history = {
+    calls,
+    omit: new Set<string>(),
+    page: async ({ before, limit = 50 }: { before?: string; limit?: number }) => {
+      calls.pages.push({ before, limit });
+      const end = before === undefined ? count : Number(before.slice('raw-'.length)); const start = Math.max(0, end - limit);
+      return { hits: ids.slice(start, end).map((id, offset) => ({ id, kind: 'event', occurredAt: at(start + offset) })), nextCursor: start > 0 ? `raw-${start}` : null };
+    },
+    readBatch: async ({ ids: requested }: { ids: string[] }) => {
+      assert.ok(requested.length <= 10); calls.originals += requested.length;
+      return requested.filter(id => !history.omit.has(id)).map(id => {
+        const position = index.get(id)!;
+        return { id, entry: isVisible(position) ? { id, kind: 'event', miraId: 'paged', occurredAt: at(position), requestedWake: null,
+          event: { id: `event-${position}`, source: 'user', type: 'web.message', occurredAt: at(position), payload: { text: text(position) } } } : null, tooLarge: false };
+      });
+    },
+    snapshot: async (work: (reader: unknown) => Promise<unknown>) => { calls.snapshots++; return work(history); },
+  };
+  const service = Reflect.construct(LocalWebService, [{ dreaming: { enabled: false } }, { signal: new AbortController().signal, onLiveInput: () => () => {} }, history, {}, {}, {}, {}, {}, {}]) as LocalWebService;
+  return { history, service, ids };
+}
+
+test('reading far into older history keeps the latest window cached in least-recently-used order', async () => {
+  const { history, service } = pagedHistory(8_000, () => false);
+  const latest = await service.timeline(); assert.ok(latest.nextCursor); assert.deepEqual(latest.items, []);
+  const latestReads = history.calls.originals; assert.ok(latestReads > 0);
+  let cursor: string | null = latest.nextCursor;
+  // Several complete older scans insert far more records than the cache holds.
+  while (cursor) {
+    const older = await service.timeline(cursor); cursor = older.nextCursor;
+    const before = history.calls.originals;
+    assert.deepEqual(await service.timeline(), latest);
+    assert.equal(history.calls.originals, before, 'a latest poll between older scans reuses its cached window');
+  }
+  assert.equal(history.calls.originals, 8_000, 'every hidden original was read exactly once');
+});

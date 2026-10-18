@@ -126,12 +126,12 @@ test('timeline scan cap returns an empty resumable page without rereading hidden
   } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('concurrent latest and older PostgreSQL reads retain complete pages during cache eviction', { timeout: 90_000 }, async t => {
+test('concurrent latest and older PostgreSQL reads retain complete pages during cache eviction', { timeout: 180_000 }, async t => {
   const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-cache-pages-'));
   let service: LocalWebService | undefined; let pendingLatest: Promise<TimelinePage> | undefined; let pauseNextCachedBatch = false;
   const entered = deferred(); const release = deferred(); const batchSizes: number[] = [];
   try {
-    const expected = await seedTimelineEvents(db, 'cache-pages', 2100, () => true);
+    const expected = await seedTimelineEvents(db, 'cache-pages', 4100, () => true);
     instrumentBatches(t, 'cache-pages', async (request, readBatch) => {
       batchSizes.push(request.ids.length);
       assert.ok(request.ids.length <= 10); assert.equal(request.maxBytes, 1_048_576);
@@ -146,13 +146,13 @@ test('concurrent latest and older PostgreSQL reads retain complete pages during 
     service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'cache-pages', sourceDirectory: process.cwd(),
       spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true,
       syntheticStream: () => { throw Error('Cache reads must not create a model request'); } }); await settled(service);
-    const latest = await service.timeline(); assert.deepEqual(latest.items, expected.slice(2000));
+    const latest = await service.timeline(); assert.deepEqual(latest.items, expected.slice(4000));
     let page = latest;
-    for (let index = 18; index >= 0; index--) {
+    for (let index = 38; index >= 0; index--) {
       assert.ok(page.nextCursor); page = await service.timeline(page.nextCursor);
       assert.deepEqual(page.items, expected.slice((index + 1) * 100, (index + 2) * 100));
     }
-    assert.ok(page.nextCursor, '100 older records remain outside the full 2000-entry cache');
+    assert.ok(page.nextCursor, '100 older records remain outside the full 4000-entry cache');
     pauseNextCachedBatch = true; pendingLatest = service.timeline();
     await boundedFixtureWait(entered.promise, 'latest page captures its cached metadata', t.signal);
     const oldest = await service.timeline(page.nextCursor);
