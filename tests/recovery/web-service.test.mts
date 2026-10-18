@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { crc32, deflateSync } from 'node:zlib';
 import { createLocalHttp, LocalWebService, WebHttpError, WebSettingsStore, listBuiltinCatalog, type WebSettings } from '@mira/server';
 import { createAssistantMessageEventStream, getCurrentTools, type TranscriptContext } from '@earendil-works/pi-ai';
@@ -21,6 +21,24 @@ async function settled(service: LocalWebService): Promise<void> {
     if (Date.now() > end) throw Error('Service did not settle');
     await new Promise(resolve => setTimeout(resolve, 10));
   }
+}
+
+type BatchReader = ReturnType<PostgresPersistence['history']>;
+type BatchRequest = Parameters<BatchReader['readBatch']>[0];
+/** Observe real original batches, including those read inside a timeline snapshot. */
+function instrumentBatches(t: TestContext, miraId: string, hook: (request: BatchRequest, read: BatchReader['readBatch']) => ReturnType<BatchReader['readBatch']>): void {
+  const realHistory = PostgresPersistence.prototype.history;
+  const instrument = (reader: BatchReader): BatchReader => {
+    const readBatch = reader.readBatch.bind(reader);
+    t.mock.method(reader, 'readBatch', (request: BatchRequest) => hook(request, readBatch));
+    const snapshot = reader.snapshot.bind(reader);
+    t.mock.method(reader, 'snapshot', <T,>(work: (inner: BatchReader) => Promise<T>) => snapshot(inner => work(inner === reader ? inner : instrument(inner))));
+    return reader;
+  };
+  t.mock.method(PostgresPersistence.prototype, 'history', function (this: PostgresPersistence, id: string) {
+    const history = realHistory.call(this, id);
+    return id === miraId ? instrument(history) : history;
+  });
 }
 
 type TimelinePage = Awaited<ReturnType<LocalWebService['timeline']>>;
@@ -72,8 +90,13 @@ test('HTTP timeline fills visible pages across hidden history without truncating
     assert.doesNotMatch(response.body + olderResponse.body, /PRIVATE_PAGINATION_EVENT/);
     await app.close(); app = undefined; await service.close(); service = undefined;
     service = await LocalWebService.open(options); await settled(service);
-    assert.deepEqual(await service.timeline(), latest);
-    assert.deepEqual(await service.timeline(latest.nextCursor!), older);
+    const { Client } = await import('pg'); const connect = Client.prototype.connect; let connections = 0;
+    Client.prototype.connect = function (this: InstanceType<typeof Client>, ...args: Parameters<typeof connect>) { connections++; return Reflect.apply(connect, this, args); } as typeof connect;
+    try {
+      // Three raw metadata pages and every uncached original share one snapshot.
+      assert.deepEqual(await service.timeline(), latest); assert.equal(connections, 1, 'one connection for a whole latest response');
+      assert.deepEqual(await service.timeline(latest.nextCursor!), older); assert.equal(connections, 2, 'one connection for a whole older response');
+    } finally { Client.prototype.connect = connect; }
     assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_runs')).rows[0].n, 0);
   } finally { await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
@@ -83,18 +106,7 @@ test('timeline scan cap returns an empty resumable page without rereading hidden
   let service: LocalWebService | undefined; let originalReads = 0;
   try {
     const expected = await seedTimelineEvents(db, 'scan-cap', 2005, index => index < 5);
-    const realHistory = PostgresPersistence.prototype.history;
-    t.mock.method(PostgresPersistence.prototype, 'history', function (this: PostgresPersistence, miraId: string) {
-      const history = realHistory.call(this, miraId);
-      if (miraId === 'scan-cap') {
-        const readBatch = history.readBatch.bind(history);
-        t.mock.method(history, 'readBatch', async (request: Parameters<typeof readBatch>[0]) => {
-          originalReads += request.ids.length;
-          return readBatch(request);
-        });
-      }
-      return history;
-    });
+    instrumentBatches(t, 'scan-cap', async (request, readBatch) => { originalReads += request.ids.length; return readBatch(request); });
     service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'scan-cap', sourceDirectory: process.cwd(),
       spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true,
       syntheticStream: () => { throw Error('History scanning must not create a model request'); } }); await settled(service);
@@ -120,24 +132,16 @@ test('concurrent latest and older PostgreSQL reads retain complete pages during 
   const entered = deferred(); const release = deferred(); const batchSizes: number[] = [];
   try {
     const expected = await seedTimelineEvents(db, 'cache-pages', 2100, () => true);
-    const realHistory = PostgresPersistence.prototype.history;
-    t.mock.method(PostgresPersistence.prototype, 'history', function (this: PostgresPersistence, miraId: string) {
-      const history = realHistory.call(this, miraId);
-      if (miraId === 'cache-pages') {
-        const readBatch = history.readBatch.bind(history);
-        t.mock.method(history, 'readBatch', async (request: Parameters<typeof readBatch>[0]) => {
-          batchSizes.push(request.ids.length);
-          assert.ok(request.ids.length <= 10); assert.equal(request.maxBytes, 1_048_576);
-          // Only schedule the real reader; metadata and missing originals still
-          // come from PostgreSQL. The empty batch yields after the cache snapshot.
-          if (pauseNextCachedBatch && request.ids.length === 0) {
-            pauseNextCachedBatch = false; entered.resolve();
-            await boundedFixtureWait(release.promise, 'concurrent older page evicts cached latest records', t.signal, 30_000);
-          }
-          return readBatch(request);
-        });
+    instrumentBatches(t, 'cache-pages', async (request, readBatch) => {
+      batchSizes.push(request.ids.length);
+      assert.ok(request.ids.length <= 10); assert.equal(request.maxBytes, 1_048_576);
+      // Only schedule the real reader; metadata and missing originals still
+      // come from PostgreSQL. The empty batch yields after the cache snapshot.
+      if (pauseNextCachedBatch && request.ids.length === 0) {
+        pauseNextCachedBatch = false; entered.resolve();
+        await boundedFixtureWait(release.promise, 'concurrent older page evicts cached latest records', t.signal, 30_000);
       }
-      return history;
+      return readBatch(request);
     });
     service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'cache-pages', sourceDirectory: process.cwd(),
       spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true,

@@ -415,3 +415,45 @@ test('history batch observes a pending tool and its later durable outcome withou
     await writer.verifyActive();
   } finally { await db.close(); }
 });
+
+test('history snapshot shares one repeatable-read connection, nests, rolls back failures and expires its reader', async () => {
+  const db = await createTestDatabase();
+  const { Client } = await import('pg');
+  const connect = Client.prototype.connect; let connections = 0;
+  try {
+    const writer = await db.acquire(), reader = db.store.history(writer.miraId);
+    for (let index = 0; index < 25; index++) await writer.receive(event(`snapshot-${index}`, `snapshot ${index}`));
+    Client.prototype.connect = function (this: InstanceType<typeof Client>, ...args: Parameters<typeof connect>) {
+      if ((this as unknown as { connectionParameters?: { application_name?: string } }).connectionParameters?.application_name === 'mira-history-reader') connections++;
+      return Reflect.apply(connect, this, args);
+    } as typeof connect;
+    let escaped: typeof reader | undefined;
+    const result = await reader.snapshot(async snapshot => {
+      escaped = snapshot;
+      const first = await snapshot.page({ kinds: ['event'], limit: 10 }); assert.ok(first.nextCursor);
+      // A commit after the snapshot began is invisible to every later read in it.
+      await writer.receive(event('snapshot-late', 'committed during snapshot'));
+      const second = await snapshot.page({ kinds: ['event'], limit: 10, before: first.nextCursor });
+      const originals = await snapshot.readBatch({ ids: [...first.hits, ...second.hits].slice(0, 10).map(hit => hit.id) });
+      const nested = await snapshot.snapshot(async inner => (await inner.page({ kinds: ['event'], limit: 100 })).hits.length);
+      return { first, second, originals, nested };
+    });
+    assert.equal(result.first.hits.length, 10); assert.equal(result.second.hits.length, 10);
+    assert.equal(result.originals.length, 10); assert.ok(result.originals.every(item => item.entry && !item.tooLarge));
+    assert.equal(result.nested, 25, 'the nested snapshot reuses the outer snapshot and does not see the later commit');
+    assert.equal(connections, 1, 'every read in the snapshot shares one reader connection');
+    assert.equal((await reader.page({ kinds: ['event'], limit: 100 })).hits.length, 26, 'a fresh read sees the later commit');
+    await assert.rejects(escaped!.page({ kinds: ['event'] }), (error: unknown) => error instanceof HistoryError && error.code === 'invalid');
+    await assert.rejects(reader.snapshot(async snapshot => {
+      await snapshot.page({ kinds: ['event'], limit: 1 });
+      throw Error('synthetic snapshot failure');
+    }), /synthetic snapshot failure/);
+    await assert.rejects(reader.snapshot(async snapshot => snapshot.readBatch({ ids: ['not-a-uuid'] })),
+      (error: unknown) => error instanceof HistoryError && error.code === 'invalid');
+    await assert.rejects(reader.snapshot(null as unknown as Parameters<typeof reader.snapshot>[0]),
+      (error: unknown) => error instanceof HistoryError && error.code === 'invalid');
+    const idle = (await db.admin.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE application_name = 'mira-history-reader' AND state LIKE 'idle in transaction%'")).rows[0].n;
+    assert.equal(idle, 0, 'every snapshot connection was committed or rolled back and closed');
+    await writer.verifyActive();
+  } finally { Client.prototype.connect = connect; await db.close(); }
+});

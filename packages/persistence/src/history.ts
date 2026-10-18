@@ -177,39 +177,77 @@ function validateEntry(entry: HistoryEntry, miraId: string, request: HistoryRead
   } catch { throw new HistoryError('corrupt', 'History source identifiers or envelope metadata are inconsistent'); }
 }
 
+interface HistorySession { client: Client; failure(): Error | undefined; closed: boolean }
 /** Internal adapter constructed by PostgresPersistence.history. One independent
- * read-only transaction per request; it never registers a Mira or takes a lock. */
+ * read-only transaction per request, or one shared snapshot transaction inside
+ * `snapshot`; it never registers a Mira or takes a lock. */
 export class PostgresHistoryReader implements RunHistoryReader {
   readonly miraId: string;
   readonly #options: PostgresOptions;
-  constructor(options: PostgresOptions, miraId: string) {
-    string(miraId, 'Mira ID'); this.miraId = miraId; this.#options = { ...options };
+  readonly #session: HistorySession | undefined;
+  constructor(options: PostgresOptions, miraId: string, session?: HistorySession) {
+    string(miraId, 'Mira ID'); this.miraId = miraId; this.#options = { ...options }; this.#session = session;
   }
-  async #query(sql: string, parameters: unknown[]): Promise<BoundedRow | undefined> {
+  /** Opens a connected client inside a READ ONLY transaction with this reader's
+   * scope and limits. The caller must COMMIT/ROLLBACK and end it. */
+  async #begin(snapshot: boolean): Promise<{ client: Client; failure(): Error | undefined }> {
     const client = new Client({
       connectionString: this.#options.connectionString,
       application_name: this.#options.applicationName ?? 'mira-history-reader',
       connectionTimeoutMillis: 5_000,
     });
     let failure: Error | undefined;
-    let inTransaction = false;
     client.on('error', (error: Error) => { failure = error; });
     try {
       await client.connect();
-      await client.query('BEGIN READ ONLY');
-      inTransaction = true;
+      await client.query(snapshot ? 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY' : 'BEGIN READ ONLY');
       await client.query(`SET LOCAL search_path TO "${this.#options.schema ?? 'public'}"`);
       await client.query("SET LOCAL statement_timeout = '5s'");
+      // A shared snapshot must never be left open by a stalled caller.
+      if (snapshot) await client.query("SET LOCAL idle_in_transaction_session_timeout = '15s'");
       await client.query("SET LOCAL TIME ZONE 'UTC'");
-      const result = await client.query<BoundedRow>(sql, parameters);
-      await client.query('COMMIT');
-      inTransaction = false;
+    } catch (error) {
+      await client.end().catch(() => {});
+      throw error;
+    }
+    return { client, failure: () => failure };
+  }
+  async #query(sql: string, parameters: unknown[]): Promise<BoundedRow | undefined> {
+    if (this.#session) {
+      if (this.#session.closed) invalid('History snapshot reader used after its snapshot ended');
+      // Shared snapshot: the transaction and limits were set by `snapshot`.
+      const result = await this.#session.client.query<BoundedRow>(sql, parameters);
+      const failure = this.#session.failure();
       if (failure) throw failure;
       return result.rows[0];
+    }
+    const { client, failure } = await this.#begin(false);
+    try {
+      const result = await client.query<BoundedRow>(sql, parameters);
+      await client.query('COMMIT');
+      if (failure()) throw failure();
+      return result.rows[0];
     } catch (error) {
-      if (inTransaction) await client.query('ROLLBACK').catch(() => {});
+      await client.query('ROLLBACK').catch(() => {});
       throw error;
     } finally { await client.end().catch(() => {}); }
+  }
+  async snapshot<T>(work: (reader: RunHistoryReader) => Promise<T>): Promise<T> {
+    if (typeof work !== 'function') invalid('History snapshot requires a function');
+    // Nested snapshots share the outer transaction rather than opening another.
+    if (this.#session) return work(this);
+    const session: HistorySession = { ...await this.#begin(true), closed: false };
+    let open = true;
+    try {
+      const result = await work(new PostgresHistoryReader(this.#options, this.miraId, session));
+      await session.client.query('COMMIT'); open = false;
+      const failure = session.failure();
+      if (failure) throw failure;
+      return result;
+    } catch (error) {
+      if (open) await session.client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally { session.closed = true; await session.client.end().catch(() => {}); }
   }
   async findEventRun(externalEventId: string): Promise<HistoryEventRun | null> {
     string(externalEventId, 'external event ID', 65_536);

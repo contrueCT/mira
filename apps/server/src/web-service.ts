@@ -319,12 +319,17 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     return { id: input.id, receipt };
   }
   async timeline(before?: string): Promise<Timeline> {
+    // One read-only snapshot and connection for every metadata page and
+    // original batch, so pages cannot shift between queries of one response.
+    return this.#history.snapshot(history => this.#scanTimeline(history, before));
+  }
+  async #scanTimeline(history: RunHistoryReader, before: string | undefined): Promise<Timeline> {
     const items: Timeline['items'] = [];
     let cursor = before;
     // Target visible messages rather than raw events. Bound each request's work
     // even when a long tool/internal interval contains no public messages.
     for (let scanned = 0; scanned < TIMELINE_SCAN_LIMIT; scanned += 100) {
-      const page = await this.#history.page({ kinds: ['event', 'context', 'tool'], limit: 100, ...(cursor ? { before: cursor } : {}) });
+      const page = await history.page({ kinds: ['event', 'context', 'tool'], limit: 100, ...(cursor ? { before: cursor } : {}) });
       // Freeze this page's cache hits: inserting older entries may evict hits
       // needed later in this same page (or by a concurrent latest read).
       const cachedPage = new Map(page.hits.map(ref => [ref.id, this.#cache.get(ref.id)]));
@@ -334,7 +339,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       for (let offset = 0; offset < page.hits.length; offset += 10) {
         const refs = page.hits.slice(offset, offset + 10);
         const missing = refs.filter(ref => !cachedPage.get(ref.id));
-        const originals = await this.#history.readBatch({ ids: missing.map(ref => ref.id), maxBytes: 1_048_576 });
+        const originals = await history.readBatch({ ids: missing.map(ref => ref.id), maxBytes: 1_048_576 });
         const fetched = new Map(originals.map(result => [result.id, result]));
         for (const ref of refs) {
           const key = ref.id;

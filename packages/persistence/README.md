@@ -287,3 +287,11 @@ Mira scope and integrity checks as `read`. Each result has `id`, `entry` and
 before transfer, and corrupt identities still fail the request. The per-original
 budget defaults to 65,536 bytes and is capped at 1 MiB. This API does not interpret
 runtime or extension payloads and does not cache mutable tool outcomes.
+
+`RunHistoryReader.snapshot(work)` runs several reads on one connection inside a
+single `REPEATABLE READ READ ONLY` transaction with the same scope, statement
+timeout and UTC settings as individual reads, plus a 15 second
+idle-in-transaction limit. Every page and batch in `work` observes the same
+snapshot; nested calls reuse it. Any failed read rolls back the snapshot, and
+the reader handed to `work` rejects use after it settles. Individual reads keep
+their independent per-request connection.

@@ -39,7 +39,7 @@ test('real PG and HTTP history loads enough visible messages across hidden pages
     await page.goto(origin);
     await expect(page.locator('[data-message-id]')).toHaveCount(50);
     await page.locator('.timeline-scroll').evaluate(element => { element.scrollTop = 0; });
-    const initialConnections = connections;
+    const initialConnections = connections, initialResponses = responses.length;
     const start = performance.now();
     const button = page.locator('.history-controls button');
     await button.click();
@@ -49,6 +49,8 @@ test('real PG and HTTP history loads enough visible messages across hidden pages
     console.log(JSON.stringify(result));
     await writeFile(testInfo.outputPath('metrics.json'), JSON.stringify(result, null, 2));
     expect(responses.filter(response => response.method === 'POST')).toHaveLength(1);
+    // Each timeline response, including any overlapping latest poll, reads one snapshot.
+    expect(result.historyConnections).toBeLessThanOrEqual(responses.length - initialResponses + 1);
     await page.screenshot({ path: testInfo.outputPath('history-desktop.png'), fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({ path: testInfo.outputPath('history-narrow.png'), fullPage: true });

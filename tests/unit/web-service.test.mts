@@ -24,6 +24,7 @@ test('completed assistant commentary is persisted before execution and readable 
       const record = writer.state.records.find(record => record.id === id);
       return { id, entry: record ? { id, kind: 'context', miraId: writer.miraId, record, occurredAt: record.occurredAt } : null, tooLarge: false };
     }),
+    snapshot: async (work: (reader: unknown) => Promise<unknown>) => work(history),
   };
   // Real Pi runtime and Timeline projection; persistence and History reads are
   // explicitly in-memory fixtures, not a PostgreSQL or browser verification.
@@ -88,6 +89,7 @@ test('chat omits delegation-only rows and reads while preserving text and attach
   const history = {
     page: async ({ before }: { before?: string }) => { cursors.push(before); return { hits: entries.map(({ id, kind, occurredAt }) => ({ id, kind, occurredAt })), nextCursor: null }; },
     readBatch: async ({ ids }: { ids: string[] }) => ids.map(id => ({ id, entry: entries.find(value => value.id === id) ?? null, tooLarge: false })),
+    snapshot: async (work: (reader: unknown) => Promise<unknown>) => work(history),
   };
   let childReads = 0;
   const reader = { readSubagentCalls: async () => { childReads++; return [{ callId: 'spawn', runId: randomUUID(), childId: randomUUID() }]; } };
