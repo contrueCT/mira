@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { PENDING_KEY, latestPagination, nextHistoryRequest, olderPagination, mergeTimeline, readPending, reconcilePending, writePending } from '../src/timeline.ts';
+import { PENDING_KEY, loadOlderHistory, latestPagination, nextHistoryRequest, olderPagination, mergeTimeline, readPending, reconcilePending, writePending } from '../src/timeline.ts';
 import type { PendingMessage, TimelineItem } from '../src/types.ts';
 
 const envelope = { id: 'a5017dbb-0c3f-4cfe-ab34-63997612ebcd', text: '一条保留原样的消息\n第二行', occurredAt: '2026-10-06T07:00:00.000Z' };
@@ -209,4 +209,76 @@ test('local day divider follows timezone rather than the timestamp UTC date', as
     assert.equal(timelineSpacing(item('a', '2026-10-16T15:59:00Z'), item('b', '2026-10-16T16:01:00Z')).divider, true);
     assert.equal(timelineSpacing(item('a', '2026-10-16T23:59:00Z'), item('b', '2026-10-17T00:01:00Z')).divider, false);
   } finally { if (original === undefined) delete process.env['TZ']; else process.env['TZ'] = original; }
+});
+
+// Deterministic harness for one older-history click: cursor N yields `pages[N]`.
+function olderHarness(pages: Array<{ items: number; next: string | null }>) {
+  let frontier: string | null = 'c0'; const fetched: string[] = []; const accepted: string[] = [];
+  let fire: (() => void) | null = null; let cancelled = false;
+  const owner = new AbortController(); let respond: ((value: { items: number; next: string | null }) => void) | null = null;
+  const options = {
+    next: () => frontier ? { cursor: frontier, gapId: null } : null,
+    fetchPage: async (request: { cursor: string }, signal: AbortSignal) => {
+      fetched.push(request.cursor);
+      const page = pages[Number(request.cursor.slice(1))]!;
+      if (page.items < 0) return new Promise<typeof page>((resolve, reject) => {
+        respond = resolve; signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+      });
+      return page;
+    },
+    accept: (page: { items: number; next: string | null }, request: { cursor: string }) => { accepted.push(request.cursor); frontier = page.next; return Math.max(0, page.items); },
+    owner: owner.signal, stopped: () => false,
+    schedule: (callback: () => void) => { fire = callback; return () => { cancelled = true; }; },
+  };
+  return { options, fetched, accepted, owner, fireTimeout: () => fire!(), respond: (value: { items: number; next: string | null }) => respond!(value), cancelled: () => cancelled };
+}
+
+test('older history loads consecutive frontiers until the target, end, repeated cursor or page budget', async () => {
+  const target = olderHarness([{ items: 10, next: 'c1' }, { items: 45, next: 'c2' }, { items: 1, next: null }]);
+  assert.deepEqual(await loadOlderHistory(target.options), { kind: 'target' }); assert.deepEqual(target.accepted, ['c0', 'c1']); assert.ok(target.cancelled());
+  const end = olderHarness([{ items: 1, next: 'c1' }, { items: 0, next: null }]);
+  assert.deepEqual(await loadOlderHistory(end.options), { kind: 'complete' });
+  const cycle = olderHarness([{ items: 1, next: 'c1' }, { items: 1, next: 'c0' }]);
+  assert.deepEqual(await loadOlderHistory(cycle.options), { kind: 'budget' }); assert.deepEqual(cycle.fetched, ['c0', 'c1']);
+  const sparse = olderHarness(Array.from({ length: 10 }, (_, index) => ({ items: 1, next: `c${index + 1}` })));
+  assert.deepEqual(await loadOlderHistory(sparse.options), { kind: 'budget' }); assert.equal(sparse.fetched.length, 8);
+});
+
+test('older history keeps a page that completes after its deadline expired', async () => {
+  const race = olderHarness([{ items: 1, next: 'c1' }, { items: 0, next: 'c2' }, { items: 1, next: 'c3' }]);
+  // The deadline passes between the response and its continuation: the page is
+  // complete, so it is committed and its cursor kept before reporting the timeout.
+  race.options.fetchPage = async (request, signal) => {
+    race.fetched.push(request.cursor);
+    if (request.cursor === 'c1') { race.fireTimeout(); assert.ok(signal.aborted); }
+    return [{ items: 1, next: 'c1' }, { items: 2, next: 'c2' }][Number(request.cursor.slice(1))]!;
+  };
+  assert.deepEqual(await loadOlderHistory(race.options), { kind: 'timeout' });
+  assert.deepEqual(race.accepted, ['c0', 'c1'], 'the late page was retained');
+  assert.deepEqual(race.fetched, ['c0', 'c1'], 'no request starts after the deadline');
+});
+
+test('older history reports in-flight timeouts and errors, and stops silently with its owner', async () => {
+  const pending = olderHarness([{ items: 1, next: 'c1' }, { items: -1, next: null }]);
+  const timing = loadOlderHistory(pending.options);
+  await new Promise(resolve => setImmediate(resolve));
+  pending.fireTimeout();
+  assert.deepEqual(await timing, { kind: 'timeout' }); assert.deepEqual(pending.accepted, ['c0']);
+  const failing = olderHarness([{ items: 1, next: 'c1' }]);
+  const failure = new Error('synthetic 503');
+  failing.options.fetchPage = async request => { if (request.cursor === 'c1') throw failure; return { items: 1, next: 'c1' }; };
+  assert.deepEqual(await loadOlderHistory(failing.options), { kind: 'error', error: failure }); assert.deepEqual(failing.accepted, ['c0']);
+  const owned = olderHarness([{ items: -1, next: null }]);
+  const stopping = loadOlderHistory(owned.options);
+  await new Promise(resolve => setImmediate(resolve));
+  owned.owner.abort();
+  assert.deepEqual(await stopping, { kind: 'stopped' }); assert.deepEqual(owned.accepted, []);
+  // A response that arrives after the owner is gone is never committed.
+  const late = olderHarness([{ items: -1, next: null }]);
+  const lateLoad = loadOlderHistory(late.options);
+  await new Promise(resolve => setImmediate(resolve));
+  late.respond({ items: 5, next: null }); late.owner.abort();
+  assert.deepEqual(await lateLoad, { kind: 'stopped' }); assert.deepEqual(late.accepted, []);
+  const already = olderHarness([{ items: 1, next: null }]); already.owner.abort();
+  assert.deepEqual(await loadOlderHistory(already.options), { kind: 'stopped' }); assert.deepEqual(already.fetched, []);
 });

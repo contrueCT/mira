@@ -11,7 +11,7 @@ import { ArrowUp, ChevronDown, SettingsIcon } from './icons.tsx';
 import { SettingsDialog } from './SettingsDialog.tsx';
 import { createMemoryRequest, readMemoryRequest, recoverMemoryRequest, writeMemoryRequest } from './management.ts';
 import type { MemoryRequestIdentity } from './management.ts';
-import { confirmsPending, replySnippet, timelineSpacing, latestPagination, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
+import { confirmsPending, replySnippet, timelineSpacing, latestPagination, loadOlderHistory, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
 import type { HistoryPagination, HistoryRequest } from './timeline.ts';
 import type { Attachment, MessageEnvelope, PendingMessage, ReplyReference, ServerStatus, TimelineItem, TimelinePage } from './types.ts';
 
@@ -213,30 +213,28 @@ export function App() {
     if (!nextHistoryRequest(paginationRef.current) || olderBusyRef.current) return;
     cancelQuoteNavigation();
     olderBusyRef.current = true; setLoadingOlder(true); setOlderError(null);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
-    const signal = AbortSignal.any([pollAbortRef.current!.signal, controller.signal]);
-    let added = 0;
-    const cursors = new Set<string>();
     try {
-      for (let pageCount = 0; pageCount < 8; pageCount++) {
-        const request = nextHistoryRequest(paginationRef.current);
-        if (!request || cursors.has(request.cursor)) break;
-        cursors.add(request.cursor);
-        const page = await api<TimelinePage>('/api/timeline', { method: 'POST', body: JSON.stringify({ before: request.cursor }), signal });
-        if (!activeRef.current || signal.aborted) return;
+      const result = await loadOlderHistory({
+        next: () => nextHistoryRequest(paginationRef.current),
+        fetchPage: (request, signal) => api<TimelinePage>('/api/timeline', { method: 'POST', body: JSON.stringify({ before: request.cursor }), signal }),
         // Commit each successful frontier, including empty pages, so retries
         // resume from it and consecutive insertions preserve the reading anchor.
-        const known = new Set(itemsRef.current.map(item => item.id));
-        for (const item of page.items) if (!known.has(item.id)) { known.add(item.id); added++; }
-        flushSync(() => acceptPage(page, request));
-        if (added >= 50) return;
-      }
-      if (nextHistoryRequest(paginationRef.current)) setOlderError('这段历史较长，已保留读取进度，请继续加载。');
-    } catch (error) {
-      if (activeRef.current && !pollAbortRef.current?.signal.aborted) setOlderError(controller.signal.aborted ? '读取较久，已保留进度，请再试一次。' : errorText(error));
+        accept: (page, request) => {
+          const known = new Set(itemsRef.current.map(item => item.id));
+          let added = 0;
+          for (const item of page.items) if (!known.has(item.id)) { known.add(item.id); added++; }
+          flushSync(() => acceptPage(page, request));
+          return added;
+        },
+        owner: pollAbortRef.current!.signal,
+        stopped: () => !activeRef.current,
+      });
+      if (!activeRef.current) return;
+      if (result.kind === 'budget') setOlderError('这段历史较长，已保留读取进度，请继续加载。');
+      else if (result.kind === 'timeout') setOlderError('读取较久，已保留进度，请再试一次。');
+      else if (result.kind === 'error') setOlderError(errorText(result.error));
     } finally {
-      clearTimeout(timeout); olderBusyRef.current = false;
+      olderBusyRef.current = false;
       if (activeRef.current) setLoadingOlder(false);
     }
   };
