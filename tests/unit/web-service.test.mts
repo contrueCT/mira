@@ -204,3 +204,12 @@ test('timeline stops between raw pages once visible text reaches the response bu
   assert.equal(page.items.length, 40); assert.equal(page.nextCursor, 'raw-400');
   assert.equal(history.calls.pages.length, 1);
 });
+
+test('timeline rejects a history batch that omits a requested original instead of hiding it', async () => {
+  const { HistoryError } = await import('@mira/life');
+  const { history, service, ids } = pagedHistory(20, () => true);
+  history.omit.add(ids[7]!);
+  await assert.rejects(service.timeline(), (error: unknown) => error instanceof HistoryError && error.code === 'corrupt');
+  history.omit.clear();
+  assert.equal((await service.timeline()).items.length, 20, 'a later complete batch is projected normally');
+});

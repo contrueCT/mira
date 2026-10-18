@@ -360,7 +360,9 @@ export class LocalWebService implements WebBackend, ManagementBackend {
           const key = ref.id;
           let cached = cachedPage.get(key);
           if (!cached) {
-            const result = fetched.get(key)!;
+            const result = fetched.get(key);
+            // Never project a guessed empty row for an original the reader omitted.
+            if (!result) throw new HistoryError('corrupt', 'History batch omitted a requested original');
             const entry = result.entry;
             if (result.tooLarge) {
               cached = { item: ref.kind === 'tool' || ref.kind === 'context' ? null : { id: key, role: 'notice', text: '此历史记录超过界面读取上限，原始记录仍完整保存。', occurredAt: ref.occurredAt } };
