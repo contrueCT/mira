@@ -736,6 +736,65 @@ test('history inserted above is not announced; a newly arrived Mira reply is', a
   await expect(announcer).toHaveText('Mira：我在，今天想聊什么？', { timeout: 10_000 });
 });
 
+/** WCAG AA text contrast (opacity and translucent colors blended onto the nearest opaque background) and font sizes of visible text. */
+async function textContrast(page: import('@playwright/test').Page) {
+  return page.evaluate(() => {
+    const parse = (c: string) => (c.match(/[\d.]+/g) ?? []).map(Number);
+    const lum = ([r, g, b]: number[]) => { const f = (v: number) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r!) + 0.7152 * f(g!) + 0.0722 * f(b!); };
+    const bg = (el: Element | null): number[] => { while (el) { const c = parse(getComputedStyle(el).backgroundColor); if (c.length >= 3 && (c[3] ?? 1) > 0.5) return c; el = el.parentElement; } return [255, 255, 255]; };
+    const rows = new Map<string, { selector: string; ratio: number; size: string; weight: string; sample: string; pass: boolean }>();
+    for (const el of document.querySelectorAll('body *')) {
+      const own = [...el.childNodes].some(n => n.nodeType === 3 && n.textContent!.trim()); if (!own) continue;
+      const style = getComputedStyle(el); const box = (el as HTMLElement).getBoundingClientRect();
+      if (style.visibility === 'hidden' || style.display === 'none' || box.width === 0 || box.height === 0 || el.closest('.sr-only, [aria-hidden="true"]')) continue;
+      let opacity = 1; for (let node: Element | null = el; node; node = node.parentElement) opacity *= Number(getComputedStyle(node).opacity);
+      if (opacity < 0.05) continue;
+      const fg = parse(style.color); const back = bg(el); const alpha = (fg[3] ?? 1) * opacity;
+      const mixed = [0, 1, 2].map(i => fg[i]! * alpha + back[i]! * (1 - alpha));
+      const a = lum(mixed), b = lum(back); const ratio = (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+      const size = parseFloat(style.fontSize); const bold = Number(style.fontWeight) >= 700;
+      const large = size >= 24 || (bold && size >= 18.66);
+      const key = `${el.tagName.toLowerCase()}.${String(el.className).trim().split(/\s+/).join('.')}`;
+      const row = { selector: key, ratio: Math.round(ratio * 100) / 100, size: style.fontSize, weight: style.fontWeight, sample: el.textContent!.trim().slice(0, 24), pass: ratio >= (large ? 3 : 4.5) };
+      const prior = rows.get(key); if (!prior || prior.ratio > row.ratio) rows.set(key, row);
+    }
+    const list = [...rows.values()].sort((x, y) => x.ratio - y.ratio);
+    const sizes = [...document.querySelectorAll('body *')].filter(el => [...el.childNodes].some(n => n.nodeType === 3 && n.textContent!.trim()) && (el as HTMLElement).getBoundingClientRect().width > 0 && !el.closest('.sr-only')).map(el => parseFloat(getComputedStyle(el).fontSize));
+    return { failing: list.filter(row => !row.pass), all: list, minFontPx: Math.min(...sizes), under11px: sizes.filter(size => size < 11).length };
+  });
+}
+
+test('visible text meets WCAG AA contrast and an 11px minimum size in chat, errors, empty state and settings', async ({ page }) => {
+  // Regression for audit #5: muted labels measured 1.7-2.9:1 and 9-10px.
+  const file = { id: '10000000-0000-4000-8000-000000000031', name: 'report.txt', mimeType: 'text/plain', size: 7, sha256: 'f'.repeat(64) };
+  let failOlder = false; let empty = false;
+  await page.route('**/api/timeline', route => route.request().method() === 'POST'
+    ? (failOlder ? route.fulfill({ status: 500, json: { error: 'Internal Server Error' } }) : route.fulfill({ json: { items: [], nextCursor: null } }))
+    : route.fulfill({ json: empty ? { items: [], nextCursor: null } : { items: [
+      { id: 'c-user', role: 'user', text: '周末去湖边走走吧', occurredAt: '2026-10-13T08:00:00Z' },
+      { id: 'c-mira', role: 'assistant', text: '好呀，带上相机。', occurredAt: '2026-10-14T08:01:00Z', attachments: [file] },
+      { id: 'c-reply', role: 'user', text: '一定', occurredAt: '2026-10-14T08:02:00Z', reply: { messageId: 'c-mira', role: 'assistant', text: '好呀，带上相机。' } },
+      { id: 'c-notice', role: 'notice', text: '外部程序 calendar\n周六 9:00 提醒', occurredAt: '2026-10-14T08:03:00Z' },
+    ], nextCursor: 'older' } }));
+  const check = async (scene: string) => {
+    const result = await textContrast(page);
+    expect(result.failing, `${scene}: ${JSON.stringify(result.failing)}`).toEqual([]);
+    expect(result.minFontPx, scene).toBeGreaterThanOrEqual(11);
+  };
+  for (const size of [{ width: 1200, height: 860 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(size); empty = false; failOlder = true;
+    await page.goto('/'); await expect(page.getByText('外部程序 calendar', { exact: false })).toBeVisible();
+    await page.getByRole('button', { name: '查看更早的消息' }).click(); await expect(page.getByText('技术信息：HTTP 500 · Internal Server Error')).toBeVisible();
+    await page.locator('[data-message-id="c-mira"]').hover();
+    await check(`chat ${size.width}`);
+    await page.getByRole('button', { name: '模型设置', exact: true }).click(); await expect(page.getByRole('dialog')).toBeVisible();
+    await check(`settings ${size.width}`);
+    await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
+    empty = true; await page.reload(); await expect(page.getByText('和 Mira 说点什么')).toBeVisible();
+    await check(`empty ${size.width}`);
+  }
+});
+
 test('child activity stays in settings, observes each identity and recovers refreshes without adding chat controls', async ({ page }, testInfo) => {
   const runId = '10000000-0000-4000-8000-000000000010';
   const childA = '10000000-0000-4000-8000-000000000011', childB = '10000000-0000-4000-8000-000000000012';
@@ -923,7 +982,7 @@ test('ordinary plugin messages use subtle source labels without impersonating We
   await expect(page.getByLabel('气象站 扩展消息')).toHaveCount(2);
   await expect(page.getByText('已经发出的通知', { exact: true })).toHaveCount(2);
   await expect(page.locator('.message-source')).toHaveCount(2);
-  await expect(page.locator('.message-source').first()).toHaveCSS('font-size', '10px');
+  await expect(page.locator('.message-source').first()).toHaveCSS('font-size', '11px');
   const inbound = page.locator('[data-message-id="plugin-in"]');
   const source = inbound.locator('.message-source');
   await expect(source).toHaveText('气象站 · weather-station · 收到');
@@ -1322,7 +1381,7 @@ test('reply timeline keeps message sides and centered dividers on desktop and na
     await expect(pending).toHaveCSS('align-items', 'flex-end');
     await expect(notice).toHaveCSS('align-items', 'center');
     await expect(page.locator('.date-divider')).toHaveCSS('text-align', 'center');
-    await expect(page.locator('.date-divider')).toHaveCSS('color', 'rgb(166, 167, 174)');
+    await expect(page.locator('.date-divider')).toHaveCSS('color', 'rgb(115, 116, 126)');
     const a = (await assistant.boundingBox())!; const ab = (await assistant.locator('.message-bubble').boundingBox())!;
     const u = (await user.boundingBox())!; const ub = (await user.locator('.message-bubble').boundingBox())!; const uq = (await user.locator('.reply-quote').boundingBox())!;
     const p = (await pending.boundingBox())!; const pb = (await pending.locator('.message-bubble').boundingBox())!; const pq = (await pending.locator('.reply-quote').boundingBox())!;
