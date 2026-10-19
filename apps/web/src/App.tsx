@@ -422,8 +422,10 @@ export function App() {
       <header className="app-header">
         <div className="identity" aria-label="Mira">
           <div className="mira-ring" aria-hidden="true" />
+          <div className="identity-text">
           <h1>Mira</h1>
           <p className="identity-detail"><span className={`status-dot ${status?.state === 'working' ? 'working' : ''} ${connectionError || status?.state === 'error' ? 'warning' : ''}`} />{stateLabel}<span className="detail-divider">·</span>{status?.model ?? (status?.mode === 'synthetic' ? '模拟模式' : '本地连接')}{status?.mode === 'synthetic' && status.model ? <span className="mode-label">模拟</span> : null}</p>
+          </div>
         </div>
         <button ref={settingsButtonRef} className="icon-button settings-button" type="button" onClick={openSettings} aria-label="模型设置" title="模型设置"><SettingsIcon /></button>
       </header>

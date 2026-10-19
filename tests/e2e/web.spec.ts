@@ -795,6 +795,22 @@ test('visible text meets WCAG AA contrast and an 11px minimum size in chat, erro
   }
 });
 
+test('the phone header is one compact row and truncates a long model name instead of wrapping', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route('**/api/status', route => route.fulfill({ json: { state: 'idle', mode: 'live', model: 'provider/very-long-model-name-with-a-dated-suffix-2026-10-01', error: null } }));
+  await page.goto('/');
+  const header = page.locator('.app-header'); await expect(header.getByRole('heading', { name: 'Mira' })).toBeVisible();
+  const box = (await header.boundingBox())!;
+  expect(box.height).toBeLessThanOrEqual(64);
+  const settings = (await page.getByRole('button', { name: '模型设置', exact: true }).boundingBox())!;
+  const detail = (await header.locator('.identity-detail').boundingBox())!;
+  expect(detail.x + detail.width).toBeLessThanOrEqual(settings.x);
+  expect(settings.y).toBeGreaterThanOrEqual(box.y); expect(settings.y + settings.height).toBeLessThanOrEqual(box.y + box.height);
+  // Desktop keeps the centered identity.
+  await page.setViewportSize({ width: 1200, height: 860 });
+  await expect(header.locator('.identity')).toHaveCSS('flex-direction', 'column');
+});
+
 test('child activity stays in settings, observes each identity and recovers refreshes without adding chat controls', async ({ page }, testInfo) => {
   const runId = '10000000-0000-4000-8000-000000000010';
   const childA = '10000000-0000-4000-8000-000000000011', childB = '10000000-0000-4000-8000-000000000012';
