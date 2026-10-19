@@ -1,6 +1,6 @@
 import { browserUuid } from './uuid.ts';
 import { flushSync } from 'react-dom';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { FormEvent, KeyboardEvent } from 'react';
 import { AttachmentList, AttachmentPreview } from './Attachments.tsx';
 import { useAttachments } from './useAttachments.ts';
@@ -12,7 +12,7 @@ import { ArrowUp, ChevronDown, SettingsIcon } from './icons.tsx';
 import { SettingsDialog } from './SettingsDialog.tsx';
 import { createMemoryRequest, readMemoryRequest, recoverMemoryRequest, writeMemoryRequest } from './management.ts';
 import type { MemoryRequestIdentity } from './management.ts';
-import { applicableUpdates, confirmsPending, replySnippet, timelineSpacing, timelineView, quoteLookupNotice, QUOTE_LOOKUP_CANCELLED, latestPagination, loadOlderHistory, locatedPagination, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
+import { announce, applicableUpdates, arrivals, confirmsPending, replySnippet, timelineSpacing, timelineView, quoteLookupNotice, QUOTE_LOOKUP_CANCELLED, latestPagination, loadOlderHistory, locatedPagination, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
 import type { HistoryPagination, HistoryRequest } from './timeline.ts';
 import type { Attachment, LocatedPage, MessageEnvelope, PendingMessage, ReplyReference, ServerStatus, TimelineItem, TimelinePage } from './types.ts';
 
@@ -60,6 +60,11 @@ export function App() {
   const [composer, setComposer] = useState('');
   const [replyTarget, setReplyTarget] = useState<ReplyReference | null>(null);
   const [quoteSearch, setQuoteSearch] = useState(false);
+  // Roving focus: one message row is in the Tab order; arrows move between rows.
+  const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
+  // Screen readers hear newly arrived Mira replies and notices only, never
+  // history inserted above by paging or a quote lookup.
+  const [announcement, setAnnouncement] = useState('');
   const [quoteNotice, setQuoteNotice] = useState<ErrorInfo | null>(null);
   const quoteAbortRef = useRef<AbortController | null>(null);
   const [highlightId, setHighlightId] = useState<string | null>(null);
@@ -122,6 +127,10 @@ export function App() {
     }
     paginationRef.current = located ? locatedPagination(paginationRef.current, itemsRef.current, page, located) : request ? olderPagination(paginationRef.current, request, page) : latestPagination(paginationRef.current, itemsRef.current, page, initializedRef.current);
     const merged = mergeTimeline(itemsRef.current, [...(request || located ? [] : applicableUpdates(itemsRef.current, page.updates)), ...page.items]);
+    if (!request && !located && initializedRef.current) {
+      const spoken = arrivals(itemsRef.current, merged).filter(item => item.role !== 'user');
+      if (spoken.length) setAnnouncement(spoken.map(announce).join('\n'));
+    }
     itemsRef.current = merged;
     setItems(merged);
     updatePending(current => reconcilePending(current, merged));
@@ -331,6 +340,16 @@ export function App() {
     else { window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}`); closingPreviewRef.current = false; setPreviewId(null); }
   };
   const stateLabel = connectionError ? '连接中断' : !status ? '正在连接' : ({ idle: '在这里', working: '正在处理', error: '需要留意', stopped: '已停止' } as const)[status.state];
+  const rovingId = activeMessageId && items.some(item => item.id === activeMessageId) ? activeMessageId : items.at(-1)?.id ?? null;
+  const moveMessageFocus = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.target !== event.currentTarget || event.altKey || event.ctrlKey || event.metaKey) return;
+    const rows = [...(scrollRef.current?.querySelectorAll<HTMLElement>('article[data-message-id]') ?? [])];
+    const index = rows.indexOf(event.currentTarget);
+    const next = event.key === 'ArrowUp' ? rows[index - 1] : event.key === 'ArrowDown' ? rows[index + 1] : event.key === 'Home' ? rows[0] : event.key === 'End' ? rows.at(-1) : undefined;
+    if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    next?.focus();
+  };
   const view = timelineView({ loading, filling: autoFilling || (!autoFillRef.current && !!nextCursor && !connectionError), items: items.length, pending: pending.length, connectionError: !!connectionError, hasOlder: !!nextCursor });
   const showEmpty = view === 'empty' || view === 'hidden-recent';
   const beginReply = (item: TimelineItem) => {
@@ -399,6 +418,7 @@ export function App() {
         // cancellation in its existing handlers so focusing Cancel cannot remove it.
         if (!internalTimelineFocusRef.current) userIntentGenerationRef.current++;
       }}>
+      <button type="button" className="skip-link" onClick={() => { textareaRef.current?.focus(); }}>跳到输入框</button>
       <header className="app-header">
         <div className="identity" aria-label="Mira">
           <div className="mira-ring" aria-hidden="true" />
@@ -423,20 +443,23 @@ export function App() {
           {nextCursor && <div className="history-controls"><button className="text-button" onClick={() => { void loadOlder(); }} disabled={loadingOlder}>{loadingOlder ? '正在读取…' : hasHistoryGap ? '补齐尚未读取的消息' : '查看更早的消息'}</button>{hasHistoryGap && <p className="history-gap-note">有一段消息尚未读取，点击后可继续补齐</p>}{olderError && <p className="inline-error" role="alert"><span>{olderError.summary}</span>{olderError.detail && <span className="error-detail">技术信息：{olderError.detail}</span>}</p>}</div>}
           {view === 'empty' && <div className="empty-state"><span className="eyebrow">每一句，都会留在这里</span><h2>和 Mira 说点什么</h2><p>一个想法、一件小事，或今天的心情。</p><p className="empty-note">从这里开始，慢慢聊。</p></div>}
           {view === 'hidden-recent' && <div className="empty-state hidden-recent" role="status"><span className="eyebrow">消息都还在</span><h2>最近是 Mira 的内部处理记录</h2><p>较早的聊天仍完整保存，可以点上方继续查看。</p></div>}
-          <div className="message-list" role="log" aria-live="polite" aria-relevant="additions text" aria-label="消息">
+          <p className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="arrival-announcer">{announcement}</p>
+          <div className="message-list" role="region" aria-label="消息" aria-busy={loadingOlder || quoteSearch || autoFilling} aria-describedby="message-keys">
+            <p id="message-keys" className="sr-only">在消息上按上下方向键切换消息，Home 和 End 跳到第一条或最后一条。</p>
             {items.map((item, index) => {
               const spacing = timelineSpacing(items[index - 1], item);
+              const rowTab = item.id === rovingId ? undefined : -1;
               return <div key={item.id} className={`message-group ${spacing.compact ? 'compact' : ''}`}>
                 {spacing.divider && <p className="date-divider">{dateLabel(item.occurredAt)} {timeLabel(item.occurredAt)}</p>}
-                <article tabIndex={0} data-message-id={item.id} className={`message-row ${item.role} ${highlightId === item.id ? 'quote-highlight' : ''}`} aria-label={item.source ? `${item.source.label} 扩展消息` : item.role === 'user' ? '你的消息' : item.role === 'assistant' ? 'Mira 的消息' : '服务通知'}>
-                  {item.reply && <button type="button" className="reply-quote" aria-label="查看引用的消息" title={replySnippet(item.reply)} disabled={quoteSearch} onClick={() => { void jumpToReply(item.reply!.messageId); }}><span aria-hidden="true">↪</span><span>{replySnippet(item.reply)}</span></button>}
+                <article tabIndex={item.id === rovingId ? 0 : -1} onFocus={() => setActiveMessageId(item.id)} onKeyDown={moveMessageFocus} data-message-id={item.id} className={`message-row ${item.role} ${highlightId === item.id ? 'quote-highlight' : ''}`} aria-label={item.source ? `${item.source.label} 扩展消息` : item.role === 'user' ? '你的消息' : item.role === 'assistant' ? 'Mira 的消息' : '服务通知'}>
+                  {item.reply && <button type="button" className="reply-quote" tabIndex={rowTab} aria-label="查看引用的消息" title={replySnippet(item.reply)} disabled={quoteSearch} onClick={() => { void jumpToReply(item.reply!.messageId); }}><span aria-hidden="true">↪</span><span>{replySnippet(item.reply)}</span></button>}
                   <div className="message-content-line">
                   <div className="message-payload">
                   {item.text && <div className="message-bubble">{item.text}</div>}
-                  {!!item.attachments?.length && <AttachmentList attachments={item.attachments} onPreview={openPreview} />}
+                  {!!item.attachments?.length && <AttachmentList attachments={item.attachments} onPreview={openPreview} tabIndex={rowTab} />}
                   </div>
                   <div className="message-side">
-                  {item.role === 'assistant' && <button className="reply-action" type="button" aria-label="回复这条消息" title="回复这条消息" disabled={sending} onClick={() => beginReply(item)}>↩</button>}
+                  {item.role === 'assistant' && <button className="reply-action" type="button" tabIndex={rowTab} aria-label="回复这条消息" title="回复这条消息" disabled={sending} onClick={() => beginReply(item)}>↩</button>}
                   <div className="message-meta">
                   {item.source && <span className="message-source" title={`${item.source.label} · ${item.source.direction === 'inbound' ? '收到' : '已发送'} · 扩展 ${item.source.extensionId}${item.source.senderId ? ` · 来源身份 ${item.source.senderId}${item.source.senderVerified ? '（由扩展验证）' : ''}` : ''}`}>{item.source.label} · {item.source.extensionId} · {item.source.direction === 'inbound' ? '收到' : '已发送'}</span>}
                   <time className="message-time" dateTime={item.occurredAt}>{timeLabel(item.occurredAt)}</time>

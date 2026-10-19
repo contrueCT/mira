@@ -24,6 +24,20 @@ export function applicableUpdates(current: TimelineItem[], updates: TimelineItem
   const known = new Set(current.map(item => item.id));
   return updates.filter(update => known.has(update.id) || mergeTimeline([], [oldest, update])[0] === oldest);
 }
+/** Items a latest page appended after the previously newest item. */
+export function arrivals(previous: TimelineItem[], merged: TimelineItem[]): TimelineItem[] {
+  const last = previous.at(-1);
+  const known = new Set(previous.map(item => item.id));
+  if (!last) return merged.filter(item => !known.has(item.id));
+  return merged.slice(merged.findIndex(item => item.id === last.id) + 1).filter(item => !known.has(item.id));
+}
+/** One short screen reader line for an arrived message. */
+export function announce(item: TimelineItem): string {
+  const who = item.source ? item.source.label : item.role === 'assistant' ? 'Mira' : '通知';
+  const text = item.text.length > 300 ? `${item.text.slice(0, 300)}…` : item.text;
+  const files = item.attachments?.length ? `（${item.attachments.length} 个附件）` : '';
+  return `${who}：${text}${files}`;
+}
 export function reconcilePending(pending: PendingMessage[], items: TimelineItem[]): PendingMessage[] {
   return pending.filter(message => !items.some(item => confirmsPending(message, item)));
 }

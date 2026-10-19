@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { PENDING_KEY, applicableUpdates, loadOlderHistory, latestPagination, locatedPagination, nextHistoryRequest, olderPagination, mergeTimeline, quoteLookupNotice, readPending, reconcilePending, timelineView, writePending } from '../src/timeline.ts';
+import { PENDING_KEY, announce, applicableUpdates, arrivals, loadOlderHistory, latestPagination, locatedPagination, nextHistoryRequest, olderPagination, mergeTimeline, quoteLookupNotice, readPending, reconcilePending, timelineView, writePending } from '../src/timeline.ts';
 import type { PendingMessage, TimelineItem } from '../src/types.ts';
 
 const envelope = { id: 'a5017dbb-0c3f-4cfe-ab34-63997612ebcd', text: '一条保留原样的消息\n第二行', occurredAt: '2026-10-06T07:00:00.000Z' };
@@ -365,4 +365,15 @@ test('late completions apply only to known items or within the loaded span', () 
   assert.deepEqual(applicableUpdates([], [inside]), []);
   assert.deepEqual(applicableUpdates(loaded, undefined), []);
   assert.deepEqual(mergeTimeline(loaded, applicableUpdates(loaded, [inside])).map(item => item.id), ['b', 'x', 'c']);
+});
+
+test('only items appended after the previous newest one are arrivals, and announcements stay short', () => {
+  const item = (id: string, minute: number, role: TimelineItem['role'] = 'assistant'): TimelineItem => ({ id, role, text: id, occurredAt: new Date(Date.UTC(2026, 9, 1, 0, minute)).toISOString() });
+  const previous = [item('b', 10), item('c', 20)];
+  const merged = mergeTimeline(previous, [item('a', 5), item('d', 30), item('e', 31, 'user')]);
+  assert.deepEqual(arrivals(previous, merged).map(entry => entry.id), ['d', 'e']);
+  assert.deepEqual(arrivals([], [item('x', 1)]).map(entry => entry.id), ['x']);
+  assert.equal(announce({ ...item('n', 1, 'notice'), text: '服务已重启' }), '通知：服务已重启');
+  const long = announce({ ...item('m', 1), text: '长'.repeat(400), attachments: [{ id: 'f', name: 'a.txt', mimeType: 'text/plain', size: 1, sha256: 'a'.repeat(64) }] });
+  assert.equal(long, `Mira：${'长'.repeat(300)}…（1 个附件）`);
 });

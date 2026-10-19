@@ -683,6 +683,59 @@ test('an attachment completed outside the latest window appears in the loaded st
   expect(order).not.toContain('too-old');
 });
 
+test('keyboard users reach the composer in a few Tab stops and move between messages with arrows', async ({ page }) => {
+  // Regression for audit #6: 100 messages used to be ~105 Tab stops before the composer.
+  const items = Array.from({ length: 100 }, (_, index) => ({ id: `kbd-${index}`, role: index % 2 ? 'assistant' : 'user', text: `键盘消息 ${index}`, occurredAt: `2026-10-14T08:${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}Z` }));
+  await page.route('**/api/timeline', route => route.fulfill({ json: { items, nextCursor: 'older' } }));
+  await page.goto('/'); await expect(page.locator('[data-message-id]')).toHaveCount(100);
+  const input = page.getByLabel('给 Mira 发消息', { exact: true });
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('button', { name: '跳到输入框' })).toBeFocused();
+  await expect(page.getByRole('button', { name: '跳到输入框' })).toBeInViewport();
+  await page.keyboard.press('Enter'); await expect(input).toBeFocused();
+  // Without the skip link the composer is still only a handful of stops away.
+  await page.locator('body').evaluate(element => { (document.activeElement as HTMLElement | null)?.blur(); element.focus(); });
+  let stops = 0; const visited: string[] = [];
+  for (; stops < 30; stops++) {
+    await page.keyboard.press('Tab');
+    visited.push(await page.evaluate(() => { const element = document.activeElement as HTMLElement | null; return element?.getAttribute('aria-label') ?? element?.textContent?.slice(0, 12) ?? ''; }));
+    if (await input.evaluate(element => element === document.activeElement)) break;
+  }
+  expect(stops, visited.join(' | ')).toBeLessThan(12);
+  expect(await page.locator('article[data-message-id][tabindex="0"]').count()).toBe(1);
+  // Only the active row's own controls are in the Tab order.
+  await expect(page.locator('[data-message-id="kbd-97"] .reply-action')).toHaveAttribute('tabindex', '-1');
+  const last = page.locator('[data-message-id="kbd-99"]');
+  await last.focus(); await expect(last.locator('.reply-action')).not.toHaveAttribute('tabindex', '-1');
+  await page.keyboard.press('ArrowUp'); await expect(page.locator('[data-message-id="kbd-98"]')).toBeFocused();
+  await expect(page.locator('[data-message-id="kbd-98"]')).toHaveAttribute('tabindex', '0'); await expect(last).toHaveAttribute('tabindex', '-1');
+  await page.keyboard.press('Home'); await expect(page.locator('[data-message-id="kbd-0"]')).toBeFocused();
+  await expect(page.locator('[data-message-id="kbd-0"]')).toBeInViewport();
+  await page.keyboard.press('End'); await expect(last).toBeFocused();
+  await page.keyboard.press('ArrowDown'); await expect(last).toBeFocused();
+});
+
+test('history inserted above is not announced; a newly arrived Mira reply is', async ({ page }) => {
+  // Regression for audit #9: the whole message list was a polite live region.
+  const latest = [{ id: 'live-user', role: 'user', text: '你好', occurredAt: '2026-10-14T09:00:00Z' }];
+  const older = Array.from({ length: 30 }, (_, index) => ({ id: `older-${index}`, role: 'assistant', text: `旧回复 ${index}`, occurredAt: `2026-10-14T08:${String(index).padStart(2, '0')}:00Z` }));
+  let reply = false; let releaseOlder!: () => void; const olderHeld = new Promise<void>(resolve => { releaseOlder = resolve; });
+  await page.route('**/api/timeline', async route => {
+    if (route.request().method() === 'POST') { await olderHeld; await route.fulfill({ json: { items: older, nextCursor: null } }); return; }
+    await route.fulfill({ json: { items: [...latest, ...(reply ? [{ id: 'live-reply', role: 'assistant', text: '我在，今天想聊什么？', occurredAt: '2026-10-14T09:00:05Z' }] : [])], nextCursor: 'older' } });
+  });
+  await page.goto('/'); await expect(page.getByText('你好')).toBeVisible();
+  const list = page.getByRole('region', { name: '消息' }); const announcer = page.getByTestId('arrival-announcer');
+  await expect(list).not.toHaveAttribute('aria-live', /.+/u); await expect(list).not.toHaveAttribute('role', 'log');
+  await expect(announcer).toHaveAttribute('aria-live', 'polite'); await expect(announcer).toHaveText('');
+  await page.getByRole('button', { name: '查看更早的消息' }).click();
+  await expect(list).toHaveAttribute('aria-busy', 'true');
+  releaseOlder(); await expect(page.getByText('旧回复 0', { exact: true })).toBeAttached();
+  await expect(list).toHaveAttribute('aria-busy', 'false'); await expect(announcer).toHaveText('');
+  reply = true;
+  await expect(announcer).toHaveText('Mira：我在，今天想聊什么？', { timeout: 10_000 });
+});
+
 test('child activity stays in settings, observes each identity and recovers refreshes without adding chat controls', async ({ page }, testInfo) => {
   const runId = '10000000-0000-4000-8000-000000000010';
   const childA = '10000000-0000-4000-8000-000000000011', childB = '10000000-0000-4000-8000-000000000012';
