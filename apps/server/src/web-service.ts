@@ -55,6 +55,23 @@ const TIMELINE_CACHE_LIMIT = 2 * TIMELINE_SCAN_LIMIT;
 // Larger than the latest window, so refreshing in-window entries can never
 // evict every pending tool outside it.
 const PENDING_TOOL_LIMIT = 512;
+// Concurrent timeline snapshots. Each holds one database connection and at
+// most one 10 x 1 MiB original batch plus a 4 MiB response, so this bounds
+// peak original-read memory near 56 MiB however many tabs poll at once.
+export const TIMELINE_READ_CONCURRENCY = 4;
+/** A small FIFO concurrency gate. */
+class Gate {
+  #active = 0;
+  readonly #waiting: Array<() => void> = [];
+  readonly limit: number;
+  constructor(limit: number) { this.limit = limit; }
+  async run<T>(work: () => Promise<T>): Promise<T> {
+    if (this.#active < this.limit) this.#active++;
+    else await new Promise<void>(resolve => this.#waiting.push(resolve));
+    try { return await work(); }
+    finally { const next = this.#waiting.shift(); if (next) next(); else this.#active--; }
+  }
+}
 // Completed publications are re-announced to latest polls for a while, so
 // every open tab (and a poll that raced the completion) still receives them.
 const COMPLETED_UPDATE_LIMIT = 32;
@@ -147,6 +164,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   #kickRequested = false;
   readonly #cache = new Map<string, { item: Timeline['items'][number] | null }>();
   readonly #pendingTools = new Set<string>();
+  readonly #timelineReads = new Gate(TIMELINE_READ_CONCURRENCY);
   readonly #completed = new Map<string, { item: Timeline['items'][number]; at: number }>();
   private constructor(options: WebServiceOptions, writer: DreamingWriter & SchedulingWriter & LiveInputWriter & SubagentWriter, history: RunHistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, attachments: AttachmentStore, subagents: SubagentManager, subagentReader: SubagentReader, terminals: TerminalManager, browser: BrowserManager, host?: ExtensionHost) {
     this.browser = browser; this.#terminals = terminals; this.#subagentReader = subagentReader; this.#subagents = subagents; this.#attachments = attachments; this.#options = options; this.#writer = writer; this.#history = history; this.#settings = settings;
@@ -348,13 +366,13 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   async timeline(before?: string): Promise<Timeline> {
     // One read-only snapshot and connection for every metadata page and
     // original batch, so pages cannot shift between queries of one response.
-    return this.#history.snapshot(async history => {
+    return this.#timelineReads.run(() => this.#history.snapshot(async history => {
       const seen = new Set<string>();
       const page = await this.#scanTimeline(history, before, { seen });
       if (before !== undefined) return page;
       const updates = await this.#completedOutside(history, seen, new Set(page.items.map(item => item.id)));
       return updates.length ? { ...page, updates } : page;
-    });
+    }));
   }
   /** Re-read pending tools the latest window did not cover; return recent
    * completions that are not part of this page. Bounded by PENDING_TOOL_LIMIT
@@ -395,7 +413,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
    * return the window that ends at the message. Null for anything that is not
    * a visible chat message of this Mira. */
   async locateTimeline(id: string, before?: string): Promise<(Timeline & { mode: 'contiguous' | 'window' }) | null> {
-    return this.#history.snapshot(async history => {
+    return this.#timelineReads.run(() => this.#history.snapshot(async history => {
       const [original] = await history.readBatch({ ids: [id], maxBytes: 1_048_576 });
       if (!original?.entry || original.tooLarge || !visible(original.entry)) return null;
       const found = (items: Timeline['items']) => items.some(item => item.id === id);
@@ -407,7 +425,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       if (!through) return null;
       const window = await this.#scanTimeline(history, through.before ?? undefined, { limit: TIMELINE_SCAN_LIMIT });
       return found(window.items) ? { ...window, mode: 'window' as const } : null;
-    });
+    }));
   }
   async #scanTimeline(history: RunHistoryReader, before: string | undefined, options: { limit?: number; until?: (items: Timeline['items']) => boolean; seen?: Set<string> } = {}): Promise<Timeline> {
     const items: Timeline['items'] = [];

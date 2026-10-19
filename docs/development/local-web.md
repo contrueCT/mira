@@ -79,7 +79,7 @@ node apps/server/src/web-cli.mts --help
 
 ### Timeline 与模型输入
 
-普通 Timeline 仅显示用户/助手文本、必要通知与总体处理中状态，不显示工具名称、工具状态或活动卡片。`GET /api/timeline` 与用于旧页的 `POST /api/timeline` 仅返回 `items`、`nextCursor`；引用定位用的 `POST /api/timeline/locate` 额外返回 `mode`（`contiguous` 或 `window`），未找到时返回 404；最新窗口 `GET /api/timeline` 还可能附带 `updates`：意图位置已在窗口外、刚完成的附件/回复发布，前端只合并到已加载范围内；后端不为页面额外读取工具活动。模型工具仍正常执行，原始调用/结果、intent/outcome、历史和合法协议配对完整保存，不能把隐藏界面理解为停止工具。
+普通 Timeline 仅显示用户/助手文本、必要通知与总体处理中状态，不显示工具名称、工具状态或活动卡片。`GET /api/timeline` 与用于旧页的 `POST /api/timeline` 仅返回 `items`、`nextCursor`；引用定位用的 `POST /api/timeline/locate` 额外返回 `mode`（`contiguous` 或 `window`），未找到时返回 404；最新窗口 `GET /api/timeline` 还可能附带 `updates`：意图位置已在窗口外、刚完成的附件/回复发布，前端只合并到已加载范围内；同一进程最多同时进行 4 个 Timeline 快照读取（最新、旧页与引用定位共用，先到先得），每个快照最多同时持有一批 10 × 1 MiB 原文和 4 MiB 响应，从而限制多标签页轮询时的峰值内存与数据库连接数；未完成的工具记录不进缓存，因为每次读取都要检查它是否已完成（也是窗口外完成通知的来源）；后端不为页面额外读取工具活动。模型工具仍正常执行，原始调用/结果、intent/outcome、历史和合法协议配对完整保存，不能把隐藏界面理解为停止工具。
 
 送给模型的普通 Web 用户消息使用来源、原始时间与未裁剪原文，不附重复的固定 Wake 原因、类型和传输 ID。其它事件保留有意义的原因、类型、事件 ID，以及完整任意 JSON payload。积累消息仍合并为一个 Wake；超限普通文件保存完全相同的精简文本，按需使用普通文件工具读取。
 

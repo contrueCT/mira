@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import { LocalWebService } from '@mira/server';
+import { TIMELINE_READ_CONCURRENCY } from '../../apps/server/src/web-service.ts';
 import { decodeRecords, encodeEntry, messageEntry } from '../../packages/runtime-pi/src/records.ts';
 import { assistant, deferred, effectTool, input, MemoryWriter, result, runtime, streamOf } from '../recovery/fixtures.mts';
 import { boundedFixtureWait } from '../recovery/service-wait-fixture.mts';
@@ -285,4 +286,21 @@ test('pending tool tracking is bounded and forgets entries that vanish', async (
   // Records that are no longer readable stop being tracked.
   for (const id of ids.slice(0, 700)) history.omit.add(id);
   await reads(); assert.equal(await reads(), 300);
+});
+
+test('concurrent timeline reads share a bounded number of snapshots and all complete in order', async () => {
+  const { history, service } = pagedHistory(400, index => index % 4 === 0);
+  let active = 0, peak = 0; const original = history.snapshot;
+  history.snapshot = async (work: (reader: unknown) => Promise<unknown>) => {
+    active++; peak = Math.max(peak, active);
+    try { await new Promise(resolve => setTimeout(resolve, 5)); return await original(work); } finally { active--; }
+  };
+  const results = await Promise.all(Array.from({ length: 12 }, (_, index) => index % 3 ? service.timeline() : service.timeline('raw-200')));
+  assert.equal(peak, TIMELINE_READ_CONCURRENCY);
+  assert.equal(results.length, 12); assert.ok(results.every(result => result.items.length > 0));
+  // A failing read releases its slot.
+  history.snapshot = async () => { throw new Error('synthetic'); };
+  await assert.rejects(Promise.all(Array.from({ length: 6 }, () => service.timeline())));
+  history.snapshot = original;
+  assert.ok((await service.timeline()).items.length > 0);
 });
