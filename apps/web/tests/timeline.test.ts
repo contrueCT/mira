@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { PENDING_KEY, loadOlderHistory, latestPagination, nextHistoryRequest, olderPagination, mergeTimeline, readPending, reconcilePending, timelineView, writePending } from '../src/timeline.ts';
+import { PENDING_KEY, loadOlderHistory, latestPagination, nextHistoryRequest, olderPagination, mergeTimeline, quoteLookupNotice, readPending, reconcilePending, timelineView, writePending } from '../src/timeline.ts';
 import type { PendingMessage, TimelineItem } from '../src/types.ts';
 
 const envelope = { id: 'a5017dbb-0c3f-4cfe-ab34-63997612ebcd', text: '一条保留原样的消息\n第二行', occurredAt: '2026-10-06T07:00:00.000Z' };
@@ -227,7 +227,7 @@ function olderHarness(pages: Array<{ items: number; next: string | null }>) {
       return page;
     },
     accept: (page: { items: number; next: string | null }, request: { cursor: string }) => { accepted.push(request.cursor); frontier = page.next; return Math.max(0, page.items); },
-    owner: owner.signal, stopped: () => false,
+    owner: owner.signal, stopped: () => false, target: 50, found: undefined as undefined | (() => boolean),
     schedule: (callback: () => void) => { fire = callback; return () => { cancelled = true; }; },
   };
   return { options, fetched, accepted, owner, fireTimeout: () => fire!(), respond: (value: { items: number; next: string | null }) => respond!(value), cancelled: () => cancelled };
@@ -293,4 +293,41 @@ test('the empty chat is only shown when no older history remains', () => {
   assert.equal(timelineView({ ...base, connectionError: true }), 'messages');
   assert.equal(timelineView({ ...base, hasOlder: true, pending: 1 }), 'messages');
   assert.equal(timelineView({ ...base, items: 3, hasOlder: true }), 'messages');
+});
+
+test('a quote lookup keeps the page that holds its message even when it arrives at the deadline', async () => {
+  // Regression: the lookup returned silently when the deadline fired between a
+  // response and its continuation, dropping the page and saying nothing.
+  const race = olderHarness([{ items: 1, next: 'c1' }, { items: 1, next: 'c2' }]);
+  let committed = 0;
+  const accept = race.options.accept; race.options.accept = (page, request) => { committed++; return accept(page, request); };
+  race.options.target = Number.POSITIVE_INFINITY;
+  race.options.found = () => committed === 2;
+  race.options.fetchPage = async (request, signal) => {
+    race.fetched.push(request.cursor);
+    if (request.cursor === 'c1') { race.fireTimeout(); assert.ok(signal.aborted); }
+    return [{ items: 1, next: 'c1' }, { items: 1, next: 'c2' }][Number(request.cursor.slice(1))]!;
+  };
+  assert.deepEqual(await loadOlderHistory(race.options), { kind: 'found' });
+  assert.deepEqual(race.accepted, ['c0', 'c1']);
+  // Without the message in that page, the same race reports a timeout, not a stop.
+  const missing = olderHarness([{ items: 1, next: 'c1' }, { items: 1, next: 'c2' }]);
+  missing.options.target = Number.POSITIVE_INFINITY; missing.options.found = () => false;
+  missing.options.fetchPage = async (request, signal) => {
+    missing.fetched.push(request.cursor);
+    if (request.cursor === 'c1') { missing.fireTimeout(); assert.ok(signal.aborted); }
+    return [{ items: 1, next: 'c1' }, { items: 1, next: 'c2' }][Number(request.cursor.slice(1))]!;
+  };
+  assert.deepEqual(await loadOlderHistory(missing.options), { kind: 'timeout' });
+  assert.deepEqual(missing.accepted, ['c0', 'c1']);
+});
+
+test('quote lookup notices distinguish a timeout, the budget, the end and a failure', () => {
+  const describe = (error: unknown) => ({ summary: '本地服务出错了，请稍后重试', detail: `HTTP 500 · ${String((error as Error).message)}` });
+  const timeout = quoteLookupNotice({ kind: 'timeout' }, describe)!;
+  assert.match(timeout.summary, /查找超时/u); assert.doesNotMatch(timeout.summary, /已停止|已取消/u);
+  assert.match(quoteLookupNotice({ kind: 'budget' }, describe)!.summary, /继续查找/u);
+  assert.match(quoteLookupNotice({ kind: 'complete' }, describe)!.summary, /没有找到原消息/u);
+  assert.deepEqual(quoteLookupNotice({ kind: 'error', error: new Error('boom') }, describe), { summary: '暂时无法读取原消息，请稍后重试。', detail: 'HTTP 500 · boom' });
+  for (const kind of ['found', 'target', 'stopped'] as const) assert.equal(quoteLookupNotice({ kind }, describe), null);
 });

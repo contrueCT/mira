@@ -105,23 +105,27 @@ export function timelineView(state: { loading: boolean; filling: boolean; items:
   return state.hasOlder ? 'hidden-recent' : 'empty';
 }
 
-export type OlderHistoryResult = { kind: 'target' | 'complete' | 'budget' | 'timeout' | 'stopped' } | { kind: 'error'; error: unknown };
-export interface OlderHistoryOptions<P> {
-  next(): HistoryRequest | null;
-  fetchPage(request: HistoryRequest, signal: AbortSignal): Promise<P>;
+export type OlderHistoryResult = { kind: 'target' | 'found' | 'complete' | 'budget' | 'timeout' | 'stopped' } | { kind: 'error'; error: unknown };
+export interface OlderHistoryOptions<P, R extends { cursor: string } = HistoryRequest> {
+  next(): R | null;
+  fetchPage(request: R, signal: AbortSignal): Promise<P>;
   /** Commits one page and returns how many rows it newly added. */
-  accept(page: P, request: HistoryRequest): number;
+  accept(page: P, request: R): number;
+  /** Checked after every committed page, before the deadline: a lookup that
+   * finds its message in a page arriving as time runs out still succeeds. */
+  found?: (() => boolean) | undefined;
   /** The owning view or its polling scope; aborting it stops silently. */
   owner: AbortSignal;
   stopped(): boolean;
   target?: number; maxPages?: number; timeoutMs?: number;
   schedule?(callback: () => void, ms: number): () => void;
 }
-/** One explicit "older messages" intent: consecutive frontiers until enough new
- * rows, the end, a repeated cursor, the page budget or the deadline. Every
- * completed response is committed before the deadline is considered, so a page
- * that arrives as time runs out is retained rather than silently dropped. */
-export async function loadOlderHistory<P>(options: OlderHistoryOptions<P>): Promise<OlderHistoryResult> {
+/** One explicit history intent (load older messages, or find a quoted one):
+ * consecutive frontiers until enough new rows, the sought message, the end, a
+ * repeated cursor, the page budget or the deadline. Every completed response
+ * is committed before the deadline is considered, so a page that arrives as
+ * time runs out is retained rather than silently dropped. */
+export async function loadOlderHistory<P, R extends { cursor: string } = HistoryRequest>(options: OlderHistoryOptions<P, R>): Promise<OlderHistoryResult> {
   const { target = 50, maxPages = 8, timeoutMs = 15_000 } = options;
   const schedule = options.schedule ?? ((callback, ms) => { const timer = setTimeout(callback, ms); return () => clearTimeout(timer); });
   if (options.owner.aborted || options.stopped()) return { kind: 'stopped' };
@@ -147,6 +151,7 @@ export async function loadOlderHistory<P>(options: OlderHistoryOptions<P>): Prom
       }
       if (options.owner.aborted || options.stopped()) return { kind: 'stopped' };
       added += options.accept(page, request);
+      if (options.found?.()) return { kind: 'found' };
       if (added >= target) return { kind: 'target' };
       if (timedOut) return { kind: 'timeout' };
     }
@@ -155,3 +160,15 @@ export async function loadOlderHistory<P>(options: OlderHistoryOptions<P>): Prom
     cancel(); options.owner.removeEventListener('abort', stop);
   }
 }
+
+/** What a finished quote lookup tells the reader; null when nothing to say. */
+export function quoteLookupNotice(result: OlderHistoryResult, describe: (error: unknown) => { summary: string; detail: string | null }): { summary: string; detail: string | null } | null {
+  switch (result.kind) {
+    case 'found': case 'target': case 'stopped': return null;
+    case 'complete': return { summary: '没有找到原消息，它可能不在可显示的聊天记录中。引用内容仍保留。', detail: null };
+    case 'budget': return { summary: '暂未找到原消息，已读取的更早消息会保留。再点一次引用可以继续查找。', detail: null };
+    case 'timeout': return { summary: '查找超时，已读取的更早消息会保留。再点一次引用可以继续查找。', detail: null };
+    case 'error': { const { detail, summary } = describe(result.error); return { summary: '暂时无法读取原消息，请稍后重试。', detail: detail ?? summary }; }
+  }
+}
+export const QUOTE_LOOKUP_CANCELLED = '已取消查找，引用内容仍保留。';

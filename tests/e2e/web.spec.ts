@@ -1160,7 +1160,7 @@ test('quote navigation pages safely, has cancellation and preserves unavailable 
     await route.fulfill({ json: { items: [{ id: '22222222-2222-4222-8222-222222222222', role: 'user', text: '合成回复', occurredAt: '2026-10-16T03:00:00Z', reply: { messageId: target, role: 'assistant', text: '仍可读的引用内容' } }], nextCursor: 'older-0' } });
   });
   await page.goto('/'); await page.getByRole('button', { name: '查看引用的消息' }).click();
-  await expect(page.getByText('暂未找到原消息。可以继续查看更早的消息，再点引用。')).toBeVisible();
+  await expect(page.getByText('暂未找到原消息，已读取的更早消息会保留。再点一次引用可以继续查找。')).toBeVisible();
   expect(reads).toBe(8); await expect(page.getByText('仍可读的引用内容', { exact: true })).toBeVisible();
   await page.route('**/api/timeline', async route => {
     if (route.request().method() === 'POST') { await new Promise(resolve => setTimeout(resolve, 1_000)); await route.fulfill({ json: { items: [], nextCursor: 'later' } }).catch(() => {}); return; }
@@ -1171,12 +1171,12 @@ test('quote navigation pages safely, has cancellation and preserves unavailable 
   await cancel.focus(); await expect(cancel).toBeFocused();
   // Focus invalidates late send restoration but must not unmount this control before click.
   await expect(cancel).toBeVisible(); await cancel.click();
-  await expect(page.getByText('查找已停止，引用内容仍保留。')).toBeVisible();
+  await expect(page.getByText('已取消查找，引用内容仍保留。')).toBeVisible();
   await expect(cancel).toHaveCount(0);
   // A subsequent lookup owns a fresh controller and can still be cancelled.
   await page.getByRole('button', { name: '查看引用的消息' }).click();
   await expect(cancel).toBeVisible(); await cancel.focus(); await cancel.click();
-  await expect(page.getByText('查找已停止，引用内容仍保留。')).toBeVisible();
+  await expect(page.getByText('已取消查找，引用内容仍保留。')).toBeVisible();
   await expect(cancel).toHaveCount(0);
 });
 
@@ -1220,7 +1220,7 @@ test('quote navigation stops on a repeated cursor and retains the quote after a 
   await page.goto('/');
   const quote = page.getByRole('button', { name: '查看引用的消息' });
   await quote.click();
-  await expect(page.getByText('暂未找到原消息。可以继续查看更早的消息，再点引用。')).toBeVisible();
+  await expect(page.getByText('暂未找到原消息，已读取的更早消息会保留。再点一次引用可以继续查找。')).toBeVisible();
   expect(reads).toBe(1);
   await expect(quote).toBeEnabled();
   await expect(page.getByRole('button', { name: '取消查找' })).toHaveCount(0);
@@ -1339,7 +1339,7 @@ for (const intent of ['latest', 'send', 'reply', 'compose', 'settings-history', 
       await bounded(page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))), 'navigation frame flush');
       await expect(page.locator('.quote-highlight')).toHaveCount(0);
       await expect(page.locator(`[data-message-id="${target}"]`)).toHaveCount(0);
-      await expect(page.getByText('查找已停止，引用内容仍保留。')).toHaveCount(0);
+      await expect(page.getByText('已取消查找，引用内容仍保留。')).toHaveCount(0);
       if (intent === 'reply' || intent === 'send' || intent === 'compose') await expect(input).toBeFocused();
       if (intent === 'article-focus' || intent === 'timeline-focus' || intent === 'timeline-wheel') {
         if (intent === 'article-focus') await expect(page.locator('[data-message-id="visible-1"]')).toBeFocused();
@@ -1479,7 +1479,7 @@ for (const intent of ['normal', 'loaded-quote', 'paged-quote', 'settings', 'sett
         await expect.poll(() => latestReads).toBeGreaterThanOrEqual(2);
         releaseRefresh(); releaseLookup(); await expect(page.locator(`[data-message-id="${target}"]`)).toBeFocused();
         await expect(page.locator(`[data-message-id="${target}"]`)).toHaveClass(/quote-highlight/u);
-        await expect(page.getByText('暂未找到原消息。可以继续查看更早的消息，再点引用。', { exact: true })).toHaveCount(0);
+        await expect(page.getByText('暂未找到原消息，已读取的更早消息会保留。再点一次引用可以继续查找。', { exact: true })).toHaveCount(0);
         await expect(page.getByRole('button', { name: '取消查找' })).toHaveCount(0);
         expect(lookups).toBe(1);
       } else if (intent === 'loaded-quote') {
@@ -1527,4 +1527,31 @@ test('connection and send failures read in Chinese, keep the technical message a
   const help = page.locator('.pending-help');
   await expect(help).toContainText('网络连接中断，暂时无法连接本地服务。不会自动重发');
   await expect(help.locator('.error-detail')).toHaveText('技术信息：Failed to fetch');
+});
+
+test('a quote lookup that reaches its deadline says it timed out, not that it was stopped', async ({ page }) => {
+  const target = '11111111-1111-4111-8111-111111111111';
+  const now = new Date('2026-10-16T12:00:00Z');
+  await page.clock.install({ time: now });
+  let reads = 0; let release!: () => void; const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/timeline**', async route => {
+    if (route.request().method() === 'GET' && new URL(route.request().url()).pathname === '/api/timeline') {
+      await route.fulfill({ json: { items: [{ id: '22222222-2222-4222-8222-222222222222', role: 'user', text: '合成回复', occurredAt: '2026-10-16T03:00:00Z', reply: { messageId: target, role: 'assistant', text: '等待超时的引用' } }], nextCursor: 'older' } });
+      return;
+    }
+    reads++; await held; await route.abort('aborted').catch(() => {});
+  });
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: '查看引用的消息' })).toBeEnabled();
+  await page.clock.pauseAt(new Date(now.getTime() + 60_000));
+  try {
+    await page.getByRole('button', { name: '查看引用的消息' }).click();
+    await expect.poll(() => reads).toBe(1);
+    await page.clock.fastForward(15_000);
+    const status = page.locator('.quote-search-status');
+    // Regression: the deadline was reported as "查找已停止" as if the reader cancelled.
+    await expect(status).toContainText('查找超时');
+    await expect(status).not.toContainText('已停止');
+    await expect(page.getByText('等待超时的引用', { exact: true })).toBeVisible();
+  } finally { release(); }
 });

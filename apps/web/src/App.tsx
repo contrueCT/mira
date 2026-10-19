@@ -12,7 +12,7 @@ import { ArrowUp, ChevronDown, SettingsIcon } from './icons.tsx';
 import { SettingsDialog } from './SettingsDialog.tsx';
 import { createMemoryRequest, readMemoryRequest, recoverMemoryRequest, writeMemoryRequest } from './management.ts';
 import type { MemoryRequestIdentity } from './management.ts';
-import { confirmsPending, replySnippet, timelineSpacing, timelineView, latestPagination, loadOlderHistory, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
+import { confirmsPending, replySnippet, timelineSpacing, timelineView, quoteLookupNotice, QUOTE_LOOKUP_CANCELLED, latestPagination, loadOlderHistory, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
 import type { HistoryPagination, HistoryRequest } from './timeline.ts';
 import type { Attachment, MessageEnvelope, PendingMessage, ReplyReference, ServerStatus, TimelineItem, TimelinePage } from './types.ts';
 
@@ -60,7 +60,7 @@ export function App() {
   const [composer, setComposer] = useState('');
   const [replyTarget, setReplyTarget] = useState<ReplyReference | null>(null);
   const [quoteSearch, setQuoteSearch] = useState(false);
-  const [quoteNotice, setQuoteNotice] = useState<string | null>(null);
+  const [quoteNotice, setQuoteNotice] = useState<ErrorInfo | null>(null);
   const quoteAbortRef = useRef<AbortController | null>(null);
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const [composerError, setComposerError] = useState<string | null>(null);
@@ -354,31 +354,29 @@ export function App() {
       return true;
     };
     if (reveal()) return;
-    if (olderBusyRef.current) { setQuoteNotice('历史消息正在读取，请稍后再点引用。'); return; }
+    if (olderBusyRef.current) { setQuoteNotice({ summary: '历史消息正在读取，请稍后再点引用。', detail: null }); return; }
+    // Cancellation (a newer intent or the cancel button) aborts this owner and
+    // stops silently; the shared loader owns the deadline and the page budget.
     const controller = new AbortController(); quoteAbortRef.current = controller;
-    const timeout = setTimeout(() => controller.abort(), 15_000);
+    const view = pollAbortRef.current?.signal; const stopWithView = () => controller.abort();
+    view?.addEventListener('abort', stopWithView, { once: true });
     olderBusyRef.current = true; setLoadingOlder(true); setQuoteSearch(true);
     nearBottomRef.current = false;
-    const cursors = new Set<string>();
     try {
-      for (let pageCount = 0; pageCount < 8; pageCount++) {
-        const request = nextHistoryRequest(paginationRef.current);
-        if (!request || cursors.has(request.cursor)) break;
-        cursors.add(request.cursor);
-        const page = await api<TimelinePage>('/api/timeline', { method: 'POST', body: JSON.stringify({ before: request.cursor }), signal: controller.signal });
-        if (!activeRef.current || quoteAbortRef.current !== controller || controller.signal.aborted) return;
+      const result = await loadOlderHistory({
+        next: () => nextHistoryRequest(paginationRef.current),
+        fetchPage: (request, signal) => api<TimelinePage>('/api/timeline', { method: 'POST', body: JSON.stringify({ before: request.cursor }), signal }),
         // The next step reads/focuses this page's DOM. A frame is not a React
         // commit guarantee: finish this insertion and its anchor layout effect first.
-        flushSync(() => acceptPage(page, request));
-        if (!activeRef.current || quoteAbortRef.current !== controller) return;
-        if (controller.signal.aborted) { setQuoteNotice('查找已停止，引用内容仍保留。'); return; }
-        if (reveal()) return;
-      }
-      setQuoteNotice('暂未找到原消息。可以继续查看更早的消息，再点引用。');
-    } catch (error) {
-      if (activeRef.current && quoteAbortRef.current === controller) setQuoteNotice(isAbort(error) ? '查找已停止，引用内容仍保留。' : '暂时无法读取原消息，请稍后重试。');
+        accept: (page, request) => { flushSync(() => acceptPage(page, request)); return page.items.length; },
+        found: reveal,
+        owner: controller.signal,
+        stopped: () => !activeRef.current || quoteAbortRef.current !== controller,
+        target: Number.POSITIVE_INFINITY,
+      });
+      if (activeRef.current && quoteAbortRef.current === controller) setQuoteNotice(quoteLookupNotice(result, errorInfo));
     } finally {
-      clearTimeout(timeout);
+      view?.removeEventListener('abort', stopWithView);
       if (quoteAbortRef.current === controller) {
         quoteAbortRef.current = null; olderBusyRef.current = false;
         if (activeRef.current) { setQuoteSearch(false); setLoadingOlder(false); }
@@ -456,7 +454,7 @@ export function App() {
       </main>
 
       <footer className="composer-section">
-        {(quoteSearch || quoteNotice) && <p className="quote-search-status" role="status">{quoteSearch ? '正在查找引用消息…' : quoteNotice}{quoteSearch && <button type="button" className="text-button" onClick={() => { cancelQuoteNavigation(); setQuoteNotice('查找已停止，引用内容仍保留。'); }}>取消查找</button>}</p>}
+        {(quoteSearch || quoteNotice) && <p className="quote-search-status" role="status">{quoteSearch ? '正在查找引用消息…' : quoteNotice?.summary}{!quoteSearch && quoteNotice?.detail && <span className="error-detail">技术信息：{quoteNotice.detail}</span>}{quoteSearch && <button type="button" className="text-button" onClick={() => { cancelQuoteNavigation(); setQuoteNotice({ summary: QUOTE_LOOKUP_CANCELLED, detail: null }); }}>取消查找</button>}</p>}
         {!nearBottom && <button className="latest-button" type="button" onClick={scrollToLatest}><ChevronDown />回到最新消息</button>}
         {replyTarget && <div className="composer-reply" aria-label="回复预览"><span aria-hidden="true">↪</span><span className="composer-reply-text"><strong>回复 {replyTarget.source?.label ?? 'Mira'}</strong><span>{replySnippet(replyTarget)}</span></span><button type="button" aria-label="取消回复" title="取消回复" onClick={() => { cancelQuoteNavigation(); setReplyTarget(null); textareaRef.current?.focus(); }}>×</button></div>}
         <form className={`composer ${composer.includes('\n') || attachments.drafts.length ? 'expanded' : ''} ${dragging ? 'dragging' : ''}`} onSubmit={submit} onFocusCapture={cancelQuoteNavigation}
