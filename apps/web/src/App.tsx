@@ -13,19 +13,12 @@ import { SettingsDialog } from './SettingsDialog.tsx';
 import { createMemoryRequest, readMemoryRequest, recoverMemoryRequest, writeMemoryRequest } from './management.ts';
 import type { MemoryRequestIdentity } from './management.ts';
 import { composerBudget, envelopeBytes, MESSAGE_BODY_LIMIT } from './composer.ts';
-import { announce, applicableUpdates, arrivals, confirmsPending, replySnippet, timelineSpacing, timelineView, quoteLookupNotice, QUOTE_LOOKUP_CANCELLED, latestPagination, loadOlderHistory, locatedPagination, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
+import { announce, applicableUpdates, arrivals, confirmsPending, dateLabel, replyReference, replySnippet, untilNextLocalDay, timelineSpacing, timelineView, quoteLookupNotice, QUOTE_LOOKUP_CANCELLED, latestPagination, loadOlderHistory, locatedPagination, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
 import type { HistoryPagination, HistoryRequest } from './timeline.ts';
 import type { Attachment, LocatedPage, MessageEnvelope, PendingMessage, ReplyReference, ServerStatus, TimelineItem, TimelinePage } from './types.ts';
 
 const timeFormat = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' });
 function timeLabel(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? '' : timeFormat.format(date); }
-function dateLabel(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  const today = new Date();
-  if (date.toDateString() === today.toDateString()) return '今天';
-  return new Intl.DateTimeFormat('zh-CN', { year: date.getFullYear() === today.getFullYear() ? undefined : 'numeric', month: 'long', day: 'numeric' }).format(date);
-}
 function initialPending(): { messages: PendingMessage[]; memoryRequest: MemoryRequestIdentity | null; error: string | null } {
   try {
     const messages = readPending(window.sessionStorage);
@@ -66,6 +59,16 @@ export function App() {
   // Screen readers hear newly arrived Mira replies and notices only, never
   // history inserted above by paging or a quote lookup.
   const [announcement, setAnnouncement] = useState('');
+  // The local day, so 今天 moves on at midnight (and after sleep or a hidden tab).
+  const [today, setToday] = useState(() => new Date());
+  useEffect(() => {
+    let timer: number | undefined;
+    const schedule = () => { window.clearTimeout(timer); timer = window.setTimeout(() => { setToday(new Date()); schedule(); }, untilNextLocalDay()); };
+    const recheck = () => { setToday(current => current.toDateString() === new Date().toDateString() ? current : new Date()); schedule(); };
+    schedule();
+    document.addEventListener('visibilitychange', recheck); window.addEventListener('focus', recheck);
+    return () => { window.clearTimeout(timer); document.removeEventListener('visibilitychange', recheck); window.removeEventListener('focus', recheck); };
+  }, []);
   const [quoteNotice, setQuoteNotice] = useState<ErrorInfo | null>(null);
   const quoteAbortRef = useRef<AbortController | null>(null);
   const [highlightId, setHighlightId] = useState<string | null>(null);
@@ -357,7 +360,7 @@ export function App() {
   const beginReply = (item: TimelineItem) => {
     if (item.role !== 'assistant' || sendingRef.current) return;
     cancelQuoteNavigation();
-    setReplyTarget({ messageId: item.id, role: item.role, text: item.text, ...(item.attachments?.length ? { attachmentNames: item.attachments.map(file => file.name) } : {}), ...(item.source ? { source: item.source } : {}) });
+    setReplyTarget(replyReference(item));
     textareaRef.current?.focus();
   };
   const jumpToReply = async (messageId: string) => {
@@ -454,7 +457,7 @@ export function App() {
               const spacing = timelineSpacing(items[index - 1], item);
               const rowTab = item.id === rovingId ? undefined : -1;
               return <div key={item.id} className={`message-group ${spacing.compact ? 'compact' : ''}`}>
-                {spacing.divider && <p className="date-divider">{dateLabel(item.occurredAt)} {timeLabel(item.occurredAt)}</p>}
+                {spacing.divider && <p className="date-divider">{dateLabel(item.occurredAt, today)} {timeLabel(item.occurredAt)}</p>}
                 <article tabIndex={item.id === rovingId ? 0 : -1} onFocus={() => setActiveMessageId(item.id)} onKeyDown={moveMessageFocus} data-message-id={item.id} className={`message-row ${item.role} ${highlightId === item.id ? 'quote-highlight' : ''}`} aria-label={item.source ? `${item.source.label} 扩展消息` : item.role === 'user' ? '你的消息' : item.role === 'assistant' ? 'Mira 的消息' : '服务通知'}>
                   {item.reply && <button type="button" className="reply-quote" tabIndex={rowTab} aria-label="查看引用的消息" title={replySnippet(item.reply)} disabled={quoteSearch} onClick={() => { void jumpToReply(item.reply!.messageId); }}><span aria-hidden="true">↪</span><span>{replySnippet(item.reply)}</span></button>}
                   <div className="message-content-line">
@@ -474,7 +477,7 @@ export function App() {
               </div>;
             })}
             {pending.map(message => <article className="message-row user pending-message" key={message.id} aria-label="待确认的消息">
-              {message.replyToMessageId && <p className="reply-quote pending-quote"><span aria-hidden="true">↪</span><span>{(() => { const target = items.find(item => item.id === message.replyToMessageId); return target ? replySnippet({ messageId: target.id, role: 'assistant', text: target.text, attachmentNames: target.attachments?.map(file => file.name) ?? [] }) : '回复原消息'; })()}</span></p>}
+              {message.replyToMessageId && <p className="reply-quote pending-quote"><span aria-hidden="true">↪</span><span>{(() => { const target = items.find(item => item.id === message.replyToMessageId); const reference = target && replyReference(target); return reference ? replySnippet(reference) : '回复原消息'; })()}</span></p>}
               {message.text && <div className="message-bubble">{message.text}</div>}
               {!!message.attachmentIds?.length && <p className="pending-attachments">{message.attachmentIds.length} 个附件 · 已保留，等待消息确认</p>}
               <div className={`message-receipt ${message.state === 'uncertain' ? 'uncertain' : ''}`}>

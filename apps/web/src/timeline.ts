@@ -133,6 +133,24 @@ export function timelineSpacing(previous: TimelineItem | undefined, current: Tim
   const sameSource = previous?.source?.extensionId === current.source?.extensionId && previous?.source?.senderId === current.source?.senderId && previous?.source?.direction === current.source?.direction;
   return { divider, compact: !divider && previous?.role === current.role && current.role !== 'notice' && sameSource };
 }
+/** The reply reference for a quotable chat item, keeping its real role and
+ * source; notices cannot be quoted. */
+export function replyReference(item: TimelineItem): import('./types.ts').ReplyReference | null {
+  if (item.role === 'notice') return null;
+  return { messageId: item.id, role: item.role, text: item.text, ...(item.attachments?.length ? { attachmentNames: item.attachments.map(file => file.name) } : {}), ...(item.source ? { source: item.source } : {}) };
+}
+/** 今天 for the viewer's current local day, else a month-day (with year when not this year). */
+export function dateLabel(value: string, now: Date = new Date()): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  if (date.toDateString() === now.toDateString()) return '今天';
+  return new Intl.DateTimeFormat('zh-CN', { year: date.getFullYear() === now.getFullYear() ? undefined : 'numeric', month: 'long', day: 'numeric' }).format(date);
+}
+/** Milliseconds until the next local midnight (at least one second). */
+export function untilNextLocalDay(now: Date = new Date()): number {
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  return Math.max(1_000, next.getTime() - now.getTime());
+}
 export function replySnippet(reply: import('./types.ts').ReplyReference): string {
   return (reply.text.trim() || reply.attachmentNames?.join('、') || '原消息').replace(/\s+/gu, ' ');
 }

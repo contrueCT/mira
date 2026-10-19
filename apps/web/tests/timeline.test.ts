@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { PENDING_KEY, announce, applicableUpdates, arrivals, loadOlderHistory, latestPagination, locatedPagination, nextHistoryRequest, olderPagination, mergeTimeline, quoteLookupNotice, readPending, reconcilePending, timelineView, writePending } from '../src/timeline.ts';
+import { PENDING_KEY, announce, applicableUpdates, arrivals, dateLabel, replyReference, untilNextLocalDay, loadOlderHistory, latestPagination, locatedPagination, nextHistoryRequest, olderPagination, mergeTimeline, quoteLookupNotice, readPending, reconcilePending, timelineView, writePending } from '../src/timeline.ts';
 import type { PendingMessage, TimelineItem } from '../src/types.ts';
 
 const envelope = { id: 'a5017dbb-0c3f-4cfe-ab34-63997612ebcd', text: '一条保留原样的消息\n第二行', occurredAt: '2026-10-06T07:00:00.000Z' };
@@ -376,4 +376,25 @@ test('only items appended after the previous newest one are arrivals, and announ
   assert.equal(announce({ ...item('n', 1, 'notice'), text: '服务已重启' }), '通知：服务已重启');
   const long = announce({ ...item('m', 1), text: '长'.repeat(400), attachments: [{ id: 'f', name: 'a.txt', mimeType: 'text/plain', size: 1, sha256: 'a'.repeat(64) }] });
   assert.equal(long, `Mira：${'长'.repeat(300)}…（1 个附件）`);
+});
+
+test('today follows the viewer local day and the next local midnight is scheduled', () => {
+  const evening = new Date(2026, 9, 14, 23, 59, 30);
+  assert.equal(dateLabel(new Date(2026, 9, 14, 8).toISOString(), evening), '今天');
+  // After midnight the same message is dated, not 今天.
+  const after = new Date(2026, 9, 15, 0, 0, 1);
+  assert.equal(dateLabel(new Date(2026, 9, 14, 8).toISOString(), after), '10月14日');
+  assert.equal(dateLabel(new Date(2025, 9, 14, 8).toISOString(), after), '2025年10月14日');
+  assert.equal(dateLabel('not a date', after), '');
+  assert.equal(untilNextLocalDay(evening), 30_000);
+  assert.equal(untilNextLocalDay(new Date(2026, 9, 14, 23, 59, 59, 999.5)), 1_000);
+});
+
+test('a reply reference keeps the quoted role and source; notices are not quotable', () => {
+  const source = { kind: 'extension' as const, extensionId: 'mail', label: '邮件', direction: 'inbound' as const };
+  const user = { id: 'u', role: 'user' as const, text: '我的原话', occurredAt: '2026-10-14T00:00:00Z' };
+  assert.deepEqual(replyReference(user), { messageId: 'u', role: 'user', text: '我的原话' });
+  const inbound = { id: 'm', role: 'assistant' as const, text: '', occurredAt: '2026-10-14T00:00:00Z', source, attachments: [{ id: 'f', name: 'a.png', mimeType: 'image/png', size: 1, sha256: 'a'.repeat(64) }] } as TimelineItem;
+  assert.deepEqual(replyReference(inbound), { messageId: 'm', role: 'assistant', text: '', attachmentNames: ['a.png'], source });
+  assert.equal(replyReference({ id: 'n', role: 'notice', text: '通知', occurredAt: '2026-10-14T00:00:00Z' }), null);
 });

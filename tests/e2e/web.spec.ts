@@ -826,6 +826,18 @@ test('the composer counts UTF-8 bytes and blocks a message the server would reje
   await input.fill('短消息'); await expect(page.locator('.composer-budget')).toHaveCount(0); await expect(send).toBeEnabled();
 });
 
+test.describe('local day labels', () => {
+  test.use({ timezoneId: 'Asia/Shanghai' });
+  test('an open page moves 今天 to a date after local midnight', async ({ page }) => {
+    await page.clock.install({ time: new Date('2026-10-14T23:59:00+08:00') });
+    await page.route('**/api/timeline', route => route.fulfill({ json: { items: [{ id: 'evening', role: 'user', text: '晚安', occurredAt: '2026-10-14T22:00:00+08:00' }], nextCursor: null } }));
+    await page.goto('/');
+    await expect(page.locator('.date-divider')).toHaveText(/^今天 /u);
+    await page.clock.runFor(2 * 60_000);
+    await expect(page.locator('.date-divider')).toHaveText(/^10月14日 /u);
+  });
+});
+
 test('child activity stays in settings, observes each identity and recovers refreshes without adding chat controls', async ({ page }, testInfo) => {
   const runId = '10000000-0000-4000-8000-000000000010';
   const childA = '10000000-0000-4000-8000-000000000011', childB = '10000000-0000-4000-8000-000000000012';
