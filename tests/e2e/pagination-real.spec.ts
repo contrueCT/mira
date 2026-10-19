@@ -7,6 +7,35 @@ import { createTestDatabase, testHistoryId } from '../integration/database.mts';
 
 const port = 3221, origin = `http://127.0.0.1:${port}`;
 
+async function seededService(db: Awaited<ReturnType<typeof createTestDatabase>>, root: string, miraId: string, shown: boolean[], listenPort: number) {
+  const writer = await db.acquire(miraId); await writer.close();
+  const entries = shown.map((visible, i) => ({ id: testHistoryId(`${miraId}-${i}`), event: { id: `seed-${i}`, source: visible ? 'user' : 'external', type: visible ? 'web.message' : 'synthetic.internal',
+    occurredAt: new Date(Date.UTC(2026, 9, 1) + i * 60_000).toISOString(), payload: { text: visible ? `合成历史消息 ${i}，周末沿湖散步的安排。` : 'PRIVATE_HIDDEN_EVENT' } } }));
+  await db.admin.query(`WITH input AS (SELECT * FROM json_to_recordset($1::json) AS x(id uuid, event json)),
+    reserved AS (INSERT INTO history_records(id, mira_id, kind) SELECT id, $2, 'event' FROM input)
+    INSERT INTO life_events(mira_id, history_id, event_id, event) SELECT $2, id, event->>'id', event FROM input`, [JSON.stringify(entries), miraId]);
+  const service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId, sourceDirectory: process.cwd(), workingDirectory: root,
+    miraHome: root, spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true, dreaming: { enabled: false } });
+  const app = createLocalHttp({ backend: service, port: listenPort, assetsDirectory: path.join(process.cwd(), 'apps/web/dist') });
+  await app.listen({ port: listenPort, host: '127.0.0.1' });
+  return { service, app, ids: entries.map(entry => entry.id), origin: `http://127.0.0.1:${listenPort}` };
+}
+
+test('real PG: a newest window of private records loads older chat instead of the empty state', async ({ page }, testInfo) => {
+  const db = await createTestDatabase(), root = await realpath(await mkdtemp('/tmp/mira-pagination-'));
+  let fixture: Awaited<ReturnType<typeof seededService>> | undefined;
+  try {
+    // 60 visible messages, then 400 newer private records: more than the 300-record latest window.
+    fixture = await seededService(db, root, 'hidden-newest', [...Array.from({ length: 60 }, () => true), ...Array.from({ length: 400 }, () => false)], port + 1);
+    await page.goto(fixture.origin);
+    await expect(page.locator('[data-message-id]')).toHaveCount(60);
+    await expect(page.getByText('和 Mira 说点什么')).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath('hidden-newest.png') });
+  } finally {
+    await fixture?.app.close(); await fixture?.service.close(); await db.close(); await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('real PG and HTTP history loads enough visible messages across hidden pages', async ({ page }, testInfo) => {
   const db = await createTestDatabase(), root = await realpath(await mkdtemp('/tmp/mira-pagination-'));
   let service: LocalWebService | undefined, app: ReturnType<typeof createLocalHttp> | undefined;

@@ -11,7 +11,7 @@ import { ArrowUp, ChevronDown, SettingsIcon } from './icons.tsx';
 import { SettingsDialog } from './SettingsDialog.tsx';
 import { createMemoryRequest, readMemoryRequest, recoverMemoryRequest, writeMemoryRequest } from './management.ts';
 import type { MemoryRequestIdentity } from './management.ts';
-import { confirmsPending, replySnippet, timelineSpacing, latestPagination, loadOlderHistory, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
+import { confirmsPending, replySnippet, timelineSpacing, timelineView, latestPagination, loadOlderHistory, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
 import type { HistoryPagination, HistoryRequest } from './timeline.ts';
 import type { Attachment, MessageEnvelope, PendingMessage, ReplyReference, ServerStatus, TimelineItem, TimelinePage } from './types.ts';
 
@@ -47,6 +47,8 @@ export function App() {
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasHistoryGap, setHasHistoryGap] = useState(false);
+  const [autoFilling, setAutoFilling] = useState(false);
+  const autoFillRef = useRef(false);
   const attachments = useAttachments();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const previewRegistry = useRef(new Map<string, Attachment>());
@@ -209,9 +211,10 @@ export function App() {
     nearBottomRef.current = true; setNearBottom(true);
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   };
-  const loadOlder = async () => {
+  const loadOlder = async (automatic = false) => {
     if (!nextHistoryRequest(paginationRef.current) || olderBusyRef.current) return;
-    cancelQuoteNavigation();
+    // The automatic first fill is not a user intent and must not cancel one.
+    if (!automatic) cancelQuoteNavigation();
     olderBusyRef.current = true; setLoadingOlder(true); setOlderError(null);
     try {
       const result = await loadOlderHistory({
@@ -238,6 +241,14 @@ export function App() {
       if (activeRef.current) setLoadingOlder(false);
     }
   };
+
+  useEffect(() => {
+    // A latest window holding only private records is not an empty chat: read
+    // older history once, with the same bounded loader as an explicit click.
+    if (loading || autoFillRef.current || items.length || !nextCursor || connectionError) return;
+    autoFillRef.current = true; setAutoFilling(true);
+    void loadOlder(true).finally(() => { if (activeRef.current) setAutoFilling(false); });
+  });
 
   const sendEnvelope = async (envelope: MessageEnvelope, retry = false, fromMemory = memoryRequestRef.current?.id === envelope.id) => {
     if (sendingRef.current || recovered.error) return;
@@ -318,7 +329,8 @@ export function App() {
     else { window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}`); closingPreviewRef.current = false; setPreviewId(null); }
   };
   const stateLabel = connectionError ? '连接中断' : !status ? '正在连接' : ({ idle: '在这里', working: '正在处理', error: '需要留意', stopped: '已停止' } as const)[status.state];
-  const showEmpty = !loading && !items.length && !pending.length && !connectionError;
+  const view = timelineView({ loading, filling: autoFilling || (!autoFillRef.current && !!nextCursor && !connectionError), items: items.length, pending: pending.length, connectionError: !!connectionError, hasOlder: !!nextCursor });
+  const showEmpty = view === 'empty' || view === 'hidden-recent';
   const beginReply = (item: TimelineItem) => {
     if (item.role !== 'assistant' || sendingRef.current) return;
     cancelQuoteNavigation();
@@ -396,9 +408,10 @@ export function App() {
         onKeyDown={event => { if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Tab'].includes(event.key)) cancelQuoteNavigation(); }}
         aria-label="与 Mira 的消息记录" tabIndex={0}>
         <div className={`timeline-content ${showEmpty ? 'is-empty' : ''}`}>
-          {loading && <div className="timeline-loading" role="status"><span className="loading-mark" />正在找回我们的消息…</div>}
+          {view === 'loading' && <div className="timeline-loading" role="status"><span className="loading-mark" />正在找回我们的消息…</div>}
           {nextCursor && <div className="history-controls"><button className="text-button" onClick={() => { void loadOlder(); }} disabled={loadingOlder}>{loadingOlder ? '正在读取…' : hasHistoryGap ? '补齐尚未读取的消息' : '查看更早的消息'}</button>{hasHistoryGap && <p className="history-gap-note">有一段消息尚未读取，点击后可继续补齐</p>}{olderError && <p className="inline-error" role="alert">{olderError}</p>}</div>}
-          {showEmpty && <div className="empty-state"><span className="eyebrow">每一句，都会留在这里</span><h2>和 Mira 说点什么</h2><p>一个想法、一件小事，或今天的心情。</p><p className="empty-note">从这里开始，慢慢聊。</p></div>}
+          {view === 'empty' && <div className="empty-state"><span className="eyebrow">每一句，都会留在这里</span><h2>和 Mira 说点什么</h2><p>一个想法、一件小事，或今天的心情。</p><p className="empty-note">从这里开始，慢慢聊。</p></div>}
+          {view === 'hidden-recent' && <div className="empty-state hidden-recent" role="status"><span className="eyebrow">消息都还在</span><h2>最近是 Mira 的内部处理记录</h2><p>较早的聊天仍完整保存，可以点上方继续查看。</p></div>}
           <div className="message-list" role="log" aria-live="polite" aria-relevant="additions text" aria-label="消息">
             {items.map((item, index) => {
               const spacing = timelineSpacing(items[index - 1], item);

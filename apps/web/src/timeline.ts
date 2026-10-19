@@ -95,6 +95,16 @@ export function replySnippet(reply: import('./types.ts').ReplyReference): string
   return (reply.text.trim() || reply.attachmentNames?.join('、') || '原消息').replace(/\s+/gu, ' ');
 }
 
+export type TimelineView = 'loading' | 'empty' | 'hidden-recent' | 'messages';
+/** Which body the timeline shows. "Empty" is only for a history with nothing
+ * older to read: a latest window of private records is not an empty chat. */
+export function timelineView(state: { loading: boolean; filling: boolean; items: number; pending: number; connectionError: boolean; hasOlder: boolean }): TimelineView {
+  if (state.items || state.pending) return 'messages';
+  if (state.loading || state.filling) return 'loading';
+  if (state.connectionError) return 'messages';
+  return state.hasOlder ? 'hidden-recent' : 'empty';
+}
+
 export type OlderHistoryResult = { kind: 'target' | 'complete' | 'budget' | 'timeout' | 'stopped' } | { kind: 'error'; error: unknown };
 export interface OlderHistoryOptions<P> {
   next(): HistoryRequest | null;

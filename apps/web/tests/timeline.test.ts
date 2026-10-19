@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { PENDING_KEY, loadOlderHistory, latestPagination, nextHistoryRequest, olderPagination, mergeTimeline, readPending, reconcilePending, writePending } from '../src/timeline.ts';
+import { PENDING_KEY, loadOlderHistory, latestPagination, nextHistoryRequest, olderPagination, mergeTimeline, readPending, reconcilePending, timelineView, writePending } from '../src/timeline.ts';
 import type { PendingMessage, TimelineItem } from '../src/types.ts';
 
 const envelope = { id: 'a5017dbb-0c3f-4cfe-ab34-63997612ebcd', text: '一条保留原样的消息\n第二行', occurredAt: '2026-10-06T07:00:00.000Z' };
@@ -281,4 +281,16 @@ test('older history reports in-flight timeouts and errors, and stops silently wi
   assert.deepEqual(await lateLoad, { kind: 'stopped' }); assert.deepEqual(late.accepted, []);
   const already = olderHarness([{ items: 1, next: null }]); already.owner.abort();
   assert.deepEqual(await loadOlderHistory(already.options), { kind: 'stopped' }); assert.deepEqual(already.fetched, []);
+});
+
+test('the empty chat is only shown when no older history remains', () => {
+  const base = { loading: false, filling: false, items: 0, pending: 0, connectionError: false, hasOlder: false };
+  assert.equal(timelineView(base), 'empty');
+  // Regression: a latest window of private records with older history behind it.
+  assert.equal(timelineView({ ...base, hasOlder: true }), 'hidden-recent');
+  assert.equal(timelineView({ ...base, hasOlder: true, filling: true }), 'loading');
+  assert.equal(timelineView({ ...base, loading: true }), 'loading');
+  assert.equal(timelineView({ ...base, connectionError: true }), 'messages');
+  assert.equal(timelineView({ ...base, hasOlder: true, pending: 1 }), 'messages');
+  assert.equal(timelineView({ ...base, items: 3, hasOlder: true }), 'messages');
 });
