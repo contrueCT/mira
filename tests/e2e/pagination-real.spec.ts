@@ -90,3 +90,37 @@ test('real PG and HTTP history loads enough visible messages across hidden pages
     await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true });
   }
 });
+
+test('real PG: a far quoted message is found in one lookup, focused, and the skipped stretch stays readable', async ({ page }, testInfo) => {
+  const db = await createTestDatabase(), root = await realpath(await mkdtemp('/tmp/mira-pagination-'));
+  let fixture: Awaited<ReturnType<typeof seededService>> | undefined;
+  try {
+    fixture = await seededService(db, root, 'far-quote', Array.from({ length: 1_500 }, () => true), port + 2);
+    // A newest user message quoting the fourth-oldest one, through the ordinary service API.
+    await fixture.service.submit({ id: 'far-quote-reply', text: '回复很早以前的那条', occurredAt: new Date(Date.UTC(2026, 9, 3)).toISOString(), replyToMessageId: fixture.ids[3]! });
+    const locates: number[] = []; let olderPosts = 0;
+    page.on('request', request => { const pathname = new URL(request.url()).pathname; if (pathname === '/api/timeline/locate') locates.push(performance.now()); else if (pathname === '/api/timeline' && request.method() === 'POST') olderPosts++; });
+    await page.goto(fixture.origin);
+    const quote = page.getByRole('button', { name: '查看引用的消息' });
+    await expect(quote).toBeVisible();
+    const start = performance.now();
+    await quote.click();
+    await expect(page.locator(`[data-message-id="${fixture.ids[3]}"]`)).toBeFocused();
+    const ms = performance.now() - start;
+    console.log(JSON.stringify({ farQuoteMs: Math.round(ms), locates: locates.length, olderPosts }));
+    await writeFile(testInfo.outputPath('far-quote.json'), JSON.stringify({ farQuoteMs: ms, locates: locates.length, olderPosts }, null, 2));
+    expect(locates).toHaveLength(1); expect(olderPosts).toBe(0);
+    await page.screenshot({ path: testInfo.outputPath('far-quote.png') });
+    // The unread messages between the located window and the newest page remain reachable.
+    const fill = page.getByRole('button', { name: '补齐尚未读取的消息' });
+    for (let clicks = 0; clicks < 40 && await fill.count(); clicks++) { await fill.click(); await expect(fill).not.toHaveText('正在读取…').catch(() => {}); }
+    await expect(fill).toHaveCount(0);
+    const shown = await page.locator('[data-message-id]').evaluateAll(elements => elements.map(element => element.getAttribute('data-message-id')));
+    expect(new Set(shown).size).toBe(shown.length);
+    // Every seeded message plus the reply (and any synthetic answer to it) is shown exactly once.
+    expect(fixture.ids.filter(id => !shown.includes(id))).toEqual([]);
+    expect(shown.length).toBeGreaterThan(fixture.ids.length);
+  } finally {
+    await fixture?.app.close(); await fixture?.service.close(); await db.close(); await rm(root, { recursive: true, force: true });
+  }
+});

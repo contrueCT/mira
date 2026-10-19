@@ -13,6 +13,8 @@ export interface TimelineItem {
   occurredAt: string;
 }
 export interface TimelinePage { items: TimelineItem[]; nextCursor: string | null }
+/** A quoted message's page: contiguous from the requested frontier, or the window ending at it. */
+export interface LocatedPage extends TimelinePage { mode: 'contiguous' | 'window' }
 export interface ModelRetryStatus { phase: 'waiting' | 'requesting'; attempt: number; maxAttempts: number; delayMs: number; reason: 'rate-limit' | 'server' | 'timeout' | 'connection' }
 export interface ServerStatus { modelRetry?: ModelRetryStatus | null; state: 'idle' | 'working' | 'error' | 'stopped'; mode: 'synthetic' | 'live'; model: string | null; error: string | null }
 export interface MessageEnvelope { id: string; text: string; occurredAt: string; attachmentIds?: string[]; replyToMessageId?: string }

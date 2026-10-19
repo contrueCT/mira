@@ -78,6 +78,25 @@ export function olderPagination(current: HistoryPagination, request: HistoryRequ
   }) };
 }
 
+/** Joins a located window (newest item: the quoted message) to the loaded
+ * history. Every unread frontier above it now ends at the window; a window
+ * below everything loaded continues the oldest frontier, and the stretch
+ * between it and the loaded messages becomes an ordinary gap. A window inside
+ * an unread gap leaves the stretch below it unread as another gap. */
+export function locatedPagination(current: HistoryPagination, known: TimelineItem[], page: { items: TimelineItem[]; nextCursor: string | null }, targetId: string): HistoryPagination {
+  const ids = new Set(known.map(item => item.id));
+  const windowIds = page.items.map(item => item.id).filter(id => !ids.has(id));
+  const gaps = current.gaps.map(gap => ({ ...gap, boundaryIds: [...gap.boundaryIds, ...windowIds] }));
+  if (page.items.some(item => ids.has(item.id)) || !windowIds.length) return { ...current, gaps };
+  const target = page.items.find(item => item.id === targetId) ?? page.items[page.items.length - 1]!;
+  const at = Date.parse(target.occurredAt);
+  const below = known.every(item => !Number.isFinite(at) || !Number.isFinite(Date.parse(item.occurredAt)) || Date.parse(item.occurredAt) > at);
+  if (below) {
+    const bridge = current.oldestCursor ? [{ id: `located-above:${targetId}`, cursor: current.oldestCursor, boundaryIds: windowIds }] : [];
+    return { ...current, oldestCursor: page.nextCursor, gaps: [...gaps, ...bridge] };
+  }
+  return page.nextCursor ? { ...current, gaps: [...gaps, { id: `located-below:${targetId}`, cursor: page.nextCursor, boundaryIds: [...ids] }] } : { ...current, gaps };
+}
 /** A conflicting server identity must not silently discard a retained reply. */
 export function confirmsPending(message: PendingMessage | import('./types.ts').MessageEnvelope, item: TimelineItem): boolean {
   return item.role === 'user' && item.externalEventId === message.id && item.reply?.messageId === message.replyToMessageId;

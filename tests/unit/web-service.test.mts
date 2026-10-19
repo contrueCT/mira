@@ -155,6 +155,10 @@ function pagedHistory(count: number, isVisible: (index: number) => boolean, text
       });
     },
     snapshot: async (work: (reader: unknown) => Promise<unknown>) => { calls.snapshots++; return work(history); },
+    pageCursorThrough: async ({ id }: { id: string }) => {
+      const position = index.get(id);
+      return position === undefined ? null : { before: position + 1 < count ? `raw-${position + 1}` : null };
+    },
   };
   const service = Reflect.construct(LocalWebService, [{ dreaming: { enabled: false } }, { signal: new AbortController().signal, onLiveInput: () => () => {} }, history, {}, {}, {}, {}, {}, {}]) as LocalWebService;
   return { history, service, ids };
@@ -212,4 +216,30 @@ test('timeline rejects a history batch that omits a requested original instead o
   await assert.rejects(service.timeline(), (error: unknown) => error instanceof HistoryError && error.code === 'corrupt');
   history.omit.clear();
   assert.equal((await service.timeline()).items.length, 20, 'a later complete batch is projected normally');
+});
+
+test('a quoted message is located contiguously from the reader frontier when near, else by its own window', async () => {
+  const { history, service, ids } = pagedHistory(3_000, index => index % 3 === 0);
+  const latest = await service.timeline(); assert.ok(latest.nextCursor);
+  const loaded = new Set(latest.items.map(item => item.id));
+  // Near: reading on from the frontier reaches the message without leaving a gap.
+  const near = await service.locateTimeline(ids[2_400]!, latest.nextCursor);
+  assert.equal(near?.mode, 'contiguous');
+  assert.ok(near.items.some(item => item.id === ids[2_400]));
+  assert.ok(near.items.length > 50, 'reading continues past the ordinary target until the message');
+  assert.equal(near.items.at(-1)!.id, ids[2_799], 'the page continues directly below the loaded window');
+  assert.ok(near.items.every(item => !loaded.has(item.id)));
+  // Far: beyond the 2,000-record contiguous budget, the window ends at the message.
+  const snapshots = history.calls.snapshots;
+  const far = await service.locateTimeline(ids[30]!, latest.nextCursor);
+  assert.equal(history.calls.snapshots, snapshots + 1, 'one snapshot per lookup');
+  assert.equal(far?.mode, 'window');
+  assert.equal(far.items.at(-1)!.id, ids[30], 'the window ends at the quoted message');
+  assert.equal(far.items[0]!.id, ids[0]);
+  assert.equal(far.nextCursor, null);
+  const without = await service.locateTimeline(ids[1_500]!);
+  assert.equal(without?.mode, 'window'); assert.equal(without.items.at(-1)!.id, ids[1_500]); assert.ok(without.nextCursor);
+  // Private or unknown records are never located.
+  assert.equal(await service.locateTimeline(ids[31]!), null);
+  assert.equal(await service.locateTimeline(randomUUID()), null);
 });

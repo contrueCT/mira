@@ -29,6 +29,8 @@ export interface WebBackend extends Partial<ManagementBackend> {
     items: Array<{ id: string; externalEventId?: string; source?: ExtensionMessageSource; reply?: ReplyReference; role: 'user' | 'assistant' | 'notice'; text: string; occurredAt: string; attachments?: AttachmentDescriptor[] }>;
     nextCursor: string | null;
   }>;
+  /** A quoted message by ID: contiguous from `before` when reachable, else the window ending at it. */
+  locateTimeline?(id: string, before?: string): Promise<(Awaited<ReturnType<WebBackend['timeline']>> & { mode: 'contiguous' | 'window' }) | null>;
   uploadAttachment?(name: string, bytes: Uint8Array): Promise<AttachmentDescriptor>;
   readAttachment?(id: string): Promise<{ descriptor: AttachmentDescriptor; bytes: Uint8Array }>;
   submit(input: { id: string; text: string; occurredAt: string; attachmentIds?: string[]; replyToMessageId?: string }): Promise<{ id: string; receipt: 'inserted' | 'duplicate' }>;
@@ -36,6 +38,9 @@ export interface WebBackend extends Partial<ManagementBackend> {
   saveSettings(value: unknown): Promise<WebSettings>;
   discover(connection: unknown, signal?: AbortSignal): Promise<ModelDiscoveryResult>;
 }
+type TimelineItem = Awaited<ReturnType<WebBackend['timeline']>>['items'][number];
+/** The public projection of one timeline item, shared by every timeline route. */
+const timelineItem = (item: TimelineItem) => ({ id: item.id, role: item.role, text: item.text, occurredAt: item.occurredAt, ...(item.reply ? { reply: replyDescriptor(item.reply) } : {}), ...(item.source ? { source: messageSource(item.source) } : {}), ...(item.attachments?.length ? { attachments: item.attachments.map(attachmentDescriptor) } : {}), ...(item.role === 'user' && item.externalEventId !== undefined ? { externalEventId: item.externalEventId } : {}) });
 export class WebHttpError extends Error {
   readonly code: 'too_large' | 'busy' | 'conflict' | 'unavailable' | 'invalid_input';
   constructor(code: WebHttpError['code']) { super(code); this.name = 'WebHttpError'; this.code = code; }
@@ -91,7 +96,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   const methods = new Map<string, readonly string[]>([
     ['/api/browser', ['GET']], ['/api/browser/:id/takeover', ['POST']], ['/api/browser/:id/return', ['POST']], ['/api/browser/:id/ticket', ['POST']],
     ['/api/auth/status', ['GET']], ['/api/auth/login', ['POST']], ['/api/auth/logout', ['POST']], ['/api/auth/settings', ['GET', 'PUT']],
-    ['/api/attachments', ['POST']], ['/api/attachments/:id', ['GET']], ['/api/status', ['GET']], ['/api/timeline', ['GET', 'POST']], ['/api/messages', ['POST']], ['/api/settings', ['GET', 'PUT']],
+    ['/api/attachments', ['POST']], ['/api/attachments/:id', ['GET']], ['/api/status', ['GET']], ['/api/timeline', ['GET', 'POST']], ['/api/timeline/locate', ['POST']], ['/api/messages', ['POST']], ['/api/settings', ['GET', 'PUT']],
     ['/api/memory', ['GET']], ['/api/messages/:id/status', ['GET']], ['/api/extensions', ['GET']], ['/api/extensions/:id', ['POST']], ['/api/extensions/:id/settings', ['GET', 'POST']], ['/api/extensions/:id/settings/actions', ['POST']], ['/api/extensions/:id/settings/cancel', ['POST']], ['/api/runs', ['GET']], ['/api/runs/:id', ['GET']], ['/api/runs/:id/requests', ['GET']],
     ['/api/models/catalog', ['GET']], ['/api/models/discover', ['POST']],
     ['/api/external/events', ['POST']], ['/api/external/wake', ['POST']], ['/api/external/notifications', ['POST']],
@@ -228,7 +233,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   }, async request => {
     const result = await backend.timeline(request.query.before);
     return {
-      items: result.items.map(item => ({ id: item.id, role: item.role, text: item.text, occurredAt: item.occurredAt, ...(item.reply ? { reply: replyDescriptor(item.reply) } : {}), ...(item.source ? { source: messageSource(item.source) } : {}), ...(item.attachments?.length ? { attachments: item.attachments.map(attachmentDescriptor) } : {}), ...(item.role === 'user' && item.externalEventId !== undefined ? { externalEventId: item.externalEventId } : {}) })),
+      items: result.items.map(timelineItem),
       nextCursor: result.nextCursor,
     };
   });
@@ -238,7 +243,15 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     schema: { querystring: noQuery, body: objectSchema({ before: { type: 'string', minLength: 1, maxLength: 524_288, pattern: '^[A-Za-z0-9_=-]+$' } }, ['before']) },
   }, async request => {
     const result = await backend.timeline(request.body.before);
-    return { items: result.items.map(item => ({ id: item.id, role: item.role, text: item.text, occurredAt: item.occurredAt, ...(item.reply ? { reply: replyDescriptor(item.reply) } : {}), ...(item.source ? { source: messageSource(item.source) } : {}), ...(item.attachments?.length ? { attachments: item.attachments.map(attachmentDescriptor) } : {}), ...(item.role === 'user' && item.externalEventId !== undefined ? { externalEventId: item.externalEventId } : {}) })), nextCursor: result.nextCursor };
+    return { items: result.items.map(timelineItem), nextCursor: result.nextCursor };
+  });
+  app.post<{ Body: { id: string; before?: string } }>('/api/timeline/locate', {
+    bodyLimit: 600_000,
+    schema: { querystring: noQuery, body: objectSchema({ id: { type: 'string', format: 'uuid' }, before: { type: 'string', minLength: 1, maxLength: 524_288, pattern: '^[A-Za-z0-9_=-]+$' } }, ['id']) },
+  }, async (request, reply) => {
+    const result = backend.locateTimeline ? await backend.locateTimeline(request.body.id, request.body.before) : null;
+    if (!result) return reply.code(404).send({ error: 'Message not found' });
+    return { items: result.items.map(timelineItem), nextCursor: result.nextCursor, mode: result.mode };
   });
   app.post<{ Body: { id: string; text: string; occurredAt: string; attachmentIds?: string[]; replyToMessageId?: string } }>('/api/messages', {
     schema: { querystring: noQuery, body: objectSchema({ id: identifier, text: { type: 'string', maxLength: 65_536 }, replyToMessageId: { type: 'string', format: 'uuid' }, attachmentIds: { type: 'array', maxItems: 10, uniqueItems: true, items: { type: 'string', format: 'uuid' } }, occurredAt: { type: 'string', format: 'date-time', maxLength: 40 } }, ['id', 'text', 'occurredAt']) },

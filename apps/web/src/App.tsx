@@ -5,16 +5,16 @@ import type { FormEvent, KeyboardEvent } from 'react';
 import { AttachmentList, AttachmentPreview } from './Attachments.tsx';
 import { useAttachments } from './useAttachments.ts';
 import { attachmentSize } from './attachments.ts';
-import { api, errorInfo, isAbort } from './api.ts';
+import { api, ApiError, errorInfo, isAbort } from './api.ts';
 import type { ErrorInfo } from './api.ts';
 import { createStatusPolling } from './status-polling.ts';
 import { ArrowUp, ChevronDown, SettingsIcon } from './icons.tsx';
 import { SettingsDialog } from './SettingsDialog.tsx';
 import { createMemoryRequest, readMemoryRequest, recoverMemoryRequest, writeMemoryRequest } from './management.ts';
 import type { MemoryRequestIdentity } from './management.ts';
-import { confirmsPending, replySnippet, timelineSpacing, timelineView, quoteLookupNotice, QUOTE_LOOKUP_CANCELLED, latestPagination, loadOlderHistory, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
+import { confirmsPending, replySnippet, timelineSpacing, timelineView, quoteLookupNotice, QUOTE_LOOKUP_CANCELLED, latestPagination, loadOlderHistory, locatedPagination, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
 import type { HistoryPagination, HistoryRequest } from './timeline.ts';
-import type { Attachment, MessageEnvelope, PendingMessage, ReplyReference, ServerStatus, TimelineItem, TimelinePage } from './types.ts';
+import type { Attachment, LocatedPage, MessageEnvelope, PendingMessage, ReplyReference, ServerStatus, TimelineItem, TimelinePage } from './types.ts';
 
 const timeFormat = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' });
 function timeLabel(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? '' : timeFormat.format(date); }
@@ -113,14 +113,14 @@ export function App() {
     return true;
   }, [recovered.error]);
 
-  const acceptPage = useCallback((page: TimelinePage, request: HistoryRequest | null = null) => {
-    if (request && scrollRef.current) {
+  const acceptPage = useCallback((page: TimelinePage, request: HistoryRequest | null = null, located: string | null = null) => {
+    if ((request || located) && scrollRef.current) {
       const container = scrollRef.current;
       const top = container.getBoundingClientRect().top;
       const element = [...container.querySelectorAll<HTMLElement>('[data-message-id]')].find(item => item.getBoundingClientRect().bottom > top) ?? null;
       prependAnchorRef.current = { height: container.scrollHeight, top: container.scrollTop, element, offset: element ? element.getBoundingClientRect().top - top : 0 };
     }
-    paginationRef.current = request ? olderPagination(paginationRef.current, request, page) : latestPagination(paginationRef.current, itemsRef.current, page, initializedRef.current);
+    paginationRef.current = located ? locatedPagination(paginationRef.current, itemsRef.current, page, located) : request ? olderPagination(paginationRef.current, request, page) : latestPagination(paginationRef.current, itemsRef.current, page, initializedRef.current);
     const merged = mergeTimeline(itemsRef.current, page.items);
     itemsRef.current = merged;
     setItems(merged);
@@ -362,19 +362,27 @@ export function App() {
     view?.addEventListener('abort', stopWithView, { once: true });
     olderBusyRef.current = true; setLoadingOlder(true); setQuoteSearch(true);
     nearBottomRef.current = false;
+    // One server lookup by ID: contiguous from the unread frontier when near
+    // (no new gap), otherwise the window ending at the message.
+    let asked = false;
     try {
-      const result = await loadOlderHistory({
-        next: () => nextHistoryRequest(paginationRef.current),
-        fetchPage: (request, signal) => api<TimelinePage>('/api/timeline', { method: 'POST', body: JSON.stringify({ before: request.cursor }), signal }),
+      const result = await loadOlderHistory<LocatedPage, { cursor: string; frontier: HistoryRequest | null }>({
+        next: () => asked ? null : { cursor: `locate:${messageId}`, frontier: nextHistoryRequest(paginationRef.current) },
+        fetchPage: (request, signal) => { asked = true; return api<LocatedPage>('/api/timeline/locate', { method: 'POST', body: JSON.stringify({ id: messageId, ...(request.frontier ? { before: request.frontier.cursor } : {}) }), signal }); },
         // The next step reads/focuses this page's DOM. A frame is not a React
         // commit guarantee: finish this insertion and its anchor layout effect first.
-        accept: (page, request) => { flushSync(() => acceptPage(page, request)); return page.items.length; },
+        accept: (page, request) => {
+          flushSync(() => page.mode === 'contiguous' && request.frontier ? acceptPage(page, request.frontier) : acceptPage(page, null, messageId));
+          return page.items.length;
+        },
         found: reveal,
         owner: controller.signal,
         stopped: () => !activeRef.current || quoteAbortRef.current !== controller,
         target: Number.POSITIVE_INFINITY,
       });
-      if (activeRef.current && quoteAbortRef.current === controller) setQuoteNotice(quoteLookupNotice(result, errorInfo));
+      // The server answers 404 for anything that is not a visible chat message.
+      const outcome = result.kind === 'error' && result.error instanceof ApiError && result.error.status === 404 ? { kind: 'complete' as const } : result;
+      if (activeRef.current && quoteAbortRef.current === controller) setQuoteNotice(quoteLookupNotice(outcome, errorInfo));
     } finally {
       view?.removeEventListener('abort', stopWithView);
       if (quoteAbortRef.current === controller) {

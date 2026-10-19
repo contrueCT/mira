@@ -161,6 +161,10 @@ export interface RunHistoryReader extends HistoryReader {
    * connection. The passed reader is valid only until `work` settles; nested
    * calls reuse the outer snapshot. Any failed read fails the snapshot. */
   snapshot<T>(work: (reader: RunHistoryReader) => Promise<T>): Promise<T>;
+  /** A `before` cursor for `page` with the same kinds whose newest hit is the
+   * record with this ID; `before: null` when it is the newest record, and null
+   * when this Mira has no such record among those kinds. Metadata only. */
+  pageCursorThrough(request: { id: string; kinds?: HistoryKind[] }): Promise<{ before: string | null } | null>;
   findEventRun(externalEventId: string): Promise<HistoryEventRun | null>;
   pageRuns(request?: Pick<HistoryPageRequest, 'before' | 'limit'>): Promise<{ items: HistoryRunHeader[]; nextCursor: string | null }>;
   readRunRequests(request: HistoryRunPageRequest): Promise<HistoryRunRequestsPage | null>;

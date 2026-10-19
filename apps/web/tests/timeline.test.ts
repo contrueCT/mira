@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { PENDING_KEY, loadOlderHistory, latestPagination, nextHistoryRequest, olderPagination, mergeTimeline, quoteLookupNotice, readPending, reconcilePending, timelineView, writePending } from '../src/timeline.ts';
+import { PENDING_KEY, loadOlderHistory, latestPagination, locatedPagination, nextHistoryRequest, olderPagination, mergeTimeline, quoteLookupNotice, readPending, reconcilePending, timelineView, writePending } from '../src/timeline.ts';
 import type { PendingMessage, TimelineItem } from '../src/types.ts';
 
 const envelope = { id: 'a5017dbb-0c3f-4cfe-ab34-63997612ebcd', text: '一条保留原样的消息\n第二行', occurredAt: '2026-10-06T07:00:00.000Z' };
@@ -330,4 +330,27 @@ test('quote lookup notices distinguish a timeout, the budget, the end and a fail
   assert.match(quoteLookupNotice({ kind: 'complete' }, describe)!.summary, /没有找到原消息/u);
   assert.deepEqual(quoteLookupNotice({ kind: 'error', error: new Error('boom') }, describe), { summary: '暂时无法读取原消息，请稍后重试。', detail: 'HTTP 500 · boom' });
   for (const kind of ['found', 'target', 'stopped'] as const) assert.equal(quoteLookupNotice({ kind }, describe), null);
+});
+
+test('a located window below the loaded history bridges to it and continues the oldest frontier', () => {
+  const known = [item('k1', '2026-10-06T02:00:00.000Z'), item('k2', '2026-10-06T03:00:00.000Z')];
+  const window = { items: [item('w1', '2026-10-01T01:00:00.000Z'), item('target', '2026-10-01T02:00:00.000Z')], nextCursor: 'below-window' };
+  const located = locatedPagination({ latestCursor: 'latest', oldestCursor: 'above-window', gaps: [] }, known, window, 'target');
+  assert.equal(located.oldestCursor, 'below-window');
+  assert.deepEqual(located.gaps, [{ id: 'located-above:target', cursor: 'above-window', boundaryIds: ['w1', 'target'] }]);
+  // Reading the bridge stops when it reaches the window, then resumes below it.
+  const request = nextHistoryRequest(located)!; assert.equal(request.cursor, 'above-window');
+  const bridged = olderPagination(located, request, { items: [item('between', '2026-10-03T00:00:00.000Z'), item('target', '2026-10-01T02:00:00.000Z')], nextCursor: 'x' });
+  assert.deepEqual(bridged.gaps, []); assert.equal(nextHistoryRequest(bridged)?.cursor, 'below-window');
+});
+
+test('a located window inside an unread gap leaves both sides of it reachable', () => {
+  const known = [item('r1', '2026-10-06T01:00:00.000Z'), item('l1', '2026-10-06T05:00:00.000Z')];
+  const current = { latestCursor: 'l-cursor', oldestCursor: 'o', gaps: [{ id: 'g', cursor: 'g', boundaryIds: ['r1'] }] };
+  const located = locatedPagination(current, known, { items: [item('target', '2026-10-06T03:00:00.000Z')], nextCursor: 'w-next' }, 'target');
+  assert.equal(located.oldestCursor, 'o');
+  assert.deepEqual(located.gaps, [{ id: 'g', cursor: 'g', boundaryIds: ['r1', 'target'] }, { id: 'located-below:target', cursor: 'w-next', boundaryIds: ['r1', 'l1'] }]);
+  // A window that already reaches loaded messages adds no gap.
+  const connected = locatedPagination(current, known, { items: [item('r1', '2026-10-06T01:00:00.000Z'), item('target', '2026-10-06T03:00:00.000Z')], nextCursor: 'w-next' }, 'target');
+  assert.deepEqual(connected.gaps, [{ id: 'g', cursor: 'g', boundaryIds: ['r1', 'target'] }]); assert.equal(connected.oldestCursor, 'o');
 });

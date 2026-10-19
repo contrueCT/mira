@@ -1152,20 +1152,17 @@ test('reply preview cancels and exact pending target survives reload and retry',
   await page.screenshot({ path: testInfo.outputPath('reply-narrow.png'), fullPage: true });
 });
 
-test('quote navigation pages safely, has cancellation and preserves unavailable quote text', async ({ page }) => {
+test('quote navigation asks the server once, has cancellation and preserves unavailable quote text', async ({ page }) => {
   const target = '11111111-1111-4111-8111-111111111111';
-  let reads = 0;
-  await page.route('**/api/timeline', async route => {
-    if (route.request().method() === 'POST') { reads++; await route.fulfill({ json: { items: [], nextCursor: `older-${reads}` } }); return; }
-    await route.fulfill({ json: { items: [{ id: '22222222-2222-4222-8222-222222222222', role: 'user', text: '合成回复', occurredAt: '2026-10-16T03:00:00Z', reply: { messageId: target, role: 'assistant', text: '仍可读的引用内容' } }], nextCursor: 'older-0' } });
-  });
+  let reads = 0; const bodies: unknown[] = [];
+  await page.route('**/api/timeline', route => route.fulfill({ json: { items: [{ id: '22222222-2222-4222-8222-222222222222', role: 'user', text: '合成回复', occurredAt: '2026-10-16T03:00:00Z', reply: { messageId: target, role: 'assistant', text: '仍可读的引用内容' } }], nextCursor: 'older-0' } }));
+  await page.route('**/api/timeline/locate', async route => { reads++; bodies.push(route.request().postDataJSON()); await route.fulfill({ status: 404, json: { error: 'Message not found' } }); });
   await page.goto('/'); await page.getByRole('button', { name: '查看引用的消息' }).click();
-  await expect(page.getByText('暂未找到原消息，已读取的更早消息会保留。再点一次引用可以继续查找。')).toBeVisible();
-  expect(reads).toBe(8); await expect(page.getByText('仍可读的引用内容', { exact: true })).toBeVisible();
-  await page.route('**/api/timeline', async route => {
-    if (route.request().method() === 'POST') { await new Promise(resolve => setTimeout(resolve, 1_000)); await route.fulfill({ json: { items: [], nextCursor: 'later' } }).catch(() => {}); return; }
-    await route.fallback();
-  });
+  await expect(page.getByText('没有找到原消息，它可能不在可显示的聊天记录中。引用内容仍保留。')).toBeVisible();
+  expect(reads).toBe(1); expect(bodies).toEqual([{ id: target, before: 'older-0' }]);
+  await expect(page.getByText('仍可读的引用内容', { exact: true })).toBeVisible();
+  await page.unroute('**/api/timeline/locate');
+  await page.route('**/api/timeline/locate', async route => { await new Promise(resolve => setTimeout(resolve, 1_000)); await route.fulfill({ status: 404, json: { error: 'Message not found' } }).catch(() => {}); });
   await page.getByRole('button', { name: '查看引用的消息' }).click();
   const cancel = page.getByRole('button', { name: '取消查找' });
   await cancel.focus(); await expect(cancel).toBeFocused();
@@ -1192,46 +1189,39 @@ test('touch viewport exposes a usable reply action without hover', async ({ brow
   await context.close();
 });
 
-test('quote navigation finds an older page and focuses the original message', async ({ page }) => {
+test('quote navigation finds a far original in one lookup and focuses it', async ({ page }) => {
   const target = '11111111-1111-4111-8111-111111111111';
-  let reads = 0;
+  let reads = 0; let olderReads = 0;
   await page.route('**/api/timeline', route => {
-    if (route.request().method() === 'POST') { reads++; return route.fulfill({ json: { items: [{ id: target, role: 'assistant', text: '分页中的原消息', occurredAt: '2026-10-15T03:00:00Z' }], nextCursor: null } }); }
+    if (route.request().method() === 'POST') { olderReads++; return route.fulfill({ json: { items: [], nextCursor: null } }); }
     return route.fulfill({ json: { items: [{ id: '22222222-2222-4222-8222-222222222222', role: 'user', text: '合成回复', occurredAt: '2026-10-16T03:00:00Z', reply: { messageId: target, role: 'assistant', text: '分页中的原消息' } }], nextCursor: 'older' } });
   });
+  await page.route('**/api/timeline/locate', route => { reads++; return route.fulfill({ json: { items: [{ id: '33333333-3333-4333-8333-333333333333', role: 'assistant', text: '更早的上下文', occurredAt: '2026-10-01T02:59:00Z' }, { id: target, role: 'assistant', text: '分页中的原消息', occurredAt: '2026-10-01T03:00:00Z' }], nextCursor: 'below-window', mode: 'window' } }); });
   await page.goto('/'); await page.getByRole('button', { name: '查看引用的消息' }).click();
   await expect(page.locator(`[data-message-id="${target}"]`)).toBeFocused();
-  expect(reads).toBe(1);
+  expect(reads).toBe(1); expect(olderReads).toBe(0);
   await expect(page.getByRole('button', { name: '取消查找' })).toHaveCount(0);
+  // The unread stretch between the window and the loaded messages stays reachable.
+  await expect(page.getByRole('button', { name: '补齐尚未读取的消息' })).toBeVisible();
 });
 
-test('quote navigation stops on a repeated cursor and retains the quote after a failed page', async ({ page }) => {
+test('quote navigation retains the quote and its technical detail after a failed lookup', async ({ page }) => {
   const target = '11111111-1111-4111-8111-111111111111';
-  let reads = 0; let failPage = false;
-  await page.route('**/api/timeline', async route => {
-    if (route.request().method() === 'POST') {
-      reads++;
-      if (failPage) { await route.fulfill({ status: 503, json: { error: 'synthetic unavailable' } }); return; }
-      const request = route.request().postDataJSON() as { before: string };
-      await route.fulfill({ json: { items: [], nextCursor: request.before } }); return;
-    }
-    await route.fulfill({ json: { items: [{ id: '22222222-2222-4222-8222-222222222222', role: 'user', text: '合成回复', occurredAt: '2026-10-16T03:00:00Z', reply: { messageId: target, role: 'assistant', text: '失败后仍然保留的引用' } }], nextCursor: 'unchanged-cursor' } });
-  });
+  let reads = 0;
+  await page.route('**/api/timeline', route => route.fulfill({ json: { items: [{ id: '22222222-2222-4222-8222-222222222222', role: 'user', text: '合成回复', occurredAt: '2026-10-16T03:00:00Z', reply: { messageId: target, role: 'assistant', text: '失败后仍然保留的引用' } }], nextCursor: 'unchanged-cursor' } }));
+  await page.route('**/api/timeline/locate', async route => { reads++; await route.fulfill({ status: 503, json: { error: 'synthetic unavailable' } }); });
   await page.goto('/');
   const quote = page.getByRole('button', { name: '查看引用的消息' });
   await quote.click();
-  await expect(page.getByText('暂未找到原消息，已读取的更早消息会保留。再点一次引用可以继续查找。')).toBeVisible();
+  const status = page.locator('.quote-search-status');
+  await expect(status).toContainText('暂时无法读取原消息，请稍后重试。');
+  await expect(status.locator('.error-detail')).toHaveText('技术信息：HTTP 503 · synthetic unavailable');
   expect(reads).toBe(1);
-  await expect(quote).toBeEnabled();
-  await expect(page.getByRole('button', { name: '取消查找' })).toHaveCount(0);
-  failPage = true;
-  await quote.click();
-  await expect(page.getByText('暂时无法读取原消息，请稍后重试。')).toBeVisible();
-  expect(reads).toBe(2);
   await expect(page.getByText('失败后仍然保留的引用', { exact: true })).toBeVisible();
   await expect(quote).toBeEnabled();
   await expect(page.getByRole('button', { name: '取消查找' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '查看更早的消息' })).toBeEnabled();
+  await quote.click(); await expect.poll(() => reads).toBe(2);
 });
 
 test('reply timeline keeps message sides and centered dividers on desktop and narrow screens', async ({ page }) => {
@@ -1292,17 +1282,16 @@ for (const intent of ['latest', 'send', 'reply', 'compose', 'settings-history', 
         Object.assign(items[0]!, { attachments: [{ id: '55555555-5555-4555-8555-555555555555', name: 'history-fixture.txt', mimeType: 'text/plain', size: 7, sha256: 'a'.repeat(64) }] });
         await page.route('**/api/attachments/*', route => route.fulfill({ body: 'fixture', contentType: 'text/plain' }));
       }
-      await page.route('**/api/timeline', async route => {
-        if (route.request().method() === 'POST') {
+      await page.route('**/api/timeline', route => route.fulfill({ json: { items, nextCursor: 'older-page' } }));
+      await page.route('**/api/timeline/locate', async route => {
+        {
           reads++;
           try { await bounded(delayedPage, 'delayed quote page release'); }
           catch (error) { routeFailure = error; await route.abort().catch(() => {}); pageFinished(); return; }
-          try { await route.fulfill({ json: { items: [{ id: target, role: 'assistant', text: '不应抢回焦点的旧消息', occurredAt: '2026-10-15T03:00:00Z' }], nextCursor: null } }); }
+          try { await route.fulfill({ json: { items: [{ id: target, role: 'assistant', text: '不应抢回焦点的旧消息', occurredAt: '2026-10-15T03:00:00Z' }], nextCursor: null, mode: 'window' } }); }
           catch { /* The newer navigation intent aborted this request. */ }
           finally { pageFinished(); }
-          return;
         }
-        await route.fulfill({ json: { items, nextCursor: 'older-page' } });
       });
       await page.route('**/api/messages', route => route.fulfill({ json: { id: (route.request().postDataJSON() as { id: string }).id, receipt: 'inserted' } }));
       await page.goto('/');
@@ -1428,8 +1417,11 @@ for (const intent of ['normal', 'loaded-quote', 'paged-quote', 'settings', 'sett
           } catch (error) { routeFailure = error; await route.abort().catch(() => {}); }
           return;
         }
+        await route.fulfill({ json: { items: [], nextCursor: null } });
+      });
+      await page.route('**/api/timeline/locate', async route => {
         lookups++;
-        try { await bounded(heldLookup, 'held quote page'); await route.fulfill({ json: { items: [original], nextCursor: null } }); }
+        try { await bounded(heldLookup, 'held quote page'); await route.fulfill({ json: { items: [original], nextCursor: null, mode: 'window' } }); }
         catch (error) { routeFailure = error; await route.abort().catch(() => {}); }
       });
       await page.route('**/api/messages', async route => {

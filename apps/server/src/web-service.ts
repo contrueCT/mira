@@ -338,11 +338,31 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     // original batch, so pages cannot shift between queries of one response.
     return this.#history.snapshot(history => this.#scanTimeline(history, before));
   }
-  async #scanTimeline(history: RunHistoryReader, before: string | undefined): Promise<Timeline> {
+  /** One quoted message by History ID, in the same snapshot as its page.
+   * With the client's older-history frontier, first read contiguously from it
+   * (no new gap) until the message, within the ordinary scan budget; otherwise
+   * return the window that ends at the message. Null for anything that is not
+   * a visible chat message of this Mira. */
+  async locateTimeline(id: string, before?: string): Promise<(Timeline & { mode: 'contiguous' | 'window' }) | null> {
+    return this.#history.snapshot(async history => {
+      const [original] = await history.readBatch({ ids: [id], maxBytes: 1_048_576 });
+      if (!original?.entry || original.tooLarge || !visible(original.entry)) return null;
+      const found = (items: Timeline['items']) => items.some(item => item.id === id);
+      if (before !== undefined) {
+        const contiguous = await this.#scanTimeline(history, before, { limit: TIMELINE_SCAN_LIMIT, until: found });
+        if (found(contiguous.items)) return { ...contiguous, mode: 'contiguous' as const };
+      }
+      const through = await history.pageCursorThrough({ id, kinds: ['event', 'context', 'tool'] });
+      if (!through) return null;
+      const window = await this.#scanTimeline(history, through.before ?? undefined, { limit: TIMELINE_SCAN_LIMIT });
+      return found(window.items) ? { ...window, mode: 'window' as const } : null;
+    });
+  }
+  async #scanTimeline(history: RunHistoryReader, before: string | undefined, options: { limit?: number; until?: (items: Timeline['items']) => boolean } = {}): Promise<Timeline> {
     const items: Timeline['items'] = [];
     let cursor = before; let bytes = 0;
     // Target visible messages rather than raw events, within a raw scan budget.
-    const limit = before === undefined ? LATEST_SCAN_LIMIT : TIMELINE_SCAN_LIMIT;
+    const limit = options.limit ?? (before === undefined ? LATEST_SCAN_LIMIT : TIMELINE_SCAN_LIMIT);
     for (let scanned = 0; scanned < limit; scanned += TIMELINE_PAGE_SIZE) {
       const page = await history.page({ kinds: ['event', 'context', 'tool'], limit: TIMELINE_PAGE_SIZE, ...(cursor ? { before: cursor } : {}) });
       // Freeze this page's cache hits: inserting older entries may evict hits
@@ -378,7 +398,8 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       }
       items.unshift(...chunk);
       cursor = page.nextCursor ?? undefined;
-      if (items.length >= TIMELINE_TARGET || bytes >= TIMELINE_RESPONSE_BYTES || !cursor) break;
+      const enough = options.until ? options.until(items) : items.length >= TIMELINE_TARGET;
+      if (enough || bytes >= TIMELINE_RESPONSE_BYTES || !cursor) break;
     }
     return { items, nextCursor: cursor ?? null };
   }
