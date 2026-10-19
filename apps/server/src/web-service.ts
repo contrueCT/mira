@@ -32,6 +32,24 @@ import { DeliveryTimer, extensionScheduling } from './scheduling.ts';
 import { DreamingScheduler, dreamingInstruction, dreamingPolicy, type DreamingOptions } from './dreaming.ts';
 import { createExternalIngress, type ExternalIngress } from './external-ingress.ts';
 
+// Raw History records an explicit older-history request may scan before
+// returning a resumable page, even when a long tool/internal interval has no
+// messages.
+const TIMELINE_SCAN_LIMIT = 2000;
+// The latest window is polled every 1.2s while Mira works, when recent records
+// are mostly private tools/context. Keep that path to three metadata pages; an
+// older click fills from the returned cursor instead.
+const LATEST_SCAN_LIMIT = 300;
+const TIMELINE_PAGE_SIZE = 100;
+const TIMELINE_TARGET = 50;
+// Soft per-response bound on visible text, checked between whole raw pages so
+// the raw continuation stays exact. One page can still exceed it.
+const TIMELINE_RESPONSE_BYTES = 4 * 1_048_576;
+// Projected records kept in least-recently-used order. Room for the latest
+// window plus complete older scans, so reading old history does not evict the
+// records every latest poll needs; independent of either scan budget.
+const TIMELINE_CACHE_LIMIT = 2 * TIMELINE_SCAN_LIMIT;
+
 export interface WebServiceOptions {
   /** Startup-only child concurrency, default 8, bounded 1..32. */
   subagentConcurrency?: number;
@@ -316,27 +334,66 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     return { id: input.id, receipt };
   }
   async timeline(before?: string): Promise<Timeline> {
-    const page = await this.#history.page({ kinds: ['event', 'context', 'tool'], limit: 50, ...(before ? { before } : {}) });
+    // One read-only snapshot and connection for every metadata page and
+    // original batch, so pages cannot shift between queries of one response.
+    return this.#history.snapshot(history => this.#scanTimeline(history, before));
+  }
+  async #scanTimeline(history: RunHistoryReader, before: string | undefined): Promise<Timeline> {
     const items: Timeline['items'] = [];
-    for (const ref of page.hits) {
-      const key = ref.id;
-      let cached = this.#cache.get(key);
-      if (!cached) {
-        try {
-          const entry = await this.#history.read({ id: ref.id, maxBytes: 1_048_576 });
-          cached = { item: entry ? visible(entry) : null };
-          // A pending tool can acquire an attachment publication later.
-          if (entry?.kind !== 'tool' || entry.outcome !== null) this.#cache.set(key, cached);
-        } catch (error) {
-          if (!(error instanceof HistoryError) || error.code !== 'too_large') throw error;
-          cached = { item: ref.kind === 'tool' || ref.kind === 'context' ? null : { id: key, role: 'notice', text: '此历史记录超过界面读取上限，原始记录仍完整保存。', occurredAt: ref.occurredAt } };
-          this.#cache.set(key, cached);
+    let cursor = before; let bytes = 0;
+    // Target visible messages rather than raw events, within a raw scan budget.
+    const limit = before === undefined ? LATEST_SCAN_LIMIT : TIMELINE_SCAN_LIMIT;
+    for (let scanned = 0; scanned < limit; scanned += TIMELINE_PAGE_SIZE) {
+      const page = await history.page({ kinds: ['event', 'context', 'tool'], limit: TIMELINE_PAGE_SIZE, ...(cursor ? { before: cursor } : {}) });
+      // Freeze this page's cache hits: inserting older entries may evict hits
+      // needed later in this same page (or by a concurrent latest read).
+      const cachedPage = new Map(page.hits.map(ref => [ref.id, this.#cached(ref.id)]));
+      const chunk: Timeline['items'] = [];
+      // Keep each original-read response within ten per-record budgets rather
+      // than transferring up to 100 MiB for one metadata page.
+      for (let offset = 0; offset < page.hits.length; offset += 10) {
+        const refs = page.hits.slice(offset, offset + 10);
+        const missing = refs.filter(ref => !cachedPage.get(ref.id));
+        const originals = await history.readBatch({ ids: missing.map(ref => ref.id), maxBytes: 1_048_576 });
+        const fetched = new Map(originals.map(result => [result.id, result]));
+        for (const ref of refs) {
+          const key = ref.id;
+          let cached = cachedPage.get(key);
+          if (!cached) {
+            const result = fetched.get(key);
+            // Never project a guessed empty row for an original the reader omitted.
+            if (!result) throw new HistoryError('corrupt', 'History batch omitted a requested original');
+            const entry = result.entry;
+            if (result.tooLarge) {
+              cached = { item: ref.kind === 'tool' || ref.kind === 'context' ? null : { id: key, role: 'notice', text: '此历史记录超过界面读取上限，原始记录仍完整保存。', occurredAt: ref.occurredAt } };
+              this.#remember(key, cached);
+            } else {
+              cached = { item: entry ? visible(entry) : null };
+              // Pending tools can acquire a public reply/attachment outcome later.
+              if (entry?.kind !== 'tool' || entry.outcome !== null) this.#remember(key, cached);
+            }
+          }
+          if (cached.item) { chunk.push(cached.item); bytes += Buffer.byteLength(cached.item.text); }
         }
-        if (this.#cache.size > 1000) this.#cache.delete(this.#cache.keys().next().value!);
       }
-      if (cached.item) items.push(cached.item);
+      items.unshift(...chunk);
+      cursor = page.nextCursor ?? undefined;
+      if (items.length >= TIMELINE_TARGET || bytes >= TIMELINE_RESPONSE_BYTES || !cursor) break;
     }
-    return { items, nextCursor: page.nextCursor };
+    return { items, nextCursor: cursor ?? null };
+  }
+  /** A hit becomes most recently used. */
+  #cached(id: string): { item: Timeline['items'][number] | null } | undefined {
+    const value = this.#cache.get(id);
+    if (value) { this.#cache.delete(id); this.#cache.set(id, value); }
+    return value;
+  }
+  #remember(id: string, value: { item: Timeline['items'][number] | null }): void {
+    this.#cache.delete(id); this.#cache.set(id, value);
+    for (const oldest of this.#cache.keys()) {
+      if (this.#cache.size <= TIMELINE_CACHE_LIMIT) break;
+      this.#cache.delete(oldest);
+    }
   }
   async memory() {
     if (!this.#options.memoryRoot) return { configured: false, content: null, revision: null };

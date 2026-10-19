@@ -153,6 +153,14 @@ export interface HistoryRunPage {
   nextCursor: string | null;
 }
 export interface RunHistoryReader extends HistoryReader {
+  /** Ordered, Mira-scoped originals in one snapshot, at most 10 IDs. The
+   * per-original byte budget has read's bounds; oversized originals are marked
+   * individually so one private record cannot block a display page. */
+  readBatch(request: { ids: string[]; maxBytes?: number }): Promise<Array<{ id: string; entry: HistoryEntry | null; tooLarge: boolean }>>;
+  /** Runs several reads against one read-only, repeatable-read snapshot and one
+   * connection. The passed reader is valid only until `work` settles; nested
+   * calls reuse the outer snapshot. Any failed read fails the snapshot. */
+  snapshot<T>(work: (reader: RunHistoryReader) => Promise<T>): Promise<T>;
   findEventRun(externalEventId: string): Promise<HistoryEventRun | null>;
   pageRuns(request?: Pick<HistoryPageRequest, 'before' | 'limit'>): Promise<{ items: HistoryRunHeader[]; nextCursor: string | null }>;
   readRunRequests(request: HistoryRunPageRequest): Promise<HistoryRunRequestsPage | null>;

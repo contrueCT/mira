@@ -20,10 +20,11 @@ test('completed assistant commentary is persisted before execution and readable 
   };
   const history = {
     page: async () => ({ hits: writer.state.records.map(record => ({ id: record.id, kind: 'context', occurredAt: record.occurredAt })), nextCursor: null }),
-    read: async ({ id }: { id: string }) => {
+    readBatch: async ({ ids }: { ids: string[] }) => ids.map(id => {
       const record = writer.state.records.find(record => record.id === id);
-      return record ? { id, kind: 'context', miraId: writer.miraId, record, occurredAt: record.occurredAt } : null;
-    },
+      return { id, entry: record ? { id, kind: 'context', miraId: writer.miraId, record, occurredAt: record.occurredAt } : null, tooLarge: false };
+    }),
+    snapshot: async (work: (reader: unknown) => Promise<unknown>) => work(history),
   };
   // Real Pi runtime and Timeline projection; persistence and History reads are
   // explicitly in-memory fixtures, not a PostgreSQL or browser verification.
@@ -73,7 +74,7 @@ test('completed assistant commentary is persisted before execution and readable 
 
 // Exercise the real service projection with a read-only history fixture, without
 // claiming PostgreSQL execution. Durable associations remain in run management.
-test('chat omits delegation-only rows and reads while preserving text, attachments and history cursors', async () => {
+test('chat omits delegation-only rows and reads while preserving text and attachments', async () => {
   const at = '2026-10-14T00:00:00.000Z';
   const attachment = { id: randomUUID(), name: 'evidence.txt', mimeType: 'text/plain', size: 5, sha256: 'a'.repeat(64) };
   const record = encodeEntry(messageEntry(assistant('Mira keeps the conversation going.'), null));
@@ -86,26 +87,27 @@ test('chat omits delegation-only rows and reads while preserving text, attachmen
   const entries = [user, reply, spawn, followup, publication];
   const cursors: Array<string | undefined> = [];
   const history = {
-    page: async ({ before }: { before?: string }) => { cursors.push(before); return { hits: entries.map(({ id, kind, occurredAt }) => ({ id, kind, occurredAt })), nextCursor: 'older-history' }; },
-    read: async ({ id }: { id: string }) => entries.find(value => value.id === id),
+    page: async ({ before }: { before?: string }) => { cursors.push(before); return { hits: entries.map(({ id, kind, occurredAt }) => ({ id, kind, occurredAt })), nextCursor: null }; },
+    readBatch: async ({ ids }: { ids: string[] }) => ids.map(id => ({ id, entry: entries.find(value => value.id === id) ?? null, tooLarge: false })),
+    snapshot: async (work: (reader: unknown) => Promise<unknown>) => work(history),
   };
   let childReads = 0;
   const reader = { readSubagentCalls: async () => { childReads++; return [{ callId: 'spawn', runId: randomUUID(), childId: randomUUID() }]; } };
   const service = Reflect.construct(LocalWebService, [{ dreaming: { enabled: false } }, { signal: new AbortController().signal, onLiveInput: () => () => {} }, history, {}, {}, {}, {}, {}, reader]) as LocalWebService;
   const first = await service.timeline();
-  assert.equal(first.nextCursor, 'older-history');
+  assert.equal(first.nextCursor, null);
   assert.deepEqual(first.items.map(item => item.id), [user.id, reply.id]);
   assert.equal(first.items[0]!.externalEventId, 'user-request');
   assert.deepEqual(first.items[0]!.attachments, [attachment]);
   assert.equal(first.items[1]!.text, 'Mira keeps the conversation going.');
   publication.outcome = { callId: 'publish', payload: { role: 'toolResult', toolName: 'send_attachment', toolCallId: 'publish', isError: false,
     details: { version: 1, type: 'attachment-publication', text: '', attachments: [attachment] } } };
-  const next = await service.timeline('older-history');
+  const next = await service.timeline();
   assert.deepEqual(next.items.map(item => item.id), [user.id, reply.id, publication.id]);
   assert.deepEqual(next.items.at(-1)!.attachments, [attachment], 'pending tool cache still admits an explicit later attachment publication');
   assert.ok(next.items.every(item => !Object.hasOwn(item, 'child')));
   assert.equal(childReads, 0, 'chat does not request child metadata or start child polling');
-  assert.deepEqual(cursors, [undefined, 'older-history']);
+  assert.deepEqual(cursors, [undefined, undefined]);
 });
 
 test('automatic ownership close retains a safe persistence notice but suppresses ordinary shutdown errors', async () => {
@@ -127,4 +129,87 @@ test('automatic ownership close retains a safe persistence notice but suppresses
     if (!(failure instanceof DurableOperationError)) assert.equal(status.error, null);
     assert.doesNotMatch(JSON.stringify(status), /private/);
   }
+});
+
+// In-memory History fixture with real cursor semantics: ascending hits within a
+// page, newest page first. Visible rows are user messages; others are hidden.
+function pagedHistory(count: number, isVisible: (index: number) => boolean, text: (index: number) => string = index => `Visible ${index}`) {
+  const at = (index: number) => new Date(Date.UTC(2026, 9, 1) + index * 1000).toISOString();
+  const ids: string[] = Array.from({ length: count }, () => randomUUID());
+  const index = new Map(ids.map((id, position) => [id, position]));
+  const calls = { pages: [] as Array<{ before: string | undefined; limit: number | undefined }>, originals: 0, snapshots: 0 };
+  const history = {
+    calls,
+    omit: new Set<string>(),
+    page: async ({ before, limit = 50 }: { before?: string; limit?: number }) => {
+      calls.pages.push({ before, limit });
+      const end = before === undefined ? count : Number(before.slice('raw-'.length)); const start = Math.max(0, end - limit);
+      return { hits: ids.slice(start, end).map((id, offset) => ({ id, kind: 'event', occurredAt: at(start + offset) })), nextCursor: start > 0 ? `raw-${start}` : null };
+    },
+    readBatch: async ({ ids: requested }: { ids: string[] }) => {
+      assert.ok(requested.length <= 10); calls.originals += requested.length;
+      return requested.filter(id => !history.omit.has(id)).map(id => {
+        const position = index.get(id)!;
+        return { id, entry: isVisible(position) ? { id, kind: 'event', miraId: 'paged', occurredAt: at(position), requestedWake: null,
+          event: { id: `event-${position}`, source: 'user', type: 'web.message', occurredAt: at(position), payload: { text: text(position) } } } : null, tooLarge: false };
+      });
+    },
+    snapshot: async (work: (reader: unknown) => Promise<unknown>) => { calls.snapshots++; return work(history); },
+  };
+  const service = Reflect.construct(LocalWebService, [{ dreaming: { enabled: false } }, { signal: new AbortController().signal, onLiveInput: () => () => {} }, history, {}, {}, {}, {}, {}, {}]) as LocalWebService;
+  return { history, service, ids };
+}
+
+test('reading far into older history keeps the latest window cached in least-recently-used order', async () => {
+  const { history, service } = pagedHistory(8_000, () => false);
+  const latest = await service.timeline(); assert.ok(latest.nextCursor); assert.deepEqual(latest.items, []);
+  const latestReads = history.calls.originals; assert.ok(latestReads > 0);
+  let cursor: string | null = latest.nextCursor;
+  // Several complete older scans insert far more records than the cache holds.
+  while (cursor) {
+    const older = await service.timeline(cursor); cursor = older.nextCursor;
+    const before = history.calls.originals;
+    assert.deepEqual(await service.timeline(), latest);
+    assert.equal(history.calls.originals, before, 'a latest poll between older scans reuses its cached window');
+  }
+  assert.equal(history.calls.originals, 8_000, 'every hidden original was read exactly once');
+});
+
+test('timeline passes raw cursors through, bounds latest polls and fills older requests to visible messages', async () => {
+  // 1,000 records: the newest 400 hidden, then one visible message every tenth record.
+  const { history, service, ids } = pagedHistory(1_000, index => index < 600 && index % 10 === 0);
+  const latest = await service.timeline();
+  assert.deepEqual(latest, { items: [], nextCursor: 'raw-700' }, 'a latest poll scans three raw pages, then returns its exact continuation');
+  assert.deepEqual(history.calls.pages, [{ before: undefined, limit: 100 }, { before: 'raw-900', limit: 100 }, { before: 'raw-800', limit: 100 }]);
+  assert.equal(history.calls.snapshots, 1);
+  history.calls.pages.length = 0;
+  const older = await service.timeline(latest.nextCursor!);
+  // Pages 600-699 (hidden) and 0-599 (60 visible) are consumed whole: 50 is reached
+  // inside the 100-199 page, so 10 visible rows remain behind cursor raw-100.
+  assert.deepEqual(history.calls.pages.map(page => page.before), ['raw-700', 'raw-600', 'raw-500', 'raw-400', 'raw-300', 'raw-200']);
+  assert.equal(older.nextCursor, 'raw-100');
+  assert.deepEqual(older.items.map(item => item.id), ids.filter((_, index) => index >= 100 && index < 600 && index % 10 === 0));
+  assert.equal(older.items.length, 50);
+  const oldest = await service.timeline(older.nextCursor!);
+  assert.equal(oldest.nextCursor, null);
+  assert.deepEqual(oldest.items.map(item => item.text), Array.from({ length: 10 }, (_, i) => `Visible ${i * 10}`));
+  assert.equal(history.calls.snapshots, 3, 'one snapshot per response');
+});
+
+test('timeline stops between raw pages once visible text reaches the response budget', async () => {
+  const { history, service } = pagedHistory(500, index => index % 5 < 2, () => 'x'.repeat(110_000));
+  const page = await service.timeline('raw-500');
+  // 40 visible rows of 110 kB pass the 4 MiB budget within the first page, below
+  // the 50-row target; the whole page is returned with its exact continuation.
+  assert.equal(page.items.length, 40); assert.equal(page.nextCursor, 'raw-400');
+  assert.equal(history.calls.pages.length, 1);
+});
+
+test('timeline rejects a history batch that omits a requested original instead of hiding it', async () => {
+  const { HistoryError } = await import('@mira/life');
+  const { history, service, ids } = pagedHistory(20, () => true);
+  history.omit.add(ids[7]!);
+  await assert.rejects(service.timeline(), (error: unknown) => error instanceof HistoryError && error.code === 'corrupt');
+  history.omit.clear();
+  assert.equal((await service.timeline()).items.length, 20, 'a later complete batch is projected normally');
 });

@@ -304,3 +304,24 @@ test('a different History revision fails explicitly instead of joining two versi
   mockDatabase(t, { ...pageEntry, offset: 4, nextOffset: 8 });
   await assert.rejects(store().history('mira-a').readText({ id, offset: 4, revision: 'b'.repeat(64) }), /changed.*restart/);
 });
+
+test('history snapshot runs every read in one repeatable-read transaction and connection', async (t) => {
+  const mock = mockDatabase(t, { hits: [], hasMore: false });
+  const history = store().history('mira-a');
+  const pages = await history.snapshot(async snapshot => [await snapshot.page({ kinds: ['event'] }), await snapshot.page({ kinds: ['tool'] })]);
+  assert.deepEqual(pages, [{ hits: [], nextCursor: null }, { hits: [], nextCursor: null }]);
+  assert.equal(mock.connected(), 1); assert.equal(mock.closed(), 1);
+  assert.equal(mock.queries[0]!.sql, 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  for (const setting of ["SET LOCAL statement_timeout = '5s'", "SET LOCAL idle_in_transaction_session_timeout = '15s'", "SET LOCAL TIME ZONE 'UTC'"]) assert(mock.queries.some(item => item.sql === setting));
+  assert.equal(mock.queries.filter(item => item.sql.startsWith('WITH response')).length, 2);
+  assert.deepEqual(mock.queries.filter(item => item.sql === 'COMMIT' || item.sql === 'ROLLBACK').map(item => item.sql), ['COMMIT']);
+  assert(!mock.queries.some(item => /INSERT|UPDATE|DELETE|advisory|FOR UPDATE/.test(item.sql)));
+});
+
+test('history snapshot rolls back and closes once when its work or a read fails', async (t) => {
+  const mock = mockDatabase(t, null, { queryError: new Error('synthetic read failure') });
+  const history = store().history('mira-a');
+  await assert.rejects(history.snapshot(async snapshot => snapshot.page({ kinds: ['event'] })), /synthetic read failure/);
+  assert.equal(mock.connected(), 1); assert.equal(mock.closed(), 1);
+  assert.deepEqual(mock.queries.filter(item => item.sql === 'COMMIT' || item.sql === 'ROLLBACK').map(item => item.sql), ['ROLLBACK']);
+});

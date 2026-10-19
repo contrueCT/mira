@@ -51,6 +51,13 @@ export function latestPagination(current: HistoryPagination, known: { id: string
   const updated = { ...current, latestCursor: page.nextCursor };
   const ids = new Set(known.map(item => item.id));
   if (page.items.some(item => ids.has(item.id)) || page.nextCursor === null || current.gaps.some(gap => gap.id === page.nextCursor || gap.cursor === page.nextCursor)) return updated;
+  // A latest window without visible messages over the same boundary as the
+  // newest gap: the new gap's range contains the old one. Replace it rather
+  // than add a gap per poll during a long private tool interval; at worst the
+  // replaced gap's partial progress is reread.
+  if (!page.items.length && current.gaps[0]?.boundaryIds.length === ids.size) {
+    return { ...updated, gaps: [{ id: page.nextCursor, cursor: page.nextCursor, boundaryIds: [...ids] }, ...current.gaps.slice(1)] };
+  }
   return { ...updated, gaps: [{ id: page.nextCursor, cursor: page.nextCursor, boundaryIds: [...ids] }, ...current.gaps] };
 }
 export function nextHistoryRequest(pagination: HistoryPagination): HistoryRequest | null {
@@ -86,4 +93,55 @@ export function timelineSpacing(previous: TimelineItem | undefined, current: Tim
 }
 export function replySnippet(reply: import('./types.ts').ReplyReference): string {
   return (reply.text.trim() || reply.attachmentNames?.join('、') || '原消息').replace(/\s+/gu, ' ');
+}
+
+export type OlderHistoryResult = { kind: 'target' | 'complete' | 'budget' | 'timeout' | 'stopped' } | { kind: 'error'; error: unknown };
+export interface OlderHistoryOptions<P> {
+  next(): HistoryRequest | null;
+  fetchPage(request: HistoryRequest, signal: AbortSignal): Promise<P>;
+  /** Commits one page and returns how many rows it newly added. */
+  accept(page: P, request: HistoryRequest): number;
+  /** The owning view or its polling scope; aborting it stops silently. */
+  owner: AbortSignal;
+  stopped(): boolean;
+  target?: number; maxPages?: number; timeoutMs?: number;
+  schedule?(callback: () => void, ms: number): () => void;
+}
+/** One explicit "older messages" intent: consecutive frontiers until enough new
+ * rows, the end, a repeated cursor, the page budget or the deadline. Every
+ * completed response is committed before the deadline is considered, so a page
+ * that arrives as time runs out is retained rather than silently dropped. */
+export async function loadOlderHistory<P>(options: OlderHistoryOptions<P>): Promise<OlderHistoryResult> {
+  const { target = 50, maxPages = 8, timeoutMs = 15_000 } = options;
+  const schedule = options.schedule ?? ((callback, ms) => { const timer = setTimeout(callback, ms); return () => clearTimeout(timer); });
+  if (options.owner.aborted || options.stopped()) return { kind: 'stopped' };
+  // Linked by hand: AbortSignal.any is newer than Vite's default browser target.
+  const controller = new AbortController();
+  const stop = () => controller.abort();
+  options.owner.addEventListener('abort', stop, { once: true });
+  let timedOut = false;
+  const cancel = schedule(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  const cursors = new Set<string>();
+  let added = 0;
+  try {
+    for (let pageCount = 0; pageCount < maxPages; pageCount++) {
+      const request = options.next();
+      if (!request) return { kind: 'complete' };
+      if (cursors.has(request.cursor)) return { kind: 'budget' };
+      cursors.add(request.cursor);
+      let page: P;
+      try { page = await options.fetchPage(request, controller.signal); }
+      catch (error) {
+        if (options.owner.aborted || options.stopped()) return { kind: 'stopped' };
+        return timedOut ? { kind: 'timeout' } : { kind: 'error', error };
+      }
+      if (options.owner.aborted || options.stopped()) return { kind: 'stopped' };
+      added += options.accept(page, request);
+      if (added >= target) return { kind: 'target' };
+      if (timedOut) return { kind: 'timeout' };
+    }
+    return options.next() ? { kind: 'budget' } : { kind: 'complete' };
+  } finally {
+    cancel(); options.owner.removeEventListener('abort', stop);
+  }
 }

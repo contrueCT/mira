@@ -4,6 +4,8 @@
 
 Playwright 在 127.0.0.1:3211 启动 `fixture-server.mts`，测试发送/恢复、模型设置、取消与冲突、桌面和窄屏布局。密钥用合成字符串覆盖密码框、留空保留、替换/移除、取消/重载清除、临时发现与目标绑定变更；检查 GET/保存响应和浏览器存储不含密钥。这里的四条合成对话只属于专用内存测试服务；正常 `pnpm start` 不会导入或预置这些消息，也不会连接这个 fixture。
 
+`history-load.spec.ts` 使用真实 React/Playwright 交互与合成 HTTP 分页，覆盖首屏/中间空页、稀疏页与去重后的 50 条目标、每次 8 页上限、游标循环、部分失败重试、连续点击、同时轮询新消息、桌面/窄屏逐页滚动锚定及加载后引用跳转。运行 `pnpm exec playwright test --config tests/e2e/playwright.config.ts history-load.spec.ts`；仅 typecheck 或 `--list` 不算浏览器验收，不能代替 `pagination-real` 的真实 PostgreSQL 链路。
+
 截图和失败 trace 输出到根目录 `test-results/`，已被 Git 忽略。测试不使用真实模型密钥或日常数据库；持久化与重启恢复由独立 PostgreSQL 测试覆盖。禁止将截图、运行数据或真实对话提交到此目录。
 
 `pnpm test:external:e2e` 是独立、强制显式隔离 PostgreSQL 的真实链路 gate：生产本地 CLI 与私有凭据、SDK、HTTP、同一 service/writer、PG、WakeLoop/runtime 到实际浏览器 Timeline。仅模型 stream 为合成；没有 mock Timeline 或内存持久化。需要 `MIRA_TEST_DATABASE_URL` 和已安装 Chromium，不缺库跳过。配置为 `external-real.config.ts`，截图保存在 `test-results/external-real/`；CI 在原 UI fixture gate 后执行。
@@ -45,3 +47,10 @@ HTTP, PostgreSQL and the production runtime. Only model output is scripted.
 It requires the same isolated `MIRA_TEST_DATABASE_URL` and installed browser;
 missing services fail rather than skip. Synthetic desktop/narrow screenshots
 are written beneath `test-results/replies-real/`, never committed as source.
+
+`pnpm test:pagination:e2e` seeds sparse visible messages among hidden events in
+isolated PostgreSQL and exercises the production service, HTTP route and React
+UI. One click must add 50 visible messages with one POST for this sample. It
+records real driver connection counts, request durations and desktop/narrow
+screenshots in `test-results/pagination-real/`. No live model or account is used;
+missing database/browser support fails the gate rather than substituting mocks.
