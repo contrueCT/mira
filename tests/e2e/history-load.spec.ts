@@ -111,7 +111,9 @@ test('history load retains partial success and retries only the failed frontier'
     await route.fulfill({ json: { items: [item(cursor === 'retry-0' ? 99 : 98)], nextCursor: cursor === 'retry-0' ? 'retry-1' : null } });
   });
   await olderButton(page).click();
-  await expect(page.locator('.history-controls [role="alert"]')).toContainText('synthetic page unavailable');
+  const alert = page.locator('.history-controls [role="alert"]');
+  await expect(alert).toContainText('更早的消息暂时没有读取成功，进度已保留，可以重试。');
+  await expect(alert.locator('.error-detail')).toHaveText('技术信息：HTTP 503 · synthetic page unavailable');
   await expect(page.locator('[data-message-id="history-99"]')).toHaveCount(1);
   await expect(olderButton(page)).toBeEnabled();
   await olderButton(page).click();

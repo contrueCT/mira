@@ -1507,3 +1507,24 @@ for (const intent of ['normal', 'loaded-quote', 'paged-quote', 'settings', 'sett
     }
   });
 }
+
+test('connection and send failures read in Chinese, keep the technical message and never overlap the reconnect action', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('[data-message-id]').first()).toBeVisible();
+  await page.route('**/api/**', route => route.abort('internetdisconnected'));
+  const notice = page.getByRole('status', { name: '运行状态与错误详情' });
+  await expect(notice).toContainText('暂时无法连接本地服务，会自动重试', { timeout: 15_000 });
+  // Regression: only the raw browser text was shown, run into the button label.
+  await expect(notice.locator('.error-detail')).toHaveText('技术信息：Failed to fetch');
+  for (const viewport of [{ width: 1200, height: 850 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    const text = (await notice.locator('.notice-text').boundingBox())!; const button = (await notice.getByRole('button', { name: '重新连接' }).boundingBox())!;
+    const overlaps = text.x < button.x + button.width && button.x < text.x + text.width && text.y < button.y + button.height && button.y < text.y + text.height;
+    expect(overlaps).toBe(false);
+  }
+  await page.getByLabel('给 Mira 发消息', { exact: true }).fill('离线时发送');
+  await page.keyboard.press('Enter');
+  const help = page.locator('.pending-help');
+  await expect(help).toContainText('网络连接中断，暂时无法连接本地服务。不会自动重发');
+  await expect(help.locator('.error-detail')).toHaveText('技术信息：Failed to fetch');
+});

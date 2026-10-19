@@ -5,7 +5,8 @@ import type { FormEvent, KeyboardEvent } from 'react';
 import { AttachmentList, AttachmentPreview } from './Attachments.tsx';
 import { useAttachments } from './useAttachments.ts';
 import { attachmentSize } from './attachments.ts';
-import { api, errorText, isAbort } from './api.ts';
+import { api, errorInfo, isAbort } from './api.ts';
+import type { ErrorInfo } from './api.ts';
 import { createStatusPolling } from './status-polling.ts';
 import { ArrowUp, ChevronDown, SettingsIcon } from './icons.tsx';
 import { SettingsDialog } from './SettingsDialog.tsx';
@@ -41,9 +42,9 @@ export function App() {
   const memoryRequestRef = useRef(memoryRequest);
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [connectionError, setConnectionError] = useState<ErrorInfo | null>(null);
   const [storageError, setStorageError] = useState<string | null>(recovered.error);
-  const [olderError, setOlderError] = useState<string | null>(null);
+  const [olderError, setOlderError] = useState<ErrorInfo | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasHistoryGap, setHasHistoryGap] = useState(false);
@@ -147,7 +148,8 @@ export function App() {
       if (timelineResult.status === 'fulfilled') acceptPage(timelineResult.value);
       else setLoading(false);
       const failed = results.find(result => result.status === 'rejected');
-      setConnectionError(failed?.status === 'rejected' ? `暂时无法连接本地服务 · ${errorText(failed.reason)}` : null);
+      if (failed?.status !== 'rejected') setConnectionError(null);
+      else { const info = errorInfo(failed.reason); setConnectionError({ summary: '暂时无法连接本地服务，会自动重试', detail: info.detail ?? info.summary }); }
     })();
     inFlightRef.current = request;
     void request.finally(() => { if (inFlightRef.current === request) inFlightRef.current = null; });
@@ -233,9 +235,9 @@ export function App() {
         stopped: () => !activeRef.current,
       });
       if (!activeRef.current) return;
-      if (result.kind === 'budget') setOlderError('这段历史较长，已保留读取进度，请继续加载。');
-      else if (result.kind === 'timeout') setOlderError('读取较久，已保留进度，请再试一次。');
-      else if (result.kind === 'error') setOlderError(errorText(result.error));
+      if (result.kind === 'budget') setOlderError({ summary: '这段历史较长，已保留读取进度，请继续加载。', detail: null });
+      else if (result.kind === 'timeout') setOlderError({ summary: '读取较久，已保留进度，请再试一次。', detail: null });
+      else if (result.kind === 'error') { const info = errorInfo(result.error); setOlderError({ summary: `更早的消息暂时没有读取成功，进度已保留，可以重试。${info.detail ? '' : info.summary}`, detail: info.detail }); }
     } finally {
       olderBusyRef.current = false;
       if (activeRef.current) setLoadingOlder(false);
@@ -274,7 +276,7 @@ export function App() {
       updatePending(current => current.map(message => message.id === envelope.id ? { ...envelope, state: 'queued' } : message));
       void refresh();
     } catch (error) {
-      if (activeRef.current) updatePending(current => current.map(message => message.id === envelope.id ? { ...envelope, state: 'uncertain', error: isAbort(error) ? '连接中断，接收结果尚未确认' : errorText(error) } : message));
+      if (activeRef.current) updatePending(current => current.map(message => message.id === envelope.id ? { ...envelope, state: 'uncertain', ...(isAbort(error) ? { error: '连接中断，接收结果尚未确认' } : (({ summary, detail }) => ({ error: summary, ...(detail ? { errorDetail: detail } : {}) }))(errorInfo(error))) } : message));
     } finally {
       clearTimeout(timeout);
       if (postAbortRef.current === controller) postAbortRef.current = null;
@@ -400,7 +402,10 @@ export function App() {
         <button ref={settingsButtonRef} className="icon-button settings-button" type="button" onClick={openSettings} aria-label="模型设置" title="模型设置"><SettingsIcon /></button>
       </header>
 
-      {(connectionError || storageError || status?.error) && <div className="connection-notice" role="status" tabIndex={0} aria-label="运行状态与错误详情"><span>{!storageError && !connectionError && status?.error && <strong>运行错误 · </strong>}{storageError ?? connectionError ?? status?.error}</span>{connectionError && <button className="text-button" onClick={() => { void refresh(); }}>重新连接</button>}</div>}
+      {(connectionError || storageError || status?.error) && <div className="connection-notice" role="status" tabIndex={0} aria-label="运行状态与错误详情">
+        <p className="notice-text">{storageError ? <span className="notice-summary">{storageError}</span> : connectionError ? <><span className="notice-summary">{connectionError.summary}</span>{connectionError.detail && <span className="error-detail">技术信息：{connectionError.detail}</span>}</> : <span className="notice-summary"><strong>运行错误 · </strong>{status?.error}</span>}</p>
+        {connectionError && <button type="button" className="secondary-button notice-action" onClick={() => { void refresh(); }}>重新连接</button>}
+      </div>}
 
       <main ref={scrollRef} className="timeline-scroll" onScroll={onScroll}
         onFocusCapture={() => { if (!internalTimelineFocusRef.current) cancelQuoteNavigation(); }}
@@ -409,7 +414,7 @@ export function App() {
         aria-label="与 Mira 的消息记录" tabIndex={0}>
         <div className={`timeline-content ${showEmpty ? 'is-empty' : ''}`}>
           {view === 'loading' && <div className="timeline-loading" role="status"><span className="loading-mark" />正在找回我们的消息…</div>}
-          {nextCursor && <div className="history-controls"><button className="text-button" onClick={() => { void loadOlder(); }} disabled={loadingOlder}>{loadingOlder ? '正在读取…' : hasHistoryGap ? '补齐尚未读取的消息' : '查看更早的消息'}</button>{hasHistoryGap && <p className="history-gap-note">有一段消息尚未读取，点击后可继续补齐</p>}{olderError && <p className="inline-error" role="alert">{olderError}</p>}</div>}
+          {nextCursor && <div className="history-controls"><button className="text-button" onClick={() => { void loadOlder(); }} disabled={loadingOlder}>{loadingOlder ? '正在读取…' : hasHistoryGap ? '补齐尚未读取的消息' : '查看更早的消息'}</button>{hasHistoryGap && <p className="history-gap-note">有一段消息尚未读取，点击后可继续补齐</p>}{olderError && <p className="inline-error" role="alert"><span>{olderError.summary}</span>{olderError.detail && <span className="error-detail">技术信息：{olderError.detail}</span>}</p>}</div>}
           {view === 'empty' && <div className="empty-state"><span className="eyebrow">每一句，都会留在这里</span><h2>和 Mira 说点什么</h2><p>一个想法、一件小事，或今天的心情。</p><p className="empty-note">从这里开始，慢慢聊。</p></div>}
           {view === 'hidden-recent' && <div className="empty-state hidden-recent" role="status"><span className="eyebrow">消息都还在</span><h2>最近是 Mira 的内部处理记录</h2><p>较早的聊天仍完整保存，可以点上方继续查看。</p></div>}
           <div className="message-list" role="log" aria-live="polite" aria-relevant="additions text" aria-label="消息">
@@ -443,7 +448,7 @@ export function App() {
                 {message.state === 'sending' ? '正在发送…' : message.state === 'queued' ? '已接收 · 等待处理' : '接收结果待确认'}
                 {message.state === 'uncertain' && <button className="text-button" disabled={sending} onClick={() => { void sendEnvelope({ id: message.id, text: message.text, occurredAt: message.occurredAt, ...(message.replyToMessageId ? { replyToMessageId: message.replyToMessageId } : {}), ...(message.attachmentIds !== undefined ? { attachmentIds: [...message.attachmentIds] } : {}) }, true); }}>核对并重试</button>}
               </div>
-              {message.state === 'uncertain' && <p className="pending-help">{message.error ?? '刷新前的发送尚未确认'}。不会自动重发</p>}
+              {message.state === 'uncertain' && <p className="pending-help"><span>{message.error ?? '刷新前的发送尚未确认'}。不会自动重发，可以核对后重试。</span>{message.errorDetail && <span className="error-detail">技术信息：{message.errorDetail}</span>}</p>}
             </article>)}
           </div>
           {status?.state === 'working' && !connectionError && <div className="working-indicator" role="status"><span className="working-dots" aria-hidden="true">•••</span>{status.modelRetry ? (status.modelRetry.phase === 'waiting' ? `模型请求暂时失败，等待重试（第 ${status.modelRetry.attempt}/${status.modelRetry.maxAttempts} 次）` : `正在重试模型请求（第 ${status.modelRetry.attempt}/${status.modelRetry.maxAttempts} 次）`) : 'Mira 正在处理'}</div>}
