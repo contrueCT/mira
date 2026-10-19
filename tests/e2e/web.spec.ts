@@ -811,6 +811,21 @@ test('the phone header is one compact row and truncates a long model name instea
   await expect(header.locator('.identity')).toHaveCSS('flex-direction', 'column');
 });
 
+test('the composer counts UTF-8 bytes and blocks a message the server would reject', async ({ page }) => {
+  // Regression: 22,000 CJK characters passed the old 50,000-character limit but exceed 64 KB.
+  let sends = 0; await page.route('**/api/messages', route => { sends++; return route.fulfill({ json: { id: 'x', receipt: 'inserted' } }); });
+  await page.goto('/');
+  const input = page.getByLabel('给 Mira 发消息', { exact: true }); const send = page.getByRole('button', { name: '发送消息', exact: true });
+  await input.fill('湖'.repeat(20_000));
+  await expect(page.getByText(/^还可输入约 .* KB$/u)).toBeVisible(); await expect(send).toBeEnabled();
+  await input.fill('湖'.repeat(22_000));
+  await expect(page.getByText(/^超出 .* KB，请缩短后再发送$/u)).toBeVisible(); await expect(send).toBeDisabled();
+  await expect(input).toHaveAttribute('aria-invalid', 'true');
+  await input.press('Enter'); expect(sends).toBe(0);
+  expect(await input.evaluate(element => (element as HTMLTextAreaElement).value.length)).toBe(22_000);
+  await input.fill('短消息'); await expect(page.locator('.composer-budget')).toHaveCount(0); await expect(send).toBeEnabled();
+});
+
 test('child activity stays in settings, observes each identity and recovers refreshes without adding chat controls', async ({ page }, testInfo) => {
   const runId = '10000000-0000-4000-8000-000000000010';
   const childA = '10000000-0000-4000-8000-000000000011', childB = '10000000-0000-4000-8000-000000000012';

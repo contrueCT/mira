@@ -12,6 +12,7 @@ import { ArrowUp, ChevronDown, SettingsIcon } from './icons.tsx';
 import { SettingsDialog } from './SettingsDialog.tsx';
 import { createMemoryRequest, readMemoryRequest, recoverMemoryRequest, writeMemoryRequest } from './management.ts';
 import type { MemoryRequestIdentity } from './management.ts';
+import { composerBudget, envelopeBytes, MESSAGE_BODY_LIMIT } from './composer.ts';
 import { announce, applicableUpdates, arrivals, confirmsPending, replySnippet, timelineSpacing, timelineView, quoteLookupNotice, QUOTE_LOOKUP_CANCELLED, latestPagination, loadOlderHistory, locatedPagination, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
 import type { HistoryPagination, HistoryRequest } from './timeline.ts';
 import type { Attachment, LocatedPage, MessageEnvelope, PendingMessage, ReplyReference, ServerStatus, TimelineItem, TimelinePage } from './types.ts';
@@ -303,12 +304,13 @@ export function App() {
     void sendEnvelope(envelope, false, true);
     return true;
   };
+  const budget = composerBudget({ text: composer, replyToMessageId: replyTarget?.messageId, attachmentIds: attachments.attachments.map(item => item.id) });
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
     const text = composer.trim();
     if ((!text && !attachments.drafts.length) || !attachments.ready || sendingRef.current || recovered.error) return;
     const envelope: MessageEnvelope = { ...(replyTarget ? { replyToMessageId: replyTarget.messageId } : {}), id: browserUuid(), text, occurredAt: new Date().toISOString(), ...(attachments.attachments.length ? { attachmentIds: attachments.attachments.map(item => item.id) } : {}) };
-    if (new TextEncoder().encode(JSON.stringify(envelope)).byteLength > 65_536) { setComposerError('消息太长，请缩短后再发送（上限约 64 KB）'); return; }
+    if (envelopeBytes(envelope) > MESSAGE_BODY_LIMIT) { setComposerError('消息太长，请缩短后再发送（上限约 64 KB）'); return; }
     setComposerError(null);
     scrollToLatest();
     void sendEnvelope(envelope);
@@ -503,9 +505,10 @@ export function App() {
           </div>)}</div>}
           <button className="add-attachment-button icon-button" type="button" disabled={sending || !!recovered.error} onClick={() => fileInputRef.current?.click()} aria-label="添加附件" title="添加图片、视频或文件">+</button>
           <label className="sr-only" htmlFor="message-input">给 Mira 发消息</label>
-          <textarea ref={textareaRef} id="message-input" placeholder="给 Mira 发消息…" value={composer} onChange={event => { cancelQuoteNavigation(); setComposer(event.target.value); setComposerError(null); }} onKeyDown={onComposerKey} rows={1} disabled={sending || !!recovered.error} maxLength={50_000} />
-          <button className="send-button" type="submit" disabled={(!composer.trim() && !attachments.drafts.length) || !attachments.ready || sending || !!recovered.error} aria-label={sending ? '正在发送' : '发送消息'} title="发送消息"><ArrowUp /></button>
+          <textarea ref={textareaRef} id="message-input" placeholder="给 Mira 发消息…" value={composer} onChange={event => { cancelQuoteNavigation(); setComposer(event.target.value); setComposerError(null); }} onKeyDown={onComposerKey} rows={1} disabled={sending || !!recovered.error} aria-describedby={budget.label ? 'composer-budget' : undefined} aria-invalid={budget.over || undefined} />
+          <button className="send-button" type="submit" disabled={(!composer.trim() && !attachments.drafts.length) || !attachments.ready || sending || !!recovered.error || budget.over} aria-label={sending ? '正在发送' : '发送消息'} title="发送消息"><ArrowUp /></button>
         </form>
+        {budget.label && <p id="composer-budget" className={`composer-budget ${budget.over ? 'over' : ''}`} aria-live="polite">{budget.label}</p>}
         {composerError && <p className="composer-error" role="alert">{composerError}</p>}
         <p className="composer-caption">Enter 发送<span>·</span>Shift + Enter 换行{status?.mode === 'synthetic' && <><span>·</span>当前为模拟模型</>}</p>
       </footer>
