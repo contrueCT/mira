@@ -49,6 +49,16 @@ const TIMELINE_RESPONSE_BYTES = 4 * 1_048_576;
 // window plus complete older scans, so reading old history does not evict the
 // records every latest poll needs; independent of either scan budget.
 const TIMELINE_CACHE_LIMIT = 2 * TIMELINE_SCAN_LIMIT;
+// Pending tool entries seen by any timeline read. Their public outcome (an
+// attachment or reply publication) is placed at the intent record, so it can
+// complete after newer records have pushed it out of the latest window.
+// Larger than the latest window, so refreshing in-window entries can never
+// evict every pending tool outside it.
+const PENDING_TOOL_LIMIT = 512;
+// Completed publications are re-announced to latest polls for a while, so
+// every open tab (and a poll that raced the completion) still receives them.
+const COMPLETED_UPDATE_LIMIT = 32;
+const COMPLETED_UPDATE_TTL_MS = 10 * 60_000;
 
 export interface WebServiceOptions {
   /** Startup-only child concurrency, default 8, bounded 1..32. */
@@ -136,6 +146,8 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   #settingsGeneration = 0;
   #kickRequested = false;
   readonly #cache = new Map<string, { item: Timeline['items'][number] | null }>();
+  readonly #pendingTools = new Set<string>();
+  readonly #completed = new Map<string, { item: Timeline['items'][number]; at: number }>();
   private constructor(options: WebServiceOptions, writer: DreamingWriter & SchedulingWriter & LiveInputWriter & SubagentWriter, history: RunHistoryReader, settings: WebSettingsStore, settingsValue: WebSettings, loop: WakeLoop, attachments: AttachmentStore, subagents: SubagentManager, subagentReader: SubagentReader, terminals: TerminalManager, browser: BrowserManager, host?: ExtensionHost) {
     this.browser = browser; this.#terminals = terminals; this.#subagentReader = subagentReader; this.#subagents = subagents; this.#attachments = attachments; this.#options = options; this.#writer = writer; this.#history = history; this.#settings = settings;
     this.#settingsValue = settingsValue; this.#loop = loop; this.#host = host;
@@ -336,7 +348,46 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   async timeline(before?: string): Promise<Timeline> {
     // One read-only snapshot and connection for every metadata page and
     // original batch, so pages cannot shift between queries of one response.
-    return this.#history.snapshot(history => this.#scanTimeline(history, before));
+    return this.#history.snapshot(async history => {
+      const seen = new Set<string>();
+      const page = await this.#scanTimeline(history, before, { seen });
+      if (before !== undefined) return page;
+      const updates = await this.#completedOutside(history, seen, new Set(page.items.map(item => item.id)));
+      return updates.length ? { ...page, updates } : page;
+    });
+  }
+  /** Re-read pending tools the latest window did not cover; return recent
+   * completions that are not part of this page. Bounded by PENDING_TOOL_LIMIT
+   * reads; tracking is in memory, so a restart forgets older pending tools
+   * (they still appear when their stretch is read again). */
+  async #completedOutside(history: RunHistoryReader, seen: Set<string>, inPage: Set<string>): Promise<NonNullable<Timeline['updates']>> {
+    const unseen = [...this.#pendingTools].filter(id => !seen.has(id));
+    for (let offset = 0; offset < unseen.length; offset += 10) {
+      const batch = unseen.slice(offset, offset + 10);
+      const results = new Map((await history.readBatch({ ids: batch, maxBytes: 1_048_576 })).map(result => [result.id, result]));
+      // An original the reader no longer returns is forgotten, not retried forever.
+      for (const id of batch) { const result = results.get(id); this.#trackTool(id, !result || result.tooLarge ? null : result.entry); }
+    }
+    const now = Date.now(); const updates: NonNullable<Timeline['updates']> = [];
+    for (const [id, value] of this.#completed) {
+      if (now - value.at > COMPLETED_UPDATE_TTL_MS) this.#completed.delete(id);
+      else if (!inPage.has(id)) updates.push(value.item);
+    }
+    return updates;
+  }
+  /** Follow one tool entry: track while pending, remember its outcome once. */
+  #trackTool(id: string, entry: HistoryEntry | null): void {
+    if (entry?.kind !== 'tool' || entry.outcome === null) {
+      if (entry?.kind === 'tool') {
+        this.#pendingTools.delete(id); this.#pendingTools.add(id);
+        for (const oldest of this.#pendingTools) { if (this.#pendingTools.size <= PENDING_TOOL_LIMIT) break; this.#pendingTools.delete(oldest); }
+      } else this.#pendingTools.delete(id);
+      return;
+    }
+    const item = visible(entry); this.#remember(id, { item });
+    if (!this.#pendingTools.delete(id) || !item) return;
+    this.#completed.delete(id); this.#completed.set(id, { item, at: Date.now() });
+    for (const oldest of this.#completed.keys()) { if (this.#completed.size <= COMPLETED_UPDATE_LIMIT) break; this.#completed.delete(oldest); }
   }
   /** One quoted message by History ID, in the same snapshot as its page.
    * With the client's older-history frontier, first read contiguously from it
@@ -358,7 +409,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       return found(window.items) ? { ...window, mode: 'window' as const } : null;
     });
   }
-  async #scanTimeline(history: RunHistoryReader, before: string | undefined, options: { limit?: number; until?: (items: Timeline['items']) => boolean } = {}): Promise<Timeline> {
+  async #scanTimeline(history: RunHistoryReader, before: string | undefined, options: { limit?: number; until?: (items: Timeline['items']) => boolean; seen?: Set<string> } = {}): Promise<Timeline> {
     const items: Timeline['items'] = [];
     let cursor = before; let bytes = 0;
     // Target visible messages rather than raw events, within a raw scan budget.
@@ -389,8 +440,10 @@ export class LocalWebService implements WebBackend, ManagementBackend {
               this.#remember(key, cached);
             } else {
               cached = { item: entry ? visible(entry) : null };
-              // Pending tools can acquire a public reply/attachment outcome later.
-              if (entry?.kind !== 'tool' || entry.outcome !== null) this.#remember(key, cached);
+              // Pending tools can acquire a public reply/attachment outcome
+              // later, so they are re-read rather than cached until then.
+              if (entry?.kind === 'tool') { options.seen?.add(key); this.#trackTool(key, entry); }
+              else this.#remember(key, cached);
             }
           }
           if (cached.item) { chunk.push(cached.item); bytes += Buffer.byteLength(cached.item.text); }

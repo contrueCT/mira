@@ -28,6 +28,8 @@ export interface WebBackend extends Partial<ManagementBackend> {
   timeline(before?: string): Promise<{
     items: Array<{ id: string; externalEventId?: string; source?: ExtensionMessageSource; reply?: ReplyReference; role: 'user' | 'assistant' | 'notice'; text: string; occurredAt: string; attachments?: AttachmentDescriptor[] }>;
     nextCursor: string | null;
+    /** Latest reads only: earlier items whose public outcome has just completed, outside `items`. */
+    updates?: Array<{ id: string; externalEventId?: string; source?: ExtensionMessageSource; reply?: ReplyReference; role: 'user' | 'assistant' | 'notice'; text: string; occurredAt: string; attachments?: AttachmentDescriptor[] }>;
   }>;
   /** A quoted message by ID: contiguous from `before` when reachable, else the window ending at it. */
   locateTimeline?(id: string, before?: string): Promise<(Awaited<ReturnType<WebBackend['timeline']>> & { mode: 'contiguous' | 'window' }) | null>;
@@ -235,6 +237,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     return {
       items: result.items.map(timelineItem),
       nextCursor: result.nextCursor,
+      ...(request.query.before === undefined && result.updates?.length ? { updates: result.updates.map(timelineItem) } : {}),
     };
   });
   // Large history IDs belong in a bounded body, not a request URL/header line.

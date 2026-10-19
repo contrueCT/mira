@@ -12,7 +12,7 @@ import { ArrowUp, ChevronDown, SettingsIcon } from './icons.tsx';
 import { SettingsDialog } from './SettingsDialog.tsx';
 import { createMemoryRequest, readMemoryRequest, recoverMemoryRequest, writeMemoryRequest } from './management.ts';
 import type { MemoryRequestIdentity } from './management.ts';
-import { confirmsPending, replySnippet, timelineSpacing, timelineView, quoteLookupNotice, QUOTE_LOOKUP_CANCELLED, latestPagination, loadOlderHistory, locatedPagination, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
+import { applicableUpdates, confirmsPending, replySnippet, timelineSpacing, timelineView, quoteLookupNotice, QUOTE_LOOKUP_CANCELLED, latestPagination, loadOlderHistory, locatedPagination, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
 import type { HistoryPagination, HistoryRequest } from './timeline.ts';
 import type { Attachment, LocatedPage, MessageEnvelope, PendingMessage, ReplyReference, ServerStatus, TimelineItem, TimelinePage } from './types.ts';
 
@@ -121,7 +121,7 @@ export function App() {
       prependAnchorRef.current = { height: container.scrollHeight, top: container.scrollTop, element, offset: element ? element.getBoundingClientRect().top - top : 0 };
     }
     paginationRef.current = located ? locatedPagination(paginationRef.current, itemsRef.current, page, located) : request ? olderPagination(paginationRef.current, request, page) : latestPagination(paginationRef.current, itemsRef.current, page, initializedRef.current);
-    const merged = mergeTimeline(itemsRef.current, page.items);
+    const merged = mergeTimeline(itemsRef.current, [...(request || located ? [] : applicableUpdates(itemsRef.current, page.updates)), ...page.items]);
     itemsRef.current = merged;
     setItems(merged);
     updatePending(current => reconcilePending(current, merged));

@@ -397,3 +397,14 @@ test('quoted-message lookup returns the projected window, 404 for anything not v
   const unsupported = createLocalHttp({ backend: backend(), port: port + 1 }); t.after(() => unsupported.close());
   assert.equal((await unsupported.inject({ method: 'POST', url: '/api/timeline/locate', headers: { ...writeHeaders, host: `127.0.0.1:${port + 1}`, origin: `http://127.0.0.1:${port + 1}` }, payload: { id: target } })).statusCode, 404);
 });
+
+test('latest timeline responses carry projected late completions; older pages never do', async t => {
+  const late = { id: 'c5017dbb-0c3f-4cfe-ab34-63997612ebcd', role: 'assistant' as const, text: 'late attachment', occurredAt: message.occurredAt, raw: 'never public' };
+  const app = createLocalHttp({ backend: backend({ timeline: async () => ({ items: [], nextCursor: 'older_1', updates: [late as never] }) }), port }); t.after(() => app.close());
+  const latest = await app.inject({ url: '/api/timeline', headers: readHeaders });
+  assert.deepEqual(latest.json(), { items: [], nextCursor: 'older_1', updates: [{ id: late.id, role: 'assistant', text: 'late attachment', occurredAt: message.occurredAt }] });
+  const older = await app.inject({ method: 'POST', url: '/api/timeline', headers: writeHeaders, payload: { before: 'older_1' } });
+  assert.deepEqual(older.json(), { items: [], nextCursor: 'older_1' });
+  const queried = await app.inject({ url: '/api/timeline?before=older_1', headers: readHeaders });
+  assert.deepEqual(queried.json(), { items: [], nextCursor: 'older_1' });
+});

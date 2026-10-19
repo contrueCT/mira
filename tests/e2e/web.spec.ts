@@ -660,6 +660,29 @@ test('mocked historical thumbnails load only near viewport and release bytes whe
   await expect(tile.locator('img')).toHaveAttribute('src', /^blob:/u); expect(reads).toBe(2);
 });
 
+test('an attachment completed outside the latest window appears in the loaded stretch, while older updates wait for paging', async ({ page }) => {
+  // Regression for audit #10: latest polls carry late completions as `updates`, outside `items`.
+  const file = { id: '10000000-0000-4000-8000-000000000021', name: 'late-report.txt', mimeType: 'text/plain', size: 7, sha256: 'e'.repeat(64) };
+  const latest = Array.from({ length: 5 }, (_, index) => ({ id: `latest-${index}`, role: 'user', text: `最新消息 ${index}`, occurredAt: `2026-10-14T08:0${index}:00Z` }));
+  const older = Array.from({ length: 5 }, (_, index) => ({ id: `loaded-${index}`, role: 'assistant', text: `已读取的较早消息 ${index}`, occurredAt: `2026-10-14T07:0${index}:00Z` }));
+  let completed = false;
+  await page.route('**/api/timeline', route => route.request().method() === 'POST'
+    ? route.fulfill({ json: { items: older, nextCursor: 'oldest' } })
+    : route.fulfill({ json: { items: latest, nextCursor: 'older', ...(completed ? { updates: [
+      { id: 'late-attachment', role: 'assistant', text: '附件整理好了', occurredAt: '2026-10-14T07:02:30Z', attachments: [file] },
+      { id: 'too-old', role: 'assistant', text: '更早完成的附件', occurredAt: '2026-10-13T00:00:00Z', attachments: [file] },
+    ] } : {}) } }));
+  await page.goto('/'); await expect(page.getByText('最新消息 4')).toBeVisible();
+  await page.getByRole('button', { name: '查看更早的消息' }).click(); await expect(page.getByText('已读取的较早消息 0')).toBeVisible();
+  completed = true;
+  await expect(page.getByText('附件整理好了')).toBeVisible({ timeout: 10_000 });
+  const order = await page.locator('[data-message-id]').evaluateAll(elements => elements.map(element => element.getAttribute('data-message-id')));
+  expect(order.indexOf('late-attachment')).toBe(order.indexOf('loaded-2') + 1);
+  await expect(page.getByRole('button', { name: '下载 late-report.txt' }).or(page.getByText('late-report.txt'))).toBeVisible();
+  // Outside the loaded span it is not spliced in; paging reads it in place later.
+  expect(order).not.toContain('too-old');
+});
+
 test('child activity stays in settings, observes each identity and recovers refreshes without adding chat controls', async ({ page }, testInfo) => {
   const runId = '10000000-0000-4000-8000-000000000010';
   const childA = '10000000-0000-4000-8000-000000000011', childB = '10000000-0000-4000-8000-000000000012';

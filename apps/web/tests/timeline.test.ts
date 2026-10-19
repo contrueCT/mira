@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { PENDING_KEY, loadOlderHistory, latestPagination, locatedPagination, nextHistoryRequest, olderPagination, mergeTimeline, quoteLookupNotice, readPending, reconcilePending, timelineView, writePending } from '../src/timeline.ts';
+import { PENDING_KEY, applicableUpdates, loadOlderHistory, latestPagination, locatedPagination, nextHistoryRequest, olderPagination, mergeTimeline, quoteLookupNotice, readPending, reconcilePending, timelineView, writePending } from '../src/timeline.ts';
 import type { PendingMessage, TimelineItem } from '../src/types.ts';
 
 const envelope = { id: 'a5017dbb-0c3f-4cfe-ab34-63997612ebcd', text: '一条保留原样的消息\n第二行', occurredAt: '2026-10-06T07:00:00.000Z' };
@@ -353,4 +353,16 @@ test('a located window inside an unread gap leaves both sides of it reachable', 
   // A window that already reaches loaded messages adds no gap.
   const connected = locatedPagination(current, known, { items: [item('r1', '2026-10-06T01:00:00.000Z'), item('target', '2026-10-06T03:00:00.000Z')], nextCursor: 'w-next' }, 'target');
   assert.deepEqual(connected.gaps, [{ id: 'g', cursor: 'g', boundaryIds: ['r1', 'target'] }]); assert.equal(connected.oldestCursor, 'o');
+});
+
+test('late completions apply only to known items or within the loaded span', () => {
+  const at = (minute: number) => new Date(Date.UTC(2026, 9, 1, 0, minute)).toISOString();
+  const loaded = [{ id: 'b', role: 'user' as const, text: 'b', occurredAt: at(10) }, { id: 'c', role: 'assistant' as const, text: 'c', occurredAt: at(20) }];
+  const inside = { id: 'x', role: 'assistant' as const, text: 'attachment', occurredAt: at(15) };
+  const before = { id: 'y', role: 'assistant' as const, text: 'older', occurredAt: at(5) };
+  const known = { ...loaded[0]!, text: 'b updated' };
+  assert.deepEqual(applicableUpdates(loaded, [inside, before, known]).map(item => item.id), ['x', 'b']);
+  assert.deepEqual(applicableUpdates([], [inside]), []);
+  assert.deepEqual(applicableUpdates(loaded, undefined), []);
+  assert.deepEqual(mergeTimeline(loaded, applicableUpdates(loaded, [inside])).map(item => item.id), ['b', 'x', 'c']);
 });

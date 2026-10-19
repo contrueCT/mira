@@ -15,6 +15,15 @@ export function mergeTimeline(current: TimelineItem[], incoming: TimelineItem[])
     return a.occurredAt.localeCompare(b.occurredAt) || a.id.localeCompare(b.id);
   });
 }
+/** Late completions from a latest poll that belong to what is already shown:
+ * a known item, or one no older than the oldest loaded item. Anything older is
+ * left for history paging, which reads it fresh. */
+export function applicableUpdates(current: TimelineItem[], updates: TimelineItem[] | undefined): TimelineItem[] {
+  if (!updates?.length || !current.length) return [];
+  const oldest = mergeTimeline([], current)[0]!;
+  const known = new Set(current.map(item => item.id));
+  return updates.filter(update => known.has(update.id) || mergeTimeline([], [oldest, update])[0] === oldest);
+}
 export function reconcilePending(pending: PendingMessage[], items: TimelineItem[]): PendingMessage[] {
   return pending.filter(message => !items.some(item => confirmsPending(message, item)));
 }

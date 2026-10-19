@@ -24,7 +24,17 @@ restart cognition.
 The main model explicitly uses `send_attachment` with existing local paths and
 optional text to publish files. It runs through normal persisted intent/effect/
 outcome. Only its known successful durable publication is projected to chat.
-Ordinary read/image/tool results remain private. Unknown outcomes retain existing
+Ordinary read/image/tool results remain private.
+The publication keeps its intent record's position in the Timeline, so it can
+complete after newer records have pushed that position out of the latest
+window. The web service follows pending tool entries it has read (at most 512,
+in memory) and re-reads those outside the latest window on each latest poll; a
+completed visible publication is returned as a separate `updates` list on
+`GET /api/timeline` for ten minutes (at most 32), never in `items`, so history
+cursors and gaps are unaffected. The browser applies an update only to a known
+item or within the stretch it has already loaded; older ones appear in place
+when that history is read. A server restart forgets tracking; the publication
+still appears whenever its stretch is read again. Unknown outcomes retain existing
 recovery semantics and are never automatically replayed. Complete snapshots that
 were never referenced may remain on disk; automatic deletion is limited to failed
 operation temporary files, avoiding a GC race with a database commit. No automatic
