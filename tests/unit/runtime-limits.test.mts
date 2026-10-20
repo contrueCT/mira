@@ -9,13 +9,13 @@ import { boundPromptMemory, MEMORY_PROMPT_BYTES } from '@mira/workspace';
 
 const text = (result: { content: Array<{ type: string; text?: string }> }) => result.content.map(block => block.text ?? '').join('\n');
 
-test('workspace bash advertises and applies a default timeout and cap', async () => {
+test('workspace bash applies a default timeout and cap without changing its declaration', async () => {
   const bash = createWorkspaceTools(process.cwd()).find(tool => tool.name === 'bash')!;
   assert.deepEqual(bashTimeouts, { defaultSeconds: 120, maxSeconds: 600 });
-  assert.match(bash.description, /time out after 120 seconds by default \(at most 600\)/);
-  assert.match(bash.description, /exec_command/);
-  const timeout = (bash.parameters as unknown as { properties: Record<string, { description: string }> }).properties['timeout']!;
-  assert.match(timeout.description, /Default 120, maximum 600/);
+  // Declaration parity: recorded native evidence is bound to the full tool digest.
+  const fake: AgentTool = { name: 'bash', label: 'bash', description: 'Run a command.', parameters: { type: 'object', properties: { timeout: { type: 'number', description: 'old' } } } as never, execute: async () => ({ content: [], details: {} }) };
+  const wrapped = withBashTimeout(fake);
+  assert.equal(wrapped.description, fake.description); assert.equal(wrapped.parameters, fake.parameters);
   const ok = await bash.execute('bash-ok', { command: 'printf fine' } as never);
   assert.match(text(ok as never), /fine/);
 });
@@ -39,6 +39,7 @@ test('a hung bash command times out with a hint to use the managed terminal', as
   await assert.rejects(bash.execute('hung', { command: 'sleep 30' } as never), (error: Error) => {
     assert.match(error.message, /Command timed out after 1 seconds/);
     assert.match(error.message, /use exec_command \(managed terminal\)/);
+    assert.match(error.message, /time out after 1 seconds by default \(at most 2\)/);
     return true;
   });
   assert.ok(Date.now() - started < 10_000);

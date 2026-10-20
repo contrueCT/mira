@@ -257,7 +257,8 @@ test('real PostgreSQL server: oversized history read reaches the model truthfull
         }
         assert.equal(requests, 3);
         const delivered = context.messages.find(message => message.role === 'toolResult' && message.toolCallId === 'read-larger-budget'); assert.ok(delivered?.role === 'toolResult');
-        assert.ok(!JSON.stringify(delivered.content).includes('untruncated-tail-marker'));
+        // Head+tail preview (ADR 0028 amendment): explicitly partial, complete original behind the reference.
+        assert.match(JSON.stringify(delivered.content), /omitted from the middle of this preview/);
         const full = await fullOutput(delivered), text = full.content[0]; assert.ok(text?.type === 'text');
         assert.deepEqual(JSON.parse(text.text), { kind: 'event', id: originalHistoryId, miraId, occurredAt, event: original, requestedWake: null });
         return streamOf(assistant('The first read exceeded its budget; the second supplied a preview and a readable complete original.'));

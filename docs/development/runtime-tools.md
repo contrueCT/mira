@@ -42,5 +42,5 @@ CLI 版本检查、Chrome 下载或版本输出成功均不证明浏览器能够
 
 ## bash 超时（2026-10-20）
 
-`bash` 未给 `timeout` 时默认 120 秒，最大 600 秒（更大值会被降到上限）；超时错误会提示改用 `exec_command`（受管终端）并用 `write_stdin` 轮询长时间运行、交互或持续输出的命令。
+`bash` 未给 `timeout` 时默认 120 秒，最大 600 秒（更大值会被降到上限）；超时错误会提示改用 `exec_command`（受管终端）并用 `write_stdin` 轮询长时间运行、交互或持续输出的命令。bash 的工具声明（描述与参数 schema）保持不变：已记录的原生模型证据（`docs/acceptance/reply-native-behavior.md`）绑定完整工具声明摘要，修改声明需要重新做原生采集；模型从超时错误中得知限制和替代方式。
 
