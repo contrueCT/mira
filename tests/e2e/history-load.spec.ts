@@ -24,18 +24,38 @@ async function fixture(page: Page, latest: () => TimelinePage, older: (cursor: s
   await expect(olderButton(page)).toBeEnabled();
 }
 
-test('history load crosses empty initial and older pages in one click', async ({ page }) => {
+test('a private-only first window fills itself from older history without showing the empty chat', async ({ page }) => {
   const reads: string[] = [];
-  await fixture(page, () => ({ items: [], nextCursor: 'empty-0' }), async (cursor, route) => {
-    reads.push(cursor);
-    await route.fulfill({ json: reads.length < 3
-      ? { items: [], nextCursor: `empty-${reads.length}` }
-      : { items: [item(1)], nextCursor: null } });
+  await page.route('**/api/status', route => route.fulfill({ json: { state: 'idle', mode: 'synthetic', model: 'Fixture', error: null } }));
+  await page.route('**/api/timeline', async route => {
+    if (route.request().method() !== 'POST') { await route.fulfill({ json: { items: [], nextCursor: 'empty-0' } }); return; }
+    reads.push((route.request().postDataJSON() as { before: string }).before);
+    await route.fulfill({ json: reads.length < 3 ? { items: [], nextCursor: `empty-${reads.length}` } : { items: [item(1)], nextCursor: null } });
   });
-  await olderButton(page).click();
+  await page.goto('/');
+  // Regression: the newest raw window held only private records, and the page
+  // claimed there was no conversation at all.
   await expect(page.getByText('历史消息 1', { exact: true })).toBeVisible();
+  await expect(page.getByText('和 Mira 说点什么')).toHaveCount(0);
   await expect(page.locator('.history-controls')).toHaveCount(0);
   expect(reads).toEqual(['empty-0', 'empty-1', 'empty-2']);
+});
+
+test('a long private-only stretch says older history exists instead of showing the empty chat', async ({ page }) => {
+  const reads: string[] = [];
+  await page.route('**/api/status', route => route.fulfill({ json: { state: 'idle', mode: 'synthetic', model: 'Fixture', error: null } }));
+  await page.route('**/api/timeline', async route => {
+    if (route.request().method() !== 'POST') { await route.fulfill({ json: { items: [], nextCursor: 'hidden-0' } }); return; }
+    reads.push((route.request().postDataJSON() as { before: string }).before);
+    await route.fulfill({ json: { items: reads.length > 8 ? [item(1)] : [], nextCursor: reads.length > 8 ? null : `hidden-${reads.length}` } });
+  });
+  await page.goto('/');
+  await expect(page.getByText('最近是 Mira 的内部处理记录')).toBeVisible();
+  await expect(page.getByText('和 Mira 说点什么')).toHaveCount(0);
+  expect(reads).toHaveLength(8);
+  await olderButton(page).click();
+  await expect(page.getByText('历史消息 1', { exact: true })).toBeVisible();
+  await expect(page.getByText('最近是 Mira 的内部处理记录')).toHaveCount(0);
 });
 
 test('history load accumulates unique rows to 50 after sparse and duplicate pages', async ({ page }) => {
@@ -91,7 +111,9 @@ test('history load retains partial success and retries only the failed frontier'
     await route.fulfill({ json: { items: [item(cursor === 'retry-0' ? 99 : 98)], nextCursor: cursor === 'retry-0' ? 'retry-1' : null } });
   });
   await olderButton(page).click();
-  await expect(page.locator('.history-controls [role="alert"]')).toContainText('synthetic page unavailable');
+  const alert = page.locator('.history-controls [role="alert"]');
+  await expect(alert).toContainText('更早的消息暂时没有读取成功，进度已保留，可以重试。');
+  await expect(alert.locator('.error-detail')).toHaveText('技术信息：HTTP 503 · synthetic page unavailable');
   await expect(page.locator('[data-message-id="history-99"]')).toHaveCount(1);
   await expect(olderButton(page)).toBeEnabled();
   await olderButton(page).click();

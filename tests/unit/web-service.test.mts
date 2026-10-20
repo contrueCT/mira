@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import { LocalWebService } from '@mira/server';
+import { TIMELINE_READ_CONCURRENCY } from '../../apps/server/src/web-service.ts';
 import { decodeRecords, encodeEntry, messageEntry } from '../../packages/runtime-pi/src/records.ts';
 import { assistant, deferred, effectTool, input, MemoryWriter, result, runtime, streamOf } from '../recovery/fixtures.mts';
 import { boundedFixtureWait } from '../recovery/service-wait-fixture.mts';
@@ -141,6 +142,8 @@ function pagedHistory(count: number, isVisible: (index: number) => boolean, text
   const history = {
     calls,
     omit: new Set<string>(),
+    /** Entries that replace the generated event at a position (e.g. a tool). */
+    entries: new Map<string, unknown>(),
     page: async ({ before, limit = 50 }: { before?: string; limit?: number }) => {
       calls.pages.push({ before, limit });
       const end = before === undefined ? count : Number(before.slice('raw-'.length)); const start = Math.max(0, end - limit);
@@ -150,11 +153,16 @@ function pagedHistory(count: number, isVisible: (index: number) => boolean, text
       assert.ok(requested.length <= 10); calls.originals += requested.length;
       return requested.filter(id => !history.omit.has(id)).map(id => {
         const position = index.get(id)!;
+        if (history.entries.has(id)) return { id, entry: history.entries.get(id), tooLarge: false };
         return { id, entry: isVisible(position) ? { id, kind: 'event', miraId: 'paged', occurredAt: at(position), requestedWake: null,
           event: { id: `event-${position}`, source: 'user', type: 'web.message', occurredAt: at(position), payload: { text: text(position) } } } : null, tooLarge: false };
       });
     },
     snapshot: async (work: (reader: unknown) => Promise<unknown>) => { calls.snapshots++; return work(history); },
+    pageCursorThrough: async ({ id }: { id: string }) => {
+      const position = index.get(id);
+      return position === undefined ? null : { before: position + 1 < count ? `raw-${position + 1}` : null };
+    },
   };
   const service = Reflect.construct(LocalWebService, [{ dreaming: { enabled: false } }, { signal: new AbortController().signal, onLiveInput: () => () => {} }, history, {}, {}, {}, {}, {}, {}]) as LocalWebService;
   return { history, service, ids };
@@ -212,4 +220,87 @@ test('timeline rejects a history batch that omits a requested original instead o
   await assert.rejects(service.timeline(), (error: unknown) => error instanceof HistoryError && error.code === 'corrupt');
   history.omit.clear();
   assert.equal((await service.timeline()).items.length, 20, 'a later complete batch is projected normally');
+});
+
+test('a quoted message is located contiguously from the reader frontier when near, else by its own window', async () => {
+  const { history, service, ids } = pagedHistory(3_000, index => index % 3 === 0);
+  const latest = await service.timeline(); assert.ok(latest.nextCursor);
+  const loaded = new Set(latest.items.map(item => item.id));
+  // Near: reading on from the frontier reaches the message without leaving a gap.
+  const near = await service.locateTimeline(ids[2_400]!, latest.nextCursor);
+  assert.equal(near?.mode, 'contiguous');
+  assert.ok(near.items.some(item => item.id === ids[2_400]));
+  assert.ok(near.items.length > 50, 'reading continues past the ordinary target until the message');
+  assert.equal(near.items.at(-1)!.id, ids[2_799], 'the page continues directly below the loaded window');
+  assert.ok(near.items.every(item => !loaded.has(item.id)));
+  // Far: beyond the 2,000-record contiguous budget, the window ends at the message.
+  const snapshots = history.calls.snapshots;
+  const far = await service.locateTimeline(ids[30]!, latest.nextCursor);
+  assert.equal(history.calls.snapshots, snapshots + 1, 'one snapshot per lookup');
+  assert.equal(far?.mode, 'window');
+  assert.equal(far.items.at(-1)!.id, ids[30], 'the window ends at the quoted message');
+  assert.equal(far.items[0]!.id, ids[0]);
+  assert.equal(far.nextCursor, null);
+  const without = await service.locateTimeline(ids[1_500]!);
+  assert.equal(without?.mode, 'window'); assert.equal(without.items.at(-1)!.id, ids[1_500]); assert.ok(without.nextCursor);
+  // Private or unknown records are never located.
+  assert.equal(await service.locateTimeline(ids[31]!), null);
+  assert.equal(await service.locateTimeline(randomUUID()), null);
+});
+
+const publishedAttachment = { id: randomUUID(), name: 'late.txt', mimeType: 'text/plain', size: 4, sha256: 'a'.repeat(64) };
+function attachmentTool(id: string, occurredAt: string, done: boolean) {
+  return { id, kind: 'tool', miraId: 'paged', occurredAt, intent: { toolName: 'send_attachment', callId: 'late-call' },
+    outcome: done ? { callId: 'late-call', payload: { role: 'toolResult', toolName: 'send_attachment', toolCallId: 'late-call', isError: false, details: { version: 1, type: 'attachment-publication', text: '附件到了', attachments: [publishedAttachment] } } } : null };
+}
+
+test('an attachment publication that completes after leaving the latest window reaches latest polls as an update', async () => {
+  // Regression for audit #10: the publication sits at its intent record, 400 raw records before the newest.
+  const { history, service, ids } = pagedHistory(1_000, index => index > 700 && index % 10 === 0);
+  const tool = ids[600]!; const at = new Date(Date.UTC(2026, 9, 1) + 600 * 1000).toISOString();
+  history.entries.set(tool, attachmentTool(tool, at, false));
+  // The tool was pending when the user read that stretch of older history.
+  const latest = await service.timeline(); assert.equal(latest.updates, undefined);
+  const older = await service.timeline(latest.nextCursor!);
+  assert.equal(older.items.some(item => item.id === tool), false);
+  // It completes; the latest window (newest 300 raw records) never covers it.
+  history.entries.set(tool, attachmentTool(tool, at, true));
+  const polled = await service.timeline();
+  assert.equal(polled.items.some(item => item.id === tool), false);
+  assert.deepEqual(polled.updates?.map(item => ({ id: item.id, role: item.role, text: item.text, attachments: item.attachments?.map(file => file.name) })), [{ id: tool, role: 'assistant', text: '附件到了', attachments: ['late.txt'] }]);
+  // Other tabs polling later still receive it; older reads never carry updates.
+  assert.equal((await service.timeline()).updates?.[0]?.id, tool);
+  assert.equal((await service.timeline(latest.nextCursor!)).updates, undefined);
+  // Reading the stretch again now shows the completed publication in place.
+  assert.equal((await service.timeline(latest.nextCursor!)).items.some(item => item.id === tool), true);
+});
+
+test('pending tool tracking is bounded and forgets entries that vanish', async () => {
+  const { history, service, ids } = pagedHistory(1_000, () => false);
+  for (const id of ids) history.entries.set(id, attachmentTool(id, new Date(Date.UTC(2026, 9, 1)).toISOString(), false));
+  // Latest covers 700-999; an older read sees 700 more pending tools.
+  const latest = await service.timeline(); await service.timeline(latest.nextCursor!);
+  const reads = async () => { const before = history.calls.originals; await service.timeline(); return history.calls.originals - before; };
+  // 300 for the window itself plus at most 512 tracked tools outside it.
+  const first = await reads(); assert.ok(first <= 300 + 512, `poll re-read ${first} originals`); assert.ok(first > 300);
+  // Records that are no longer readable stop being tracked.
+  for (const id of ids.slice(0, 700)) history.omit.add(id);
+  await reads(); assert.equal(await reads(), 300);
+});
+
+test('concurrent timeline reads share a bounded number of snapshots and all complete in order', async () => {
+  const { history, service } = pagedHistory(400, index => index % 4 === 0);
+  let active = 0, peak = 0; const original = history.snapshot;
+  history.snapshot = async (work: (reader: unknown) => Promise<unknown>) => {
+    active++; peak = Math.max(peak, active);
+    try { await new Promise(resolve => setTimeout(resolve, 5)); return await original(work); } finally { active--; }
+  };
+  const results = await Promise.all(Array.from({ length: 12 }, (_, index) => index % 3 ? service.timeline() : service.timeline('raw-200')));
+  assert.equal(peak, TIMELINE_READ_CONCURRENCY);
+  assert.equal(results.length, 12); assert.ok(results.every(result => result.items.length > 0));
+  // A failing read releases its slot.
+  history.snapshot = async () => { throw new Error('synthetic'); };
+  await assert.rejects(Promise.all(Array.from({ length: 6 }, () => service.timeline())));
+  history.snapshot = original;
+  assert.ok((await service.timeline()).items.length > 0);
 });

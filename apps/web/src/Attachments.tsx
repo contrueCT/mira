@@ -36,19 +36,20 @@ function useNearViewport() {
   }, []);
   return { ref, near };
 }
-export function AttachmentTile({ attachment, onPreview }: { attachment: Attachment; onPreview: (attachment: Attachment) => void }) {
+export function AttachmentTile({ attachment, onPreview, tabIndex }: { attachment: Attachment; onPreview: (attachment: Attachment) => void; tabIndex?: number | undefined }) {
   const kind = attachmentKind(attachment.mimeType);
   const [decodeError, setDecodeError] = useState(false);
   const { ref, near } = useNearViewport();
   const { url, error } = useAttachmentUrl(attachment, kind === 'image' && near);
-  return <button ref={ref} type="button" className={`attachment-tile attachment-${kind}`} aria-label={`${kind === 'image' ? '预览图片' : kind === 'video' ? '预览视频' : '查看附件'} ${attachment.name}`} onClick={() => onPreview(attachment)}>
+  return <button ref={ref} type="button" className={`attachment-tile attachment-${kind}`} tabIndex={tabIndex} aria-label={`${kind === 'image' ? '预览图片' : kind === 'video' ? '预览视频' : '查看附件'} ${attachment.name}`} onClick={() => onPreview(attachment)}>
     {kind === 'image' && url && !decodeError ? <img src={url} alt={attachment.name} loading="lazy" onError={() => setDecodeError(true)} /> : <span className="attachment-symbol" aria-hidden="true">{kind === 'image' ? '▧' : kind === 'video' ? '▶' : '↧'}</span>}
     {kind !== 'image' && <span className="attachment-file-label"><strong>{attachment.name}</strong><span>{attachmentSize(attachment.size)}{kind === 'file' ? ' · 下载 / 引用' : ' · 视频'}</span></span>}
     {kind === 'image' && (!url || decodeError) && <span className="attachment-image-status">{error || decodeError ? '预览未加载，点击查看' : '正在加载图片…'}</span>}
   </button>;
 }
-export function AttachmentList({ attachments, onPreview }: { attachments: Attachment[]; onPreview: (attachment: Attachment) => void }) {
-  return <div className="attachment-grid">{attachments.map(attachment => <AttachmentTile key={attachment.id} attachment={attachment} onPreview={onPreview} />)}</div>;
+/** `tabIndex` lets a roving timeline row keep its tiles out of the Tab order while inactive. */
+export function AttachmentList({ attachments, onPreview, tabIndex }: { attachments: Attachment[]; onPreview: (attachment: Attachment) => void; tabIndex?: number | undefined }) {
+  return <div className="attachment-grid">{attachments.map(attachment => <AttachmentTile key={attachment.id} attachment={attachment} onPreview={onPreview} tabIndex={tabIndex} />)}</div>;
 }
 export function AttachmentPreview({ attachment, onClose, returnFocus }: { attachment: Attachment; onClose: () => void; returnFocus: HTMLElement | null }) {
   const dialogRef = useRef<HTMLDialogElement>(null);

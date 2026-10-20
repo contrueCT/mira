@@ -103,7 +103,7 @@ test('Feishu generic settings QR and explicit pairing reach the same durable Mir
     await expect(page.getByText('（合成测试）已收到你的飞书消息，任务进度会在这里同步。', { exact: true })).toBeVisible();
     await expect(page.locator('.message-source').filter({ hasText: '普通插件 · ordinary' })).toHaveCount(1);
     await expect(page.locator('.message-source').filter({ hasText: '飞书 · feishu · 收到' })).toHaveCount(1);
-    await expect(page.locator('.message-source').first()).toHaveCSS('font-size', '10px');
+    await expect(page.locator('.message-source').first()).toHaveCSS('font-size', '11px');
     const checkSourceMetadata = async (narrow: boolean) => {
       for (const row of await page.locator('.message-row').filter({ has: page.locator('.message-source') }).all()) {
         const meta = row.locator('.message-meta');

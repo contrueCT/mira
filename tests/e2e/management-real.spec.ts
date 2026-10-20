@@ -505,7 +505,7 @@ test('extension private settings traverse real browser, HTTP, Cordis and Postgre
     await expect(page.getByRole('button',{name:'取消当前操作',exact:true})).toBeVisible();
     await expect(connectionSettings.locator('details')).not.toHaveAttribute('open');
     const authorizationLink = page.getByRole('link', {name:'Official authorization', exact:true});
-    await expect(authorizationLink).toHaveCSS('color', 'rgb(84, 121, 165)');
+    await expect(authorizationLink).toHaveCSS('color', 'rgb(67, 100, 143)');
     await expect(authorizationLink).toHaveCSS('text-decoration-line', 'none');
     await authorizationLink.hover();
     await expect(authorizationLink).toHaveCSS('text-decoration-line', 'underline');
@@ -513,7 +513,7 @@ test('extension private settings traverse real browser, HTTP, Cordis and Postgre
     await authorizationLink.focus();
     await expect(authorizationLink).toHaveCSS('outline-style', 'solid');
     await expect(authorizationLink).toHaveCSS('outline-width', '3px');
-    await expect(authorizationLink).toHaveCSS('outline-color', 'rgb(84, 121, 165)');
+    await expect(authorizationLink).toHaveCSS('outline-color', 'rgb(67, 100, 143)');
     await authorizationLink.blur();
     await page.mouse.move(0, 0);
     await page.screenshot({path:testInfo.outputPath('extension-settings-desktop.png'),fullPage:true});

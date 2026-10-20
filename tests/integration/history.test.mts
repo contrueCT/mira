@@ -457,3 +457,41 @@ test('history snapshot shares one repeatable-read connection, nests, rolls back 
     await writer.verifyActive();
   } finally { Client.prototype.connect = connect; await db.close(); }
 });
+
+test('a page cursor through a record starts its page at that record across ties, odd dates, kinds and Mira scope', async () => {
+  const db = await createTestDatabase();
+  try {
+    const writer = await db.acquire('locate-a'); const other = await db.acquire('locate-b');
+    await writer.receive({ ...event('odd-date', 'unnormalized'), occurredAt: '2026-02-30T00:00:00Z' });
+    await writer.receive({ ...event('old', 'old'), occurredAt: '2026-10-04T00:00:00.000Z' });
+    for (const id of ['z', 'same-id', 'a']) await writer.receive(event(id, 'same timestamp'));
+    await writer.receive({ ...event('micros', 'precision'), occurredAt: '2026-10-05T00:00:00.000001Z' });
+    await writer.append(0, record('located', null, 'context at the shared timestamp'));
+    await writer.beginTool(1, { callId: 'located-tool', assistantRecordId: uuid('located'), toolName: 'synthetic', requestedArguments: {}, arguments: {}, occurredAt: now });
+    await writer.finishTool({ callId: 'located-tool', occurredAt: now, payload: null });
+    await other.receive(event('foreign', 'never in locate-a'));
+    const reader = db.store.history('locate-a');
+    const kinds = ['event', 'context', 'tool'] as const;
+    const all = (await reader.page({ kinds: [...kinds], limit: 100 })).hits;
+    assert.equal(all.length, 8);
+    for (const [index, hit] of all.entries()) {
+      const located = await reader.pageCursorThrough({ id: hit.id, kinds: [...kinds].reverse() });
+      assert.ok(located, `record ${index} is found`);
+      const page = await reader.page({ kinds: [...kinds], limit: 3, ...(located.before ? { before: located.before } : {}) });
+      assert.equal(page.hits.at(-1)?.id, hit.id, `the located page's newest hit is record ${index}`);
+      assert.deepEqual(page.hits, all.slice(Math.max(0, index - 2), index + 1));
+      assert.equal(located.before === null, index === all.length - 1, 'only the newest record needs no cursor');
+    }
+    assert.equal(await reader.pageCursorThrough({ id: await eventId(db, 'foreign', 'locate-b') }), null, 'another Mira is out of scope');
+    assert.equal(await reader.pageCursorThrough({ id: uuid('located'), kinds: ['event', 'tool'] }), null, 'a record of an unselected kind is not found');
+    assert.equal(await reader.pageCursorThrough({ id: uuid('missing-record') }), null);
+    await assert.rejects(reader.pageCursorThrough({ id: 'not-a-uuid' }), (error: unknown) => error instanceof HistoryError && error.code === 'invalid');
+    await assert.rejects(reader.pageCursorThrough({ id: uuid('located'), extra: true } as never), (error: unknown) => error instanceof HistoryError && error.code === 'invalid');
+    // The lookup also runs inside one snapshot with the page that follows it.
+    const snapshotPage = await reader.snapshot(async snapshot => {
+      const located = await snapshot.pageCursorThrough({ id: all[2]!.id, kinds: [...kinds] });
+      return snapshot.page({ kinds: [...kinds], limit: 1, before: located!.before! });
+    });
+    assert.deepEqual(snapshotPage.hits.map(hit => hit.id), [all[2]!.id]);
+  } finally { await db.close(); }
+});

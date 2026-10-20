@@ -370,3 +370,41 @@ test('HTTP discovery preserves only the validated capability metadata needed by 
   assert.deepEqual(response.json().models, [{ id: 'rich', name: 'Rich', contextWindow: 100000, maxTokens: 4096, reasoning: true, input: ['text', 'image'] }, { id: 'id-only' }]);
   assert.ok(!response.body.includes('private-sentinel')); assert.ok(!response.body.includes('reasoningFormat'));
 });
+
+test('quoted-message lookup returns the projected window, 404 for anything not visible, and validates its body', async t => {
+  const target = 'a5017dbb-0c3f-4cfe-ab34-63997612ebcd';
+  const calls: Array<[string, string | undefined]> = [];
+  const app = createLocalHttp({ backend: backend({
+    locateTimeline: async (id, before) => {
+      calls.push([id, before]);
+      return id === target ? { items: [{ id: target, role: 'assistant', text: 'quoted', occurredAt: message.occurredAt, raw: 'never public' } as never], nextCursor: 'older_1', mode: 'window' } : null;
+    },
+  }), port }); t.after(() => app.close());
+  const found = await app.inject({ method: 'POST', url: '/api/timeline/locate', headers: writeHeaders, payload: { id: target, before: 'cursor_1' } });
+  assert.equal(found.statusCode, 200);
+  assert.deepEqual(found.json(), { items: [{ id: target, role: 'assistant', text: 'quoted', occurredAt: message.occurredAt }], nextCursor: 'older_1', mode: 'window' });
+  const missing = await app.inject({ method: 'POST', url: '/api/timeline/locate', headers: writeHeaders, payload: { id: 'b5017dbb-0c3f-4cfe-ab34-63997612ebcd' } });
+  assert.equal(missing.statusCode, 404); assert.deepEqual(missing.json(), { error: 'Message not found' });
+  assert.deepEqual(calls, [[target, 'cursor_1'], ['b5017dbb-0c3f-4cfe-ab34-63997612ebcd', undefined]]);
+  for (const payload of [{}, { id: 'not-a-uuid' }, { id: target, before: 'a.b' }, { id: target, extra: true }, { id: target, before: 'a'.repeat(524_289) }]) {
+    const invalid = await app.inject({ method: 'POST', url: '/api/timeline/locate', headers: writeHeaders, payload });
+    assert.ok([400, 413].includes(invalid.statusCode), JSON.stringify(payload).slice(0, 40));
+  }
+  assert.equal(calls.length, 2);
+  const read = await app.inject({ url: '/api/timeline/locate', headers: readHeaders }); assert.equal(read.statusCode, 405);
+  const foreign = await app.inject({ method: 'POST', url: '/api/timeline/locate', headers: { ...writeHeaders, origin: 'https://foreign.example' }, payload: { id: target } });
+  assert.equal(foreign.statusCode, 403);
+  const unsupported = createLocalHttp({ backend: backend(), port: port + 1 }); t.after(() => unsupported.close());
+  assert.equal((await unsupported.inject({ method: 'POST', url: '/api/timeline/locate', headers: { ...writeHeaders, host: `127.0.0.1:${port + 1}`, origin: `http://127.0.0.1:${port + 1}` }, payload: { id: target } })).statusCode, 404);
+});
+
+test('latest timeline responses carry projected late completions; older pages never do', async t => {
+  const late = { id: 'c5017dbb-0c3f-4cfe-ab34-63997612ebcd', role: 'assistant' as const, text: 'late attachment', occurredAt: message.occurredAt, raw: 'never public' };
+  const app = createLocalHttp({ backend: backend({ timeline: async () => ({ items: [], nextCursor: 'older_1', updates: [late as never] }) }), port }); t.after(() => app.close());
+  const latest = await app.inject({ url: '/api/timeline', headers: readHeaders });
+  assert.deepEqual(latest.json(), { items: [], nextCursor: 'older_1', updates: [{ id: late.id, role: 'assistant', text: 'late attachment', occurredAt: message.occurredAt }] });
+  const older = await app.inject({ method: 'POST', url: '/api/timeline', headers: writeHeaders, payload: { before: 'older_1' } });
+  assert.deepEqual(older.json(), { items: [], nextCursor: 'older_1' });
+  const queried = await app.inject({ url: '/api/timeline?before=older_1', headers: readHeaders });
+  assert.deepEqual(queried.json(), { items: [], nextCursor: 'older_1' });
+});
