@@ -5,7 +5,7 @@ description: Browser automation CLI for AI agents. Use when the user needs to in
 
 ## Mira managed browser integration
 
-When Mira exposes browser_open, browser_command, browser_list, and browser_close, use those tools for all browser work. Do not invoke agent-browser through bash or terminal: that bypasses the user's Settings → Browser control lease. This is resource coordination, not an action approval system or OS sandbox. Main and child handles are isolated.
+When Mira exposes browser_open, browser_command, browser_list, and browser_close, use those tools for all browser work. Do not invoke agent-browser through bash or terminal: that bypasses the user's browser control lease (header Browser button or Settings → Browser). This is resource coordination, not an action approval system or OS sandbox. Main and child handles are isolated.
 
 Start with browser_open, then browser_command args ["snapshot", "-i"]. Pass the returned observation number for the next command; obtain a new snapshot after each command and after human return. During requesting/human/held/returning, wait for the user to explicitly return control. Never replay unknown clicks/submissions or recreate a browser automatically after restart. Use browser_list to inspect existing handles.
 

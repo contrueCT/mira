@@ -125,3 +125,8 @@ not relax the child inheritance bound. No file is automatically deleted. This is
 not a sandbox against arbitrary host-user edits, a disk quota, or a claim of live
 model accuracy. Local socket restrictions block real PG/browser execution when
 present; those gates must actually pass in CI before claiming they passed.
+
+## Amendment (2026-10-20): head + tail previews
+
+Oversized text previews now keep the beginning and the end of the output (the last text block may use up to half of the remaining budget) with an explicit `[… N bytes omitted from the middle of this preview …]` marker; a trailing bracketed evidence hint (for example native bash `[Showing lines … Full output: …]`) is kept intact. Errors and summaries printed last are therefore visible without reading the evidence file. Budgets, evidence files and the full-output reference are unchanged.
+

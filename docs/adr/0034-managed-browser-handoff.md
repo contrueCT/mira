@@ -9,6 +9,13 @@
 - 官方 native daemon 由 Mira 监督；初始 launch 后仅通过同代官方 socket 协议通信。协议映射限定在 `browser-driver.ts`；不调用会自动重启 daemon 的 CLI 命令，不 fork 上游。
 - 上游依据为 v0.39.1 commit `1165952d74ceed98fdc2dd97190ad41f44dd0e24` 的 `cli/src/native/stream/{mod,websocket}.rs`、命令协议和官方 streaming 文档。版本升级必须重新验收。
 
+
+## 头部浏览器入口（2026-10-20 修订）
+
+用户要求把入口从设置中提出：头部增加与设置并列、位于设置左侧的“浏览器”按钮，点击直接打开 `#browser` 原生 dialog，优先选中 Mira（主线）自己的浏览器。dialog 复用 BrowserPanel，租约、输入桥、断线保持与明确交还语义不变；关闭此窗口与关闭设置一样不自动交还。设置内“浏览器”页保留。上面“不增加常驻按钮”一条由此修订；仍不增加主聊天卡片或独立 Dashboard。
+
+同时：用户自己的接手/继续接手/交还成功后，服务端会按 epoch 关闭旧画面流；面板在新 epoch 可查看时自动重连一次（不再要求手动“重新连接”）。其他断线（网络、登出、关闭窗口）仍需用户显式重新连接。状态为 unknown/closed 的浏览器不再申请画面票据，界面用中文说明需让 Mira 关闭后重开，不展示面向模型的英文提示。
+
 ## 已安装浏览器发现（2026-10-18）
 
 CLI 的浏览器路径配置不会自动传给 Mira 直接监督的 native daemon。默认缓存优先在 Ubuntu 上可能选中没有对应 AppArmor profile 的下载版 Chrome，即使系统官方 Chrome 已能正常启动。

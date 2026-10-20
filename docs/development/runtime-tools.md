@@ -39,3 +39,8 @@ python3 -m venv "$TOOLS_HOME/documents-venv"
 `MIRA_BROWSER_EXECUTABLE_PATH` 可显式指定已安装 Chrome/Chromium 的可执行文件。未设置时，每次新建受管浏览器先检查 Linux 官方 Chrome 的标准安装位置（依次为 `/opt/google/chrome/chrome`、`/usr/bin/google-chrome-stable`、`/usr/bin/google-chrome`），只选择可执行的普通文件；未找到或在其他平台时沿用上游发现。新安装的系统 Chrome 下一次 browser_open 即可识别，无需重启。受管 daemon 不读取 CLI 的 config.json；显式启动路径仍优先，不在启动失败后换浏览器重试。Ubuntu AppArmor 不支持下载版 Chromium sandbox 时，选系统正常安装的官方 Chrome 路径（如 /usr/bin/google-chrome），不移动二进制、不修改 OS 策略、不默认禁用 sandbox。CI 的受管浏览器选择 runner 预装官方 Chrome、记录版本并隔离 HOME；UI 测试仍用固定 Playwright Chromium。`pnpm test:browser:e2e` 要求隔离 PostgreSQL、官方 agent-browser native binary 与 Chromium，不以 UI fixture 代替。
 
 CLI 版本检查、Chrome 下载或版本输出成功均不证明浏览器能够启动。Linux 上先核对服务实际选择的 Chrome ELF 文件，再用 `ldd` 检查缺失库；`error while loading shared libraries` / 退出 127 属于启动依赖问题，单独的 `DevToolsActivePort` 缺失或 unknown outcome 尚不能确定原因。具体步骤见内置 skill 的[启动故障排查](../../skills/agent-browser/SKILL.md#browser-downloaded-but-cannot-start-linux)。更换启动环境中的浏览器路径后需授权重启；已有安装授权沿用，需要交互 sudo 密码时由用户在终端输入。修复后必须实际 `browser_open` 并取得 snapshot，交互与人工交还分别验收。
+
+## bash 超时（2026-10-20）
+
+`bash` 未给 `timeout` 时默认 120 秒，最大 600 秒（更大值会被降到上限）；超时错误会提示改用 `exec_command`（受管终端）并用 `write_stdin` 轮询长时间运行、交互或持续输出的命令。
+
