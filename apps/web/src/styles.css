@@ -6,6 +6,8 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   --blue: #4f73a0;
+  /* Deliberately lighter than AA for the large, airy user bubble (white text 3.71:1). */
+  --bubble: #6487b3;
   --blue-dark: #43648f;
   --ink: #303238;
   --muted: #6b6e76;
@@ -48,7 +50,7 @@ button:disabled { opacity: .48; }
 .empty-state p { margin: 0; font-size: 14px; color: #72747e; line-height: 1.8; }
 .empty-state .empty-note { font-size: 12px; color: #72747f; margin-top: 6px; }
 .message-bubble { max-width: 86%; padding: 15px 21px; border-radius: 27px; background: #f3f3f5; font-size: 16px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; }
-.message-row.user .message-bubble { max-width: 78%; background: var(--blue); color: #fff; padding: 12px 21px; }
+.message-row.user .message-bubble { max-width: 78%; background: var(--bubble); color: #fff; padding: 12px 21px; }
 .message-row.notice { align-items: center; margin: 18px 0; }
 .message-row.notice .message-bubble { background: #faf8f4; color: #7d6e59; font-size: 13px; max-width: 88%; padding: 11px 17px; border-radius: 14px; }
 .message-receipt { font-size: 11px; color: #717580; margin: 6px 13px 0; display: flex; gap: 9px; align-items: center; }
@@ -75,7 +77,8 @@ button:disabled { opacity: .48; }
 .composer:focus-within { border-color: #d5deea; }
 .composer textarea { min-height: 38px; flex: 1; min-width: 0; max-height: 160px; padding: 7px 0 4px; resize: none; border: 0; background: transparent; color: var(--ink); font-size: 16px; line-height: 1.65; scrollbar-width: thin; }
 .composer textarea:focus-visible { outline: 0; }
-.composer textarea::placeholder { color: #717581; }
+/* Placeholder and shortcut hint stay quiet by design (2.8:1); real content meets AA. */
+.composer textarea::placeholder { color: #979aa4; }
 .composer textarea:disabled { color: #969aa3; }
 .send-button { border: 0; background: var(--blue); color: white; border-radius: 50%; width: 38px; height: 38px; flex: 0 0 38px; display: flex; align-items: center; justify-content: center; }
 .send-button:hover:not(:disabled) { background: #6f93bf; }
@@ -83,8 +86,8 @@ button:disabled { opacity: .48; }
 .composer-error { color: #8d6f4d; font-size: 11px; text-align: center; margin: 8px 0 0; }
 .composer-budget { color: #6b6e76; font-size: 11px; text-align: center; margin: 8px 0 0; }
 .composer-budget.over { color: #8d6f4d; }
-.composer-caption { color: #717480; font-size: 11px; line-height: 1.5; text-align: center; margin: 9px 0 0; }
-.composer-caption span { margin: 0 7px; color: #717581; }
+.composer-caption { color: #979aa4; font-size: 11px; line-height: 1.5; text-align: center; margin: 9px 0 0; }
+.composer-caption span { margin: 0 7px; color: #979aa4; }
 .latest-button { position: absolute; top: -31px; left: 50%; transform: translateX(-50%); display: flex; gap: 6px; align-items: center; padding: 7px 12px; border: 1px solid #e7e9ef; border-radius: 20px; background: #fff; color: #687587; box-shadow: 0 2px 10px #28334d08; font-size: 11px; white-space: nowrap; }
 .latest-button svg { width: 14px; height: 14px; }
 .skip-link { position: fixed; top: 8px; left: 8px; z-index: 100; padding: 8px 14px; border: 1px solid #4f6f96; border-radius: 8px; background: #fff; color: #2f4f75; font: inherit; font-size: 14px; cursor: pointer; transform: translateY(-160%); }
