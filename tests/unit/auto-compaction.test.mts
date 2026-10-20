@@ -6,6 +6,8 @@ import test from 'node:test';
 import { getCurrentSystemMessage, getSystemMessageText, type TranscriptContext } from '@earendil-works/pi-ai';
 import { convertToLlm } from '@earendil-works/pi-coding-agent';
 import type { PiRuntimeOptions } from '@mira/runtime-pi';
+import { contextPressure, cjkCharacters, estimateRequestTokens } from '../../packages/runtime-pi/src/budget.ts';
+import { compactionReductions } from '../../packages/runtime-pi/src/compaction-fit.ts';
 import { assistant, deferred, effectTool, input, MemoryWriter, model, result, runtime, seed, streamOf, toolCalls } from '../recovery/fixtures.mts';
 
 const prompt = {
@@ -267,10 +269,101 @@ test('a non-reducing automatic checkpoint is rejected once without publishing or
   assert.equal((await runtime(writer).recover()).entries.filter(entry => entry.type === 'compaction').length, 0);
 });
 
-test('an oversized SDK summarization request is rejected before calling the injected stream', async () => {
+function summaryInput(context: TranscriptContext): Record<string, any> {
+  const user = context.messages.find(message => message.role === 'user');
+  return JSON.parse(typeof user?.content === 'string' ? user.content : '');
+}
+test('an oversized SDK summarization request is reduced to fit before calling the injected stream and declares what was omitted', async () => {
+  const writer = new MemoryWriter(); await seedLargeHistory(writer); let calls = 0; let request: Record<string, any> | undefined;
+  const state = await runtime(writer, (_model, context, options) => {
+    calls++; request = summaryInput(context);
+    // Regression: this request used to be rejected outright before any dispatch.
+    assert.ok(estimateRequestTokens(context.messages) + options!.maxTokens! <= model.contextWindow);
+    return streamOf(assistant('Reduced checkpoint'));
+  }).compact({ keepRecentTokens: 1 });
+  assert.equal(calls, 1);
+  assert.match(JSON.stringify(request!.input_reductions.steps), /oldest_source_messages_omitted/);
+  assert.match(request!.input_reductions.notice, /do not invent/);
+  // The boundary still names every summarized History ID, including omitted ones.
+  assert.ok(request!.boundary.source_history_ids.length > request!.source_messages.length);
+  assert.equal(state.entries.filter(entry => entry.type === 'compaction').length, 1);
+});
+
+test('a provider overflow of the summary request retries once with a smaller bounded request', async () => {
+  const writer = new MemoryWriter(); await seedLargeHistory(writer); const sizes: number[] = [];
+  const roomy = { ...model, contextWindow: 65_536 };
+  const state = await runtime(writer, (_model, context) => {
+    sizes.push(JSON.stringify(context.messages).length);
+    if (sizes.length === 1) return streamOf({ ...assistant(''), content: [], stopReason: 'error', errorMessage: 'prompt is too long: 70000 tokens > 65536 maximum' });
+    assert.ok(summaryInput(context).input_reductions, 'the retry declares its reductions');
+    return streamOf(assistant('Checkpoint after overflow retry'));
+  }, { model: roomy }).compact({ keepRecentTokens: 1 });
+  assert.equal(sizes.length, 2); assert.ok(sizes[1]! < sizes[0]!);
+  assert.equal(state.entries.filter(entry => entry.type === 'compaction').length, 1);
+});
+
+test('repeated summary overflows stop after three bounded attempts without publishing a checkpoint', async () => {
   const writer = new MemoryWriter(); await seedLargeHistory(writer); const before = await writer.load(); let calls = 0;
-  await assert.rejects(runtime(writer, () => { calls++; return streamOf(assistant()); }).compact({ keepRecentTokens: 1 }), /budget|context|window/i);
-  assert.equal(calls, 0); assert.deepEqual(await writer.load(), before);
+  await assert.rejects(runtime(writer, () => { calls++; return streamOf({ ...assistant(''), content: [], stopReason: 'error', errorMessage: 'Your input exceeds the context window of this model' }); }, { model: { ...model, contextWindow: 65_536 } }).compact({ keepRecentTokens: 1 }),
+    /overflowed the provider context after bounded reductions/);
+  assert.equal(calls, 3); assert.deepEqual(await writer.load(), before);
+});
+
+test('compaction reductions bound the retained tail, then trim old tool results head+tail, then drop the oldest sources', () => {
+  const big = (label: string) => `${label}-HEAD ${'x'.repeat(20_000)} ${label}-TAIL`;
+  const input = { mode: 'initial', source_messages: [
+    { history_id: 'a', role: 'user', content: 'oldest question' },
+    { history_id: 'b', role: 'toolResult', content: [{ type: 'text', text: big('tool') }] },
+    { history_id: 'c', role: 'assistant', content: [{ type: 'text', text: 'newest source answer' }] },
+  ], retained_tail: { purpose: 'reference_only_not_summarized', messages: Array.from({ length: 30 }, (_, index) => ({ history_id: `t${index}`, role: 'user', content: big(`tail${index}`) })) } };
+  const steps = [...compactionReductions(input as never, 40_000)];
+  assert.deepEqual(steps[0]!.input, input, 'the first candidate is unchanged');
+  const tail = steps[1]!.input.retained_tail;
+  assert.deepEqual(steps[1]!.reductions, ['retained_tail_excerpted']);
+  assert.equal(tail['excerpted'], true); assert.ok(Number(tail['omitted_older_messages']) > 0);
+  assert.equal(tail.messages.at(-1)!['history_id'], 't29', 'the newest tail message survives');
+  assert.ok(JSON.stringify(tail.messages).length <= 8_000);
+  const trimmed = steps.find(step => step.reductions.some(item => item.startsWith('tool_results_trimmed_to_2000')))!;
+  const tool = JSON.stringify(trimmed.input.source_messages[1]);
+  assert.match(tool, /tool-HEAD/); assert.match(tool, /tool-TAIL/); assert.match(tool, /omitted for compaction/);
+  const last = steps.at(-1)!;
+  assert.deepEqual(last.input.source_messages.map(message => message['history_id']), ['c']);
+  assert.match(last.reductions.at(-1)!, /oldest_source_messages_omitted:2/);
+  for (let index = 1; index < steps.length; index++) assert.ok(JSON.stringify(steps[index]!.input).length < JSON.stringify(steps[index - 1]!.input).length + 400);
+});
+
+test('context pressure anchors on provider usage and estimates only what was added since, with a CJK-aware floor', () => {
+  const usage = (input: number, output: number) => ({ input, output, cacheRead: 0, cacheWrite: 0, totalTokens: input + output, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
+  const chinese = '这是一个用于验证上下文估算的中文句子。'.repeat(200);
+  const first = { role: 'user' as const, content: chinese, timestamp: 1 };
+  // chars/4 alone would count this 4,000-character CJK text as ~1,000 tokens.
+  assert.ok(estimateRequestTokens([first]) >= cjkCharacters(chinese), 'CJK characters count at least one token each');
+  const answered = { ...assistant('好的'), usage: usage(6_000, 20) };
+  const added = { role: 'user' as const, content: 'follow-up '.repeat(100), timestamp: 2 };
+  const pressure = contextPressure([first, answered, added], [], model);
+  assert.equal(pressure.anchorIndex, 1);
+  assert.ok(pressure.anchoredTokens! >= 6_020 + Math.floor(1_000 / 4), 'usage plus estimated growth');
+  assert.ok(pressure.anchoredTokens! < 6_020 + 400);
+  assert.equal(pressure.tokens, Math.max(pressure.estimatedTokens, pressure.anchoredTokens!));
+  // Errors, another model and anything before a compaction summary are not anchors.
+  assert.equal(contextPressure([first, { ...answered, stopReason: 'error' as const }], [], model).anchoredTokens, null);
+  assert.equal(contextPressure([first, { ...answered, model: 'another-model' }], [], model).anchoredTokens, null);
+  assert.equal(contextPressure([first, answered, { role: 'compactionSummary', summary: 's', tokensBefore: 1, timestamp: 3 } as never], [], model).anchoredTokens, null);
+  // Underreported usage never lowers pressure below the heuristic.
+  const low = contextPressure([first, { ...answered, usage: usage(1, 1) }], [], model);
+  assert.equal(low.tokens, low.estimatedTokens);
+});
+
+test('provider usage alone triggers automatic compaction even when chars/4 says the context is small', async () => {
+  const writer = new MemoryWriter();
+  const usage = { input: 7_000, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 7_010, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  await seed(writer, [input('中文历史问题。'.repeat(150)), { ...assistant('中文回答。'.repeat(150)), usage }, input('Retained question'), { ...assistant('Retained answer'), usage }]);
+  let summaries = 0;
+  await runtime(writer, (_model, context) => {
+    if (isSummary(context)) { summaries++; return streamOf(assistant('Usage-triggered checkpoint')); }
+    return streamOf(assistant('Answered after compaction'));
+  }, { autoCompaction: { enabled: true, threshold: 0.8, reserveTokens: 512, keepRecentTokens: 1 } }).run(input('Next'));
+  assert.equal(summaries, 1, 'reported 7,010 of 7,680 input tokens crosses the 80% threshold');
 });
 
 test('invalid automatic compaction settings fail before any persistence or provider request', () => {

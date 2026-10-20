@@ -26,7 +26,7 @@ import { resolveThinkingLevel, type ThinkingLevel } from './reasoning.ts';
 export { thinkingLevels, defaultThinkingLevel, parseThinkingLevel, resolveThinkingLevel, supportedThinkingLevels, compactionThinkingLevel } from './reasoning.ts';
 export type { ThinkingLevel } from './reasoning.ts';
 
-import { contextBudget, estimateRequestTokens, type AutoCompactionOptions } from './budget.ts';
+import { contextBudget, contextPressure, estimateRequestTokens, type AutoCompactionOptions } from './budget.ts';
 import { ToolOutputProjector } from './tool-output.ts';
 import { messageReplySources, messageReplies, replyIndexContent, replyIndexNotice, ReplyIndexProjector } from './replies.ts';
 export type { AutoCompactionOptions } from './budget.ts';
@@ -737,7 +737,9 @@ export class PiDurableRuntime implements CognitionRuntime {
             }
             let messages = await refreshMessages();
             const budget = contextBudget(this.options.model, this.options.autoCompaction);
-            const estimate = estimateRequestTokens(messages, context.tools ?? [], this.options.model);
+            // Provider usage anchors the measurement; chars/4 alone badly
+            // underestimates CJK and lets real overflows happen first.
+            const estimate = contextPressure(messages, context.tools ?? [], this.options.model).tokens;
             const history = messages.filter(message => message.role !== 'system');
             const hasOlderHistory = history.length > 1 && estimateRequestTokens(history, [], this.options.model) > budget.keepRecentTokens;
             if (budget.enabled && hasOlderHistory && estimate >= budget.inputTokens * budget.threshold) {
@@ -746,7 +748,7 @@ export class PiDurableRuntime implements CognitionRuntime {
               parentId = compacted.entries.at(-1)?.id ?? null;
               messages = continuedMessages(compacted);
             }
-            if (estimateRequestTokens(messages, context.tools ?? [], this.options.model) > budget.inputTokens) throw new Error('Context exceeds input budget after compaction');
+            if (contextPressure(messages, context.tools ?? [], this.options.model).tokens > budget.inputTokens) throw new Error('Context exceeds input budget after compaction; a very large Memory file or single message may not be compactable');
             await checkLiveInput();
             return { context: { messages, tools: context.tools ?? [] } };
           } catch (error) { throw fail(error); }
@@ -987,7 +989,7 @@ export class PiDurableRuntime implements CognitionRuntime {
       validateProjection(messages);
       const afterTokens = estimateRequestTokens(messages, tools, this.options.model);
       if (afterTokens > budget.inputTokens) throw new Error('Compacted context exceeds input budget');
-      if (requireReduction && afterTokens >= estimateRequestTokens(before.messages, tools, this.options.model)) throw new Error('Compaction cannot reduce this context');
+      if (requireReduction && afterTokens >= contextPressure(before.messages, tools, this.options.model).tokens) throw new Error('Compaction cannot reduce this context');
       await this.verified();
       options.signal?.throwIfAborted();
       const record = encodeEntry(checkpoint);
