@@ -97,3 +97,59 @@ test('real PG service keeps first-last HTTP diagnostics separate from its persis
     assert.match(records, /PUBLIC_FAILURE_3/); assert.doesNotMatch(records, /PUBLIC_FAILURE_1|PUBLIC_FAILURE_2/);
   } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test('runtime failure identities remain stable across polls and settings saves and change for a new failure', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-error-id-')); let service: LocalWebService | undefined;
+  const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'error-occurrence', sourceDirectory: process.cwd(), workingDirectory: root, miraHome: root,
+    spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), autoCompaction: { enabled: false }, dreaming: { enabled: false },
+    modelFetch: (async () => retryFailure(400, 'Unsupported parameter: reasoning_effort')) as typeof globalThis.fetch };
+  try {
+    await settings(options.settingsFile); service = await LocalWebService.open(options);
+    await service.submit({ id: 'first-error', text: 'Synthetic failing request', occurredAt: '2026-10-17T00:00:00.000Z' });
+    await until(async () => (await service!.status()).state === 'error', 'First error missing');
+    const first = await service.status(); assert.match(first.errorId!, /^[a-f0-9-]{36}$/);
+    assert.equal((await service.status()).errorId, first.errorId);
+    await service.saveSettings(await service.settings()); assert.equal((await service.status()).errorId, first.errorId);
+    await service.submit({ id: 'second-error', text: 'Another synthetic failing request', occurredAt: '2026-10-17T00:00:01.000Z' });
+    await until(async () => (await service!.status()).state === 'error', 'Second error missing');
+    const second = await service.status(); assert.notEqual(second.errorId, first.errorId); assert.deepEqual(second.error, first.error);
+  } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('configuration probe uses the service transport hook without writing settings or conversation and cancels on close', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-service-probe-')); let service: LocalWebService | undefined;
+  let calls = 0; let hold = false; let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'service-probe', sourceDirectory: process.cwd(), workingDirectory: root, miraHome: root,
+    spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), autoCompaction: { enabled: false }, dreaming: { enabled: false },
+    modelFetch: (async (_url, init) => {
+      calls++;
+      if (hold) {
+        entered();
+        return await new Promise<Response>((_resolve, reject) => {
+          const signal = init!.signal!;
+          if (signal.aborted) reject(signal.reason);
+          else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      }
+      return calls === 1 ? retryFailure(400, 'Unsupported parameter: reasoning_effort') : retryResponse('OK');
+    }) as typeof globalThis.fetch };
+  try {
+    await settings(options.settingsFile);
+    const store = new WebSettingsStore(options.settingsFile, process.cwd()); const draft = await store.get();
+    draft.configuration.customConnections[0]!.models[0]!.reasoning = true;
+    await store.save(draft);
+    service = await LocalWebService.open(options);
+    await until(async () => (await service!.status()).state === 'idle', 'Startup not idle');
+    const saved = await service.settings();
+    const before = (await db.admin.query('SELECT count(*)::int AS n FROM context_records')).rows[0].n;
+    const result = await service.probe(saved);
+    assert.equal(result.status, 'supported'); assert.equal(calls, 2);
+    assert.deepEqual(await service.settings(), saved);
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM context_records')).rows[0].n, before);
+    hold = true;
+    const pending = assert.rejects(service.probe(saved)); await started;
+    await service.close(); await pending; assert.equal(calls, 3);
+    assert.deepEqual(await store.get(), saved);
+  } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});

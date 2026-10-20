@@ -9,3 +9,7 @@ Mira changes (2026-10-14): remove foreign tool-allowlist/hidden metadata; replac
 Installation adaptation is based on the pinned official [postinstall hook](https://github.com/vercel-labs/agent-browser/blob/1165952d74ceed98fdc2dd97190ad41f44dd0e24/scripts/postinstall.js) and [Node launcher](https://github.com/vercel-labs/agent-browser/blob/1165952d74ceed98fdc2dd97190ad41f44dd0e24/bin/agent-browser.js). These are referenced, not copied; actual native CLI/browser startup remains unverified in this integration.
 
 Mira changes (2026-10-15): managed browser tools take precedence over shell invocation when available. Web uses the pinned native daemon protocol and official stream; `BrowserPanel.tsx` adapts the upstream Dashboard viewport coordinate/modifier mappings without copying the Dashboard application. See [ADR 0034](../../docs/adr/0034-managed-browser-handoff.md). Native browser validation remains a separate real-chain gate.
+
+Mira changes (2026-10-17): add Linux startup troubleshooting for downloaded Chrome with missing shared libraries, service-specific executable selection, privileged-install handoff, and real managed-browser verification. Package/version checks remain distinct from browser readiness; the instructions preserve managed control and existing installation authorization.
+
+Mira changes (2026-10-18): explain managed Linux discovery of system-installed official Chrome on every new open, explicit startup override precedence, and the separate CLI configuration boundary.

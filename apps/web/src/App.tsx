@@ -34,6 +34,7 @@ export function App() {
   const [pending, setPending] = useState<PendingMessage[]>(recovered.messages);
   const [memoryRequest, setMemoryRequest] = useState<MemoryRequestIdentity | null>(recovered.memoryRequest);
   const memoryRequestRef = useRef(memoryRequest);
+  const [dismissedErrorId, setDismissedErrorId] = useState<string | null>(() => { try { return window.sessionStorage.getItem('mira.dismissedErrorId'); } catch { return null; } });
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [connectionError, setConnectionError] = useState<ErrorInfo | null>(null);
@@ -344,6 +345,16 @@ export function App() {
     if (window.history.state?.miraAttachment) window.history.back();
     else { window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}`); closingPreviewRef.current = false; setPreviewId(null); }
   };
+  const runtimeError = status?.error && (!status.errorId || status.errorId !== dismissedErrorId) ? status.error : null;
+  const dismissRuntimeError = () => {
+    if (!status?.errorId) return;
+    setDismissedErrorId(status.errorId);
+    try { window.sessionStorage.setItem('mira.dismissedErrorId', status.errorId); } catch { /* Keep dismissal for this mount when storage is unavailable. */ }
+  };
+  const showRuntimeError = () => {
+    setDismissedErrorId(null);
+    try { window.sessionStorage.removeItem('mira.dismissedErrorId'); } catch { /* In-memory viewing still works. */ }
+  };
   const stateLabel = connectionError ? '连接中断' : !status ? '正在连接' : ({ idle: '在这里', working: '正在处理', error: '需要留意', stopped: '已停止' } as const)[status.state];
   const rovingId = activeMessageId && items.some(item => item.id === activeMessageId) ? activeMessageId : items.at(-1)?.id ?? null;
   const moveMessageFocus = (event: ReactKeyboardEvent<HTMLElement>) => {
@@ -433,8 +444,10 @@ export function App() {
         <button ref={settingsButtonRef} className="icon-button settings-button" type="button" onClick={openSettings} aria-label="模型设置" title="模型设置"><SettingsIcon /></button>
       </header>
 
-      {(connectionError || storageError || status?.error) && <div className="connection-notice" role="status" tabIndex={0} aria-label="运行状态与错误详情">
-        <p className="notice-text">{storageError ? <span className="notice-summary">{storageError}</span> : connectionError ? <><span className="notice-summary">{connectionError.summary}</span>{connectionError.detail && <span className="error-detail">技术信息：{connectionError.detail}</span>}</> : <span className="notice-summary"><strong>运行错误 · </strong>{status?.error}</span>}</p>
+      {status?.error && !runtimeError && <button type="button" className="text-button error-details-button" onClick={showRuntimeError}>查看运行错误</button>}
+      {(connectionError || storageError || runtimeError) && <div className={`connection-notice${!connectionError && !storageError ? ' runtime-notice' : ''}`} role="status" tabIndex={0} aria-label="运行状态与错误详情">
+        <p className="notice-text">{storageError ? <span className="notice-summary">{storageError}</span> : connectionError ? <><span className="notice-summary">{connectionError.summary}</span>{connectionError.detail && <span className="error-detail">技术信息：{connectionError.detail}</span>}</> : <span className="notice-summary"><strong>运行错误 · </strong>{runtimeError}</span>}</p>
+        {!storageError && !connectionError && runtimeError && status?.errorId && <button type="button" className="text-button" aria-label="关闭此次运行错误提示" onClick={dismissRuntimeError}>关闭</button>}
         {connectionError && <button type="button" className="secondary-button notice-action" onClick={() => { void refresh(); }}>重新连接</button>}
       </div>}
 

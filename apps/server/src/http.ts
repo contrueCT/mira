@@ -1,3 +1,4 @@
+import type { ModelProbeResult } from './model-probe.ts';
 import { replyDescriptor, type ReplyReference } from './replies.ts';
 import { registerBrowserHttp, type BrowserWebBackend } from './browser-http.ts';
 import { messageSource, type ExtensionMessageSource } from './extension-messages.ts';
@@ -24,7 +25,7 @@ import { parseWebSettings, parseWebSettingsWrite, WebSettingsError, webSettingsM
 
 export interface WebBackend extends Partial<ManagementBackend> {
   browser?: BrowserWebBackend;
-  status(): Promise<{ state: 'idle' | 'working' | 'error' | 'stopped'; mode: 'synthetic' | 'live'; model: string | null; error: string | ModelRequestFailure | PersistenceFailureNotice | null; modelRetry?: ModelRetryStatus | null }>;
+  status(): Promise<{ state: 'idle' | 'working' | 'error' | 'stopped'; mode: 'synthetic' | 'live'; model: string | null; error: string | ModelRequestFailure | PersistenceFailureNotice | null; errorId?: string | null; modelRetry?: ModelRetryStatus | null }>;
   timeline(before?: string): Promise<{
     items: Array<{ id: string; externalEventId?: string; source?: ExtensionMessageSource; reply?: ReplyReference; role: 'user' | 'assistant' | 'notice'; text: string; occurredAt: string; attachments?: AttachmentDescriptor[] }>;
     nextCursor: string | null;
@@ -38,6 +39,7 @@ export interface WebBackend extends Partial<ManagementBackend> {
   submit(input: { id: string; text: string; occurredAt: string; attachmentIds?: string[]; replyToMessageId?: string }): Promise<{ id: string; receipt: 'inserted' | 'duplicate' }>;
   settings(): Promise<WebSettings>;
   saveSettings(value: unknown): Promise<WebSettings>;
+  probe?(value: unknown, signal?: AbortSignal): Promise<ModelProbeResult>;
   discover(connection: unknown, signal?: AbortSignal): Promise<ModelDiscoveryResult>;
 }
 type TimelineItem = Awaited<ReturnType<WebBackend['timeline']>>['items'][number];
@@ -94,13 +96,13 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   const backend = options.backend;
   const externalSenders = new WeakMap<FastifyRequest, string>();
   const active = new WeakSet<FastifyRequest>(); let inFlight = 0;
-  let interval = performance.now(); let reads = 0; let writes = 0; let discoveries = 0; let discovering = false;
+  let interval = performance.now(); let reads = 0; let writes = 0; let discoveries = 0; let discovering = false; let probing = false;
   const methods = new Map<string, readonly string[]>([
     ['/api/browser', ['GET']], ['/api/browser/:id/takeover', ['POST']], ['/api/browser/:id/return', ['POST']], ['/api/browser/:id/ticket', ['POST']],
     ['/api/auth/status', ['GET']], ['/api/auth/login', ['POST']], ['/api/auth/logout', ['POST']], ['/api/auth/settings', ['GET', 'PUT']],
     ['/api/attachments', ['POST']], ['/api/attachments/:id', ['GET']], ['/api/status', ['GET']], ['/api/timeline', ['GET', 'POST']], ['/api/timeline/locate', ['POST']], ['/api/messages', ['POST']], ['/api/settings', ['GET', 'PUT']],
     ['/api/memory', ['GET']], ['/api/messages/:id/status', ['GET']], ['/api/extensions', ['GET']], ['/api/extensions/:id', ['POST']], ['/api/extensions/:id/settings', ['GET', 'POST']], ['/api/extensions/:id/settings/actions', ['POST']], ['/api/extensions/:id/settings/cancel', ['POST']], ['/api/runs', ['GET']], ['/api/runs/:id', ['GET']], ['/api/runs/:id/requests', ['GET']],
-    ['/api/models/catalog', ['GET']], ['/api/models/discover', ['POST']],
+    ['/api/models/probe', ['POST']], ['/api/models/catalog', ['GET']], ['/api/models/discover', ['POST']],
     ['/api/external/events', ['POST']], ['/api/external/wake', ['POST']], ['/api/external/notifications', ['POST']],
   ]);
   app.addHook('onRequest', async (request, reply) => {
@@ -173,7 +175,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     if (!publicAuthRoute && options.auth && !options.auth.status(request.headers.cookie).authenticated) return reply.code(401).send({ error: 'Please sign in to Mira' });
     const now = performance.now();
     if (now - interval >= 60_000) { interval = now; reads = 0; writes = 0; discoveries = 0; }
-    if (inFlight >= 32 || (write ? ++writes > 60 : ++reads > 600) || (pathname === '/api/models/discover' && ++discoveries > 6)) return reply.code(429).header('retry-after', '60').send({ error: 'Too many local requests; retry shortly' });
+    if (inFlight >= 32 || (write ? ++writes > 60 : ++reads > 600) || (['/api/models/discover', '/api/models/probe'].includes(pathname) && ++discoveries > 6)) return reply.code(429).header('retry-after', '60').send({ error: 'Too many local requests; retry shortly' });
     active.add(request); inFlight++;
   });
   const release = async (request: FastifyRequest): Promise<void> => { if (active.delete(request)) inFlight--; };
@@ -228,7 +230,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   app.setNotFoundHandler((_request, reply) => reply.code(404).send({ error: 'Not found' }));
   app.get('/api/status', { schema: { querystring: noQuery } }, async () => {
     const result = await backend.status();
-    return { state: result.state, mode: result.mode, model: result.model, ...(result.modelRetry ? { modelRetry: { phase: result.modelRetry.phase, attempt: result.modelRetry.attempt, maxAttempts: result.modelRetry.maxAttempts, delayMs: result.modelRetry.delayMs, reason: result.modelRetry.reason } } : {}), error: result.error === null ? null : result.error instanceof ModelRequestFailure ? result.error.message : PersistenceFailureNotice.text(result.error) ?? protectedError };
+    return { state: result.state, mode: result.mode, model: result.model, ...(result.error !== null && result.errorId ? { errorId: result.errorId } : {}), ...(result.modelRetry ? { modelRetry: { phase: result.modelRetry.phase, attempt: result.modelRetry.attempt, maxAttempts: result.modelRetry.maxAttempts, delayMs: result.modelRetry.delayMs, reason: result.modelRetry.reason } } : {}), error: result.error === null ? null : result.error instanceof ModelRequestFailure ? result.error.message : PersistenceFailureNotice.text(result.error) ?? protectedError };
   });
   app.get<{ Querystring: { before?: string } }>('/api/timeline', {
     schema: { querystring: objectSchema({ before: { type: 'string', minLength: 1, maxLength: 2_048, pattern: '^[A-Za-z0-9_=-]+$' } }) },
@@ -281,6 +283,23 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   app.put('/api/settings', { bodyLimit: webSettingsMaxBytes, schema: { querystring: noQuery, body: settingsSchema } }, async request => {
     const settings = parseWebSettingsWrite(request.body);
     return parseWebSettings(await backend.saveSettings(settings));
+  });
+  app.post('/api/models/probe', { bodyLimit: webSettingsMaxBytes, schema: { querystring: noQuery, body: settingsSchema } }, async (request, reply) => {
+    const settings = parseWebSettingsWrite(request.body);
+    if (!backend.probe) throw new WebHttpError('unavailable');
+    if (probing) throw new WebHttpError('busy');
+    probing = true;
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    const disconnected = () => { if (!reply.raw.writableEnded) abort(); };
+    request.raw.once('aborted', abort); reply.raw.once('close', disconnected);
+    const timer = setTimeout(abort, 31_000);
+    try {
+      const result = await backend.probe(settings, controller.signal);
+      // Probe diagnostics are minted and sanitized by the credential-owning transport.
+      return { status: result.status, ...(result.status === 'supported' ? { format: result.format } : {}),
+        attempts: result.attempts.map(attempt => ({ format: attempt.format, status: attempt.status, ...(attempt.message ? { message: attempt.message } : {}) })) };
+    } finally { clearTimeout(timer); request.raw.removeListener('aborted', abort); reply.raw.removeListener('close', disconnected); probing = false; }
   });
   app.get('/api/models/catalog', { schema: { querystring: noQuery } }, async () => listBuiltinCatalog());
   app.post<{ Body: { connection: unknown } }>('/api/models/discover', {

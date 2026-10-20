@@ -170,11 +170,21 @@ test('root and ancestor symlinks fail without writing into their targets', async
   });
 });
 
-test('a writable non-sticky ancestor is rejected before creating an artifact', async () => {
+test('writable non-sticky ancestors allow full output, reuse and reconstruction without chmod', async () => {
   await withRoot(async (root, base) => {
     await chmod(base, 0o777);
-    await assert.rejects(materialize(root, 'unsafe-ancestor', 'content'), /ancestor is writable/);
-    assert.deepEqual(await readdir(base), []);
+    const content = '完整工具输出 🧠\n'.repeat(4000);
+    const artifact = await materialize(root, 'writable-ancestor', content);
+    assert.equal(await readFile(artifact.path, 'utf8'), content);
+    assert.equal(artifact.bytes, Buffer.byteLength(content));
+    assert.deepEqual(await materialize(root, 'writable-ancestor', content), artifact);
+    await assert.rejects(materialize(root, 'writable-ancestor', 'changed'), /conflict/);
+    await unlink(artifact.path);
+    assert.deepEqual(await materialize(root, 'writable-ancestor', content), artifact);
+    assert.equal(await readFile(artifact.path, 'utf8'), content);
+    assert.equal((await lstat(base)).mode & 0o777, 0o777);
+    assert.equal((await lstat(root)).mode & 0o777, 0o700);
+    assert.equal((await lstat(artifact.path)).mode & 0o777, 0o400);
   });
 });
 

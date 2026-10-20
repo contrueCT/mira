@@ -9,6 +9,14 @@
 - 官方 native daemon 由 Mira 监督；初始 launch 后仅通过同代官方 socket 协议通信。协议映射限定在 `browser-driver.ts`；不调用会自动重启 daemon 的 CLI 命令，不 fork 上游。
 - 上游依据为 v0.39.1 commit `1165952d74ceed98fdc2dd97190ad41f44dd0e24` 的 `cli/src/native/stream/{mod,websocket}.rs`、命令协议和官方 streaming 文档。版本升级必须重新验收。
 
+## 已安装浏览器发现（2026-10-18）
+
+CLI 的浏览器路径配置不会自动传给 Mira 直接监督的 native daemon。默认缓存优先在 Ubuntu 上可能选中没有对应 AppArmor profile 的下载版 Chrome，即使系统官方 Chrome 已能正常启动。
+
+代码在每次新建浏览器、发出 launch 前检查 Linux 官方 Chrome 标准安装位置，并把选中的可执行文件显式传入 daemon。显式 `MIRA_BROWSER_EXECUTABLE_PATH` 优先；系统安装可在下一次 open 发现，未找到或其他平台沿用上游发现。完整路径顺序见[运行工具](../development/runtime-tools.md)。这只选择已有文件，不执行候选探针、不安装依赖、不导入 CLI profile/flags/config，也不在 launch 失败后换浏览器重试。
+
+skill 负责解释依赖检查、安装与 sudo 交互；浏览器发现由代码完成，普通用户安装系统 Chrome 后无需手工修改服务配置。自定义路径的启动环境覆盖仍需重启生效。
+
 ## 所有权与租约
 
 服务创建不可猜测 browser ID、独立 session 和 daemon generation。main/child 工具闭包绑定各自 stream 身份；模型不能指定 owner。所有受管命令共用每浏览器队列。

@@ -243,3 +243,11 @@ The model sees canonical IDs and deterministic reply metadata through recovery
 and compaction, with ordinary History lookup for omitted originals.
 
 Web passes its explicit `miraHome` as the spool writer’s private managed data root, so the CLI default `~/.mira/wake-input` supports overflow, attachment indexes and reply indexes. Only strict descendants of that root are allowed; source overlap, HOME itself/ancestors, symlinks and non-private roots remain rejected. The synthetic demo keeps its explicitly configured outside-HOME spool contract.
+
+`POST /api/models/probe` 接收与模型设置保存相同的草稿和 revision，验证所选推理 Chat Completions 模型的参数格式，不写配置。接口沿用 Web 同源/认证/写请求限制、单个在途测试和每分钟六次发现/测试上限；返回脱敏的逐格式结果。接受格式由浏览器随普通设置保存。正常 runtime 不触发探测。LiteLLM 明确拒绝 effort 并提示允许列表时，第二次探针保留标准字段、加入固定 `allowed_openai_params: ["reasoning_effort"]`；不再尝试 OpenRouter。
+
+`GET /api/status` 在错误存在时返回 `errorId`，由服务端每次记录错误生成 UUID，轮询保持稳定。浏览器关闭横幅不清除后端状态、不启动新 Wake。
+
+## 受管浏览器启动发现
+
+`MIRA_BROWSER_EXECUTABLE_PATH` 显式覆盖优先。Linux 上每次新建浏览器先发现系统安装的官方 Chrome，再沿用上游默认发现；安装到标准位置后无需重启 Mira。受管 daemon 不读取 agent-browser CLI config.json，不在失败后改用另一个浏览器重试。依赖准备与具体路径见[运行工具](../../docs/development/runtime-tools.md)和 [ADR 0034](../../docs/adr/0034-managed-browser-handoff.md)。

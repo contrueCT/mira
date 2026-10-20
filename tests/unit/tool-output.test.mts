@@ -15,8 +15,9 @@ import { fullOutput, largeToolText, outputPath, outputSpool } from '../recovery/
 const textBytes = (message: ToolResultMessage) => Buffer.byteLength(message.content.filter(block => block.type === 'text').map(block => block.text).join('\n'));
 const largeModel = { ...model, contextWindow: 200_000 };
 
-test('actual extension result.text is bounded before the next model request; original file pages remain readable after recovery', async () => {
+test('large tool output under a writable ancestor remains readable by the model and after recovery', async () => {
   const root = await realpath(await mkdtemp('/tmp/mira-tool-output-'));
+  await chmod(root, 0o777);
   try {
     const writer = new MemoryWriter(); let calls = 0, effects = 0; let savedPath = '';
     const tools = [...createWorkspaceTools(root), ...extensionTools([{ extensionId: 'large', activation: 'test', tool: {

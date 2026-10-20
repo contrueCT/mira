@@ -297,7 +297,7 @@ test('long child compacts through real tools and PostgreSQL, remains inspectable
 
 test('reasoning saved in the real browser reaches credential-bound SDK payloads and survives restart', async ({ page }, testInfo) => {
   const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-reasoning-browser-'));
-  const originalFetch = globalThis.fetch; const levels: unknown[] = [];
+  const originalFetch = globalThis.fetch; const levels: unknown[] = []; const probes: unknown[] = [];
   let service: LocalWebService | undefined, app: ReturnType<typeof createLocalHttp> | undefined;
   const settingsFile = path.join(root, 'models.json');
   const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'reasoning-browser', sourceDirectory,
@@ -323,7 +323,10 @@ test('reasoning saved in the real browser reaches credential-bound SDK payloads 
     globalThis.fetch = async (input, init) => {
       const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
       if (url.origin !== 'https://reasoning-browser.invalid') return originalFetch(input, init);
-      const payload = JSON.parse(String(init?.body)); levels.push(payload.reasoning_effort);
+      const payload = JSON.parse(String(init?.body));
+      // Saving a reasoning Chat Completions model without an explicit format runs
+      // the one-request settings probe (ADR 0041) before the first save only.
+      if (JSON.stringify(payload.messages).includes('Reply with OK.')) probes.push(payload.reasoning_effort); else levels.push(payload.reasoning_effort);
       return new Response([
         { id: 'wire-response', choices: [{ index: 0, delta: { role: 'assistant', content: `WIRE_LEVEL_${payload.reasoning_effort}` }, finish_reason: null }] },
         { id: 'wire-response', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }, '[DONE]',
@@ -331,7 +334,7 @@ test('reasoning saved in the real browser reaches credential-bound SDK payloads 
     };
     await start(); await page.goto(origin); await expect.poll(async () => (await service!.status()).state).toBe('idle');
     await saveLevel('high'); await send('验证保存的高推理档位。');
-    await expect(page.getByText('WIRE_LEVEL_high', { exact: true })).toBeVisible(); expect(levels).toEqual(['high']);
+    await expect(page.getByText('WIRE_LEVEL_high', { exact: true })).toBeVisible(); expect(levels).toEqual(['high']); expect(probes).toEqual(['high']);
     await expect.poll(async () => (await service!.status()).state).toBe('idle');
     await app!.close(); app = undefined; await service!.close(); service = undefined; await start(); await page.reload();
     await expect.poll(async () => (await service!.status()).state).toBe('idle');
@@ -343,7 +346,7 @@ test('reasoning saved in the real browser reaches credential-bound SDK payloads 
     await page.screenshot({ path: testInfo.outputPath('reasoning-real-settings-mobile.png'), fullPage: true });
     await page.getByRole('button', { name: '关闭设置', exact: true }).click();
     await saveLevel('low'); await send('继续验证低推理档位。');
-    await expect(page.getByText('WIRE_LEVEL_low', { exact: true })).toBeVisible(); expect(levels).toEqual(['high', 'low']);
+    await expect(page.getByText('WIRE_LEVEL_low', { exact: true })).toBeVisible(); expect(levels).toEqual(['high', 'low']); expect(probes).toEqual(['high']);
     expect((await db.admin.query("SELECT count(*)::int AS n FROM context_records WHERE envelope::text LIKE '%sk-synthetic-browser-reasoning%'")).rows[0].n).toBe(0);
   } finally { await app?.close(); await service?.close(); globalThis.fetch = originalFetch; await db.close(); await rm(root, { recursive: true, force: true }); }
 });

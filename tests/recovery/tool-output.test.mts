@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, readFile, rm, realpath } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, realpath, chmod } from 'node:fs/promises';
 import path from 'node:path';
 import { createHistoryTools, type RecoveredContext } from '@mira/runtime-pi';
 import type { ToolCall } from '@earendil-works/pi-ai';
@@ -15,8 +15,9 @@ const exec = promisify(execFile);
 const worker = new URL('./tool-output-worker.mts', import.meta.url).pathname;
 const guard = new URL('../deny-model-network.mts', import.meta.url).pathname;
 
-test('real PostgreSQL process death after outcome commit restores full evidence, readable files and bounded provider projection without replay', async () => {
+test('real PostgreSQL recovery under a writable ancestor restores full evidence without replay', async () => {
   const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-tool-output-postgres-'));
+  await chmod(root, 0o777);
   try {
     const miraId = 'large-output-process', spool = path.join(root, 'spool'), counter = path.join(root, 'effect');
     const child = (mode: string) => exec(process.execPath, ['--import', guard, worker, db.schema, miraId, mode, spool, counter], { timeout: 30_000, maxBuffer: 10_000_000 });

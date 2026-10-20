@@ -445,3 +445,8 @@ button:disabled { opacity: .48; }
 }
 @media (hover: none), (pointer: coarse) { .reply-action { opacity: 1; min-width: 40px; min-height: 40px; } }
 @media (prefers-reduced-motion: reduce) { .quote-highlight .message-bubble { animation: none; outline: 2px solid #91afd4; } }
+
+.error-details-button { align-self: center; margin: 0 auto 8px; }
+
+.connection-notice.runtime-notice { flex-direction: row; }
+.runtime-notice > .text-button { position: sticky; top: 0; background: #faf8f4; }

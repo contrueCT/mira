@@ -17,7 +17,7 @@ import type { BuiltinCatalog, CustomConnection, CustomConnectionWrite, CustomMod
 interface Props { synthetic: boolean; onClose: () => void; onSaved: () => void; returnFocus: RefObject<HTMLButtonElement | null>; memoryRequest: MemoryPanelProps['request']; memoryPending: MemoryPanelProps['pending']; sending: boolean; storageError: string | null; onMemorySubmit: MemoryPanelProps['onSubmit']; onMemoryRetry: MemoryPanelProps['onRetry'] }
 type SettingsTab = 'model' | 'memory' | 'extensions' | 'runs' | 'access' | 'browser';
 const tabs: { id: SettingsTab; label: string }[] = [{ id: 'model', label: '模型' }, { id: 'memory', label: 'Memory' }, { id: 'extensions', label: '扩展' }, { id: 'runs', label: '运行记录' }, { id: 'access', label: '访问' }, { id: 'browser', label: '浏览器' }];
-interface ModelDraft { originalId: string | null; id: string; name: string; contextWindow: string; maxTokens: string; reasoning: '' | 'true' | 'false'; reasoningFormat: '' | 'openai' | 'openrouter'; input: '' | 'text' | 'image' | 'text-image' }
+interface ModelDraft { originalId: string | null; id: string; name: string; contextWindow: string; maxTokens: string; reasoning: '' | 'true' | 'false'; reasoningFormat: '' | 'openai' | 'openrouter' | 'litellm'; input: '' | 'text' | 'image' | 'text-image' }
 const blankModel = (id = '', name = ''): ModelDraft => ({ originalId: null, id, name, contextWindow: '', maxTokens: '', reasoning: 'false', reasoningFormat: '', input: 'text' });
 function modelDraftFrom(model: CustomModel): ModelDraft {
   return { originalId: model.id, id: model.id, name: model.name ?? '', contextWindow: String(model.contextWindow), maxTokens: String(model.maxTokens), reasoning: model.reasoning ? 'true' : 'false', reasoningFormat: model.reasoningFormat ?? '', input: model.input.length === 2 ? 'text-image' : model.input[0] ?? '' };
@@ -58,6 +58,8 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
   const [saved, setSaved] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [probing, setProbing] = useState(false);
+  const [probeNotice, setProbeNotice] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [mode, setMode] = useState<'builtin' | 'custom'>('builtin');
   const [providerId, setProviderId] = useState('');
@@ -75,7 +77,12 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
   const originalCredentialsRef = useRef<Settings['configuration']['builtinCredentials']>({});
   const aliveRef = useRef(true);
   const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  const requestClose = () => {
+    // Cancel before history.back()/React unmount can yield to a probe response.
+    saveAbortRef.current?.abort(); discoveryAbortRef.current?.abort(); loadAbortRef.current?.abort();
+    onClose();
+  };
+  onCloseRef.current = requestClose;
 
   useEffect(() => {
     aliveRef.current = true;
@@ -85,10 +92,13 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
     closeRef.current?.focus();
     const cancel = (event: Event) => { event.preventDefault(); onCloseRef.current(); };
     dialog?.addEventListener('cancel', cancel);
+    const navigation = () => { saveAbortRef.current?.abort(); discoveryAbortRef.current?.abort(); };
+    window.addEventListener('popstate', navigation);
     return () => {
       aliveRef.current = false;
       loadAbortRef.current?.abort(); discoveryAbortRef.current?.abort(); saveAbortRef.current?.abort();
       dialog?.removeEventListener('cancel', cancel);
+      window.removeEventListener('popstate', navigation);
       if (dialog?.open) dialog.close();
       // Parent removes inert in the same commit; restore focus once that commit finishes.
       queueMicrotask(() => { if (returnFocus.current?.isConnected) returnFocus.current.focus(); else if (previous instanceof HTMLElement && previous.isConnected) previous.focus(); });
@@ -118,7 +128,7 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
     discoveryAbortRef.current?.abort(); discoveryAbortRef.current = null; setDiscovering(false);
   }, [tab]);
 
-  const touch = () => { editVersionRef.current += 1; setDirty(true); setSaved(false); setError(null); };
+  const touch = () => { editVersionRef.current += 1; setDirty(true); setSaved(false); setError(null); setProbeNotice(null); };
   const stopDiscovery = () => { discoveryAbortRef.current?.abort(); discoveryAbortRef.current = null; setDiscovering(false); setDiscovery(null); setDiscoveryError(null);  };
   const change = (update: (value: SettingsWrite) => SettingsWrite) => { touch(); setDraft(current => current ? update(current) : current); };
   const provider = catalog?.providers.find(item => item.id === providerId);
@@ -157,10 +167,10 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
   };
   const editConnection = (patch: Partial<CustomConnectionWrite>) => {
     stopDiscovery();
-    if (patch.api !== undefined && patch.api !== 'openai-completions') setModelDraft(current => current ? { ...current, reasoningFormat: '' } : current);
+    if (patch.baseUrl !== undefined || patch.api !== undefined) setModelDraft(current => current ? { ...current, reasoningFormat: '' } : current);
     change(current => ({ ...current, configuration: { ...current.configuration, customConnections: current.configuration.customConnections.map(item => {
       if (item.id !== connectionId) return item;
-      const next = { ...item, ...patch, ...(patch.api !== undefined && patch.api !== 'openai-completions' ? { models: item.models.map(({ reasoningFormat: _format, ...model }) => model) } : {}) };
+      const next = { ...item, ...patch, ...(patch.baseUrl !== undefined || patch.api !== undefined ? { models: item.models.map(({ reasoningFormat: _format, ...model }) => model) } : {}) };
       // Never reuse a stored or entered secret at a newly edited destination.
       return sameCredentialTarget(item, next) ? next : withApiKey({ ...next, hasApiKey: false }, undefined);
     }) } }));
@@ -220,7 +230,7 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
       input: candidate.input?.length === 2 ? 'text-image' : candidate.input?.[0] ?? 'text',
     });
   };
-  const updateModelDraft = (patch: Partial<ModelDraft>) => { touch(); setModelDraft(current => current ? { ...current, ...patch } : current); };
+  const updateModelDraft = (patch: Partial<ModelDraft>) => { touch(); setModelDraft(current => current ? { ...current, ...patch, ...(patch.id !== undefined && patch.id !== current.id ? { reasoningFormat: '' as const } : {}) } : current); };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -257,20 +267,39 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
     saveBusyRef.current = true; setSaving(true); setError(null); setSaved(false);
     const controller = new AbortController(); saveAbortRef.current = controller;
     const version = editVersionRef.current;
+    let writing = false;
     try {
+      const selected = next.selection;
+      const target = selected?.kind === 'custom' ? next.configuration.customConnections.find(item => item.id === selected.connection) : undefined;
+      const model = target?.models.find(item => item.id === selected?.model);
+      if (target?.api === 'openai-completions' && model?.reasoning && !model.reasoningFormat) {
+        setProbing(true); setProbeNotice(null);
+        const probe = await api<{ status: 'supported' | 'failed'; format?: 'openai' | 'openrouter' | 'litellm'; attempts: { format: string; message?: string }[] }>('/api/models/probe', { method: 'POST', body: JSON.stringify(next), signal: controller.signal });
+        controller.signal.throwIfAborted();
+        if (!aliveRef.current || version !== editVersionRef.current) return;
+        if (probe.status !== 'supported' || !['openai', 'openrouter', 'litellm'].includes(probe.format ?? '')) {
+          throw new Error(`推理参数测试未通过，配置尚未保存。${probe.attempts.map(attempt => `${attempt.format}：${attempt.message ?? '请求失败'}`).join('；')}`);
+        }
+        model.reasoningFormat = probe.format!;
+        setProbeNotice(`接口已接受 ${probe.format === 'litellm' ? 'LiteLLM reasoning_effort 兼容参数' : probe.format === 'openai' ? 'reasoning_effort' : 'reasoning.effort'}；实际推理强度由服务端执行。`);
+        setProbing(false);
+      }
+      controller.signal.throwIfAborted();
+      if (!aliveRef.current || version !== editVersionRef.current) return;
+      writing = true;
       const result = await api<Settings>('/api/settings', { method: 'PUT', body: JSON.stringify(next), signal: controller.signal });
       if (!controller.signal.aborted && aliveRef.current && version === editVersionRef.current) { originalConnectionsRef.current = structuredClone(result.configuration.customConnections); originalCredentialsRef.current = structuredClone(result.configuration.builtinCredentials); setDraft(result); setDirty(false); setSaved(true); setConflict(false); setModelDraft(null); onSaved(); }
     } catch (cause) {
       if (!controller.signal.aborted && aliveRef.current) {
         if (cause instanceof ApiError && cause.status === 409 && cause.message === 'Mira is working; retry when it is idle') setError('Mira 或子任务仍在运行，暂时不能修改配置。编辑仍保留，等全部结束后可以再次保存。');
         else if (cause instanceof ApiError && cause.status === 409) { setConflict(true); setError('配置已在别处更新。你的编辑仍保留，请重新读取最新配置后再修改。'); }
-        else setError('尚未确认保存结果，请重新读取配置核对后再修改。');
+        else setError(writing ? '尚未确认保存结果，请重新读取配置核对后再修改。' : `测试未完成，配置尚未保存。${errorText(cause)}`);
       }
-    } finally { saveBusyRef.current = false; if (aliveRef.current) setSaving(false); }
+    } finally { saveBusyRef.current = false; if (aliveRef.current) { setSaving(false); setProbing(false); } }
   };
 
   return <dialog ref={dialogRef} className="settings-dialog" aria-labelledby="settings-title">
-    <div className="settings-topbar"><div><span className="eyebrow">MIRA · PREFERENCES</span><h2 id="settings-title">设置</h2></div><button ref={closeRef} className="icon-button" type="button" aria-label="关闭设置" onClick={onClose}><CloseIcon /></button></div>
+    <div className="settings-topbar"><div><span className="eyebrow">MIRA · PREFERENCES</span><h2 id="settings-title">设置</h2></div><button ref={closeRef} className="icon-button" type="button" aria-label="关闭设置" onClick={requestClose}><CloseIcon /></button></div>
     <div className="settings-tabs" role="tablist" aria-label="设置分类">{tabs.map((item, index) => <button key={item.id} id={`settings-tab-${item.id}`} type="button" role="tab" aria-selected={tab === item.id} aria-controls={`settings-panel-${item.id}`} tabIndex={tab === item.id ? 0 : -1} onClick={() => setTab(item.id)} onKeyDown={event => {
       const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : null;
       if (next !== null) { event.preventDefault(); const target = tabs[next]!; setTab(target.id); document.getElementById(`settings-tab-${target.id}`)?.focus(); }
@@ -311,7 +340,7 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
               </div>
               <div className="field-heading"><label className="field-label" htmlFor="custom-model">已配置模型</label><button type="button" className="text-button" onClick={() => { touch(); setModelDraft(blankModel()); }}>手动添加</button></div>
               <select id="custom-model" value={modelDraft ? '' : selectedCustom?.id ?? ''} onChange={event => { setModelDraft(null); change(current => ({ ...current, selection: { kind: 'custom', connection: connection.id, model: event.target.value } })); }}><option value="" disabled>{modelDraft ? '正在填写模型' : '选择模型'}</option>{connection.models.map(item => <option key={item.id} value={item.id}>{item.name ?? item.id}</option>)}</select>
-              {selectedCustom && !modelDraft && <div className="model-facts"><p>{modelSummary(selectedCustom)}</p>{selectedCustom.reasoning && connection.api === 'openai-completions' && !selectedCustom.reasoningFormat && <p className="field-hint">推理参数：自动（沿用接口适配）。仅在服务文档明确要求时更改。</p>}<button type="button" className="text-button" onClick={() => { touch(); setModelDraft(modelDraftFrom(selectedCustom)); }}>编辑模型能力</button></div>}
+              {selectedCustom && !modelDraft && <div className="model-facts"><p>{modelSummary(selectedCustom)}</p>{selectedCustom.reasoning && connection.api === 'openai-completions' && !selectedCustom.reasoningFormat && <p className="field-hint">推理参数：保存时自动测试。会调用模型，可能产生少量费用。</p>}<button type="button" className="text-button" onClick={() => { touch(); setModelDraft(modelDraftFrom(selectedCustom)); }}>编辑模型能力</button></div>}
               {modelDraft && <div className="model-editor">
                 <div className="field-heading"><h3>{modelDraft.originalId ? '编辑模型' : '配置模型'}</h3>{connection.models.length > 0 && <button type="button" className="text-button" onClick={() => setModelDraft(null)}>取消编辑</button>}</div>
                 <p className="field-hint">已填入目录提供的信息。未提供的 token 限额请按服务文档补充；输入类型默认选为文本；推理格式通常无需更改。</p>
@@ -319,7 +348,7 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
                 <label className="field-label" htmlFor="model-name">显示名称 <span className="optional">可选</span></label><input id="model-name" value={modelDraft.name} onChange={event => updateModelDraft({ name: event.target.value })} />
                 <div className="field-grid"><div><label className="field-label" htmlFor="context-window">上下文窗口</label><input id="context-window" type="number" min="1" step="1" placeholder="tokens" value={modelDraft.contextWindow} onChange={event => updateModelDraft({ contextWindow: event.target.value })} /></div><div><label className="field-label" htmlFor="max-tokens">最大输出</label><input id="max-tokens" type="number" min="1" step="1" placeholder="tokens" value={modelDraft.maxTokens} onChange={event => updateModelDraft({ maxTokens: event.target.value })} /></div></div>
                 <div className="field-grid"><div><label className="field-label" htmlFor="reasoning">推理能力</label><select id="reasoning" value={modelDraft.reasoning} onChange={event => updateModelDraft({ reasoning: event.target.value as ModelDraft['reasoning'] })}><option value="" disabled>请选择</option><option value="false">未声明或不支持</option><option value="true">支持</option></select></div><div><label className="field-label" htmlFor="model-input">输入类型</label><select id="model-input" value={modelDraft.input} onChange={event => updateModelDraft({ input: event.target.value as ModelDraft['input'] })}><option value="" disabled>请选择</option><option value="text">文本</option><option value="image">图片</option><option value="text-image">文本和图片</option></select></div></div>
-                {modelDraft.reasoning === 'true' && connection.api === 'openai-completions' && <><label className="field-label" htmlFor="reasoning-format">推理参数格式</label><select id="reasoning-format" value={modelDraft.reasoningFormat} onChange={event => updateModelDraft({ reasoningFormat: event.target.value as ModelDraft['reasoningFormat'] })}><option value="">自动（沿用接口适配）</option><option value="openai">OpenAI · reasoning_effort</option><option value="openrouter">OpenRouter · reasoning.effort</option></select><p className="field-hint">标准 Chat Completions 通常发送 reasoning_effort；仅在服务文档明确要求时更改。不会自动试发其他格式。</p></> }
+                {modelDraft.reasoning === 'true' && connection.api === 'openai-completions' && <><label className="field-label" htmlFor="reasoning-format">推理参数格式</label><select id="reasoning-format" value={modelDraft.reasoningFormat} onChange={event => updateModelDraft({ reasoningFormat: event.target.value as ModelDraft['reasoningFormat'] })}><option value="">自动测试并保存</option><option value="openai">OpenAI · reasoning_effort</option><option value="openrouter">OpenRouter · reasoning.effort</option><option value="litellm">LiteLLM · reasoning_effort 兼容</option></select><p className="field-hint">自动模式在保存时先测试标准参数，明确拒绝后按服务提示尝试 LiteLLM 兼容或 OpenRouter 格式，最多两次。会调用模型，可能产生少量费用；失败保留草稿。手动选择按服务文档填写。</p></> }
               </div>}
             </>}
           </section>}
@@ -333,15 +362,15 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
           </section>
         </fieldset>
         {error && <div className="settings-error" role="alert"><p>{error}</p><button type="button" className="text-button" disabled={saving} onClick={reloadSettings}>重新读取并放弃当前编辑</button></div>}
-        {saved && <p className="saved-notice" role="status">配置已保存。{draft.selection === null ? '当前未启用模型，请选择模型并填写 API Key 后再发送消息。' : synthetic ? '当前仍为模拟模式；重新启动服务并移除 --synthetic 后使用真实模型。' : '下一条新消息将使用所选模型。'}连接是否可用取决于密钥与服务商权限。</p>}
+        {probeNotice && <p className="field-hint" role="status">{probeNotice}</p>}{saved && <p className="saved-notice" role="status">配置已保存。{draft.selection === null ? '当前未启用模型，请选择模型并填写 API Key 后再发送消息。' : synthetic ? '当前仍为模拟模式；重新启动服务并移除 --synthetic 后使用真实模型。' : '下一条新消息将使用所选模型。'}连接是否可用取决于密钥与服务商权限。</p>}
       </div>
-      <div className="settings-footer"><span>{dirty ? '尚有未保存的更改' : '密钥保留在本地服务端'}</span><div><button type="button" className="secondary-button" onClick={onClose}>{dirty ? '取消' : '关闭'}</button><button type="submit" className="primary-button" disabled={saving || !dirty || conflict}>{saving ? '正在保存…' : '保存设置'}</button></div></div>
+      <div className="settings-footer"><span>{dirty ? '尚有未保存的更改' : '密钥保留在本地服务端'}</span><div><button type="button" className="secondary-button" onClick={requestClose}>{dirty ? '取消' : '关闭'}</button><button type="submit" className="primary-button" disabled={saving || !dirty || conflict}>{saving ? (probing ? '正在测试推理参数…' : '正在保存…') : '保存设置'}</button></div></div>
     </form> : null}
     </section>
     <section id="settings-panel-memory" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-memory" hidden={tab !== 'memory'}><MemoryPanel active={tab === 'memory'} request={memoryRequest} pending={memoryPending} sending={sending} storageError={storageError} onSubmit={onMemorySubmit} onRetry={onMemoryRetry} /></section>
     <section id="settings-panel-extensions" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-extensions" hidden={tab !== 'extensions'}><ExtensionsPanel active={tab === 'extensions'} /></section>
     <section id="settings-panel-runs" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-runs" hidden={tab !== 'runs'}><RunsPanel active={tab === 'runs'} /></section>
-    <section id="settings-panel-access" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-access" hidden={tab !== 'access'}><AccessPanel active={tab === 'access'} onClose={onClose} /></section>
+    <section id="settings-panel-access" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-access" hidden={tab !== 'access'}><AccessPanel active={tab === 'access'} onClose={requestClose} /></section>
     <section id="settings-panel-browser" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-browser" hidden={tab !== 'browser'}><BrowserPanel active={tab === 'browser'} /></section>
   </dialog>;
 }

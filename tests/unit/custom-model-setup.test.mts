@@ -73,7 +73,7 @@ test('real HTTP discovery and saved explicit wire format preserve effort, legacy
   }
 });
 
-for (const format of ['openai', 'openrouter'] as const) {
+for (const format of ['openai', 'openrouter', 'litellm'] as const) {
   test(`explicit ${format} format sends the configured effort without mixed fields`, async () => {
     for (const effort of ['low', 'medium', 'high'] as const) {
       let body: Record<string, unknown> | undefined;
@@ -81,14 +81,16 @@ for (const format of ['openai', 'openrouter'] as const) {
       const transport = createModelTransport(configuration, { kind: 'custom', connection: 'fixture', model: 'gpt-6-luna' }, { env: () => key, fetch: async (_url, init) => { body = JSON.parse(String(init?.body)); return completion(); } });
       const stream = await transport.streamFn(transport.model, normalizeContext({ messages: [{ role: 'user', content: 'Fixture', timestamp: 1 }] }), { reasoning: effort });
       await stream.result(); assert.ok(body);
-      assert.equal(body['reasoning_effort'], format === 'openai' ? effort : undefined);
+      assert.equal(body['reasoning_effort'], format !== 'openrouter' ? effort : undefined);
       assert.deepEqual(body['reasoning'], format === 'openrouter' ? { effort } : undefined);
+      assert.deepEqual(body['allowed_openai_params'], format === 'litellm' ? ['reasoning_effort'] : undefined);
+      assert.equal(body['drop_params'], undefined);
     }
   });
 }
 
 test('invalid or wrong-protocol compatibility declarations fail before requests', () => {
-  for (const [api, reasoningFormat] of [['openai-completions', true], ['openai-completions', 'unsupported'], ['openai-completions', null], ['openai-responses', 'openrouter'], ['anthropic-messages', 'openai']]) {
+  for (const [api, reasoningFormat] of [['openai-completions', true], ['openai-completions', 'unsupported'], ['openai-completions', null], ['openai-responses', 'openrouter'], ['openai-responses', 'litellm'], ['anthropic-messages', 'openai']]) {
     assert.throws(() => parseModelConfiguration({ customConnections: [{ id: 'fixture', api, baseUrl: 'https://synthetic.example/v1', apiKeyEnv: 'KEY', models: [{ id: 'test', contextWindow: 32000, maxTokens: 4096, reasoning: true, reasoningFormat, input: ['text'] }] }] }));
   }
 });
