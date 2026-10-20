@@ -150,7 +150,7 @@ test('real managed browser preserves page/cookie across handoff; rendered input,
     await expect(other.getByRole('button', { name: '重新连接', exact: true })).toBeVisible();
     expect(service!.browser.list()[0]?.state).toBe('human'); await other.close(); await page.bringToFront();
     await expect(managed.command(opened.id, ['click', '#secret'], observed.observation)).rejects.toThrow(/agent control/);
-    await page.getByRole('button', { name: '放大画面', exact: true }).click();
+    await page.getByRole('button', { name: '专注画面', exact: true }).click();
     const canvas = page.locator('.browser-viewport canvas');
     const remote = await canvas.evaluate(element => ({ width: (element as HTMLCanvasElement).width, height: (element as HTMLCanvasElement).height }));
     const box = await canvas.boundingBox(); if (!box) throw Error('Missing real remote frame');
@@ -254,7 +254,7 @@ test('real managed browser preserves page/cookie across handoff; rendered input,
     const stale = await page.evaluate(async id => (await fetch(`/api/browser/${id}/ticket`, { method: 'POST', headers: { 'x-mira-client': 'web', 'content-type': 'application/json' }, body: '{}' })).status, oldId);
     expect(stale).toBe(409);
     await browserTab(page);
-    await expect(page.getByText('还没有活动的浏览器。Mira 使用浏览器时会显示在这里。')).toBeVisible();
+    await expect(page.getByText('Mira 还没有打开浏览器')).toBeVisible();
   } catch (error) {
     await page.screenshot({ path: testInfo.outputPath('first-failure.png'), fullPage: true }).catch(() => undefined);
     throw error;
