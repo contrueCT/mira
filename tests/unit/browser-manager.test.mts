@@ -579,3 +579,23 @@ test('queued human navigation is not run when control changes before it starts',
   assert.equal(JSON.stringify(driver.argv).includes('example.org/queued'), false);
   await manager.close();
 });
+
+test('a reopened browser reports later user navigation instead of the stale reopen notice', async () => {
+  const { driver, manager, owner, browser } = await setup();
+  const snapshot = await owner.command(browser.id, ['snapshot', '-i']);
+  await owner.command(browser.id, ['open', 'https://example.org/start'], snapshot.observation);
+  driver.fail = true;
+  await assert.rejects(owner.command(browser.id, ['snapshot']), /unknown/);
+  driver.fail = false;
+  const locked = manager.list().find(item => item.id === browser.id)!;
+  const fresh = await manager.reopen(locked.id, locked.epoch);
+  assert.match(fresh.message!, /^Opened fresh by the user/);
+  await owner.command(fresh.id, ['snapshot', '-i']);
+  assert.equal(manager.list().find(item => item.id === fresh.id)!.message, undefined);
+  const lease = await manager.takeover(fresh.id);
+  await manager.humanNavigate(fresh.id, lease.epoch, { kind: 'open', url: 'https://example.net/next' });
+  const returned = await manager.release(fresh.id, lease.epoch);
+  // Returning invalidates observations; the stale "opened fresh" notice must not hide what the user did.
+  assert.match(returned.message!, /^While under user control the user navigated 1 time\(s\) and switched tabs 0 time\(s\) \(last site: example\.net\)/);
+  await manager.close();
+});
