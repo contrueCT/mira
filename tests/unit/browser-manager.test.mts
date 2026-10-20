@@ -12,6 +12,7 @@ import { AgentBrowserDriver, browserProtocolCommand, browserHumanInput, type Bro
 
 class FakeDriver implements BrowserDriver {
   calls: string[] = [];
+  argv: string[][] = [];
   exitListener: ((session: string) => void) | undefined;
   onExit(listener: (session: string) => void) { this.exitListener = listener; return () => { this.exitListener = undefined; }; }
   gate: Promise<void> | undefined;
@@ -19,7 +20,7 @@ class FakeDriver implements BrowserDriver {
   failOpen = false;
   failStream = false;
   async open(session: string, url: string) { this.calls.push(`open:${session}:${url}`); if (this.failOpen) throw Error('open failed'); return {}; }
-  async command(_session: string, args: readonly string[]) { this.calls.push(args.join(' ')); await this.gate; if (this.fail) throw Error('secret upstream failure'); return { snapshot: 'page' }; }
+  async command(_session: string, args: readonly string[]) { this.argv.push([...args]); this.calls.push(args.join(' ')); await this.gate; if (this.fail) throw Error('secret upstream failure'); return { snapshot: 'page' }; }
   async humanInput(_session: string, input: Record<string, unknown>) { this.calls.push(String(input.action)); await this.gate; if (this.fail) throw Error('unknown input'); }
   async stream() { this.calls.push('stream'); if (this.failStream) throw Error('stream down'); return 'ws://127.0.0.1:12345'; }
   async pauseStream() { this.calls.push('pause'); if (this.fail) throw Error('unknown'); }
@@ -500,4 +501,81 @@ test('managed browser discovers a later skill-prefix install and keeps explicit 
     await assert.rejects(explicit.open('44444444-4444-4444-4444-444444444444', 'https://example.test'), /pinned/);
     assert.equal(await readFile(log, 'utf8'), 'explicit');
   } finally { if (previousPath === undefined) delete process.env['PATH']; else process.env['PATH'] = previousPath; if (previous === undefined) delete process.env['MIRA_AGENT_BROWSER_EXECUTABLE']; else process.env['MIRA_AGENT_BROWSER_EXECUTABLE'] = previous; await rm(home, { recursive: true, force: true }); }
+});
+
+test('human navigation rejects without the current lease and rejects unsafe addresses before the driver', async () => {
+  const { driver, manager, browser } = await setup();
+  await assert.rejects(manager.humanNavigate(browser.id, browser.epoch, { kind: 'open', url: 'https://example.org/user-opened' }), /human control lease/);
+  const lease = await manager.takeover(browser.id);
+  manager.disconnect(browser.id, lease.epoch);
+  const held = manager.list()[0]!;
+  assert.equal(held.state, 'held');
+  await assert.rejects(manager.humanNavigate(browser.id, held.epoch, { kind: 'open', url: 'https://example.org/user-opened' }), /human control lease/);
+  const again = await manager.takeover(browser.id);
+  await assert.rejects(manager.humanNavigate(browser.id, again.epoch - 1, { kind: 'open', url: 'https://example.org/user-opened' }), /human control lease/);
+  for (const url of ['javascript:alert(1)', 'file:///etc/passwd', 'data:text/html,x', 'https://user:pw@x.test/', 'https://example.org/' + 'a'.repeat(2048)]) {
+    await assert.rejects(manager.humanNavigate(browser.id, again.epoch, { kind: 'open', url }), /Only http\(s\) addresses without credentials can be opened/);
+  }
+  for (const tabId of ['../etc', 'tab id', '', 'a'.repeat(129)]) await assert.rejects(manager.humanNavigate(browser.id, again.epoch, { kind: 'tab', tabId }), /Invalid tab id/);
+  assert.equal(driver.argv.length, 0);
+  await manager.close();
+});
+
+test('human navigation runs on the session queue and tells Mira until the next agent snapshot', async () => {
+  const { driver, manager, owner, browser } = await setup();
+  const lease = await manager.takeover(browser.id);
+  let unblock!: () => void; driver.gate = new Promise(resolve => { unblock = resolve; });
+  const opening = manager.humanNavigate(browser.id, lease.epoch, { kind: 'open', url: 'https://example.org/user-opened' });
+  const switching = manager.humanNavigate(browser.id, lease.epoch, { kind: 'tab', tabId: 't2' });
+  await Promise.resolve(); await Promise.resolve();
+  assert.deepEqual(driver.argv, [['open', 'https://example.org/user-opened']]);
+  unblock();
+  const opened = await opening; const switched = await switching;
+  assert.deepEqual(driver.argv, [['open', 'https://example.org/user-opened'], ['tab', 't2']]);
+  assert.equal(opened.state, 'human'); assert.equal(opened.message, undefined);
+  assert.deepEqual(switched.userActivity, { navigations: 1, tabSwitches: 1, domain: 'example.org' });
+  assert.equal(JSON.stringify(manager.list()).includes('user-opened'), false);
+  const returned = await manager.release(browser.id, lease.epoch);
+  assert.equal(returned.state, 'agent');
+  assert.equal(returned.message, 'While under user control the user navigated 1 time(s) and switched tabs 1 time(s) (last site: example.org). The current page and tabs may differ from your last observation; take a fresh snapshot before acting.');
+  assert.deepEqual(returned.userActivity, { navigations: 1, tabSwitches: 1, domain: 'example.org' });
+  const snap = await owner.command(browser.id, ['snapshot']);
+  assert.equal(snap.userActivity, undefined); assert.equal(snap.message, undefined); assert.equal(manager.list()[0]!.userActivity, undefined);
+  driver.fail = true;
+  await assert.rejects(owner.command(browser.id, ['click', '@e1'], snap.observation), /unknown/);
+  driver.fail = false;
+  const locked = manager.list().find(item => item.id === browser.id)!;
+  const fresh = await manager.reopen(locked.id, locked.epoch);
+  assert.equal(fresh.domain, 'example.org');
+  assert.match(driver.calls.filter(call => call.startsWith('open:')).at(-1)!, /https:\/\/example\.org\/user-opened$/);
+  assert.equal(JSON.stringify(manager.list()).includes('user-opened'), false);
+  await manager.close();
+});
+
+test('failed human navigation becomes unknown and is not replayed', async () => {
+  const { driver, manager, browser } = await setup(); const lease = await manager.takeover(browser.id); driver.fail = true;
+  await assert.rejects(manager.humanNavigate(browser.id, lease.epoch, { kind: 'open', url: 'https://example.org/user-opened' }), /not replayed/);
+  assert.equal(manager.list()[0]!.state, 'unknown'); assert.equal(manager.list()[0]!.userActivity, undefined);
+  assert.deepEqual(driver.argv, [['open', 'https://example.org/user-opened']]);
+  driver.fail = false;
+  await assert.rejects(manager.humanNavigate(browser.id, lease.epoch, { kind: 'open', url: 'https://example.org/again' }), /human control lease/);
+  assert.deepEqual(driver.argv, [['open', 'https://example.org/user-opened']]);
+  await manager.close();
+});
+
+test('queued human navigation is not run when control changes before it starts', async () => {
+  const { driver, manager, browser } = await setup(); const lease = await manager.takeover(browser.id);
+  let unblock!: () => void; driver.gate = new Promise(resolve => { unblock = resolve; });
+  const input = manager.humanInput(browser.id, lease.epoch, { action: 'inserttext', text: 'hold the queue' });
+  const nav = manager.humanNavigate(browser.id, lease.epoch, { kind: 'open', url: 'https://example.org/queued' });
+  const rejected = assert.rejects(nav, /control changed before navigation started/);
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(driver.calls.includes('inserttext'), true); assert.equal(driver.argv.length, 0);
+  const returning = manager.release(browser.id, lease.epoch);
+  assert.equal(manager.list()[0]!.state, 'returning');
+  unblock(); await input; await rejected; const returned = await returning;
+  assert.equal(returned.state, 'agent');
+  assert.equal(driver.argv.some(args => args[0] === 'open'), false);
+  assert.equal(JSON.stringify(driver.argv).includes('example.org/queued'), false);
+  await manager.close();
 });

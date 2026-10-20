@@ -3,10 +3,10 @@ import { AgentBrowserDriver, validateBrowserCommand, browserHumanInput, type Bro
 
 export class BrowserControlError extends Error { constructor(message: string) { super(message); this.name = 'BrowserControlError'; } }
 export type BrowserState = 'agent' | 'requesting' | 'human' | 'held' | 'returning' | 'unknown' | 'closed';
-export interface BrowserStatus { id: string; state: BrowserState; epoch: number; observation: number; ownerLabel: string; pressedButtons?: string[]; queuedInputs?: number; cancelledInputs?: number; domain?: string; message?: string; lock?: 'outcome' | 'cleanup'; replacedBy?: string; replaces?: string }
+export interface BrowserStatus { id: string; state: BrowserState; epoch: number; observation: number; ownerLabel: string; pressedButtons?: string[]; queuedInputs?: number; cancelledInputs?: number; domain?: string; userActivity?: { navigations: number; tabSwitches: number; domain?: string }; message?: string; lock?: 'outcome' | 'cleanup'; replacedBy?: string; replaces?: string }
 export interface BrowserReleaseStatus extends BrowserStatus { cancelledInputs: number }
 export interface BrowserResult extends BrowserStatus { output: unknown }
-interface Session { id: string; owner: string; session: string; state: BrowserState; epoch: number; observation: number; observed: boolean; lock: Promise<void>; domain?: string; url?: string; replacedBy?: string; replaces?: string; cleanupUnknown?: boolean; finishedClose?: boolean; inputEpoch?: number; pressedButtons: Set<string>; pendingInputs: number; inFlightInput?: boolean; cancelledInputs?: number }
+interface Session { id: string; owner: string; session: string; state: BrowserState; epoch: number; observation: number; observed: boolean; lock: Promise<void>; domain?: string; url?: string; replacedBy?: string; replaces?: string; cleanupUnknown?: boolean; finishedClose?: boolean; inputEpoch?: number; pressedButtons: Set<string>; pendingInputs: number; inFlightInput?: boolean; cancelledInputs?: number; userActivity?: { navigations: number; tabSwitches: number; domain?: string } }
 /** Service-local coordination, not an OS security boundary. No command, input, frame, or reopen-address persistence. */
 export class BrowserManager {
   readonly #sessions = new Map<string, Session>();
@@ -17,7 +17,7 @@ export class BrowserManager {
   constructor(options: { driver?: BrowserDriver; cwd?: string; miraHome?: string; mainOwner?: string } = {}) { this.#mainOwner = options.mainOwner ?? 'main'; this.#driver = options.driver ?? new AgentBrowserDriver({ ...(options.cwd === undefined ? {} : { cwd: options.cwd }), ...(options.miraHome === undefined ? {} : { miraHome: options.miraHome }) });
     this.#driver.onExit?.(session => { const s = [...this.#sessions.values()].find(s => s.session === session); if (s) this.#unknown(s); });
   }
-  #status(s: Session): BrowserStatus { const message = s.state === 'unknown' ? (s.cleanupUnknown ? 'Browser cleanup could not be verified. Agent and human control remain disabled; closing may be retried.' : 'Browser outcome unknown. Do not replay commands. Close this browser and explicitly open a new one.') : s.state === 'closed' && s.replacedBy ? 'Closed and reopened by the user after an indeterminate outcome. The previous page, its state and element references are gone; use browser ' + s.replacedBy + ' after a fresh snapshot.' : s.state === 'agent' && s.replaces && !s.observed ? 'Opened fresh by the user to replace browser ' + s.replaces + ' (same address, new page; nothing carried over). Take a fresh snapshot before acting.' : undefined; return { id: s.id, state: s.state, epoch: s.epoch, observation: s.observation, pressedButtons: [...s.pressedButtons], queuedInputs: Math.max(0, s.pendingInputs - (s.inFlightInput ? 1 : 0)), ...(s.cancelledInputs !== undefined ? { cancelledInputs: s.cancelledInputs } : {}), ownerLabel: s.owner === this.#mainOwner ? 'Mira' : 'Task', ...(s.domain ? { domain: s.domain } : {}), ...(message ? { message } : {}), ...(s.state === 'unknown' ? { lock: s.cleanupUnknown ? 'cleanup' as const : 'outcome' as const } : {}), ...(s.replacedBy ? { replacedBy: s.replacedBy } : {}), ...(s.replaces ? { replaces: s.replaces } : {}) }; }
+  #status(s: Session): BrowserStatus { const message = s.state === 'unknown' ? (s.cleanupUnknown ? 'Browser cleanup could not be verified. Agent and human control remain disabled; closing may be retried.' : 'Browser outcome unknown. Do not replay commands. Close this browser and explicitly open a new one.') : s.state === 'closed' && s.replacedBy ? 'Closed and reopened by the user after an indeterminate outcome. The previous page, its state and element references are gone; use browser ' + s.replacedBy + ' after a fresh snapshot.' : s.state === 'agent' && s.replaces && !s.observed ? 'Opened fresh by the user to replace browser ' + s.replaces + ' (same address, new page; nothing carried over). Take a fresh snapshot before acting.' : s.state === 'agent' && s.userActivity ? 'While under user control the user navigated ' + s.userActivity.navigations + ' time(s) and switched tabs ' + s.userActivity.tabSwitches + ' time(s)' + (s.userActivity.domain ? ' (last site: ' + s.userActivity.domain + ')' : '') + '. The current page and tabs may differ from your last observation; take a fresh snapshot before acting.' : undefined; return { id: s.id, state: s.state, epoch: s.epoch, observation: s.observation, pressedButtons: [...s.pressedButtons], queuedInputs: Math.max(0, s.pendingInputs - (s.inFlightInput ? 1 : 0)), ...(s.cancelledInputs !== undefined ? { cancelledInputs: s.cancelledInputs } : {}), ownerLabel: s.owner === this.#mainOwner ? 'Mira' : 'Task', ...(s.domain ? { domain: s.domain } : {}), ...(s.userActivity ? { userActivity: { navigations: s.userActivity.navigations, tabSwitches: s.userActivity.tabSwitches, ...(s.userActivity.domain ? { domain: s.userActivity.domain } : {}) } } : {}), ...(message ? { message } : {}), ...(s.state === 'unknown' ? { lock: s.cleanupUnknown ? 'cleanup' as const : 'outcome' as const } : {}), ...(s.replacedBy ? { replacedBy: s.replacedBy } : {}), ...(s.replaces ? { replaces: s.replaces } : {}) }; }
   #notify(s: Session): void { for (const listener of this.#listeners) { try { listener(this.#status(s)); } catch { /* Observers cannot break the control gate. */ } } }
   subscribe(listener: (status: BrowserStatus) => void): () => void { this.#listeners.add(listener); return () => { this.#listeners.delete(listener); }; }
   list(): BrowserStatus[] { return [...this.#sessions.values()].map(s => this.#status(s)); }
@@ -56,6 +56,7 @@ export class BrowserManager {
       try {
         const output = await this.#driver.command(s.session, args);
         s.observation++; s.observed = args[0] === 'snapshot';
+        if (args[0] === 'snapshot') delete s.userActivity;
         if (args[0] === 'open') { s.url = args[1]!; s.domain = new URL(args[1]!).hostname; }
         this.#notify(s); return { ...this.#status(s), output };
       } catch { this.#unknown(s); throw Error('Browser command failed or its outcome is unknown. It was not replayed; inspect the browser before closing it.'); }
@@ -95,6 +96,26 @@ export class BrowserManager {
       catch { this.#unknown(s); throw Error('Human browser input outcome unknown; it was not replayed'); }
       finally { s.inFlightInput = false; }
     }); } finally { s.pendingInputs--; }
+  }
+  async humanNavigate(id: string, epoch: number, action: { kind: 'open'; url: string } | { kind: 'tab'; tabId: string }): Promise<BrowserStatus> {
+    const s = this.#get(id);
+    if (!this.isHuman(id, epoch)) throw new BrowserControlError('Browser navigation requires the current human control lease');
+    if (action.kind === 'open') {
+      if (typeof action.url !== 'string' || action.url.length > 2048) throw new BrowserControlError('Only http(s) addresses without credentials can be opened');
+      try { validateBrowserCommand(['open', action.url]); } catch { throw new BrowserControlError('Only http(s) addresses without credentials can be opened'); }
+    } else if (typeof action.tabId !== 'string' || !/^[\w-]{1,128}$/.test(action.tabId)) throw new BrowserControlError('Invalid tab id');
+    return this.#serial(s, async () => {
+      if (s.inputEpoch !== epoch || s.state !== 'human') throw new BrowserControlError('Browser control changed before navigation started; it was not run');
+      try { await this.#driver.command(s.session, action.kind === 'open' ? ['open', action.url] : ['tab', action.tabId]); }
+      catch { this.#unknown(s); throw Error('Browser navigation outcome unknown; it was not replayed'); }
+      const prior = s.userActivity;
+      if (action.kind === 'open') {
+        const host = new URL(action.url).hostname;
+        s.url = action.url; s.domain = host;
+        s.userActivity = { navigations: (prior?.navigations ?? 0) + 1, tabSwitches: prior?.tabSwitches ?? 0, ...(host ? { domain: host } : {}) };
+      } else s.userActivity = { navigations: prior?.navigations ?? 0, tabSwitches: (prior?.tabSwitches ?? 0) + 1, ...(prior?.domain ? { domain: prior.domain } : {}) };
+      this.#notify(s); return this.#status(s);
+    });
   }
   disconnect(id: string, epoch: number): void { const s = this.#get(id); if (!this.isHuman(id, epoch)) return; s.state = 'held'; s.epoch++; delete s.inputEpoch; this.#notify(s); }
   async stream(id: string): Promise<string> { const blocked = (s: Session) => s.state === 'closed' || s.state === 'returning' || (s.state === 'unknown' && !!s.cleanupUnknown); const s = this.#get(id); if (blocked(s)) throw new BrowserControlError('Browser stream unavailable'); return this.#serial(s, async () => { if (blocked(s)) throw new BrowserControlError('Browser stream unavailable'); try { return await this.#driver.stream(s.session); } catch { if (s.state !== 'unknown') this.#unknown(s); throw Error('Browser stream unavailable; browser outcome unknown'); } }); }

@@ -18,6 +18,7 @@ export interface BrowserWebBackend {
   stream(id: string): string | Promise<string>;
   invalidate(id: string): void;
   humanInput(id: string, epoch: number, input: Record<string, unknown>, current: () => boolean): Promise<void>;
+  humanNavigate(id: string, epoch: number, action: { kind: 'open'; url: string } | { kind: 'tab'; tabId: string }): Promise<BrowserView>;
   isHuman(id: string, epoch: number): boolean;
   subscribe(listener: (browser: BrowserView) => void): () => void;
 }
@@ -49,7 +50,34 @@ export class BrowserFrameFence {
   }
   accepts(timestamp: unknown): boolean { return this.#target !== null && typeof timestamp === 'number' && Number.isFinite(timestamp) && timestamp > this.#capturedAfter; }
 }
-/** Strict projection: no commands, raw CDP, URLs, console output or arbitrary object forwarding. */
+const httpAddress = (value: unknown): string | null => {
+  if (typeof value !== 'string' || value.length > 2048) return null;
+  try { const url = new URL(value); if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) return null; return value; } catch { return null; }
+};
+const tabTitle = (value: unknown) => typeof value === 'string' ? value.trim().slice(0, 200) : '';
+const sameKeys = (value: Record<string, unknown>, keys: readonly string[]) => { const actual = Object.keys(value); return actual.length === keys.length && keys.every(key => actual.includes(key)); };
+/** Viewer-only http(s) page URL. Credentials and other schemes become null. Never log or persist this. */
+export function browserPageUrl(value: unknown): { domain: string | null; url: string | null } { return { domain: domain(value), url: httpAddress(value) }; }
+/** Viewer-only tab list. Invalid ids are dropped; titles are trimmed to 200 characters. */
+export function browserTabs(value: unknown): Array<{ tabId: string; active: boolean; domain: string | null; url: string | null; title: string }> {
+  if (!Array.isArray(value)) return [];
+  const tabs: Array<{ tabId: string; active: boolean; domain: string | null; url: string | null; title: string }> = [];
+  for (const item of value) {
+    if (tabs.length >= 32) break;
+    if (!item || typeof item !== 'object') continue;
+    const tab = item as Record<string, unknown>;
+    if (typeof tab.tabId !== 'string' || !/^[\w-]{1,128}$/.test(tab.tabId)) continue;
+    tabs.push({ tabId: tab.tabId, active: tab.active === true, domain: domain(tab.url), url: httpAddress(tab.url), title: tabTitle(tab.title) });
+  }
+  return tabs;
+}
+/** Owner navigation payload. Null means the shape is invalid and the caller closes the socket. */
+export function browserNavigation(value: Record<string, unknown>): { kind: 'open'; url: string } | { kind: 'tab'; tabId: string } | null {
+  if (value.type === 'nav_open' && sameKeys(value, ['type', 'epoch', 'url']) && typeof value.url === 'string' && value.url.length <= 2048) return { kind: 'open', url: value.url };
+  if (value.type === 'nav_tab' && sameKeys(value, ['type', 'epoch', 'tabId']) && typeof value.tabId === 'string' && /^[\w-]{1,128}$/.test(value.tabId)) return { kind: 'tab', tabId: value.tabId };
+  return null;
+}
+/** Strict projection to the authenticated viewer: bounded frame/status plus http(s) URL and title. No commands, raw CDP, console, credentials, or arbitrary objects. */
 export function browserInput(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
@@ -156,11 +184,23 @@ export function registerBrowserHttp(app: FastifyInstance, backend: BrowserWebBac
           if (!frame || value.seq !== frame.seq) return;
           rendered = frame; connection.upstream.send(JSON.stringify({ type: 'ack', seq: frame.seq })); return;
         }
-        if (!upstreamVerified || !connection.inputOwner || owners.get(browser.id) !== connection || !backend.isHuman(browser.id, browser.epoch) || value.epoch !== browser.epoch || !rendered || rendered.generation !== fence.generation || value.generation !== fence.generation || value.frameSeq !== rendered.seq) return;
+        const navigating = value.type === 'nav_open' || value.type === 'nav_tab';
+        // Read-only and stale sockets ignore navigation the same way they ignore input.
+        if (!upstreamVerified || !connection.inputOwner || owners.get(browser.id) !== connection || !backend.isHuman(browser.id, browser.epoch) || value.epoch !== browser.epoch) return;
+        if (!navigating && (!rendered || rendered.generation !== fence.generation || value.generation !== fence.generation || value.frameSeq !== rendered.seq)) return;
         if (Date.now() - inputWindow >= 1000) { inputWindow = Date.now(); inputCount = 0; }
         if (++inputCount > 240) { close(connection); return; }
+        if (navigating) {
+          const action = browserNavigation(value);
+          if (!action) { close(connection); return; }
+          void backend.humanNavigate(browser.id, browser.epoch, action).then(() => send(connection, { type: 'nav_done' }), (error: unknown) => {
+            send(connection, { type: 'nav_error', message: error instanceof Error && error.message ? error.message : 'Browser navigation failed' });
+            if (!(error instanceof Error) || error.name !== 'BrowserControlError') close(connection);
+          });
+          return;
+        }
         const input = browserInput(value);
-        if (!input || (input.action === 'input_mouse' && input.x !== undefined && (Number(input.x) > rendered.width || Number(input.y) > rendered.height))) { close(connection); return; }
+        if (!input || !rendered || (input.action === 'input_mouse' && input.x !== undefined && (Number(input.x) > rendered.width || Number(input.y) > rendered.height))) { close(connection); return; }
         const generation = fence.generation;
         void backend.humanInput(browser.id, browser.epoch, input, () => !connection.closed && fence.generation === generation && (!auth || auth.status(connection.cookie).authenticated)).catch(() => close(connection));
       });
@@ -221,8 +261,8 @@ export function registerBrowserHttp(app: FastifyInstance, backend: BrowserWebBac
             if (frame) upstream.send(JSON.stringify({ type: 'ack', seq: frame.seq }));
             rendered = null; frame = null;
             const generation = fence.generation;
-            if (value.type === 'url') send(connection, { type: 'url', domain: domain(value.url), generation });
-            else send(connection, { type: 'tabs', generation, tabs: Array.isArray(value.tabs) ? value.tabs.slice(0, 32).map(item => ({ active: !!(item && typeof item === 'object' && 'active' in item && item.active), domain: domain(item && typeof item === 'object' && 'url' in item ? item.url : null) })) : [] });
+            if (value.type === 'url') send(connection, { type: 'url', ...browserPageUrl(value.url), generation });
+            else send(connection, { type: 'tabs', generation, tabs: browserTabs(value.tabs) });
           } else if (value.type === 'status') {
             send(connection, { type: 'status', connected: value.connected === true, screencasting: value.screencasting === true, viewportWidth: finite(value.viewportWidth, 16384) ? value.viewportWidth : 0, viewportHeight: finite(value.viewportHeight, 16384) ? value.viewportHeight : 0 });
             if (value.connected === false) { backend.invalidate(browser.id); close(connection); }

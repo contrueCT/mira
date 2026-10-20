@@ -32,6 +32,21 @@
 
 .browser-viewport canvas { touch-action: none; }
 
+.browser-nav { display: flex; flex-direction: column; gap: 8px; padding: 8px 12px 10px; background: #f7f9fc; border-top: 1px solid #e5e8ee; }
+.browser-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.browser-tabs li { min-width: 0; max-width: 100%; }
+.browser-tabs button { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; text-align: left; }
+.browser-tab-title, .browser-tab-domain { overflow-wrap: anywhere; }
+.browser-tab-domain { color: #5f6a7d; font-size: 12px; }
+.browser-tab-current { color: #405d82; font-size: 12px; }
+.browser-address { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; }
+.browser-address-label { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; color: #5f6a7d; font-size: 12px; }
+.browser-address input { flex: 1; min-width: 0; width: 100%; padding: 7px 10px; border: 1px solid #dde2eb; border-radius: 9px; background: #fff; color: #253044; font: inherit; font-size: 13px; }
+.browser-address input[readonly] { background: #f7f9fc; color: #253044; }
+.browser-address input:focus-visible { outline: 2px solid #7a9ed6; outline-offset: 3px; }
+.browser-address .browser-note, .browser-address .browser-error { flex-basis: 100%; margin: 0; }
+.browser-panel .browser-tabs button:disabled, .browser-panel .browser-address button:disabled { opacity: 1; color: #405d82; background: #f7f9fc; cursor: default; }
+
 /* Standalone browser dialog opened from the header. */
 .browser-dialog { width: min(760px, calc(100vw - 40px)); }
 .browser-dialog-body { overflow-y: auto; overscroll-behavior: contain; min-height: 0; }

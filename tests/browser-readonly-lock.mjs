@@ -27,12 +27,13 @@ new Function('require', 'exports', 'module', compiled)(name => name === 'ws' ? {
 const routes = new Map(), hooks = [];
 const app = { server: new EventEmitter(), get() {}, post(route, _options, handler) { routes.set(route, handler); }, addHook(_name, callback) { hooks.push(callback); } };
 const browser = { id: '11111111-1111-4111-8111-111111111111', epoch: 4, state: 'unknown', lock: 'outcome', ownerLabel: 'Mira' };
-let inputs = 0, calls = 0, finishVerify;
+let inputs = 0, navs = 0, calls = 0, finishVerify;
 const backend = {
   list: () => [browser], subscribe: () => () => {},
   stream: () => ++calls === 1 ? Promise.resolve('ws://127.0.0.1:12345') : new Promise(resolve => { finishVerify = () => resolve('ws://127.0.0.1:12345'); }),
   disconnect() {}, isHuman: () => true, invalidate() {}, reopen: async () => browser,
   humanInput: async () => { inputs++; throw Error('read-only connection forwarded input'); },
+  humanNavigate: async () => { navs++; throw Error('read-only connection forwarded navigation'); },
 };
 const reply = () => ({ code() { return this; }, send(value) { return value; } });
 mod.exports.registerBrowserHttp(app, backend, new Map([['mira.example', 'https://mira.example']]));
@@ -49,8 +50,11 @@ try {
   client.emit('message', Buffer.from(JSON.stringify({ type: 'ack', seq: 1 })), false);
   client.emit('message', Buffer.from(JSON.stringify({ type: 'input_text', text: 'secret', epoch: browser.epoch, generation: 1, frameSeq: 1 })), false);
   client.emit('message', Buffer.from(JSON.stringify({ type: 'input_mouse', eventType: 'mousePressed', x: 1, y: 1, button: 'left', clickCount: 1, epoch: browser.epoch, generation: 1, frameSeq: 1 })), false);
+  client.emit('message', Buffer.from(JSON.stringify({ type: 'nav_open', epoch: browser.epoch, url: 'https://example.org/' })), false);
+  client.emit('message', Buffer.from(JSON.stringify({ type: 'nav_tab', epoch: browser.epoch, tabId: 't2' })), false);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(inputs, 0, 'a read-only lock must not forward input');
+  assert.equal(navs, 0, 'a read-only lock must not forward navigation');
   assert.equal(client.ended, false);
   assert.equal(client.messages.some(item => item.type === 'frame'), true);
   const minted = await routes.get('/api/browser/:id/ticket')({ params: { id: browser.id }, headers: {} }, reply());

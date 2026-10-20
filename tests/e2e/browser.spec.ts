@@ -374,3 +374,68 @@ test('cleanup lock explains that close was not confirmed and does not request a 
   await dialog.getByRole('button', { name: '刷新', exact: true }).click();
   await page.waitForTimeout(200); expect(tickets).toBe(0);
 });
+
+test('address bar and tabs stay read-only until takeover, then navigate on the owner socket', async ({ page }) => {
+  let status = { id: 'nav-browser', state: 'agent', epoch: 1, ownerLabel: 'Mira', domain: 'example.test' };
+  const received: Record<string, unknown>[] = [];
+  let socket: WebSocketRoute | undefined;
+  let takeovers = 0;
+  await page.route('**/api/browser', route => route.fulfill({ json: { browsers: [status] } }));
+  await page.route('**/api/browser/nav-browser/ticket', route => route.fulfill({ json: { ticket: 'nav-ticket', epoch: status.epoch } }));
+  await page.route('**/api/browser/nav-browser/takeover', async route => {
+    takeovers++; status = { ...status, state: 'requesting', epoch: 2 }; await route.fulfill({ json: status });
+  });
+  await page.routeWebSocket('**/api/browser/stream', ws => {
+    socket = ws;
+    ws.onMessage(message => {
+      const input = JSON.parse(String(message)) as Record<string, unknown>; received.push(input);
+      if (input.type === 'nav_open') ws.send(JSON.stringify({ type: 'nav_done' }));
+    });
+    ws.send(JSON.stringify({ type: 'mira_state', browser: status }));
+  });
+  await page.goto('/'); await page.getByRole('button', { name: '浏览器', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '浏览器' });
+  await expect.poll(() => socket !== undefined).toBe(true);
+  socket!.send(JSON.stringify({ type: 'tabs', generation: 1, tabs: [
+    { tabId: 't1', active: true, title: '示例', domain: 'example.test', url: 'https://example.test/start' },
+    { tabId: 't2', active: false, title: '另一页', domain: 'example.org', url: 'https://example.org/other' },
+  ] }));
+  socket!.send(JSON.stringify({ type: 'url', generation: 1, domain: 'example.test', url: 'https://example.test/start' }));
+  const address = dialog.getByLabel('浏览器地址');
+  const tabs = dialog.getByRole('list', { name: '标签页' }).getByRole('button');
+  await expect(address).toHaveValue('https://example.test/start');
+  await expect(address).toHaveJSProperty('readOnly', true);
+  await expect(dialog.getByRole('button', { name: '前往', exact: true })).toBeDisabled();
+  await expect(tabs).toHaveCount(2);
+  await expect(tabs.nth(0)).toBeDisabled(); await expect(tabs.nth(1)).toBeDisabled();
+  await expect(tabs.nth(0)).toHaveAttribute('aria-current', 'page');
+  await dialog.getByRole('button', { name: '接手操作', exact: true }).click();
+  await expect.poll(() => takeovers).toBe(1);
+  status = { ...status, state: 'human', epoch: 3 };
+  socket!.send(JSON.stringify({ type: 'mira_state', browser: status }));
+  await expect(dialog.getByText('由你操作', { exact: true })).toBeVisible();
+  await expect(address).toHaveJSProperty('readOnly', true);
+  const data = await page.evaluate(() => { const canvas = document.createElement('canvas'); canvas.width = 40; canvas.height = 20; return canvas.toDataURL('image/jpeg').split(',')[1]!; });
+  socket!.send(JSON.stringify({ type: 'frame', seq: 1, generation: 1, epoch: 3, data, metadata: { deviceWidth: 40, deviceHeight: 20 } }));
+  await expect.poll(() => received.some(item => item.type === 'ack' && item.seq === 1)).toBe(true);
+  await expect(address).toHaveJSProperty('readOnly', false);
+  await expect(dialog.getByRole('button', { name: '前往', exact: true })).toBeEnabled();
+  await expect(tabs.nth(0)).toBeDisabled(); await expect(tabs.nth(1)).toBeEnabled();
+  await address.fill('example.org');
+  await dialog.getByRole('button', { name: '前往', exact: true }).click();
+  await expect.poll(() => received.some(item => item.type === 'nav_open')).toBe(true);
+  expect(received.find(item => item.type === 'nav_open')).toEqual({ type: 'nav_open', epoch: 3, url: 'https://example.org/' });
+  await expect(dialog.getByRole('button', { name: '前往', exact: true })).toBeEnabled();
+  await address.fill('javascript:alert(1)');
+  await dialog.getByRole('button', { name: '前往', exact: true }).click();
+  await expect(dialog.getByText('只支持 http 或 https 网址')).toBeVisible();
+  expect(received.filter(item => item.type === 'nav_open')).toHaveLength(1);
+  await tabs.nth(1).click();
+  await expect.poll(() => received.some(item => item.type === 'nav_tab')).toBe(true);
+  expect(received.find(item => item.type === 'nav_tab')).toEqual({ type: 'nav_tab', epoch: 3, tabId: 't2' });
+  await expect(tabs.nth(0)).toHaveAttribute('aria-current', 'page');
+  socket!.send(JSON.stringify({ type: 'nav_error', message: 'Only http(s) addresses without credentials can be opened' }));
+  const alert = dialog.locator('.browser-view > .browser-error');
+  await expect(alert).toContainText('浏览器导航未完成');
+  await expect(alert).toContainText('Only http(s) addresses without credentials can be opened');
+});

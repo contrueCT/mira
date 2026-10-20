@@ -787,7 +787,14 @@ test('visible text meets WCAG AA contrast and an 11px minimum size in chat, erro
   let browserList: Array<Record<string, unknown>> = [];
   await page.route('**/api/browser', route => route.fulfill({ json: { browsers: browserList } }));
   await page.route('**/api/browser/locked-browser/ticket', route => route.fulfill({ json: { ticket: 'locked-ticket', epoch: lockedBrowser.epoch } }));
-  await page.routeWebSocket('**/api/browser/stream', ws => { ws.send(JSON.stringify({ type: 'mira_state', browser: lockedBrowser })); });
+  await page.routeWebSocket('**/api/browser/stream', ws => {
+    ws.send(JSON.stringify({ type: 'mira_state', browser: lockedBrowser }));
+    ws.send(JSON.stringify({ type: 'tabs', generation: 1, tabs: [
+      { tabId: 't1', active: true, title: '示例页面', domain: 'example.test', url: 'https://example.test/' },
+      { tabId: 't2', active: false, title: '另一页', domain: 'example.org', url: 'https://example.org/' },
+    ] }));
+    ws.send(JSON.stringify({ type: 'url', generation: 1, domain: 'example.test', url: 'https://example.test/' }));
+  });
   const check = async (scene: string) => {
     const result = await textContrast(page, CONTRAST_EXCEPTIONS);
     expect(result.failing, `${scene}: ${JSON.stringify(result.failing)}`).toEqual([]);
@@ -821,6 +828,10 @@ test('visible text meets WCAG AA contrast and an 11px minimum size in chat, erro
     await page.getByRole('button', { name: '浏览器', exact: true }).click();
     await page.getByRole('button', { name: '关闭并重开浏览器', exact: true }).click();
     await expect(page.getByRole('button', { name: '确认关闭并重开', exact: true })).toBeVisible();
+    await expect(page.getByText('示例页面', { exact: true })).toBeVisible();
+    await expect(page.getByText('另一页', { exact: true })).toBeVisible();
+    await expect(page.getByLabel('浏览器地址')).toHaveJSProperty('readOnly', true);
+    await expect(page.getByRole('button', { name: '前往', exact: true })).toBeDisabled();
     await check(`locked browser ${size.width}`);
     await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
     empty = true; await page.reload(); await expect(page.getByText('和 Mira 说点什么')).toBeVisible();

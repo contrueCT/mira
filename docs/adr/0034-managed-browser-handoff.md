@@ -69,3 +69,13 @@ REST 继续原 API 的精确 Host/Origin、X-Mira-Client、cookie 和 CSRF 规�
 用户可以在两种锁定上选择“关闭并重开浏览器”。界面先要求确认：关闭后当前页面、登录状态和未保存内容都会丢失，并按最后一次成功打开的地址重新打开。确认后 `POST /api/browser/:id/reopen` 携带当前 epoch，沿用与交还相同的 CSRF 与 X-Mira-Client 保护。服务要求状态为 `unknown` 且 epoch 匹配，并要求会话记得成功打开过的地址。该地址只留在内存，不进入状态或日志，来自初次打开或之后成功的 agent `open`。关闭使用原来的会话队列，所以会等在途命令结束，并同步把状态改为 closed、epoch 增加。关闭未能确认时，会话变成 `cleanup` 锁定，不创建新浏览器。关闭成功后，为同一 owner 按既有容量规则打开新会话：新的 id，`replaces` 指向旧 id，旧会话 `replacedBy` 指向新 id。打开失败时，新会话仍按 `#open` 变成 `unknown`，两条链接仍然写下，界面可以跟着走。对旧 id 再点一次，或 epoch 已过期，都会被拒绝，避免打开两次。agent 对已关闭且带 `replacedBy` 的 id 下命令会得到 not_executed，说明应通过 browser_list 找到替代并重新 snapshot；对已关闭会话的 agent close 仍是空操作。
 
 Mira 不会因此收到新的历史注入，工具声明也不变。它从 `browser_list` 的状态说明得知旧页面已关闭、新页面在第一次 snapshot 之前什么都没继承；继续操作旧 id 时得到上述 not_executed。人工画面和输入仍然不进入模型、历史或日志。
+
+## 接手期间的标签页与地址栏（2026-10-20 修订）
+
+画面工具栏和视口之间增加标签列表与地址栏（`BrowserNavigation.tsx`）。控件只在 human 租约、当前连接已建立且已有画面时可用；包括锁定后的只读查看在内，其余状态仍然展示 URL 和标签，但不能前往或切换。服务端在输入所有者的 WebSocket 上强制执行同一租约：`nav_open` / `nav_tab` 与人工输入共用上游已核对、所有者、`isHuman(epoch)`、epoch 一致、登录仍有效和同一速率计数，但不要求已渲染帧匹配。只读连接上的这两类消息被忽略，不转发，连接保持。形状必须恰好是 `{type, epoch, url}`（url 为长度不超过 2048 的字符串）或 `{type, epoch, tabId}`（`/^[\w-]{1,128}$/`）；不合法则关闭连接。
+
+地址在浏览器和服务器两侧都只接受带主机、不含用户名或密码、长度不超过 2048 的 http 或 https。`javascript:`、`file:`、`data:`、`chrome:`、`about:`、`ftp:` 以及嵌入凭据一律拒绝。标签切换使用上游 tabId。导航进入该会话队列，启动前再次核对仍是当前 human 租约；驱动失败与人工输入一样失败关闭为 `unknown`，不重放。成功的前往会更新内存中的重开地址和主机名。
+
+代理现在把标签的完整 http(s) URL 和页面标题转发给已认证的查看者，修订此前“只转发 domain / 仅显示当前标签”的投影。非 http(s)、超长或带凭据的 URL 变为 null，非法 tabId 丢弃，标题截断到 200 字，最多 32 个标签。这些字段只到查看者套接字，仍然不进入模型、数据库或日志。
+
+工具声明不变，也不注入历史。用户的前往和切标签累计为 `userActivity`（次数，以及最后打开网址的主机名）。交还后若状态为 `agent` 且该活动仍在，`browser_list` 与工具结果里的状态说明会要求先取新的 snapshot。Mira 的 agent `snapshot` 成功后清除该活动。`release` 已使旧观察失效；它内部的 snapshot 不清除 `userActivity`。

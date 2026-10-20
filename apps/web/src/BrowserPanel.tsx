@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, MouseEvent, PointerEvent } from 'react';
 import { api, errorInfo } from './api.ts';
+import { BrowserAddressBar, BrowserTabList, useBrowserNavigation } from './BrowserNavigation.tsx';
 import { useVisiblePoll } from './useVisiblePoll.ts';
 import './browser.css';
 
@@ -17,6 +18,7 @@ interface BrowserStatus {
   lock?: 'outcome' | 'cleanup';
   replacedBy?: string;
   replaces?: string;
+  userActivity?: { navigations: number; tabSwitches: number; domain?: string };
 }
 const replacedClosed = (browser: BrowserStatus) => browser.state === 'closed' && !!browser.replacedBy;
 const stateLabels: Record<BrowserStatus['state'], string> = {
@@ -98,10 +100,16 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus, onReplace }: {
   const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
+  const report = (summary: string | null, detail: string | null = null) => { setError(summary); setErrorDetail(detail); };
   const [confirming, setConfirming] = useState(false);
   const [reopening, setReopening] = useState(false);
   const [connectionVersion, setConnectionVersion] = useState(0);
   const [currentDomain, setCurrentDomain] = useState(browser.domain);
+  const [navPending, setNavPending] = useState(false);
+  const navPendingRef = useRef(false);
+  const navErrorRef = useRef(false);
+  const navigation = useBrowserNavigation();
+  const navigationRef = useRef(navigation); navigationRef.current = navigation;
   const clearInput = () => { pressedRef.current = false; if (bridgeRef.current) bridgeRef.current.value = ''; composingRef.current = false; compositionCommitRef.current = null; };
   // Cleanup-lock and closed browsers never mint tickets. An outcome lock stays
   // viewable and read-only; entering it changes the epoch, so reconnect then.
@@ -116,12 +124,13 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus, onReplace }: {
     let stopped = false;
     aliveRef.current = true; generationRef.current = -1;
     readyRef.current = false; renderedRef.current = null; setConnected(false); setHasFrame(false); clearInput();
+    navigationRef.current.reset(); navPendingRef.current = false; setNavPending(false); navErrorRef.current = false;
     const invalidate = () => { serial += 1; readyRef.current = false; renderedRef.current = null; setHasFrame(false); clearInput(); canvasRef.current?.getContext('2d')?.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height); };
     void api<{ ticket: string; epoch: number }>(`/api/browser/${encodeURIComponent(browser.id)}/ticket`, { method: 'POST', body: '{}', signal: controller.signal }).then(result => {
       if (stopped) return;
       const url = new URL('/api/browser/stream', window.location.href); url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
       socket = new WebSocket(url, ['mira-browser', result.ticket]); socketRef.current = socket;
-      socket.onopen = () => { if (!stopped) { setConnected(true); setError(null); } };
+      socket.onopen = () => { if (!stopped) { setConnected(true); report(null); } };
       socket.onmessage = event => {
         if (stopped || typeof event.data !== 'string') return;
         let message: Record<string, unknown>;
@@ -132,8 +141,16 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus, onReplace }: {
           if (next.epoch !== browserRef.current.epoch || next.state !== browserRef.current.state) invalidate();
           browserRef.current = next; statusRef.current(next); return;
         }
+        if (message.type === 'nav_done') { navPendingRef.current = false; setNavPending(false); return; }
+        if (message.type === 'nav_error') {
+          navPendingRef.current = false; setNavPending(false); navErrorRef.current = true;
+          report('浏览器导航未完成', typeof message.message === 'string' && message.message ? message.message : null);
+          return;
+        }
         if (message.type === 'tabs' || message.type === 'url') {
           invalidate();
+          navPendingRef.current = false; setNavPending(false);
+          navigationRef.current.onStreamMessage(message);
           if (message.type === 'url') setCurrentDomain(typeof message.domain === 'string' ? message.domain : null);
           else if (Array.isArray(message.tabs)) { const tab = message.tabs.find((item: { active?: boolean }) => item?.active) as { domain?: unknown } | undefined; if (tab) setCurrentDomain(typeof tab.domain === 'string' ? tab.domain : null); }
           if (Number.isSafeInteger(message.generation)) generationRef.current = Math.max(generationRef.current, message.generation as number);
@@ -157,12 +174,12 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus, onReplace }: {
           if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'ack', seq }));
           image.onload = null; image.onerror = null; image.src = '';
         };
-        image.onerror = () => { if (!stopped && generation === serial) { invalidate(); setError('画面无法读取，请重新连接。'); } };
+        image.onerror = () => { if (!stopped && generation === serial) { invalidate(); report('画面无法读取，请重新连接。'); } };
         image.src = `data:image/jpeg;base64,${message.data}`;
       };
-      socket.onclose = () => { if (stopped) return; invalidate(); setConnected(false); setError('画面连接已断开。若你已接手，控制权会保持，重新连接后可继续。'); };
-      socket.onerror = () => { if (!stopped) setError('暂时无法连接浏览器画面。'); };
-    }).catch(() => { if (!stopped) setError('暂时无法连接浏览器画面，请重试。'); });
+      socket.onclose = () => { if (stopped) return; invalidate(); setConnected(false); if (!navErrorRef.current) report('画面连接已断开。若你已接手，控制权会保持，重新连接后可继续。'); };
+      socket.onerror = () => { if (!stopped) report('暂时无法连接浏览器画面。'); };
+    }).catch(() => { if (!stopped) report('暂时无法连接浏览器画面，请重试。'); });
     return () => { stopped = true; aliveRef.current = false; controller.abort(); invalidate(); socket?.close(); socketRef.current = null; };
   }, [browser.id, connectionVersion, unavailable, lockEpoch]);
 
@@ -173,7 +190,7 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus, onReplace }: {
   useEffect(() => {
     const from = followEpochRef.current;
     if (from === null || connected || browser.epoch <= from || !['agent', 'human', 'held'].includes(browser.state)) return;
-    followEpochRef.current = null; setError(null); setConnectionVersion(value => value + 1);
+    followEpochRef.current = null; report(null); setConnectionVersion(value => value + 1);
   }, [browser.epoch, browser.state, connected]);
   const send = (payload: Record<string, unknown>) => {
     const frame = renderedRef.current; const socket = socketRef.current; const current = browserRef.current;
@@ -196,7 +213,7 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus, onReplace }: {
     return () => canvas.removeEventListener('wheel', wheel);
   }, []);
   const text = (value: string) => {
-    if (new TextEncoder().encode(value).length > 4096) setError('一次输入或粘贴最多支持 4096 字节，请分段输入。');
+    if (new TextEncoder().encode(value).length > 4096) report('一次输入或粘贴最多支持 4096 字节，请分段输入。');
     else if (value) send({ type: 'input_text', text: value });
     clearInput();
   };
@@ -224,22 +241,22 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus, onReplace }: {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v') return;
     event.preventDefault(); event.stopPropagation();
     if (eventType !== 'keyDown' || ['Shift', 'Control', 'Meta', 'Alt'].includes(event.key)) return;
-    if (!/^(?:Enter|Tab|Backspace|Delete|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|Home|End|PageUp|PageDown|[a-zA-Z0-9])$/.test(event.key)) { setError('此按键暂不支持；可使用普通文本输入或粘贴。'); return; }
+    if (!/^(?:Enter|Tab|Backspace|Delete|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|Home|End|PageUp|PageDown|[a-zA-Z0-9])$/.test(event.key)) { report('此按键暂不支持；可使用普通文本输入或粘贴。'); return; }
     send({ type: 'input_key', key: event.key, modifiers: modifiers(event) });
   };
   const changeControl = async (action: 'takeover' | 'return') => {
     if (busyRef.current) return;
-    busyRef.current = true; setBusy(true); setError(null); readyRef.current = false; clearInput();
+    busyRef.current = true; setBusy(true); report(null); readyRef.current = false; clearInput();
     followEpochRef.current = browserRef.current.epoch;
     try {
       const next = await api<BrowserStatus>(`/api/browser/${encodeURIComponent(browser.id)}/${action}`, { method: 'POST', body: JSON.stringify(action === 'return' ? { epoch: browserRef.current.epoch } : {}) });
       if (aliveRef.current && next.epoch >= browserRef.current.epoch) { browserRef.current = next; statusRef.current(next); }
-    } catch { followEpochRef.current = null; socketRef.current?.close(); if (aliveRef.current) setError('操作结果尚未确认，请刷新状态后再试。'); }
+    } catch { followEpochRef.current = null; socketRef.current?.close(); if (aliveRef.current) report('操作结果尚未确认，请刷新状态后再试。'); }
     finally { busyRef.current = false; if (aliveRef.current) setBusy(false); }
   };
   const confirmReopen = async () => {
     if (busyRef.current) return;
-    busyRef.current = true; setReopening(true); setError(null); setErrorDetail(null);
+    busyRef.current = true; setReopening(true); report(null);
     const previous = browserRef.current;
     try {
       const fresh = await api<BrowserStatus>(`/api/browser/${encodeURIComponent(previous.id)}/reopen`, { method: 'POST', body: JSON.stringify({ epoch: previous.epoch }) });
@@ -249,12 +266,20 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus, onReplace }: {
       replaceRef.current(fresh);
     } catch (caught) {
       if (!aliveRef.current) return;
-      const info = errorInfo(caught); setError(info.summary); setErrorDetail(info.detail); setConfirming(false);
+      const info = errorInfo(caught); report(info.summary, info.detail); setConfirming(false);
     } finally { busyRef.current = false; if (aliveRef.current) setReopening(false); }
   };
   const address = currentDomain || browser.domain || '原地址';
+  const navEnabled = browser.state === 'human' && connected && hasFrame;
+  const beginNav = (payload: Record<string, unknown>) => {
+    const socket = socketRef.current; const current = browserRef.current;
+    if (navPendingRef.current || current.state !== 'human' || !connected || !hasFrame || socket?.readyState !== WebSocket.OPEN) return;
+    navPendingRef.current = true; setNavPending(true); navErrorRef.current = false; report(null);
+    socket.send(JSON.stringify({ ...payload, epoch: current.epoch }));
+  };
   return <div className="browser-view">
     <div className="browser-toolbar"><span className="browser-domain">当前标签页 · {currentDomain ?? browser.domain ?? '空白页'}</span><button type="button" onClick={onExpand}>{expanded ? '收起画面' : '放大画面'}</button></div>
+    <div className="browser-nav"><BrowserTabList tabs={navigation.tabs} enabled={navEnabled} pending={navPending} onSwitch={tabId => beginNav({ type: 'nav_tab', tabId })} /><BrowserAddressBar url={navigation.url} enabled={navEnabled} pending={navPending} onNavigate={url => beginNav({ type: 'nav_open', url })} /></div>
     <p className="browser-control-state" role="status">{browser.state === 'unknown' && browser.lock === 'outcome' ? '只读查看 · 状态待确认' : stateLabels[browser.state]}</p>
     {!!browser.cancelledInputs && <p className="browser-note" role="status">已取消 {browser.cancelledInputs} 条尚未发送的输入。请核对页面结果，不要重复提交。</p>}
     {browser.state === 'returning' && !!browser.queuedInputs && <p className="browser-note">正在取消尚未发送的输入，并等待当前操作响应。</p>}
@@ -262,7 +287,7 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus, onReplace }: {
     {browser.state === 'unknown' && browser.lock === 'outcome' && <p className="browser-note" role="status">上一次浏览器操作失败或结果无法确认。为避免重复操作，这个浏览器已锁定：你可以查看当前画面，但不能操作，Mira 也不能继续使用它。</p>}
     {browser.state === 'unknown' && browser.lock !== 'outcome' && <p className="browser-note" role="status">浏览器关闭未能确认。可以重试关闭并重开。</p>}
     {browser.state === 'closed' && <p className="browser-note" role="status">这个浏览器已关闭。</p>}
-    {browser.state !== 'unknown' && browser.state !== 'closed' && !!browser.message && !browser.replaces && <p className="browser-note">{browser.message}</p>}
+    {browser.state !== 'unknown' && browser.state !== 'closed' && !!browser.message && !browser.replaces && !browser.userActivity && <p className="browser-note">{browser.message}</p>}
     {!unavailable && <div className="browser-viewport">
       <canvas ref={canvasRef} aria-label="远程浏览器画面" className={hasFrame ? '' : 'browser-canvas-empty'} onPointerDown={event => { event.preventDefault(); if (browserRef.current.state !== 'human' || !readyRef.current) return; pressedRef.current = true; pressedButtonRef.current = event.button; event.currentTarget.setPointerCapture(event.pointerId); mouse(event, 'mousePressed'); }} onPointerMove={event => mouse(event, 'mouseMoved')} onPointerUp={event => { releasePointer(event); if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }} onPointerCancel={abandonPointer} onLostPointerCapture={abandonPointer} onContextMenu={event => event.preventDefault()} />
       {!hasFrame && <span className="browser-placeholder">{connected ? '等待当前页面画面…' : '画面尚未连接'}</span>}
@@ -278,7 +303,7 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus, onReplace }: {
       {browser.state === 'human' && browser.pressedButtons?.map(button => <button key={button} type="button" disabled={!connected || !hasFrame} onClick={() => send({ type: 'input_release', button })}>松开{({ left: '左键', middle: '中键', right: '右键' } as Record<string, string>)[button] ?? '鼠标'}</button>)}
       {(browser.state === 'agent' || browser.state === 'held') && <button type="button" disabled={busy || reopening} onClick={() => void changeControl('takeover')}>{browser.state === 'held' ? '继续接手' : '接手操作'}</button>}
       {['human', 'held', 'requesting'].includes(browser.state) && <button type="button" disabled={busy || reopening} onClick={() => void changeControl('return')}>交还 Mira</button>}
-      {browser.state === 'unknown' && <button ref={reopenButtonRef} type="button" disabled={reopening} onClick={() => { setError(null); setErrorDetail(null); setConfirming(true); }}>关闭并重开浏览器</button>}
+      {browser.state === 'unknown' && <button ref={reopenButtonRef} type="button" disabled={reopening} onClick={() => { report(null); setConfirming(true); }}>关闭并重开浏览器</button>}
       {!connected && !unavailable && <button type="button" disabled={busy || reopening} onClick={() => setConnectionVersion(value => value + 1)}>重新连接</button>}
     </div>
     {browser.state === 'unknown' && confirming && <div className="browser-confirm">

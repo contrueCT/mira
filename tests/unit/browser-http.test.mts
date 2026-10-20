@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { IncomingMessage } from 'node:http';
 import { BrowserControlError } from '../../apps/server/src/browser-manager.ts';
-import { BrowserFrameFence, browserInput, registerBrowserHttp, trustedBrowserUpgrade, type BrowserView } from '../../apps/server/src/browser-http.ts';
+import { BrowserFrameFence, browserInput, browserNavigation, browserPageUrl, browserTabs, registerBrowserHttp, trustedBrowserUpgrade, type BrowserView } from '../../apps/server/src/browser-http.ts';
 
 // fastify is a server dependency; resolve it from that package so this test stays outside the server project.
 const Fastify = createRequire(new URL('../../apps/server/package.json', import.meta.url))('fastify') as (options?: object) => {
@@ -93,13 +93,55 @@ test('outcome lock can take a ticket, cleanup lock cannot, and a read-only socke
   execFileSync(process.execPath, ['tests/browser-readonly-lock.mjs'], { timeout: 15_000, stdio: 'pipe' });
 });
 
+test('viewer projection keeps http(s) tab urls and titles and drops everything else', () => {
+  const title = '标'.repeat(250);
+  const tabs = browserTabs([
+    { tabId: 't1', active: true, title: '  Example  ', url: 'https://example.com/a' },
+    { tabId: 'bad id', active: false, title: 'dropped', url: 'https://example.com/nope' },
+    { tabId: 't2', active: false, title, url: 'javascript:alert(1)' },
+    { tabId: 't3', active: false, title: 5, url: 'file:///etc/passwd' },
+    { tabId: 't4', active: false, title: 'creds', url: 'https://user:s3cret@hidden.test/path' },
+    { active: true, title: 'missing', url: 'https://missing-id.test/' },
+    null,
+    { tabId: 't5', active: false, title: 'long', url: 'https://ok.test/' + 'a'.repeat(2100) },
+    ...Array.from({ length: 40 }, (_item, index) => ({ tabId: `x${index}`, active: false, title: 'extra', url: 'https://extra.test/' })),
+  ]);
+  assert.equal(tabs.length, 32);
+  assert.deepEqual(tabs.slice(0, 5).map(tab => tab.tabId), ['t1', 't2', 't3', 't4', 't5']);
+  assert.equal(tabs[0]!.title, 'Example'); assert.equal(tabs[0]!.url, 'https://example.com/a'); assert.equal(tabs[0]!.domain, 'example.com'); assert.equal(tabs[0]!.active, true);
+  assert.equal(tabs[1]!.url, null); assert.equal(tabs[1]!.domain, null); assert.equal(tabs[1]!.title.length, 200);
+  assert.equal(tabs[2]!.url, null); assert.equal(tabs[2]!.title, '');
+  assert.equal(tabs[3]!.url, null); assert.equal(tabs[3]!.domain, 'hidden.test');
+  assert.equal(JSON.stringify(tabs[3]).includes('s3cret'), false);
+  assert.equal(tabs[4]!.url, null); assert.equal(tabs[4]!.domain, 'ok.test');
+  assert.equal(tabs.at(-1)!.tabId, 'x26');
+  assert.deepEqual(browserPageUrl('https://httpbin.org/html'), { domain: 'httpbin.org', url: 'https://httpbin.org/html' });
+  assert.deepEqual(browserPageUrl('javascript:alert(1)'), { domain: null, url: null });
+  assert.deepEqual(browserPageUrl('file:///etc/passwd'), { domain: null, url: null });
+  assert.deepEqual(browserPageUrl('https://user:s3cret@hidden.test/path'), { domain: 'hidden.test', url: null });
+  assert.deepEqual(browserNavigation({ type: 'nav_open', epoch: 3, url: 'https://example.org/' }), { kind: 'open', url: 'https://example.org/' });
+  assert.deepEqual(browserNavigation({ type: 'nav_tab', epoch: 3, tabId: 't2' }), { kind: 'tab', tabId: 't2' });
+  for (const value of [
+    { type: 'nav_open', epoch: 3, url: 'https://example.org/', extra: true },
+    { type: 'nav_open', epoch: 3, url: 'x'.repeat(2049) },
+    { type: 'nav_open', epoch: 3 },
+    { type: 'nav_tab', epoch: 3, tabId: 'bad id' },
+    { type: 'nav_tab', epoch: 3, tabId: 't2', url: 'https://example.org/' },
+    { type: 'input_text', epoch: 3, text: 'nope' },
+  ]) assert.equal(browserNavigation(value), null);
+});
+
+test('owner navigation is proxied without a rendered frame, and a bad shape closes the socket', () => {
+  for (const scenario of ['owner', 'fatal', 'malformed']) execFileSync(process.execPath, ['tests/browser-navigation-proxy.mjs', scenario], { timeout: 15_000, stdio: 'pipe' });
+});
+
 test('reopen validates the epoch, calls the backend, and maps a control error to 409', async () => {
   const id = '11111111-1111-4111-8111-111111111111';
   const calls: string[] = [];
   let browser: BrowserView = { id, epoch: 4, state: 'unknown', lock: 'outcome', ownerLabel: 'Mira' };
   const app = Fastify({ logger: false, ajv: { customOptions: { removeAdditional: false, coerceTypes: false, useDefaults: false } } });
   registerBrowserHttp(app as Parameters<typeof registerBrowserHttp>[0], {
-    list: () => [browser], takeover: async () => browser, release: async () => browser, disconnect() {}, stream: async () => 'ws://127.0.0.1:9', invalidate() {}, humanInput: async () => { calls.push('humanInput'); }, isHuman: () => false, subscribe: () => () => {},
+    list: () => [browser], takeover: async () => browser, release: async () => browser, disconnect() {}, stream: async () => 'ws://127.0.0.1:9', invalidate() {}, humanInput: async () => { calls.push('humanInput'); }, humanNavigate: async () => browser, isHuman: () => false, subscribe: () => () => {},
     reopen: async (browserId, epoch) => { calls.push(`reopen:${browserId}:${epoch}`); if (epoch === 9) throw new BrowserControlError('Browser is not locked in an indeterminate state or the view is stale; refresh and retry'); return { id: '22222222-2222-4222-8222-222222222222', state: 'agent', epoch: 0, ownerLabel: 'Mira', replaces: browserId }; },
   }, new Map([['127.0.0.1', 'http://127.0.0.1']]));
   const post = (url: string, payload: unknown) => app.inject({ method: 'POST', url, headers: { 'content-type': 'application/json' }, payload: payload as object });
