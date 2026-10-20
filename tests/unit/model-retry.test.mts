@@ -6,9 +6,9 @@ import { normalizeContext } from '@earendil-works/pi-ai';
 import { PiDurableRuntime } from '@mira/runtime-pi';
 import { createModelTransport, listBuiltinCatalog } from '@mira/server';
 import type { ModelRequestFailure } from '../../apps/server/src/model-errors.ts';
-import { boundedRetryAfter, retryableTransportError, type ModelRetryStatus } from '../../apps/server/src/model-retry.ts';
+import { boundedRetryAfter, defaultModelRetryPolicy, retryDelayMs, retryableTransportError, type ModelRetryStatus } from '../../apps/server/src/model-retry.ts';
 import { MemoryWriter, effectTool, input, result, seed, assistant } from '../recovery/fixtures.mts';
-import { retryTransport, retryResponse, retryFailure, brokenPartialResponse, syntheticRetryKey, retryConfiguration, retrySelection } from '../recovery/model-retry-fixtures.mts';
+import { fastRetryPolicy, retryTransport, retryResponse, retryFailure, brokenPartialResponse, syntheticRetryKey, retryConfiguration, retrySelection } from '../recovery/model-retry-fixtures.mts';
 const context = normalizeContext({ messages: [{ role: 'user', content: 'Synthetic retry test', timestamp: 1 }] });
 
 test('actual SDK retries only the buffered request and reports transient status without publishing failed attempts', async () => {
@@ -19,7 +19,7 @@ test('actual SDK retries only the buffered request and reports transient status 
   for await (const event of stream) events.push(event);
   assert.equal(calls, 2); assert.deepEqual(bodies[0], bodies[1]);
   assert.deepEqual(events.map(event => event.type), ['done']); assert.equal((await stream.result()).stopReason, 'stop');
-  assert.deepEqual(statuses, [null, { phase: 'waiting', attempt: 2, maxAttempts: 3, delayMs: 250, reason: 'rate-limit' }, { phase: 'requesting', attempt: 2, maxAttempts: 3, delayMs: 0, reason: 'rate-limit' }, null]);
+  assert.deepEqual(statuses, [null, { phase: 'waiting', attempt: 2, maxAttempts: 5, delayMs: 250, reason: 'rate-limit' }, { phase: 'requesting', attempt: 2, maxAttempts: 5, delayMs: 0, reason: 'rate-limit' }, null]);
   assert.deepEqual(failures, [null]);
 });
 
@@ -29,12 +29,12 @@ test('transient HTTP exhaustion is bounded, preserves first and last sanitized r
   const stream = await transport.streamFn(transport.model, context); const events = [];
   for await (const event of stream) events.push(event);
   const message = await stream.result();
-  assert.equal(calls, 3); assert.deepEqual(events.map(event => event.type), ['error']);
-  assert.match(failures.at(-1)!.message, /after 3 attempts.*request-1.*failure-1.*request-3.*failure-3/);
-  assert.match(message.errorMessage!, /request-3.*failure-3/); assert.doesNotMatch(message.errorMessage!, /failure-1/);
+  assert.equal(calls, 5); assert.deepEqual(events.map(event => event.type), ['error']);
+  assert.match(failures.at(-1)!.message, /after 5 attempts.*request-1.*failure-1.*request-5.*failure-5/);
+  assert.match(message.errorMessage!, /request-5.*failure-5/); assert.doesNotMatch(message.errorMessage!, /failure-1/);
   assert.equal(failures.at(-1)!.terminalMessage, message.errorMessage);
   assert.doesNotMatch(message.errorMessage!, /synthetic-retry-key/); assert.ok(message.errorMessage!.length < 2_100);
-  assert.equal(statuses.at(-1), null); assert.deepEqual(statuses.filter(status => status?.phase === 'waiting').map(status => status!.delayMs), [250, 1_000]);
+  assert.equal(statuses.at(-1), null); assert.deepEqual(statuses.filter(status => status?.phase === 'waiting').map(status => status!.delayMs), [250, 500, 1_000, 2_000]);
 });
 
 test('authentication, validation, redirects, TLS, DNS and unknown errors are not guessed retryable', async () => {
@@ -55,7 +55,7 @@ test('known network failure codes retry through the actual SDK while retry-after
     return retryResponse();
   });
   assert.equal((await (await transport.streamFn(transport.model, context)).result()).stopReason, 'stop'); assert.equal(calls, 2);
-  assert.equal(boundedRetryAfter('900'), 10_000); assert.equal(boundedRetryAfter('0.5'), 500);
+  assert.equal(boundedRetryAfter('900'), 60_000); assert.equal(boundedRetryAfter('30'), 30_000); assert.equal(boundedRetryAfter('0.5'), 500);
   assert.equal(boundedRetryAfter('Thu, 01 Jan 1970 00:00:03 GMT', 1_000), 2_000);
   assert.equal(boundedRetryAfter('garbage'), undefined); assert.equal(boundedRetryAfter('-1'), undefined);
 });
@@ -110,7 +110,7 @@ test('exhausted partial SSE never persists text or creates a tool intent', async
   const writer = new MemoryWriter(); let calls = 0; let effects = 0;
   const transport = retryTransport(async () => { calls++; return brokenPartialResponse(); });
   await assert.rejects(new PiDurableRuntime({ writer, ...transport, tools: [effectTool(async () => { effects++; return result; })] }).run(input()), /connection reset/);
-  assert.equal(calls, 3); assert.equal(effects, 0); assert.equal(writer.state.executions.length, 0);
+  assert.equal(calls, 5); assert.equal(effects, 0); assert.equal(writer.state.executions.length, 0);
   assert.doesNotMatch(JSON.stringify(writer.state), /UNCOMMITTED_PARTIAL|partial-call/);
 });
 
@@ -200,13 +200,13 @@ test('retryable HTTP error-body resets retain the HTTP category while 2xx stream
   for (const api of ['openai-completions', 'openai-responses', 'anthropic-messages'] as const) {
     let calls = 0; const statuses: Array<ModelRetryStatus | null> = [];
     const configuration = { ...retryConfiguration, customConnections: retryConfiguration.customConnections.map(connection => ({ ...connection, api })) };
-    const transport = createModelTransport(configuration, retrySelection, { env: () => syntheticRetryKey, onRetry: status => statuses.push(status), fetch: async () => {
+    const transport = createModelTransport(configuration, retrySelection, { env: () => syntheticRetryKey, retryPolicy: fastRetryPolicy, onRetry: status => statuses.push(status), fetch: async () => {
       calls++;
       return new Response(new ReadableStream({ start(controller) { controller.error(Object.assign(new Error('Body reset'), { code: 'ECONNRESET' })); } }), { status: 503 });
     } });
     const message = await (await transport.streamFn(transport.model, context)).result();
-    assert.equal(calls, 3); assert.match(message.errorMessage!, /HTTP 503/);
-    assert.deepEqual(statuses.filter(status => status?.phase === 'waiting').map(status => status!.reason), ['server', 'server']);
+    assert.equal(calls, 5); assert.match(message.errorMessage!, /HTTP 503/);
+    assert.deepEqual(statuses.filter(status => status?.phase === 'waiting').map(status => status!.reason), ['server', 'server', 'server', 'server']);
   }
   let calls = 0; const transport = retryTransport(async () => ++calls === 1 ? brokenPartialResponse() : retryResponse());
   assert.equal((await (await transport.streamFn(transport.model, context)).result()).stopReason, 'stop'); assert.equal(calls, 2);
@@ -256,4 +256,36 @@ test('Google cloud mode changed during async credential resolution is rejected b
       assert.doesNotMatch(JSON.stringify(message), new RegExp(syntheticRetryKey));
     } finally { if (previous === undefined) delete process.env[variable]; else process.env[variable] = previous; }
   }
+});
+
+test('default retry policy: five attempts, exponential backoff with ±10% jitter, a 60s cap and Retry-After within it', () => {
+  assert.equal(defaultModelRetryPolicy.maxAttempts, 5);
+  const fixed = (random: number) => ({ ...defaultModelRetryPolicy, random: () => random });
+  assert.deepEqual([1, 2, 3, 4].map(attempt => retryDelayMs(attempt, fixed(0.5))), [1_000, 2_000, 4_000, 8_000]);
+  assert.equal(retryDelayMs(1, fixed(0)), 900); assert.equal(retryDelayMs(1, fixed(0.999_999)), 1_100);
+  for (let attempt = 1; attempt <= 4; attempt++) for (let sample = 0; sample < 50; sample++) {
+    const delay = retryDelayMs(attempt); const base = 1_000 * 2 ** (attempt - 1);
+    assert.ok(delay >= base * 0.9 && delay <= base * 1.1, `${attempt}: ${delay}`);
+  }
+  assert.equal(retryDelayMs(10, fixed(0.5)), 60_000, 'backoff never exceeds one minute');
+  assert.equal(retryDelayMs(1, fixed(0.5), 30_000), 30_000, 'Retry-After longer than backoff is honored');
+  assert.equal(retryDelayMs(1, fixed(0.5), 600_000), 60_000, 'Retry-After is capped');
+  assert.equal(retryDelayMs(3, fixed(0.5), 100), 4_000, 'a shorter Retry-After does not shorten backoff');
+});
+
+test('an idle response stream is aborted with a retryable timeout and the buffered request is retried once data stops', async () => {
+  let calls = 0; const statuses: Array<ModelRetryStatus | null> = [];
+  const transport = retryTransport(async () => {
+    if (++calls > 1) return retryResponse('Recovered after idle stream');
+    // Headers arrive, then one partial chunk, then silence.
+    return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('data: {"id":"idle","choices":[{"index":0,"delta":{"role":"assistant","content":"PARTIAL_IDLE"},"finish_reason":null}]}\n\n')); } }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  }, { streamIdleTimeoutMs: 200, onRetry: status => statuses.push(status) });
+  const started = Date.now();
+  const message = await (await transport.streamFn(transport.model, context)).result();
+  assert.equal(message.stopReason, 'stop'); assert.equal(calls, 2); assert.ok(Date.now() - started < 5_000);
+  assert.doesNotMatch(JSON.stringify(message), /PARTIAL_IDLE/);
+  assert.equal(statuses.find(status => status?.phase === 'waiting')?.reason, 'timeout');
+  const exhausted = retryTransport(async () => new Response(new ReadableStream({ start() {} }), { status: 200, headers: { 'content-type': 'text/event-stream' } }), { streamIdleTimeoutMs: 50, retryPolicy: { ...fastRetryPolicy, maxAttempts: 2, initialDelayMs: 10 } });
+  const failed = await (await exhausted.streamFn(exhausted.model, context)).result();
+  assert.equal(failed.stopReason, 'error'); assert.match(failed.errorMessage!, /no data for 0 seconds|MIRA_STREAM_IDLE_TIMEOUT/);
 });

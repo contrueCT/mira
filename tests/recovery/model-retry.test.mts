@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { LocalWebService, WebSettingsStore, createLocalHttp } from '@mira/server';
 import { createTestDatabase } from '../integration/database.mts';
-import { retryConfiguration, retrySelection, retryResponse, retryFailure, syntheticRetryKey } from './model-retry-fixtures.mts';
+import { fastRetryPolicy, retryConfiguration, retrySelection, retryResponse, retryFailure, syntheticRetryKey } from './model-retry-fixtures.mts';
 
 async function until(check: () => Promise<boolean>, message: string): Promise<void> {
   const deadline = Date.now() + 10_000;
@@ -34,7 +34,9 @@ test('real PG/service/SDK retries after one committed effect, exposes actual sta
     try {
       const response = await app.inject({ url: '/api/status', headers: { host: '127.0.0.1:4318', 'x-mira-client': 'web' } });
       assert.equal(response.statusCode, 200); assert.equal(response.json().state, 'working');
-      assert.deepEqual(response.json().modelRetry, { phase: 'waiting', attempt: 2, maxAttempts: 3, delayMs: 250, reason: 'server' });
+      // Default production policy: five attempts, first backoff 1s ±10% jitter.
+      const retry = response.json().modelRetry; assert.deepEqual({ ...retry, delayMs: undefined }, { phase: 'waiting', attempt: 2, maxAttempts: 5, delayMs: undefined, reason: 'server' });
+      assert.ok(retry.delayMs >= 900 && retry.delayMs <= 1_100, String(retry.delayMs));
       assert.equal(response.json().error, null); assert.doesNotMatch(response.body, /synthetic-retry-key|capacity temporarily/);
     } finally { await app.close(); }
     await until(async () => (await service!.status()).state !== 'working', 'Retry did not finish');
@@ -81,20 +83,20 @@ test('real PG service keeps first-last HTTP diagnostics separate from its persis
   let calls = 0;
   const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'retry-terminal', sourceDirectory: process.cwd(), workingDirectory: root, miraHome: root,
     spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), autoCompaction: { enabled: false }, dreaming: { enabled: false },
-    modelFetch: (async () => retryFailure(503, `PUBLIC_FAILURE_${++calls}`, `attempt-${calls}`)) as typeof globalThis.fetch };
+    modelRetryPolicy: fastRetryPolicy, modelFetch: (async () => retryFailure(503, `PUBLIC_FAILURE_${++calls}`, `attempt-${calls}`)) as typeof globalThis.fetch };
   try {
     await settings(options.settingsFile); service = await LocalWebService.open(options);
     await service.submit({ id: 'terminal-input', text: 'Synthetic failing request', occurredAt: '2026-10-14T00:00:00.000Z' });
     await until(async () => (await service!.status()).state !== 'working', 'Request did not settle');
-    assert.equal((await service.status()).state, 'error'); assert.equal(calls, 3);
+    assert.equal((await service.status()).state, 'error'); assert.equal(calls, 5);
     const app = createLocalHttp({ backend: service, port: 4318 });
     try {
       const response = await app.inject({ url: '/api/status', headers: { host: '127.0.0.1:4318', 'x-mira-client': 'web' } });
-      assert.match(response.json().error, /after 3 attempts.*PUBLIC_FAILURE_1.*PUBLIC_FAILURE_3/);
+      assert.match(response.json().error, /after 5 attempts.*PUBLIC_FAILURE_1.*PUBLIC_FAILURE_5/);
       assert.equal(response.json().modelRetry, undefined);
     } finally { await app.close(); }
     const records = JSON.stringify((await db.admin.query('SELECT envelope FROM context_records ORDER BY version')).rows);
-    assert.match(records, /PUBLIC_FAILURE_3/); assert.doesNotMatch(records, /PUBLIC_FAILURE_1|PUBLIC_FAILURE_2/);
+    assert.match(records, /PUBLIC_FAILURE_5/); assert.doesNotMatch(records, /PUBLIC_FAILURE_[1-4]/);
   } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
 

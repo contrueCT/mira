@@ -10,9 +10,31 @@ export interface ModelRetryStatus {
   delayMs: number;
   reason: ModelRetryReason;
 }
-const maxAttempts = 3;
-const delays = [250, 1_000] as const;
-const maxRetryAfterMs = 10_000;
+/** Codex/dsh-style bounded retry: about five attempts with exponential backoff
+ * and ±10% jitter, never waiting more than a minute. A provider Retry-After is
+ * honored up to the same cap. Only a buffered, uncommitted request is retried. */
+export interface ModelRetryPolicy {
+  maxAttempts: number;
+  initialDelayMs: number;
+  maxDelayMs: number;
+  /** Fractional spread around each backoff, e.g. 0.1 for ±10%. */
+  jitterRatio: number;
+  /** Random source in [0, 1); injectable for deterministic tests. */
+  random: () => number;
+}
+export const defaultModelRetryPolicy: Readonly<ModelRetryPolicy> = Object.freeze({ maxAttempts: 5, initialDelayMs: 1_000, maxDelayMs: 60_000, jitterRatio: 0.1, random: Math.random });
+const maxRetryAfterMs = defaultModelRetryPolicy.maxDelayMs;
+/** Delay before attempt `attempt + 1`, after `attempt` failed attempts. */
+export function retryDelayMs(attempt: number, policy: ModelRetryPolicy = defaultModelRetryPolicy, retryAfterMs?: number): number {
+  const base = Math.min(policy.maxDelayMs, policy.initialDelayMs * 2 ** Math.max(0, attempt - 1));
+  const jittered = Math.round(base * (1 - policy.jitterRatio + 2 * policy.jitterRatio * policy.random()));
+  return Math.min(policy.maxDelayMs, Math.max(jittered, retryAfterMs ?? 0));
+}
+function resolvePolicy(value: Partial<ModelRetryPolicy> | undefined, attemptLimit: number | undefined): ModelRetryPolicy {
+  const policy = { ...defaultModelRetryPolicy, ...value, ...(attemptLimit === undefined ? {} : { maxAttempts: attemptLimit }) };
+  if (!Number.isSafeInteger(policy.maxAttempts) || policy.maxAttempts < 1 || policy.maxAttempts > 10 || !(policy.initialDelayMs >= 0) || !(policy.maxDelayMs >= policy.initialDelayMs) || policy.maxDelayMs > 300_000 || !(policy.jitterRatio >= 0 && policy.jitterRatio < 1)) throw Error('Invalid model retry policy');
+  return policy;
+}
 
 export function retryableHttpStatus(status: number): ModelRetryReason | undefined {
   if (status === 429) return 'rate-limit';
@@ -26,7 +48,7 @@ export function retryableTransportError(error: unknown): ModelRetryReason | unde
   for (let current = error, depth = 0; current && typeof current === 'object' && depth < 3 && !seen.has(current); depth++) {
     seen.add(current);
     const value = current as Record<string, unknown>;
-    if (['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'].includes(String(value['code']))) return 'timeout';
+    if (['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'MIRA_STREAM_IDLE_TIMEOUT'].includes(String(value['code']))) return 'timeout';
     if (['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'EAI_AGAIN', 'UND_ERR_SOCKET'].includes(String(value['code']))) return 'connection';
     current = value['cause'];
   }
@@ -54,8 +76,11 @@ export function retryModelRequest(
   signal: AbortSignal | undefined,
   onRetry: ((status: ModelRetryStatus | null) => void) | undefined,
   onFailure: ((failure: ModelRequestFailure | null) => void) | undefined,
-  attemptLimit: number = maxAttempts,
+  attemptLimit?: number,
+  retryPolicy?: Partial<ModelRetryPolicy>,
 ): AssistantMessageEventStream {
+  const policy = resolvePolicy(retryPolicy, attemptLimit);
+  const limit = policy.maxAttempts;
   const output = createAssistantMessageEventStream();
   onRetry?.(null); onFailure?.(null);
   void (async () => {
@@ -63,7 +88,7 @@ export function retryModelRequest(
     let attemptNumber = 0;
     let terminal: Extract<AssistantMessageEvent, { type: 'error' }> | undefined;
     try {
-      for (let attempt = 1; attempt <= attemptLimit; attempt++) {
+      for (let attempt = 1; attempt <= limit; attempt++) {
         attemptNumber = attempt;
         const failure: ModelFailureContext = {};
         let diagnostic: ModelRequestFailure | undefined;
@@ -74,7 +99,7 @@ export function retryModelRequest(
           terminal = event;
           first ??= diagnostic;
           if (event.reason === 'aborted' || signal?.aborted) { output.push(event); return; }
-          if (!failure.retryReason || attempt === attemptLimit) {
+          if (!failure.retryReason || attempt === limit) {
             if (diagnostic) {
               const final = ModelRequestFailure.afterAttempts(first ?? diagnostic, diagnostic, attempt);
               // Runtime/Pi classification must see only the terminal failure;
@@ -84,8 +109,8 @@ export function retryModelRequest(
             }
             output.push(event); return;
           }
-          const delayMs = Math.max(delays[attempt - 1]!, failure.retryAfterMs ?? 0);
-          const status = { phase: 'waiting' as const, attempt: attempt + 1, maxAttempts: attemptLimit, delayMs, reason: failure.retryReason };
+          const delayMs = retryDelayMs(attempt, policy, failure.retryAfterMs);
+          const status = { phase: 'waiting' as const, attempt: attempt + 1, maxAttempts: limit, delayMs, reason: failure.retryReason };
           onRetry?.(status);
           await wait(delayMs, signal);
           signal?.throwIfAborted();
