@@ -3,7 +3,11 @@ import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { normalizeContext } from '@earendil-works/pi-ai';
 import { builtinModels, getBuiltinModelDataGeneratedAt } from '@earendil-works/pi-ai/providers/all';
-import { getBuiltinCatalogModel, listBuiltinCatalog, parseModelConfiguration, createModelTransport, type CustomConnection, type CustomProtocol } from '@mira/server';
+import { getBuiltinCatalogModel, listBuiltinCatalog, parseModelConfiguration, createModelTransport as createRealModelTransport, type CustomConnection, type CustomProtocol } from '@mira/server';
+// These tests check diagnostics, not backoff timing: keep the production retry
+// count and classification but use millisecond delays (ADR 0029 amendment).
+const quickRetry = { initialDelayMs: 1, maxDelayMs: 4, jitterRatio: 0 };
+const createModelTransport: typeof createRealModelTransport = (configuration, selection, options = {}) => createRealModelTransport(configuration, selection, { retryPolicy: quickRetry, ...options });
 import { PiDurableRuntime } from '@mira/runtime-pi';
 import { MemoryWriter, effectTool, result, input } from '../recovery/fixtures.mts';
 
@@ -143,7 +147,10 @@ test('provider error bodies and injected transport failures do not expose creden
 
 test('real adapter composition retains full Mira prompt, same-round tool intent, and recovery context offline', async () => {
   const writer = new MemoryWriter(); let calls = 0; let effects = 0; const requests: string[] = [];
-  const transport = createModelTransport(config(), { kind: 'custom', connection: 'openai', model: 'manual-id' }, { env: () => syntheticKey, fetch: async (_url, init) => {
+  // The full Mira prompt plus the Chinese summary prompt (CJK-aware estimate,
+  // ~1 token per character) and output reserve no longer fit an 8K model.
+  const roomy = { builtinCredentials: {}, customConnections: [{ ...connection(), models: [{ ...connection().models[0]!, contextWindow: 16_384 }] }] };
+  const transport = createModelTransport(roomy, { kind: 'custom', connection: 'openai', model: 'manual-id' }, { env: () => syntheticKey, fetch: async (_url, init) => {
     calls++; requests.push(String(init?.body)); return completions('After tool', calls === 1);
   } });
   const tool = effectTool(async () => { effects++; assert.equal(writer.state.executions.length, 1); return result; });
