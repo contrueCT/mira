@@ -460,14 +460,14 @@ test('real browser observes request retry through PG and the credential-bound SD
     // explicit refresh or maximum Retry-After can conceal a stale idle timer here.
     await page.clock.runFor(1199); expect(statusRequests).toHaveLength(workingReads);
     await page.clock.runFor(1);
-    await expect(page.getByRole('status').filter({ hasText: '等待重试（第 2/3 次）' })).toBeVisible();
+    await expect(page.getByRole('status').filter({ hasText: '等待重试（第 2/5 次）' })).toBeVisible();
     expect(statusRequests).toHaveLength(workingReads + 1);
     expect(await page.evaluate(() => Date.now()) - clockStart).toBe(1200);
     expect((await service!.status()).state).toBe('working'); expect((await service!.status()).error).toBeNull();
     await page.screenshot({ path: testInfo.outputPath('model-retry-real-desktop.png'), fullPage: true, animations: 'disabled' });
     await expect.poll(() => calls).toBe(3);
     await page.clock.runFor(1200);
-    await expect(page.getByRole('status').filter({ hasText: '正在重试模型请求（第 2/3 次）' })).toBeVisible();
+    await expect(page.getByRole('status').filter({ hasText: '正在重试模型请求（第 2/5 次）' })).toBeVisible();
     expect((await service!.status()).modelRetry?.phase).toBe('requesting');
     await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({ path: testInfo.outputPath('model-retry-real-narrow.png'), fullPage: true, animations: 'disabled' });

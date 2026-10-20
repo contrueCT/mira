@@ -51,7 +51,7 @@ export function headTail(text: string, bytes: number): string {
   for (let round = 0; round < 4; round++) {
     const slack = bytes - Buffer.byteLength(head) - Buffer.byteLength(marker(total - Buffer.byteLength(head) - tailLength)) - tailLength;
     if (slack <= 0) break;
-    headBudget += slack; const grown = prefix(text, headBudget);
+    headBudget = Buffer.byteLength(head) + slack; const grown = prefix(text, headBudget);
     if (grown === head) break; head = grown;
   }
   return `${head}${marker(total - Buffer.byteLength(head) - tailLength)}${tail}`;

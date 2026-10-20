@@ -8,7 +8,7 @@ import { type ToolResultMessage } from '@earendil-works/pi-ai';
 import { createHistoryTools } from '@mira/runtime-pi';
 import { FixtureHistoryReader, fixtureMiraId, fixtureHistoryIds } from '../../scripts/tool-usability-fixtures.mts';
 import type { HistoryTextPage } from '@mira/life';
-import { TOOL_OUTPUT_TEXT_BYTES } from '../../packages/runtime-pi/src/tool-output.ts';
+import { headTail, TOOL_OUTPUT_TEXT_BYTES } from '../../packages/runtime-pi/src/tool-output.ts';
 import { assistant, effectTool, input, model, runtime, scripted, seed, streamOf, toolCalls, MemoryWriter, overrideWriter } from '../recovery/fixtures.mts';
 import { fullOutput, largeToolText, outputPath, outputSpool } from '../recovery/tool-output-fixtures.mts';
 
@@ -349,4 +349,15 @@ test('unmergeable opaque text separators fail before dispatch without losing can
     assert.deepEqual(writer.state, before); assert.equal(effects, 1);
     assert.deepEqual(JSON.parse((await readFile(target, 'utf8')).trimEnd().split('\n').slice(1).map(line => JSON.parse(line).text).join('')), canonical);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('head+tail previews never exceed the byte budget, fill it for ASCII and keep the trailing hint', () => {
+  for (let bytes = 200; bytes < 20_000; bytes += 37) {
+    const mixed = headTail(largeToolText, bytes);
+    assert.ok(Buffer.byteLength(mixed) <= bytes && Buffer.byteLength(mixed) >= bytes - 3, `multibyte ${bytes}: ${Buffer.byteLength(mixed)}`);
+    assert.ok(mixed.endsWith('FULL_ORIGINAL_TAIL') && /omitted from the middle of this preview/.test(mixed));
+    const ascii = headTail(`${'x'.repeat(40_000)}\n[Showing lines 1-9 of 9. Full output: /tmp/out.log]`, bytes);
+    assert.equal(Buffer.byteLength(ascii), bytes);
+    if (bytes > 400) assert.ok(ascii.endsWith('[Showing lines 1-9 of 9. Full output: /tmp/out.log]'));
+  }
 });
