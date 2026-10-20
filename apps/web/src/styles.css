@@ -26,7 +26,6 @@ button:disabled { opacity: .48; }
 .app-header { flex: 0 0 auto; min-height: 174px; position: relative; padding: 28px 64px 22px; background: #fff; z-index: 1; }
 .identity { display: flex; align-items: center; flex-direction: column; text-align: center; }
 .mira-ring { width: 66px; height: 66px; border: 19px solid var(--lavender); border-radius: 50%; }
-.identity-text { display: flex; flex-direction: column; align-items: center; min-width: 0; }
 .identity h1 { margin: 8px 0 0; font-size: 21px; line-height: 1.25; font-weight: 600; letter-spacing: -.65px; }
 .identity-detail { color: #717580; font-size: 11px; line-height: 1.5; margin: 7px 0 0; display: flex; align-items: center; justify-content: center; gap: 6px; flex-wrap: wrap; max-width: 560px; overflow-wrap: anywhere; }
 .status-dot { flex-shrink: 0; height: 5px; width: 5px; border-radius: 50%; background: #aabbb3; }
@@ -167,17 +166,11 @@ button:disabled { opacity: .48; }
   .mira-ring { width: 76px; height: 76px; border-width: 22px; }
 }
 @media (max-width: 600px) {
-  /* One compact row on phones: the timeline keeps most of the screen. */
-  .app-header { min-height: 0; padding: 10px 56px 10px 16px; border-bottom: 1px solid var(--line); }
-  .identity { flex-direction: row; text-align: left; gap: 10px; }
-  .mira-ring { width: 30px; height: 30px; border-width: 9px; flex-shrink: 0; }
-  .identity h1 { font-size: 17px; margin: 0; }
-  .identity-detail { font-size: 11px; gap: 5px; margin: 0; justify-content: flex-start; }
-  .identity-text { align-items: flex-start; }
-  .identity-detail .status-dot { display: inline-block; vertical-align: middle; margin: -2px 5px 0 0; }
-  .identity-detail .detail-divider, .identity-detail .mode-label { margin: 0 5px; }
-  .identity-detail { flex-wrap: nowrap; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
-  .settings-button { top: 50%; right: 8px; transform: translateY(-50%); }
+  .app-header { min-height: 139px; padding: 21px 42px 17px; }
+  .mira-ring { width: 50px; height: 50px; border-width: 15px; }
+  .identity h1 { font-size: 19px; margin-top: 6px; }
+  .identity-detail { font-size: 11px; gap: 5px; margin-top: 6px; }
+  .settings-button { top: 17px; right: 12px; }
   .icon-button { width: 36px; height: 36px; }
   .timeline-content, .composer-section { width: calc(100% - 32px); }
   .message-bubble { max-width: 91%; padding: 12px 17px; font-size: 15px; line-height: 1.7; border-radius: 22px; }
