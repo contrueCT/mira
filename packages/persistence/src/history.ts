@@ -44,7 +44,7 @@ const sources: Record<HistoryKind, Source> = {
     integrity: 'true',
   },
 };
-function originalSql(): string {
+function originalSql(idParameter = '$2::uuid'): string {
   return kinds.map(sourceKind => {
     const source = sources[sourceKind];
     return `SELECT json_build_object('kind', h.kind, 'id', h.id, 'miraId', h.mira_id,
@@ -52,7 +52,7 @@ function originalSql(): string {
       (s.${source.id} IS NOT NULL AND (${source.integrity})) AS valid
       FROM history_records AS h LEFT JOIN ${source.table} AS s ON
         s.${source.id} = h.id AND s.mira_id = h.mira_id
-      WHERE h.mira_id = $1 AND h.id = $2::uuid AND h.kind = '${sourceKind}'`;
+      WHERE h.mira_id = $1 AND h.id = ${idParameter} AND h.kind = '${sourceKind}'`;
   }).join('\nUNION ALL\n');
 }
 /** Fixed management metadata, independent of coalesced membership size. */
@@ -93,6 +93,20 @@ function selectedKinds(value: unknown): HistoryKind[] {
   selected.forEach(kind);
   // Filter order has no effect on pagination or cursor scope.
   return kinds.filter(sourceKind => selected.includes(sourceKind));
+}
+/** Ordered page metadata of the selected kinds, shared by paging and cursor lookup. */
+function pageMatches(selected: HistoryKind[]): string {
+  return selected.map(sourceKind => {
+    const source = sources[sourceKind];
+    // Project only immutable reference metadata. Even a multi-megabyte private
+    // system/runtime payload must not consume the history page's byte budget.
+    const normalizable = `pg_input_is_valid(${source.timestamp}, 'timestamp with time zone')`;
+    return `SELECT '${sourceKind}'::text AS kind, ${source.id}::text AS id, ${source.timestamp} AS occurred_at,
+      CASE WHEN ${normalizable} THEN 1 ELSE 0 END AS time_group,
+      CASE WHEN ${normalizable} THEN extract(epoch FROM (${source.timestamp})::timestamptz) ELSE 0 END AS occurred_time,
+      CASE WHEN ${normalizable} THEN '' ELSE ${source.timestamp} END AS raw_timestamp,
+      (${source.integrity}) AS valid FROM ${source.table} AS s WHERE mira_id = $1`;
+  }).join('\nUNION ALL\n');
 }
 interface PageBoundary { group: number; timestamp: string; rawTimestamp: string; kind: HistoryKind; id: string }
 interface PageRow extends HistoryPageHit { cursorGroup: number; cursorTimestamp: string; cursorRawTimestamp: string }
@@ -177,39 +191,77 @@ function validateEntry(entry: HistoryEntry, miraId: string, request: HistoryRead
   } catch { throw new HistoryError('corrupt', 'History source identifiers or envelope metadata are inconsistent'); }
 }
 
+interface HistorySession { client: Client; failure(): Error | undefined; closed: boolean }
 /** Internal adapter constructed by PostgresPersistence.history. One independent
- * read-only transaction per request; it never registers a Mira or takes a lock. */
+ * read-only transaction per request, or one shared snapshot transaction inside
+ * `snapshot`; it never registers a Mira or takes a lock. */
 export class PostgresHistoryReader implements RunHistoryReader {
   readonly miraId: string;
   readonly #options: PostgresOptions;
-  constructor(options: PostgresOptions, miraId: string) {
-    string(miraId, 'Mira ID'); this.miraId = miraId; this.#options = { ...options };
+  readonly #session: HistorySession | undefined;
+  constructor(options: PostgresOptions, miraId: string, session?: HistorySession) {
+    string(miraId, 'Mira ID'); this.miraId = miraId; this.#options = { ...options }; this.#session = session;
   }
-  async #query(sql: string, parameters: unknown[]): Promise<BoundedRow | undefined> {
+  /** Opens a connected client inside a READ ONLY transaction with this reader's
+   * scope and limits. The caller must COMMIT/ROLLBACK and end it. */
+  async #begin(snapshot: boolean): Promise<{ client: Client; failure(): Error | undefined }> {
     const client = new Client({
       connectionString: this.#options.connectionString,
       application_name: this.#options.applicationName ?? 'mira-history-reader',
       connectionTimeoutMillis: 5_000,
     });
     let failure: Error | undefined;
-    let inTransaction = false;
     client.on('error', (error: Error) => { failure = error; });
     try {
       await client.connect();
-      await client.query('BEGIN READ ONLY');
-      inTransaction = true;
+      await client.query(snapshot ? 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY' : 'BEGIN READ ONLY');
       await client.query(`SET LOCAL search_path TO "${this.#options.schema ?? 'public'}"`);
       await client.query("SET LOCAL statement_timeout = '5s'");
+      // A shared snapshot must never be left open by a stalled caller.
+      if (snapshot) await client.query("SET LOCAL idle_in_transaction_session_timeout = '15s'");
       await client.query("SET LOCAL TIME ZONE 'UTC'");
-      const result = await client.query<BoundedRow>(sql, parameters);
-      await client.query('COMMIT');
-      inTransaction = false;
+    } catch (error) {
+      await client.end().catch(() => {});
+      throw error;
+    }
+    return { client, failure: () => failure };
+  }
+  async #query(sql: string, parameters: unknown[]): Promise<BoundedRow | undefined> {
+    if (this.#session) {
+      if (this.#session.closed) invalid('History snapshot reader used after its snapshot ended');
+      // Shared snapshot: the transaction and limits were set by `snapshot`.
+      const result = await this.#session.client.query<BoundedRow>(sql, parameters);
+      const failure = this.#session.failure();
       if (failure) throw failure;
       return result.rows[0];
+    }
+    const { client, failure } = await this.#begin(false);
+    try {
+      const result = await client.query<BoundedRow>(sql, parameters);
+      await client.query('COMMIT');
+      if (failure()) throw failure();
+      return result.rows[0];
     } catch (error) {
-      if (inTransaction) await client.query('ROLLBACK').catch(() => {});
+      await client.query('ROLLBACK').catch(() => {});
       throw error;
     } finally { await client.end().catch(() => {}); }
+  }
+  async snapshot<T>(work: (reader: RunHistoryReader) => Promise<T>): Promise<T> {
+    if (typeof work !== 'function') invalid('History snapshot requires a function');
+    // Nested snapshots share the outer transaction rather than opening another.
+    if (this.#session) return work(this);
+    const session: HistorySession = { ...await this.#begin(true), closed: false };
+    let open = true;
+    try {
+      const result = await work(new PostgresHistoryReader(this.#options, this.miraId, session));
+      await session.client.query('COMMIT'); open = false;
+      const failure = session.failure();
+      if (failure) throw failure;
+      return result;
+    } catch (error) {
+      if (open) await session.client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally { session.closed = true; await session.client.end().catch(() => {}); }
   }
   async findEventRun(externalEventId: string): Promise<HistoryEventRun | null> {
     string(externalEventId, 'external event ID', 65_536);
@@ -379,17 +431,7 @@ export class PostgresHistoryReader implements RunHistoryReader {
     const selected = selectedKinds(request.kinds);
     const scope = cursorScope(this.miraId, selected);
     const boundary = request.before === undefined ? null : decodeCursor(request.before, scope, selected);
-    const matches = selected.map(sourceKind => {
-      const source = sources[sourceKind];
-      // Project only immutable reference metadata. Even a multi-megabyte private
-      // system/runtime payload must not consume the history page's byte budget.
-      const normalizable = `pg_input_is_valid(${source.timestamp}, 'timestamp with time zone')`;
-      return `SELECT '${sourceKind}'::text AS kind, ${source.id}::text AS id, ${source.timestamp} AS occurred_at,
-        CASE WHEN ${normalizable} THEN 1 ELSE 0 END AS time_group,
-        CASE WHEN ${normalizable} THEN extract(epoch FROM (${source.timestamp})::timestamptz) ELSE 0 END AS occurred_time,
-        CASE WHEN ${normalizable} THEN '' ELSE ${source.timestamp} END AS raw_timestamp,
-        (${source.integrity}) AS valid FROM ${source.table} AS s WHERE mira_id = $1`;
-    }).join('\nUNION ALL\n');
+    const matches = pageMatches(selected);
     const order = 'time_group DESC, occurred_time DESC, raw_timestamp COLLATE "C" DESC, kind COLLATE "C" DESC, id COLLATE "C" DESC';
     const sql = `WITH matches AS (${matches}), limited AS MATERIALIZED
       (SELECT * FROM matches WHERE $3::integer IS NULL OR
@@ -424,6 +466,34 @@ export class PostgresHistoryReader implements RunHistoryReader {
       nextCursor: result.hasMore && oldest ? encodeCursor(scope, { group: oldest.cursorGroup, timestamp: oldest.cursorTimestamp, rawTimestamp: oldest.cursorRawTimestamp, kind: oldest.kind, id: oldest.id }) : null,
     };
   }
+  async pageCursorThrough(request: { id: string; kinds?: HistoryKind[] }): Promise<{ before: string | null } | null> {
+    object(request); historyId(request.id);
+    if (Object.keys(request).some(key => key !== 'id' && key !== 'kinds')) invalid('History cursor lookup accepts only id and kinds');
+    const selected = selectedKinds(request.kinds);
+    const scope = cursorScope(this.miraId, selected);
+    // The boundary is the next newer record: `before` it, a page's newest hit is
+    // the requested record. Same ordering, scope and integrity as `page`.
+    const key = (alias: string) => `(${alias}.time_group, ${alias}.occurred_time, ${alias}.raw_timestamp COLLATE "C", ${alias}.kind COLLATE "C", ${alias}.id COLLATE "C")`;
+    const sql = `WITH matches AS (${pageMatches(selected)}), target AS MATERIALIZED (SELECT * FROM matches WHERE id = $2::text),
+      newer AS MATERIALIZED (SELECT m.* FROM matches AS m, target AS t WHERE ${key('m')} > ${key('t')}
+        ORDER BY m.time_group, m.occurred_time, m.raw_timestamp COLLATE "C", m.kind COLLATE "C", m.id COLLATE "C" LIMIT 1)
+      SELECT json_build_object('found', (SELECT count(*) FROM target) = 1,
+        'newer', (SELECT json_build_object('kind', kind, 'id', id, 'cursorGroup', time_group, 'cursorTimestamp', occurred_time::text, 'cursorRawTimestamp', raw_timestamp) FROM newer)) AS body,
+        coalesce((SELECT bool_and(valid IS TRUE) FROM (SELECT valid FROM target UNION ALL SELECT valid FROM newer) AS checked), true) AS valid`;
+    const result = response<{ found: boolean; newer: { kind: HistoryKind; id: string; cursorGroup: number; cursorTimestamp: string; cursorRawTimestamp: string } | null }>(
+      await this.#query(bound(sql, '$3'), [this.miraId, request.id, MAX_PAGE_BYTES]));
+    if (!result || typeof result.found !== 'boolean') throw new HistoryError('corrupt', 'Invalid history cursor lookup');
+    if (!result.found) return null;
+    const newer = result.newer;
+    if (!newer) return { before: null };
+    try {
+      kind(newer.kind); historyId(newer.id); timestampKey(newer.cursorTimestamp);
+      if (!selected.includes(newer.kind) || (newer.cursorGroup !== 0 && newer.cursorGroup !== 1)) throw Error();
+      if (newer.cursorGroup === 0) { string(newer.cursorRawTimestamp, 'original timestamp', 65_536); if (newer.cursorTimestamp !== '0') throw Error(); }
+      else if (newer.cursorRawTimestamp !== '') throw Error();
+    } catch { throw new HistoryError('corrupt', 'Invalid history cursor lookup metadata'); }
+    return { before: encodeCursor(scope, { group: newer.cursorGroup, timestamp: newer.cursorTimestamp, rawTimestamp: newer.cursorRawTimestamp, kind: newer.kind, id: newer.id }) };
+  }
   async read(request: HistoryReadRequest): Promise<HistoryEntry | null> {
     object(request); historyId(request.id);
     if (Object.keys(request).some(key => key !== 'id' && key !== 'maxBytes')) invalid('History read accepts only id and maxBytes');
@@ -433,6 +503,29 @@ export class PostgresHistoryReader implements RunHistoryReader {
     const entry = response<HistoryEntry>(await this.#query(bound(originalSql(), '$3'), [this.miraId, request.id, maxBytes]));
     if (entry) validateEntry(entry, this.miraId, request);
     return entry;
+  }
+  async readBatch(request: { ids: string[]; maxBytes?: number }): Promise<Array<{ id: string; entry: HistoryEntry | null; tooLarge: boolean }>> {
+    object(request);
+    if (Object.keys(request).some(key => key !== 'ids' && key !== 'maxBytes') || !Array.isArray(request.ids) || request.ids.length > 10) invalid('Invalid history batch');
+    request.ids.forEach(historyId);
+    const maxBytes = request.maxBytes ?? 65_536; integer(maxBytes, 1, 1_048_576, 'read budget');
+    if (!request.ids.length) return [];
+    // Each original is bounded inside SQL, before transfer. The lateral lookup
+    // retains read's registry/type/integrity checks and current-Mira scope.
+    const sql = `SELECT json_build_object('items', json_agg(json_build_object('id', ids.id,
+        'entry', CASE WHEN octet_length(original.body::text) <= $3 THEN original.body ELSE NULL END,
+        'tooLarge', coalesce(octet_length(original.body::text) > $3, false)) ORDER BY ids.n)) AS body,
+        bool_and(CASE WHEN original.body IS NULL THEN true ELSE original.valid IS TRUE END) AS valid
+      FROM unnest($2::uuid[]) WITH ORDINALITY ids(id, n)
+      LEFT JOIN LATERAL (${originalSql('ids.id')}) original ON true`;
+    const result = response<{ items: Array<{ id: string; entry: HistoryEntry | null; tooLarge: boolean }> }>(await this.#query(bound(sql, '$4'),
+      [this.miraId, request.ids, maxBytes, request.ids.length * (maxBytes + 1024)]));
+    if (!result || !Array.isArray(result.items) || result.items.length !== request.ids.length) throw new HistoryError('corrupt', 'Invalid history batch response');
+    for (const [index, item] of result.items.entries()) {
+      if (item.id !== request.ids[index] || typeof item.tooLarge !== 'boolean' || (item.tooLarge && item.entry !== null)) throw new HistoryError('corrupt', 'Invalid history batch entry');
+      if (item.entry) validateEntry(item.entry, this.miraId, { id: item.id, maxBytes });
+    }
+    return result.items;
   }
   async readText(request: HistoryTextRequest): Promise<HistoryTextPage | null> {
     object(request); historyId(request.id);

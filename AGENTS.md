@@ -80,7 +80,7 @@ pnpm check
 - 超限唤醒保存普通文本文件并告知路径；复用普通文件工具，不构建专用消息读取/分页服务
 - [ADR 0012](docs/adr/0012-global-history-identities.md)：四类 History 采用全局 UUID 薄身份表；read 只接收 ID，外部事件/工具协议标识分离；Memory commit 保存直接 History-Id。新空库/数据目录启动，不添加旧库检测、映射、兼容或清理
 - [ADR 0011](docs/adr/0011-conversation-context-and-skills.md)：正常聊天不展示工具活动；Wake 精简正文但保留业务 payload；Pi Skills 按优先级扫描源码 skills/、Mira home skills/ 与运行用户 ~/.agents/skills/，每自然请求更新目录、正文按需 read，不额外 Wake
-- 用户批准的 v0.2 纯文本聊天、History 与委派优先修订保留无关原文；来源 manifest 同时记录原始与当前 SHA，不可把修订伪称原始附件字节；ADR 0038 以明确模板身份校验当前/上一已发布快照，在自然请求边界升级，保留冻结 Memory 与原始历史
+- 用户批准的 v0.2 纯文本聊天、History、委派优先与执行沟通修订保留无关原文；来源 manifest 同时记录原始与当前 SHA，不可把修订伪称原始附件字节；ADR 0038/0044 以明确模板身份校验当前及已知已发布快照，在自然请求边界升级，保留冻结 Memory 与原始历史
 - 早期开发只维护当前 v0.5/v0.2 设计，不保留旧 State/Prompt 配置、别名或迁移层；继续保护当前持久上下文、历史、恢复/压缩与 Memory Git 完整性，不引入用户数据清理/重置
 - 重要技术选择与范围变化先向用户确认，状态记录在 `docs/adr/`；不能把建议当批准
 - 每轮实现及修复都使用全新、独立 `gpt-6.1-sol` / `max` 审查，不继承实现对话
@@ -109,3 +109,4 @@ pnpm check
 
 
 - [ADR 0043](docs/adr/0043-message-replies-timeline.md)：主 Timeline 紧凑时间分组及双向 History-ID 回复；引用是服务端验证的有界数据快照，不升级权限，子任务不发布主聊天回复。真实浏览器门禁 `test:replies:e2e` 与合成 UI/离线测试分开。
+- [ADR 0044](docs/adr/0044-task-communication-prompt.md)：执行前简短回应，长任务在自然请求机会提供有用反馈；主 assistant 完整文字随原 Timeline 投递，非 token 流。保持委派优先、冻结 Memory 与已发布模板身份，无新增 timer/UI。

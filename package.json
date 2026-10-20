@@ -30,6 +30,7 @@
     "terminal:prepare": "node scripts/prepare-terminal.mts",
     "test:mcp:e2e": "node scripts/run-real-web-tests.mts mcp",
 
+    "test:pagination:e2e": "node scripts/run-real-web-tests.mts pagination",
     "test:replies:e2e": "node scripts/run-real-web-tests.mts replies",
     "test:browser:e2e": "node scripts/run-real-web-tests.mts browser"
   },

@@ -1,15 +1,19 @@
-import { providerEntered } from './service-wait-fixture.mts';
+import { boundedFixtureWait, providerEntered } from './service-wait-fixture.mts';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile, realpath } from 'node:fs/promises';
+import { mkdtemp, open, readFile, rm, writeFile, realpath, type FileHandle } from 'node:fs/promises';
+import { constants, watch, type FSWatcher } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { crc32, deflateSync } from 'node:zlib';
 import { createLocalHttp, LocalWebService, WebHttpError, WebSettingsStore, listBuiltinCatalog, type WebSettings } from '@mira/server';
 import { createAssistantMessageEventStream, getCurrentTools, type TranscriptContext } from '@earendil-works/pi-ai';
+import { PostgresPersistence } from '@mira/persistence';
 import { readWebExtensionConfiguration } from '../../apps/server/src/web-extensions.ts';
 import { createTestDatabase } from '../integration/database.mts';
-import { assistant, streamOf } from './fixtures.mts';
+import { assistant, deferred, streamOf } from './fixtures.mts';
 
 async function settled(service: LocalWebService): Promise<void> {
   const end = Date.now() + 10_000;
@@ -18,6 +22,266 @@ async function settled(service: LocalWebService): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 10));
   }
 }
+
+type BatchReader = ReturnType<PostgresPersistence['history']>;
+type BatchRequest = Parameters<BatchReader['readBatch']>[0];
+/** Observe real original batches, including those read inside a timeline snapshot. */
+function instrumentBatches(t: TestContext, miraId: string, hook: (request: BatchRequest, read: BatchReader['readBatch']) => ReturnType<BatchReader['readBatch']>): void {
+  const realHistory = PostgresPersistence.prototype.history;
+  const instrument = (reader: BatchReader): BatchReader => {
+    const readBatch = reader.readBatch.bind(reader);
+    t.mock.method(reader, 'readBatch', (request: BatchRequest) => hook(request, readBatch));
+    const snapshot = reader.snapshot.bind(reader);
+    t.mock.method(reader, 'snapshot', <T,>(work: (inner: BatchReader) => Promise<T>) => snapshot(inner => work(inner === reader ? inner : instrument(inner))));
+    return reader;
+  };
+  t.mock.method(PostgresPersistence.prototype, 'history', function (this: PostgresPersistence, id: string) {
+    const history = realHistory.call(this, id);
+    return id === miraId ? instrument(history) : history;
+  });
+}
+
+type TimelinePage = Awaited<ReturnType<LocalWebService['timeline']>>;
+async function seedTimelineEvents(db: Awaited<ReturnType<typeof createTestDatabase>>, miraId: string, count: number,
+  isVisible: (index: number) => boolean): Promise<TimelinePage['items']> {
+  const writer = await db.acquire(miraId);
+  const expected: Omit<TimelinePage['items'][number], 'id'>[] = [];
+  try {
+    for (let index = 0; index < count; index++) {
+      const visible = isVisible(index); const id = `timeline-${index}`;
+      const occurredAt = new Date(Date.UTC(2026, 9, 1) + index).toISOString();
+      const text = visible ? `Visible message ${index}` : `PRIVATE_PAGINATION_EVENT_${index}`;
+      // Real durable event-only receipts avoid thousands of synthetic model
+      // turns. No raw SQL inserts or fabricated History pages are involved.
+      await writer.receive({ id, source: visible ? 'user' : 'system', type: visible ? 'web.message' : 'internal.observation', occurredAt, payload: { text } });
+      if (visible) expected.push({ externalEventId: id, role: 'user', text, occurredAt });
+    }
+  } finally { await writer.close(); }
+  const ids = new Map((await db.admin.query<{ event_id: string; history_id: string }>(
+    'SELECT event_id, history_id FROM life_events WHERE mira_id = $1', [miraId])).rows.map(row => [row.event_id, row.history_id]));
+  assert.equal(ids.size, count);
+  return expected.map(item => ({ ...item, id: ids.get(item.externalEventId!)! }));
+}
+
+test('HTTP timeline fills visible pages across hidden history without truncating or losing the raw continuation', { timeout: 60_000 }, async () => {
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-visible-pages-'));
+  let service: LocalWebService | undefined; let app: ReturnType<typeof createLocalHttp> | undefined;
+  try {
+    const expected = await seedTimelineEvents(db, 'visible-pages', 400, index => index < 100 || (index >= 140 && index < 200));
+    const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'visible-pages', sourceDirectory: process.cwd(),
+      spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true,
+      syntheticStream: () => { throw Error('Timeline reads must not create a model request'); } };
+    service = await LocalWebService.open(options); await settled(service);
+    const history = db.store.history(options.miraId);
+    const rawFirst = await history.page({ kinds: ['event', 'context', 'tool'], limit: 100 }); assert.ok(rawFirst.nextCursor);
+    const rawSecond = await history.page({ kinds: ['event', 'context', 'tool'], limit: 100, before: rawFirst.nextCursor }); assert.ok(rawSecond.nextCursor);
+    const rawThird = await history.page({ kinds: ['event', 'context', 'tool'], limit: 100, before: rawSecond.nextCursor }); assert.ok(rawThird.nextCursor);
+    app = createLocalHttp({ backend: service, port: httpPort });
+    const response = await app.inject({ url: '/api/timeline', headers: readHeaders }); assert.equal(response.statusCode, 200, response.body);
+    const latest = response.json<TimelinePage>();
+    assert.deepEqual(latest.items, expected.slice(100));
+    assert.equal(latest.items.length, 60, 'keep the whole raw page instead of cutting off visible messages beyond the target');
+    assert.equal(latest.nextCursor, rawThird.nextCursor, 'continue after all scanned raw records, including hidden ones');
+    const olderResponse = await app.inject({ method: 'POST', url: '/api/timeline', headers: writeHeaders, payload: { before: latest.nextCursor } });
+    assert.equal(olderResponse.statusCode, 200, olderResponse.body);
+    const older = olderResponse.json<TimelinePage>(); assert.equal(older.nextCursor, null);
+    const combined = [...older.items, ...latest.items];
+    assert.deepEqual(combined, expected); assert.equal(new Set(combined.map(item => item.id)).size, expected.length);
+    assert.doesNotMatch(response.body + olderResponse.body, /PRIVATE_PAGINATION_EVENT/);
+    await app.close(); app = undefined; await service.close(); service = undefined;
+    service = await LocalWebService.open(options); await settled(service);
+    const { Client } = await import('pg'); const connect = Client.prototype.connect; let connections = 0;
+    Client.prototype.connect = function (this: InstanceType<typeof Client>, ...args: Parameters<typeof connect>) { connections++; return Reflect.apply(connect, this, args); } as typeof connect;
+    try {
+      // Three raw metadata pages and every uncached original share one snapshot.
+      assert.deepEqual(await service.timeline(), latest); assert.equal(connections, 1, 'one connection for a whole latest response');
+      assert.deepEqual(await service.timeline(latest.nextCursor!), older); assert.equal(connections, 2, 'one connection for a whole older response');
+    } finally { Client.prototype.connect = connect; }
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_runs')).rows[0].n, 0);
+  } finally { await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('latest and older scan caps return empty resumable pages without rereading hidden originals', { timeout: 120_000 }, async t => {
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-scan-cap-'));
+  let service: LocalWebService | undefined; let originalReads = 0;
+  try {
+    const expected = await seedTimelineEvents(db, 'scan-cap', 2305, index => index < 5);
+    instrumentBatches(t, 'scan-cap', async (request, readBatch) => { originalReads += request.ids.length; return readBatch(request); });
+    service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'scan-cap', sourceDirectory: process.cwd(),
+      spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true,
+      syntheticStream: () => { throw Error('History scanning must not create a model request'); } }); await settled(service);
+    const history = db.store.history('scan-cap'); const rawCursors: string[] = []; let rawCursor: string | undefined;
+    for (let scanned = 0; scanned < 2300; scanned += 100) {
+      const raw = await history.page({ kinds: ['event', 'context', 'tool'], limit: 100, ...(rawCursor ? { before: rawCursor } : {}) });
+      assert.equal(raw.hits.length, 100); assert.ok(raw.nextCursor); rawCursor = raw.nextCursor; rawCursors.push(rawCursor);
+    }
+    // The polled latest window is bounded to 300 raw records.
+    const latest = await service.timeline();
+    assert.deepEqual(latest.items, []); assert.equal(latest.nextCursor, rawCursors[2], 'the latest cap must stop at exactly 300 raw records');
+    assert.equal(originalReads, 300);
+    assert.deepEqual(await service.timeline(), latest, 'refresh retains the exact empty page and continuation');
+    assert.equal(originalReads, 300, 'refresh must reuse the latest window without fetching hidden originals again');
+    // An explicit older request scans up to 2000 raw records from that cursor.
+    const capped = await service.timeline(latest.nextCursor!);
+    assert.deepEqual(capped.items, []); assert.equal(capped.nextCursor, rawCursors[22], 'the older cap must stop at exactly 2000 raw records');
+    assert.equal(originalReads, 2300);
+    assert.deepEqual(await service.timeline(latest.nextCursor!), capped, 'an older retry retains the exact empty page and continuation');
+    assert.deepEqual(await service.timeline(), latest);
+    assert.equal(originalReads, 2300, 'retries and polls reuse both cached windows');
+    const older = await service.timeline(capped.nextCursor!);
+    assert.deepEqual(older.items, expected); assert.equal(older.nextCursor, null);
+    assert.deepEqual(await service.timeline(capped.nextCursor!), older, 'a retry must retain every visible item exactly once');
+  } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('concurrent latest and older PostgreSQL reads retain complete pages during cache eviction', { timeout: 180_000 }, async t => {
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-cache-pages-'));
+  let service: LocalWebService | undefined; let pendingLatest: Promise<TimelinePage> | undefined; let pauseNextCachedBatch = false;
+  const entered = deferred(); const release = deferred(); const batchSizes: number[] = [];
+  try {
+    const expected = await seedTimelineEvents(db, 'cache-pages', 4100, () => true);
+    instrumentBatches(t, 'cache-pages', async (request, readBatch) => {
+      batchSizes.push(request.ids.length);
+      assert.ok(request.ids.length <= 10); assert.equal(request.maxBytes, 1_048_576);
+      // Only schedule the real reader; metadata and missing originals still
+      // come from PostgreSQL. The empty batch yields after the cache snapshot.
+      if (pauseNextCachedBatch && request.ids.length === 0) {
+        pauseNextCachedBatch = false; entered.resolve();
+        await boundedFixtureWait(release.promise, 'concurrent older page evicts cached latest records', t.signal, 30_000);
+      }
+      return readBatch(request);
+    });
+    service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'cache-pages', sourceDirectory: process.cwd(),
+      spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true,
+      syntheticStream: () => { throw Error('Cache reads must not create a model request'); } }); await settled(service);
+    const latest = await service.timeline(); assert.deepEqual(latest.items, expected.slice(4000));
+    let page = latest;
+    for (let index = 38; index >= 0; index--) {
+      assert.ok(page.nextCursor); page = await service.timeline(page.nextCursor);
+      assert.deepEqual(page.items, expected.slice((index + 1) * 100, (index + 2) * 100));
+    }
+    assert.ok(page.nextCursor, '100 older records remain outside the full 4000-entry cache');
+    pauseNextCachedBatch = true; pendingLatest = service.timeline();
+    await boundedFixtureWait(entered.promise, 'latest page captures its cached metadata', t.signal);
+    const oldest = await service.timeline(page.nextCursor);
+    assert.deepEqual(oldest.items, expected.slice(0, 100)); assert.equal(oldest.nextCursor, null);
+    release.resolve(); assert.deepEqual(await pendingLatest, latest); pendingLatest = undefined;
+    assert.deepEqual(await service.timeline(), latest, 'a fresh latest request also survives the older-page eviction');
+    assert.ok(batchSizes.includes(10)); assert.ok(batchSizes.includes(0));
+  } finally {
+    release.resolve(); await pendingLatest?.catch(() => {});
+    await service?.close(); await db.close(); await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a pending real publication is reread after its durable outcome instead of being cached as hidden', { timeout: 60_000 }, async t => {
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-pending-publication-'));
+  let service: LocalWebService | undefined; let calls = 0;
+  const entered = deferred(); const release = deferred();
+  try {
+    const file = path.join(root, 'published.txt'); await writeFile(file, 'Immutable pending publication bytes');
+    const realAcquire = PostgresPersistence.prototype.acquire;
+    t.mock.method(PostgresPersistence.prototype, 'acquire', async function (this: PostgresPersistence, miraId: string) {
+      const writer = await realAcquire.call(this, miraId);
+      if (miraId === 'pending-publication') {
+        const finishTool = writer.finishTool.bind(writer);
+        t.mock.method(writer, 'finishTool', async (outcome: Parameters<typeof finishTool>[0]) => {
+          if (outcome.callId === 'pending-publication-tool') {
+            entered.resolve();
+            await boundedFixtureWait(release.promise, 'allow real publication outcome to commit', t.signal, 30_000);
+          }
+          return finishTool(outcome);
+        });
+      }
+      return writer;
+    });
+    const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'pending-publication', sourceDirectory: process.cwd(),
+      spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true,
+      syntheticStream: () => { calls++; return streamOf(calls === 1 ? { ...assistant(), stopReason: 'toolUse', content: [
+        { type: 'toolCall', id: 'pending-publication-tool', name: 'send_attachment', arguments: { paths: [file], text: 'Published after pending reads' } },
+      ] } : assistant('')); } };
+    service = await LocalWebService.open(options); await settled(service);
+    await service.submit({ id: 'publish-request', text: 'Publish the local fixture file.', occurredAt: '2026-10-01T00:00:00.000Z' });
+    await boundedFixtureWait(entered.promise, 'real attachment tool reaches outcome persistence', t.signal);
+    const execution = (await db.admin.query<{ history_id: string; outcome: unknown }>(
+      'SELECT history_id, outcome FROM tool_executions WHERE mira_id = $1', [options.miraId])).rows[0];
+    assert.ok(execution); assert.equal(execution.outcome, null);
+    for (let read = 0; read < 2; read++) {
+      const pending = await service.timeline();
+      assert.ok(!pending.items.some(item => item.id === execution.history_id || item.attachments?.length));
+    }
+    release.resolve(); await settled(service); assert.equal((await service.status()).state, 'idle'); assert.equal(calls, 2);
+    const published = await service.timeline();
+    const item = published.items.find(item => item.id === execution.history_id); assert.ok(item);
+    assert.equal(item.text, 'Published after pending reads'); assert.equal(item.attachments?.length, 1);
+    assert.equal((await service.readAttachment(item.attachments![0]!.id)).bytes.toString(), 'Immutable pending publication bytes');
+    assert.equal(published.items.filter(candidate => candidate.id === item.id).length, 1);
+    assert.doesNotMatch(JSON.stringify(published), /pending-publication-tool|requestedArguments/);
+    await service.close(); service = undefined;
+    service = await LocalWebService.open(options); await settled(service);
+    assert.equal(calls, 2, 'completed publication must not replay on restart');
+    assert.deepEqual(await service.timeline(), published);
+  } finally { release.resolve(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('HTTP timeline reads committed commentary while its real Bash tool is still in flight', { timeout: 30_000 }, async t => {
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-commentary-'));
+  let service: LocalWebService | undefined; let app: ReturnType<typeof createLocalHttp> | undefined;
+  let fifo: FileHandle | undefined; let watcher: FSWatcher | undefined; let released = false; let requests = 0;
+  const release = async () => { if (fifo && !released) { released = true; await fifo.write('continue\n'); } };
+  try {
+    const fifoPath = path.join(root, 'release.fifo'); const started = deferred();
+    await promisify(execFile)('mkfifo', [fifoPath]);
+    // Keeping both FIFO ends open makes release safe even if an earlier assertion
+    // fails before Bash reaches its read; cleanup never waits for a new reader.
+    fifo = await open(fifoPath, constants.O_RDWR | constants.O_NONBLOCK);
+    watcher = watch(root, (_event, filename) => { if (filename?.toString() === 'tool-started') started.resolve(); });
+    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+    const command = [`exec 3< ${quote(fifoPath)}`, `mkdir ${quote(path.join(root, 'tool-started'))}`, 'IFS= read -r release <&3', "printf 'PRIVATE_COMMENTARY_TOOL_RESULT'"].join('\n');
+    const commentary = 'I will inspect the local evidence before reporting the result.';
+    const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'live-commentary', sourceDirectory: process.cwd(),
+      spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true,
+      syntheticStream: () => {
+        requests++;
+        return streamOf(requests === 1 ? { ...assistant(), stopReason: 'toolUse', content: [
+          { type: 'thinking', thinking: 'PRIVATE_COMMENTARY_THINKING' }, { type: 'text', text: commentary },
+          { type: 'toolCall', id: 'PRIVATE_COMMENTARY_CALL', name: 'bash', arguments: { command } },
+        ] } : assistant('The local evidence has been checked.'));
+      } };
+    service = await LocalWebService.open(options); await settled(service);
+    const http = createLocalHttp({ backend: service, port: httpPort }); app = http;
+    const submitted = await http.inject({ method: 'POST', url: '/api/messages', headers: writeHeaders,
+      payload: { id: 'live-commentary-input', text: 'Check the local evidence.', occurredAt: '2026-10-17T08:00:00.000Z' } });
+    assert.equal(submitted.statusCode, 201, submitted.body);
+    await boundedFixtureWait(started.promise, 'real Bash reached its FIFO read', t.signal);
+    assert.equal(requests, 1, 'the next model request cannot have started during the blocked tool');
+    const executions = (await db.admin.query('SELECT t.intent, t.outcome, c.envelope FROM tool_executions t JOIN context_records c ON c.mira_id = t.mira_id AND c.record_id = t.assistant_record_id')).rows;
+    assert.equal(executions.length, 1); assert.equal(executions[0].outcome, null, 'real tool intent exists while its outcome is still pending');
+    assert.equal(executions[0].envelope.id, executions[0].intent.assistantRecordId);
+    assert.match(JSON.stringify(executions[0].envelope), /I will inspect the local evidence/);
+    assert.match(JSON.stringify(executions[0].envelope), /PRIVATE_COMMENTARY_CALL/);
+    const cursor = (await db.store.history('live-commentary').page({ kinds: ['event', 'context', 'tool'], limit: 1 })).nextCursor;
+    assert.ok(cursor);
+    for (const request of [{ url: '/api/timeline', headers: readHeaders },
+      { method: 'POST' as const, url: '/api/timeline', headers: writeHeaders, payload: { before: cursor } }]) {
+      const response = await http.inject(request); assert.equal(response.statusCode, 200, response.body);
+      const item = response.json().items.find((item: { text: string }) => item.text === commentary);
+      assert.ok(item, 'commentary is readable before the real Bash tool is released');
+      assert.equal(item.id, executions[0].intent.assistantRecordId);
+      assert.doesNotMatch(response.body, /PRIVATE_COMMENTARY_|release\.fifo|requestedArguments|Mira System Prompt/);
+      assert.equal(requests, 1); assert.equal((await service.status()).state, 'working');
+    }
+    await release(); await settled(service);
+    assert.equal(requests, 2); assert.equal((await service.status()).state, 'idle');
+    const final = await http.inject({ url: '/api/timeline', headers: readHeaders });
+    assert.equal(final.statusCode, 200); assert.match(final.body, /The local evidence has been checked/);
+    assert.equal(final.json().items.filter((item: { text: string }) => item.text === commentary).length, 1);
+    assert.ok((await db.admin.query('SELECT outcome FROM tool_executions')).rows[0].outcome);
+  } finally {
+    await release(); watcher?.close();
+    await app?.close(); await service?.close(); await fifo?.close(); await db.close(); await rm(root, { recursive: true, force: true });
+  }
+});
 test('default web extension configuration exposes real management dispatch and restores it with PostgreSQL', { timeout: 30_000 }, async () => {
   const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-web-default-extensions-'));
   let service: LocalWebService | undefined; let requests = 0;
@@ -243,7 +507,7 @@ test('missing live model is a setup state and cannot enqueue or call a model', {
   let service: LocalWebService | undefined;
   try {
     service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'unconfigured', sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json') });
-    assert.deepEqual(await service.status(), { state: 'idle', mode: 'live', model: null, error: null, modelRetry: null });
+    assert.deepEqual(await service.status(), { state: 'idle', mode: 'live', model: null, error: null, errorId: null, modelRetry: null });
     await assert.rejects(service.submit({ id: 'setup-message', text: 'Do not send yet', occurredAt: '2026-10-06T08:00:00.000Z' }), WebHttpError);
     assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM life_events')).rows[0].n, 0);
   } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
@@ -525,7 +789,9 @@ test('a PostgreSQL failure saving a provider error shows only a fixed temporary 
     app = createLocalHttp({ backend: service, port: httpPort });
     const status = await app.inject({ url: '/api/status', headers: readHeaders }); assert.equal(status.statusCode, 200); assert.equal(status.json().state, 'stopped');
     assert.equal(status.json().error, 'Persistence write failed and the runtime stopped. This is a temporary server notice; no durable tool diagnostic is confirmed. Check PostgreSQL and recover saved state before retrying. External tool effects may already have happened.');
-    assert.deepEqual(Object.keys(status.json()).sort(), ['error', 'mode', 'model', 'state'], 'status exposes no internal IDs, cause or stack');
+    // errorId is the ephemeral per-occurrence UUID for dismissing the banner (ADR 0044), not a record ID.
+    assert.deepEqual(Object.keys(status.json()).sort(), ['error', 'errorId', 'mode', 'model', 'state'], 'status exposes no internal IDs, cause or stack');
+    assert.match(status.json().errorId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     assert.doesNotMatch(status.body, /synthetic-provider-before-database-failure|synthetic-database-private-error|synthetic-database-diagnostic-key|HTTP 400|invalid_request_error|P0001|synthetic_reject_model_error|"cause"|"stack"|"headers"|"requestId"|"request_id"/);
     const runs = (await db.admin.query('SELECT input_record_id, final_record_id, completed FROM wake_runs')).rows;
     assert.equal(runs.length, 1); assert.ok(runs[0].input_record_id); assert.equal(runs[0].final_record_id, null); assert.equal(runs[0].completed, false);

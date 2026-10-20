@@ -1,0 +1,5 @@
+{
+  "evidenceType": "Synthetic conversation/tool outcomes; unavailableTools removes named production declarations for this case only",
+  "history": [],
+  "user": "帮我读取 /tmp/mira-synthetic-workspace/package.json，告诉我项目名称。"
+}

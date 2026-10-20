@@ -5,7 +5,7 @@ import type { SystemMessage } from '@earendil-works/pi-ai';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 
 export const MIRA_PROMPT_SECTION = 'mira.system.v0.2';
-export const MIRA_PROMPT_SHA256 = 'a3ea5a98735089138296892ee0c30f47439c044b44a6e9bde0409724cbf22fe1';
+export const MIRA_PROMPT_SHA256 = '5e520269ae889045e06dd158b4c2c47ada2cb94fa4f28577e3bcb0f688292892';
 const bytes = readFileSync(new URL('../prompts/mira-system-v0.2.md', import.meta.url));
 if (createHash('sha256').update(bytes).digest('hex') !== MIRA_PROMPT_SHA256) throw new Error('Mira system template hash mismatch');
 export const MIRA_SYSTEM_TEMPLATE = bytes.toString('utf8');
@@ -14,7 +14,10 @@ export const MIRA_SYSTEM_TEMPLATE = bytes.toString('utf8');
 const PRE_DELEGATION_SHA256 = '3e0e1ea9a70f134d158ce77c6e242c909aedb5a871b299d2065dac51aec2d7e0';
 const priorBytes = readFileSync(new URL('../prompts/mira-system-v0.2-pre-delegation.md', import.meta.url));
 if (createHash('sha256').update(priorBytes).digest('hex') !== PRE_DELEGATION_SHA256) throw new Error('Prior Mira system template hash mismatch');
-const templates = new Map([[PRE_DELEGATION_SHA256, priorBytes.toString('utf8')], [MIRA_PROMPT_SHA256, MIRA_SYSTEM_TEMPLATE]]);
+const PRE_COMMUNICATION_SHA256 = 'a3ea5a98735089138296892ee0c30f47439c044b44a6e9bde0409724cbf22fe1';
+const preCommunicationBytes = readFileSync(new URL('../prompts/mira-system-v0.2-pre-communication.md', import.meta.url));
+if (createHash('sha256').update(preCommunicationBytes).digest('hex') !== PRE_COMMUNICATION_SHA256) throw new Error('Prior Mira system template hash mismatch');
+const templates = new Map([[PRE_DELEGATION_SHA256, priorBytes.toString('utf8')], [PRE_COMMUNICATION_SHA256, preCommunicationBytes.toString('utf8')], [MIRA_PROMPT_SHA256, MIRA_SYSTEM_TEMPLATE]]);
 
 export const MIRA_PLACEHOLDERS = ['MEMORY_ROOT', 'MEMORY_STATE', 'CURRENT_TIME', 'EXTENSIONS_ROOT', 'OTHER_ENVIRONMENT_CONTEXT', 'DYNAMIC_TOOL_AND_EXTENSION_GUIDANCE', 'CURRENT_AUTHORIZATION_CONTEXT'] as const;
 export type MiraPromptValues = Record<typeof MIRA_PLACEHOLDERS[number], string>;

@@ -15,6 +15,29 @@ export function mergeTimeline(current: TimelineItem[], incoming: TimelineItem[])
     return a.occurredAt.localeCompare(b.occurredAt) || a.id.localeCompare(b.id);
   });
 }
+/** Late completions from a latest poll that belong to what is already shown:
+ * a known item, or one no older than the oldest loaded item. Anything older is
+ * left for history paging, which reads it fresh. */
+export function applicableUpdates(current: TimelineItem[], updates: TimelineItem[] | undefined): TimelineItem[] {
+  if (!updates?.length || !current.length) return [];
+  const oldest = mergeTimeline([], current)[0]!;
+  const known = new Set(current.map(item => item.id));
+  return updates.filter(update => known.has(update.id) || mergeTimeline([], [oldest, update])[0] === oldest);
+}
+/** Items a latest page appended after the previously newest item. */
+export function arrivals(previous: TimelineItem[], merged: TimelineItem[]): TimelineItem[] {
+  const last = previous.at(-1);
+  const known = new Set(previous.map(item => item.id));
+  if (!last) return merged.filter(item => !known.has(item.id));
+  return merged.slice(merged.findIndex(item => item.id === last.id) + 1).filter(item => !known.has(item.id));
+}
+/** One short screen reader line for an arrived message. */
+export function announce(item: TimelineItem): string {
+  const who = item.source ? item.source.label : item.role === 'assistant' ? 'Mira' : '通知';
+  const text = item.text.length > 300 ? `${item.text.slice(0, 300)}…` : item.text;
+  const files = item.attachments?.length ? `（${item.attachments.length} 个附件）` : '';
+  return `${who}：${text}${files}`;
+}
 export function reconcilePending(pending: PendingMessage[], items: TimelineItem[]): PendingMessage[] {
   return pending.filter(message => !items.some(item => confirmsPending(message, item)));
 }
@@ -51,6 +74,13 @@ export function latestPagination(current: HistoryPagination, known: { id: string
   const updated = { ...current, latestCursor: page.nextCursor };
   const ids = new Set(known.map(item => item.id));
   if (page.items.some(item => ids.has(item.id)) || page.nextCursor === null || current.gaps.some(gap => gap.id === page.nextCursor || gap.cursor === page.nextCursor)) return updated;
+  // A latest window without visible messages over the same boundary as the
+  // newest gap: the new gap's range contains the old one. Replace it rather
+  // than add a gap per poll during a long private tool interval; at worst the
+  // replaced gap's partial progress is reread.
+  if (!page.items.length && current.gaps[0]?.boundaryIds.length === ids.size) {
+    return { ...updated, gaps: [{ id: page.nextCursor, cursor: page.nextCursor, boundaryIds: [...ids] }, ...current.gaps.slice(1)] };
+  }
   return { ...updated, gaps: [{ id: page.nextCursor, cursor: page.nextCursor, boundaryIds: [...ids] }, ...current.gaps] };
 }
 export function nextHistoryRequest(pagination: HistoryPagination): HistoryRequest | null {
@@ -71,6 +101,25 @@ export function olderPagination(current: HistoryPagination, request: HistoryRequ
   }) };
 }
 
+/** Joins a located window (newest item: the quoted message) to the loaded
+ * history. Every unread frontier above it now ends at the window; a window
+ * below everything loaded continues the oldest frontier, and the stretch
+ * between it and the loaded messages becomes an ordinary gap. A window inside
+ * an unread gap leaves the stretch below it unread as another gap. */
+export function locatedPagination(current: HistoryPagination, known: TimelineItem[], page: { items: TimelineItem[]; nextCursor: string | null }, targetId: string): HistoryPagination {
+  const ids = new Set(known.map(item => item.id));
+  const windowIds = page.items.map(item => item.id).filter(id => !ids.has(id));
+  const gaps = current.gaps.map(gap => ({ ...gap, boundaryIds: [...gap.boundaryIds, ...windowIds] }));
+  if (page.items.some(item => ids.has(item.id)) || !windowIds.length) return { ...current, gaps };
+  const target = page.items.find(item => item.id === targetId) ?? page.items[page.items.length - 1]!;
+  const at = Date.parse(target.occurredAt);
+  const below = known.every(item => !Number.isFinite(at) || !Number.isFinite(Date.parse(item.occurredAt)) || Date.parse(item.occurredAt) > at);
+  if (below) {
+    const bridge = current.oldestCursor ? [{ id: `located-above:${targetId}`, cursor: current.oldestCursor, boundaryIds: windowIds }] : [];
+    return { ...current, oldestCursor: page.nextCursor, gaps: [...gaps, ...bridge] };
+  }
+  return page.nextCursor ? { ...current, gaps: [...gaps, { id: `located-below:${targetId}`, cursor: page.nextCursor, boundaryIds: [...ids] }] } : { ...current, gaps };
+}
 /** A conflicting server identity must not silently discard a retained reply. */
 export function confirmsPending(message: PendingMessage | import('./types.ts').MessageEnvelope, item: TimelineItem): boolean {
   return item.role === 'user' && item.externalEventId === message.id && item.reply?.messageId === message.replyToMessageId;
@@ -84,6 +133,102 @@ export function timelineSpacing(previous: TimelineItem | undefined, current: Tim
   const sameSource = previous?.source?.extensionId === current.source?.extensionId && previous?.source?.senderId === current.source?.senderId && previous?.source?.direction === current.source?.direction;
   return { divider, compact: !divider && previous?.role === current.role && current.role !== 'notice' && sameSource };
 }
+/** The reply reference for a quotable chat item, keeping its real role and
+ * source; notices cannot be quoted. */
+export function replyReference(item: TimelineItem): import('./types.ts').ReplyReference | null {
+  if (item.role === 'notice') return null;
+  return { messageId: item.id, role: item.role, text: item.text, ...(item.attachments?.length ? { attachmentNames: item.attachments.map(file => file.name) } : {}), ...(item.source ? { source: item.source } : {}) };
+}
+/** 今天 for the viewer's current local day, else a month-day (with year when not this year). */
+export function dateLabel(value: string, now: Date = new Date()): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  if (date.toDateString() === now.toDateString()) return '今天';
+  return new Intl.DateTimeFormat('zh-CN', { year: date.getFullYear() === now.getFullYear() ? undefined : 'numeric', month: 'long', day: 'numeric' }).format(date);
+}
+/** Milliseconds until the next local midnight (at least one second). */
+export function untilNextLocalDay(now: Date = new Date()): number {
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  return Math.max(1_000, next.getTime() - now.getTime());
+}
 export function replySnippet(reply: import('./types.ts').ReplyReference): string {
   return (reply.text.trim() || reply.attachmentNames?.join('、') || '原消息').replace(/\s+/gu, ' ');
 }
+
+export type TimelineView = 'loading' | 'empty' | 'hidden-recent' | 'messages';
+/** Which body the timeline shows. "Empty" is only for a history with nothing
+ * older to read: a latest window of private records is not an empty chat. */
+export function timelineView(state: { loading: boolean; filling: boolean; items: number; pending: number; connectionError: boolean; hasOlder: boolean }): TimelineView {
+  if (state.items || state.pending) return 'messages';
+  if (state.loading || state.filling) return 'loading';
+  if (state.connectionError) return 'messages';
+  return state.hasOlder ? 'hidden-recent' : 'empty';
+}
+
+export type OlderHistoryResult = { kind: 'target' | 'found' | 'complete' | 'budget' | 'timeout' | 'stopped' } | { kind: 'error'; error: unknown };
+export interface OlderHistoryOptions<P, R extends { cursor: string } = HistoryRequest> {
+  next(): R | null;
+  fetchPage(request: R, signal: AbortSignal): Promise<P>;
+  /** Commits one page and returns how many rows it newly added. */
+  accept(page: P, request: R): number;
+  /** Checked after every committed page, before the deadline: a lookup that
+   * finds its message in a page arriving as time runs out still succeeds. */
+  found?: (() => boolean) | undefined;
+  /** The owning view or its polling scope; aborting it stops silently. */
+  owner: AbortSignal;
+  stopped(): boolean;
+  target?: number; maxPages?: number; timeoutMs?: number;
+  schedule?(callback: () => void, ms: number): () => void;
+}
+/** One explicit history intent (load older messages, or find a quoted one):
+ * consecutive frontiers until enough new rows, the sought message, the end, a
+ * repeated cursor, the page budget or the deadline. Every completed response
+ * is committed before the deadline is considered, so a page that arrives as
+ * time runs out is retained rather than silently dropped. */
+export async function loadOlderHistory<P, R extends { cursor: string } = HistoryRequest>(options: OlderHistoryOptions<P, R>): Promise<OlderHistoryResult> {
+  const { target = 50, maxPages = 8, timeoutMs = 15_000 } = options;
+  const schedule = options.schedule ?? ((callback, ms) => { const timer = setTimeout(callback, ms); return () => clearTimeout(timer); });
+  if (options.owner.aborted || options.stopped()) return { kind: 'stopped' };
+  // Linked by hand: AbortSignal.any is newer than Vite's default browser target.
+  const controller = new AbortController();
+  const stop = () => controller.abort();
+  options.owner.addEventListener('abort', stop, { once: true });
+  let timedOut = false;
+  const cancel = schedule(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  const cursors = new Set<string>();
+  let added = 0;
+  try {
+    for (let pageCount = 0; pageCount < maxPages; pageCount++) {
+      const request = options.next();
+      if (!request) return { kind: 'complete' };
+      if (cursors.has(request.cursor)) return { kind: 'budget' };
+      cursors.add(request.cursor);
+      let page: P;
+      try { page = await options.fetchPage(request, controller.signal); }
+      catch (error) {
+        if (options.owner.aborted || options.stopped()) return { kind: 'stopped' };
+        return timedOut ? { kind: 'timeout' } : { kind: 'error', error };
+      }
+      if (options.owner.aborted || options.stopped()) return { kind: 'stopped' };
+      added += options.accept(page, request);
+      if (options.found?.()) return { kind: 'found' };
+      if (added >= target) return { kind: 'target' };
+      if (timedOut) return { kind: 'timeout' };
+    }
+    return options.next() ? { kind: 'budget' } : { kind: 'complete' };
+  } finally {
+    cancel(); options.owner.removeEventListener('abort', stop);
+  }
+}
+
+/** What a finished quote lookup tells the reader; null when nothing to say. */
+export function quoteLookupNotice(result: OlderHistoryResult, describe: (error: unknown) => { summary: string; detail: string | null }): { summary: string; detail: string | null } | null {
+  switch (result.kind) {
+    case 'found': case 'target': case 'stopped': return null;
+    case 'complete': return { summary: '没有找到原消息，它可能不在可显示的聊天记录中。引用内容仍保留。', detail: null };
+    case 'budget': return { summary: '暂未找到原消息，已读取的更早消息会保留。再点一次引用可以继续查找。', detail: null };
+    case 'timeout': return { summary: '查找超时，已读取的更早消息会保留。再点一次引用可以继续查找。', detail: null };
+    case 'error': { const { detail, summary } = describe(result.error); return { summary: '暂时无法读取原消息，请稍后重试。', detail: detail ?? summary }; }
+  }
+}
+export const QUOTE_LOOKUP_CANCELLED = '已取消查找，引用内容仍保留。';

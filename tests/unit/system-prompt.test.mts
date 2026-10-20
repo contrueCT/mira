@@ -13,7 +13,7 @@ const config = { environmentContext: 'Synthetic offline runtime', authorizationC
 
 test('user-approved v0.2 revision exact bytes, eight occurrences, static text and examples remain intact', async () => {
   const bytes = await readFile(new URL('../../packages/runtime-pi/prompts/mira-system-v0.2.md', import.meta.url));
-  assert.equal(bytes.byteLength, 22436);
+  assert.equal(bytes.byteLength, 23674);
   assert.equal(createHash('sha256').update(bytes).digest('hex'), MIRA_PROMPT_SHA256);
   assert.equal(bytes.toString(), MIRA_SYSTEM_TEMPLATE);
   assert.equal([...MIRA_SYSTEM_TEMPLATE.matchAll(/\{\{[^{}]+\}\}/g)].length, 8);
@@ -204,39 +204,72 @@ test('delegation guidance prioritizes substantial independent work and retains p
 
 // Historical bytes are immutable input to recovery, not an alternate new-run prompt.
 const priorTemplate = await readFile(new URL('../../packages/runtime-pi/prompts/mira-system-v0.2-pre-delegation.md', import.meta.url), 'utf8');
-async function seedPriorPrompt(writer: MemoryWriter) {
-  const prompt = { values: { ...values, MEMORY_STATE: 'PERSISTED_MEMORY' }, skills: '' };
+const preCommunicationTemplate = await readFile(new URL('../../packages/runtime-pi/prompts/mira-system-v0.2-pre-communication.md', import.meta.url), 'utf8');
+const publishedRevisions = [
+  { name: 'pre-delegation', template: priorTemplate, identity: undefined, hash: '3e0e1ea9a70f134d158ce77c6e242c909aedb5a871b299d2065dac51aec2d7e0' },
+  { name: 'pre-communication', template: preCommunicationTemplate, identity: 'a3ea5a98735089138296892ee0c30f47439c044b44a6e9bde0409724cbf22fe1', hash: 'a3ea5a98735089138296892ee0c30f47439c044b44a6e9bde0409724cbf22fe1' },
+];
+async function seedPriorPrompt(writer: MemoryWriter, revision: typeof publishedRevisions[number]) {
+  const prompt = { values: { ...values, MEMORY_STATE: 'PERSISTED_MEMORY' }, skills: '', ...(revision.identity ? { templateSha256: revision.identity } : {}) };
   await seed(writer, [{ role: 'system', content: '', timestamp: 1,
     miraMemory: 'PERSISTED_MEMORY', miraMemoryConfigured: true,
-    miraPrompt: prompt, sections: { [MIRA_PROMPT_SECTION]: renderMiraPrompt(prompt.values, priorTemplate) },
+    miraPrompt: prompt, sections: { [MIRA_PROMPT_SECTION]: renderMiraPrompt(prompt.values, revision.template) },
   } as never, input('Earlier discussion '.repeat(400)), assistant('Earlier response '.repeat(100))]);
 }
 const promptRevisionCount = (writer: MemoryWriter) => writer.state.records.filter(record => JSON.stringify(record.payload).includes('"templateSha256"')).length;
 
-test('published pre-delegation bytes recover and upgrade at first request without reloading Memory or changing history', async () => {
-  assert.equal(createHash('sha256').update(priorTemplate).digest('hex'), '3e0e1ea9a70f134d158ce77c6e242c909aedb5a871b299d2065dac51aec2d7e0');
-  const writer = new MemoryWriter(); await seedPriorPrompt(writer);
+test('communication is the only change to the previous published template', () => {
+  assert.equal(MIRA_SYSTEM_TEMPLATE.replace(/\n\n\n<task_communication>[\s\S]*?<\/task_communication>/, ''), preCommunicationTemplate);
+});
+
+test('custom system content and sections are preserved without opting into the built-in Mira prompt', async () => {
+  const writer = new MemoryWriter();
+  const custom = { role: 'system' as const, content: 'User-owned custom instructions', sections: { custom: 'User-owned custom section' }, timestamp: 1 };
+  await seed(writer, [custom, input('Earlier custom-context discussion '.repeat(300)), assistant('Earlier answer '.repeat(100))]);
+  const before = structuredClone(writer.state.records);
+  await new PiDurableRuntime({ writer, model, streamFn: (_model, context) => {
+    assert.equal(getCurrentSystemPrompt(context.messages), 'User-owned custom instructions\n\nUser-owned custom section');
+    return streamOf(assistant());
+  } }).run(input('Continue'));
+  assert.deepEqual(writer.state.records.slice(0, before.length), before);
+  assert.equal(promptRevisionCount(writer), 0);
+  await new PiDurableRuntime({ writer, model: { ...model, contextWindow: 32_768 }, autoCompaction: { enabled: false },
+    streamFn: () => streamOf(assistant('Synthetic continuation summary')),
+  }).compact({ keepRecentTokens: 1, reserveTokens: 512 });
+  const recovered = await new PiDurableRuntime({ writer, model, streamFn: () => streamOf(assistant()) }).recover();
+  assert.equal(getCurrentSystemPrompt(recovered.messages), 'User-owned custom instructions\n\nUser-owned custom section');
+  assert.deepEqual(writer.state.records.slice(0, before.length), before);
+  assert.equal(promptRevisionCount(writer), 0);
+});
+
+for (const revision of publishedRevisions) {
+test(`published ${revision.name} bytes recover and upgrade at first request without reloading Memory or changing history`, async () => {
+  assert.equal(createHash('sha256').update(revision.template).digest('hex'), revision.hash);
+  const writer = new MemoryWriter(); await seedPriorPrompt(writer, revision);
+  const initialRevisions = promptRevisionCount(writer);
   const original = structuredClone(writer.state.records); let loads = 0, calls = 0;
   const options = { writer, model: { ...model, contextWindow: 32_768 }, autoCompaction: { enabled: false },
     miraPrompt: { ...config, loadMemory: async () => { loads++; return 'SHOULD_NOT_LOAD'; } },
     streamFn: (_model: typeof model, context: Parameters<import('@earendil-works/pi-agent-core').StreamFn>[1]) => {
       calls++; const prompt = getCurrentSystemPrompt(context.messages);
       assert.equal((prompt.match(/<delegation>/g) ?? []).length, 1);
+      assert.equal((prompt.match(/<task_communication>/g) ?? []).length, 1);
       assert.match(prompt, /PERSISTED_MEMORY/); assert.ok(!prompt.includes('SHOULD_NOT_LOAD'));
       return streamOf(assistant());
     } };
   await new PiDurableRuntime(options).recover();
   assert.deepEqual(writer.state.records, original);
   await new PiDurableRuntime(options).run(input('Continue'));
-  assert.equal(promptRevisionCount(writer), 1);
+  assert.equal(promptRevisionCount(writer), initialRevisions + 1);
   await new PiDurableRuntime(options).run(input('Again'));
-  assert.equal(promptRevisionCount(writer), 1);
+  assert.equal(promptRevisionCount(writer), initialRevisions + 1);
   assert.equal(loads, 0); assert.equal(calls, 2);
   assert.deepEqual(writer.state.records.slice(0, original.length), original);
 });
 
-test('pre-delegation compaction retains its template and frozen Memory until the next natural request', async () => {
-  const writer = new MemoryWriter(); await seedPriorPrompt(writer); let loads = 0;
+test(`${revision.name} compaction retains its template and frozen Memory until the next natural request`, async () => {
+  const writer = new MemoryWriter(); await seedPriorPrompt(writer, revision); let loads = 0;
+  const initialRevisions = promptRevisionCount(writer);
   const options = { writer, model: { ...model, contextWindow: 32_768 }, autoCompaction: { enabled: false },
     miraPrompt: { ...config, loadMemory: async () => { loads++; return 'COMPACTED_MEMORY'; } },
     streamFn: () => streamOf(assistant('Synthetic summary '.repeat(30))) };
@@ -244,19 +277,21 @@ test('pre-delegation compaction retains its template and frozen Memory until the
   const before = structuredClone(writer.state.records);
   const recovered = await new PiDurableRuntime(options).recover();
   const prompt = getCurrentSystemPrompt(recovered.messages);
-  assert.match(prompt, /COMPACTED_MEMORY/); assert.ok(!prompt.includes('<delegation>'));
-  assert.equal(promptRevisionCount(writer), 0); assert.equal(loads, 1);
+  assert.match(prompt, /COMPACTED_MEMORY/); assert.ok(!prompt.includes('<task_communication>'));
+  assert.equal(prompt.includes('<delegation>'), revision.name !== 'pre-delegation');
+  assert.equal(promptRevisionCount(writer), initialRevisions + (revision.identity ? 1 : 0)); assert.equal(loads, 1);
   await new PiDurableRuntime({ ...options, streamFn: (_model, context) => {
-    assert.match(getCurrentSystemPrompt(context.messages), /<delegation>/);
+    assert.match(getCurrentSystemPrompt(context.messages), /<task_communication>/);
     assert.match(getCurrentSystemPrompt(context.messages), /COMPACTED_MEMORY/);
     return streamOf(assistant());
   } }).run(input('Continue'));
-  assert.equal(loads, 1); assert.equal(promptRevisionCount(writer), 1);
+  assert.equal(loads, 1); assert.equal(promptRevisionCount(writer), initialRevisions + (revision.identity ? 1 : 0) + 1);
   assert.deepEqual(writer.state.records.slice(0, before.length), before);
 });
 
-for (const fault of ['cas', 'lost-response'] as const) test(`template upgrade ${fault} preserves frozen evidence and recovers without duplicate revision`, async () => {
-  const writer = new MemoryWriter(); await seedPriorPrompt(writer); let calls = 0, loads = 0;
+for (const fault of ['cas', 'lost-response'] as const) test(`${revision.name} template upgrade ${fault} preserves frozen evidence and recovers without duplicate revision`, async () => {
+  const writer = new MemoryWriter(); await seedPriorPrompt(writer, revision); let calls = 0, loads = 0;
+  const initialRevisions = promptRevisionCount(writer);
   const original = structuredClone(writer.state.records);
   const faultWriter = overrideWriter(writer, { append: async (...args) => {
     if (!JSON.stringify(args[1].payload).includes('"templateSha256"')) return writer.append(...args);
@@ -267,15 +302,17 @@ for (const fault of ['cas', 'lost-response'] as const) test(`template upgrade ${
     streamFn: () => { calls++; return streamOf(assistant()); } };
   await assert.rejects(new PiDurableRuntime({ ...options, writer: faultWriter }).run(input('Continue')), /version conflict|commit response/);
   assert.equal(calls, 0); assert.equal(loads, 0);
-  assert.equal(promptRevisionCount(writer), fault === 'cas' ? 0 : 1);
+  assert.equal(promptRevisionCount(writer), initialRevisions + (fault === 'cas' ? 0 : 1));
   await new PiDurableRuntime({ ...options, writer }).run();
-  assert.equal(calls, 1); assert.equal(loads, 0); assert.equal(promptRevisionCount(writer), 1);
+  assert.equal(calls, 1); assert.equal(loads, 0); assert.equal(promptRevisionCount(writer), initialRevisions + 1);
   assert.deepEqual(writer.state.records.slice(0, original.length), original);
 });
+}
 
 test('unknown template identities and tampered prior/current text fail closed', async () => {
   for (const [templateSha256, template, tamper] of [
     [undefined, priorTemplate, true], [MIRA_PROMPT_SHA256, MIRA_SYSTEM_TEMPLATE, true],
+    [publishedRevisions[1]!.hash, preCommunicationTemplate, true],
     ['0'.repeat(64), priorTemplate, false], [undefined, MIRA_SYSTEM_TEMPLATE, false],
   ] as const) {
     const writer = new MemoryWriter();
