@@ -173,7 +173,7 @@ export function registerBrowserHttp(app: FastifyInstance, backend: BrowserWebBac
       connections.add(connection); if (inputOwner) owners.set(browser.id, connection);
       send(connection, { type: 'mira_state', browser });
       client.on('error', () => close(connection)); client.on('close', () => close(connection));
-      const fence = new BrowserFrameFence(); let frame: { seq: number; generation: number; width: number; height: number } | null = null; let rendered: { seq: number; generation: number; width: number; height: number } | null = null;
+      const fence = new BrowserFrameFence(); let tabList = ""; let frame: { seq: number; generation: number; width: number; height: number } | null = null; let rendered: { seq: number; generation: number; width: number; height: number } | null = null;
       let inputWindow = Date.now(); let inputCount = 0; let upstreamVerified = false;
       client.on('message', (data, binary) => {
         if (connection.closed || binary || !connection.upstream || connection.upstream.readyState !== WebSocket.OPEN || (auth && !auth.status(connection.cookie).authenticated)) { close(connection); return; }
@@ -256,6 +256,12 @@ export function registerBrowserHttp(app: FastifyInstance, backend: BrowserWebBac
               const active = tabs.find(tab => tab?.active === true);
               if (!active || typeof active.targetId !== 'string' || typeof active.url !== 'string') { backend.invalidate(browser.id); close(connection); return; }
               changed = fence.page(active.targetId, active.url, emittedAt);
+              const listed = JSON.stringify(browserTabs(value.tabs));
+              // Same active page, different list (a title finished loading, a background
+              // tab changed): refresh the viewer's tab list only. Not a document boundary,
+              // so no generation bump, frame reset or ack.
+              if (!changed && listed !== tabList) { tabList = listed; send(connection, { type: 'tab_list', generation: fence.generation, tabs: JSON.parse(listed) as unknown }); }
+              if (changed) tabList = listed;
             }
             if (!changed) return;
             if (frame) upstream.send(JSON.stringify({ type: 'ack', seq: frame.seq }));

@@ -62,6 +62,13 @@ try {
       { active: false, tabId: 't3', targetId: 'z', title: 'file', url: 'file:///etc/passwd' },
       { active: false, tabId: 't4', targetId: 'c', title: 'creds', url: 'https://user:secret-pw@hidden.test/a' },
     ] })), false);
+    // Same active page, title loaded later: list-only refresh, no new generation; an identical list is not resent.
+    const titled = { type: 'tabs', timestamp: now, tabs: [{ active: true, tabId: 't1', targetId: '3259', title: 'Example Domain', url: 'https://example.com/' }] };
+    upstream.emit('message', Buffer.from(JSON.stringify(titled)), false);
+    upstream.emit('message', Buffer.from(JSON.stringify(titled)), false);
+    const lists = client.messages.filter(item => item.type === 'tab_list');
+    assert.equal(lists.length, 1); assert.equal(lists[0].tabs[0].title, 'Example Domain');
+    assert.equal(lists[0].generation, client.messages.find(item => item.type === 'tabs').generation);
     upstream.emit('message', Buffer.from(JSON.stringify({ type: 'url', timestamp: now + 1, url: 'https://httpbin.org/html' })), false);
     const projected = client.messages.filter(item => item.type === 'tabs' || item.type === 'url');
     assert.equal(projected.length, 2);
