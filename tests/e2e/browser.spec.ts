@@ -288,15 +288,89 @@ test('header browser entry sits immediately left of Settings and opens Mira’s 
   await expect(page.getByRole('heading', { name: '浏览器', level: 3 })).toBeVisible();
 });
 
-test('fail-closed unknown browser explains itself in Chinese and never requests a ticket or offers reconnect/takeover', async ({ page }) => {
-  await page.route('**/api/browser', route => route.fulfill({ json: { browsers: [{ id: 'lost', state: 'unknown', epoch: 3, ownerLabel: 'Mira', domain: 'example.test', message: 'Browser outcome unknown. Do not replay commands. Close this browser and explicitly open a new one.' }] } }));
-  let tickets = 0; await page.route('**/api/browser/lost/ticket', route => { tickets++; return route.fulfill({ status: 409, json: { error: 'Browser is not available for viewing' } }); });
+test('locked outcome browser is read-only, and the user can close and reopen it', async ({ page }) => {
+  const locked = { id: 'lost', state: 'unknown', lock: 'outcome', epoch: 3, ownerLabel: 'Mira', domain: 'example.test', message: 'Browser outcome unknown. Do not replay commands. Close this browser and explicitly open a new one.' };
+  let browsers: Array<Record<string, unknown>> = [locked];
+  const received: Record<string, unknown>[] = [];
+  let socket: WebSocketRoute | undefined; let tickets = 0; let reopenBody: unknown;
+  await page.route('**/api/browser', route => route.fulfill({ json: { browsers } }));
+  await page.route('**/api/browser/lost/ticket', route => { tickets++; return route.fulfill({ json: { ticket: 'locked-ticket', epoch: locked.epoch } }); });
+  await page.route('**/api/browser/fresh-browser/ticket', route => route.fulfill({ json: { ticket: 'fresh-ticket', epoch: 0 } }));
+  await page.route('**/api/browser/lost/reopen', async route => {
+    reopenBody = route.request().postDataJSON();
+    const fresh = { id: 'fresh-browser', state: 'agent', epoch: 0, ownerLabel: 'Mira', domain: 'example.test', replaces: 'lost' };
+    browsers = [{ ...locked, state: 'closed', replacedBy: 'fresh-browser', epoch: 4 }, fresh];
+    await route.fulfill({ json: fresh });
+  });
+  await page.routeWebSocket('**/api/browser/stream', ws => { socket = ws; ws.onMessage(message => received.push(JSON.parse(String(message)) as Record<string, unknown>)); ws.send(JSON.stringify({ type: 'mira_state', browser: locked })); });
   await page.goto('/'); await page.getByRole('button', { name: '浏览器', exact: true }).click();
-  await expect(page.getByText('状态待确认', { exact: true })).toBeVisible();
-  await expect(page.getByText(/上一次浏览器操作失败或结果无法确认/)).toBeVisible();
-  await expect(page.getByText(/Browser outcome unknown/)).toHaveCount(0);
-  await expect(page.locator('.browser-viewport')).toHaveCount(0);
-  for (const name of ['重新连接', '接手操作', '交还 Mira']) await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '浏览器' });
+  await expect(dialog.getByText('只读查看 · 状态待确认', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('上一次浏览器操作失败或结果无法确认。为避免重复操作，这个浏览器已锁定：你可以查看当前画面，但不能操作，Mira 也不能继续使用它。')).toBeVisible();
+  await expect(dialog.getByText(/Browser outcome unknown/)).toHaveCount(0);
+  for (const name of ['接手操作', '交还 Mira']) await expect(dialog.getByRole('button', { name, exact: true })).toHaveCount(0);
+  await expect.poll(() => tickets).toBeGreaterThan(0);
+  await expect.poll(() => socket !== undefined).toBe(true);
+  const data = await page.evaluate(() => {
+    const canvas = document.createElement('canvas'); canvas.width = 40; canvas.height = 20;
+    const ctx = canvas.getContext('2d')!; ctx.fillStyle = '#123456'; ctx.fillRect(0, 0, 40, 20);
+    return canvas.toDataURL('image/jpeg').split(',')[1]!;
+  });
+  socket!.send(JSON.stringify({ type: 'frame', seq: 1, generation: 1, epoch: locked.epoch, data, metadata: { deviceWidth: 40, deviceHeight: 20 } }));
+  await expect.poll(() => received.some(item => item.type === 'ack')).toBe(true);
+  const canvas = dialog.locator('.browser-viewport canvas');
+  await expect(canvas).not.toHaveClass(/browser-canvas-empty/);
+  await expect.poll(() => canvas.evaluate(element => (element as HTMLCanvasElement).width)).toBeGreaterThan(0);
+  await canvas.click(); await page.keyboard.type('secret-locked');
+  await page.waitForTimeout(150);
+  expect(received.filter(item => String(item.type).startsWith('input_'))).toHaveLength(0);
+  socket!.close();
+  await expect(dialog.getByRole('button', { name: '重新连接', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: '接手操作', exact: true })).toHaveCount(0);
+  const reopen = dialog.getByRole('button', { name: '关闭并重开浏览器', exact: true });
+  await reopen.click();
+  const confirm = dialog.getByRole('button', { name: '确认关闭并重开', exact: true });
+  await expect(confirm).toBeFocused();
+  await expect(dialog.getByText(/将在 example\.test 重新打开一个新的浏览器/)).toBeVisible();
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(confirm).toHaveCount(0);
+  await expect(reopen).toBeFocused();
+  await reopen.click(); await confirm.click();
+  await expect.poll(() => reopenBody).toEqual({ epoch: locked.epoch });
+  await expect(dialog.getByRole('combobox')).toHaveValue('fresh-browser');
+  await expect(dialog.getByRole('button', { name: '接手操作', exact: true })).toBeVisible();
+  await expect(dialog.locator('.browser-select option')).toHaveCount(1);
+  await expect(dialog.locator('.browser-select option[value="lost"]')).toHaveCount(0);
+});
+
+test('reopen reports a stale lock in Chinese with the HTTP detail', async ({ page }) => {
+  const locked = { id: 'lost', state: 'unknown', lock: 'outcome', epoch: 3, ownerLabel: 'Mira', domain: 'example.test', message: 'Browser outcome unknown. Do not replay commands. Close this browser and explicitly open a new one.' };
+  await page.route('**/api/browser', route => route.fulfill({ json: { browsers: [locked] } }));
+  await page.route('**/api/browser/lost/ticket', route => route.fulfill({ json: { ticket: 'locked-ticket', epoch: locked.epoch } }));
+  await page.route('**/api/browser/lost/reopen', route => route.fulfill({ status: 409, json: { error: 'Browser is not locked in an indeterminate state or the view is stale; refresh and retry' } }));
+  await page.routeWebSocket('**/api/browser/stream', ws => { ws.send(JSON.stringify({ type: 'mira_state', browser: locked })); });
+  await page.goto('/'); await page.getByRole('button', { name: '浏览器', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '浏览器' });
+  await dialog.getByRole('button', { name: '关闭并重开浏览器', exact: true }).click();
+  await dialog.getByRole('button', { name: '确认关闭并重开', exact: true }).click();
+  const alert = dialog.getByRole('alert');
+  await expect(alert).toContainText('内容已被其他操作更新');
+  await expect(alert).toContainText('HTTP 409');
+  await expect(dialog.getByRole('button', { name: '确认关闭并重开', exact: true })).toHaveCount(0);
+});
+
+test('cleanup lock explains that close was not confirmed and does not request a ticket', async ({ page }) => {
+  const locked = { id: 'lost', state: 'unknown', lock: 'cleanup', epoch: 5, ownerLabel: 'Mira', domain: 'example.test', message: 'Browser cleanup could not be verified. Agent and human control remain disabled; closing may be retried.' };
+  let tickets = 0;
+  await page.route('**/api/browser', route => route.fulfill({ json: { browsers: [locked] } }));
+  await page.route('**/api/browser/lost/ticket', route => { tickets++; return route.fulfill({ status: 409, json: { error: 'Browser is not available for viewing' } }); });
+  await page.goto('/'); await page.getByRole('button', { name: '浏览器', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '浏览器' });
+  await expect(dialog.getByText('浏览器关闭未能确认。可以重试关闭并重开。')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: '关闭并重开浏览器', exact: true })).toBeVisible();
+  await expect(dialog.locator('.browser-viewport')).toHaveCount(0);
+  await expect(dialog.getByText(/Browser cleanup/)).toHaveCount(0);
+  for (const name of ['重新连接', '接手操作', '交还 Mira']) await expect(dialog.getByRole('button', { name, exact: true })).toHaveCount(0);
+  await dialog.getByRole('button', { name: '刷新', exact: true }).click();
   await page.waitForTimeout(200); expect(tickets).toBe(0);
 });

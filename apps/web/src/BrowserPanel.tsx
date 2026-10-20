@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, MouseEvent, PointerEvent } from 'react';
-import { api } from './api.ts';
+import { api, errorInfo } from './api.ts';
 import { useVisiblePoll } from './useVisiblePoll.ts';
 import './browser.css';
 
@@ -14,7 +14,11 @@ interface BrowserStatus {
   pressedButtons?: string[];
   cancelledInputs?: number;
   queuedInputs?: number;
+  lock?: 'outcome' | 'cleanup';
+  replacedBy?: string;
+  replaces?: string;
 }
+const replacedClosed = (browser: BrowserStatus) => browser.state === 'closed' && !!browser.replacedBy;
 const stateLabels: Record<BrowserStatus['state'], string> = {
   agent: 'Mira 操作中 · 只读查看', requesting: '等待当前操作结束', human: '由你操作',
   held: '连接中断 · 已保留你的控制权', returning: '正在交还 Mira', unknown: '状态待确认', closed: '浏览器已关闭',
@@ -41,7 +45,12 @@ export function BrowserPanel({ active, preferOwner, standalone = false }: { acti
       const result = await api<{ browsers: BrowserStatus[] }>('/api/browser', { signal });
       if (signal.aborted || revision !== statusRevision.current) return;
       setBrowsers(result.browsers); setLoaded(true); setError(null);
-      setSelected(current => result.browsers.some(browser => browser.id === current) ? current : (preferOwner ? result.browsers.find(browser => browser.ownerLabel === preferOwner) : undefined)?.id ?? result.browsers[0]?.id ?? '');
+      setSelected(current => {
+        const chosen = result.browsers.find(browser => browser.id === current);
+        const redirected = chosen && replacedClosed(chosen) && result.browsers.some(browser => browser.id === chosen.replacedBy && !replacedClosed(browser)) ? chosen.replacedBy! : current;
+        if (result.browsers.some(browser => browser.id === redirected && !replacedClosed(browser))) return redirected;
+        return (preferOwner ? result.browsers.find(browser => browser.ownerLabel === preferOwner && !replacedClosed(browser)) : undefined)?.id ?? result.browsers.find(browser => !replacedClosed(browser))?.id ?? '';
+      });
     } catch { if (!signal.aborted && revision === statusRevision.current) { setLoaded(true); setError('暂时无法读取浏览器状态，请重试。'); } }
   }, 2500, version);
   useEffect(() => {
@@ -49,25 +58,29 @@ export function BrowserPanel({ active, preferOwner, standalone = false }: { acti
     dialog?.classList.toggle('browser-expanded', active && expanded);
     return () => dialog?.classList.remove('browser-expanded');
   }, [active, expanded]);
-  const browser = browsers.find(item => item.id === selected);
+  const visible = browsers.filter(item => !replacedClosed(item));
+  const browser = visible.find(item => item.id === selected);
   return <div className="browser-panel">
     <div className="browser-heading"><div>{!standalone && <h3>浏览器</h3>}<p>查看 Mira 正在使用的浏览器，需要时接手操作。</p></div><button type="button" onClick={() => setVersion(value => value + 1)}>刷新</button></div>
     {error && <p className="browser-error" role="alert">{error}</p>}
     {!loaded && <p role="status">正在读取浏览器…</p>}
-    {loaded && !error && browsers.length === 0 && <div className="browser-empty">还没有活动的浏览器。Mira 使用浏览器时会显示在这里。</div>}
-    {browsers.length > 0 && <label className="browser-select">当前浏览器<select value={selected} onChange={event => setSelected(event.target.value)}>{browsers.map((item, index) => <option key={item.id} value={item.id}>{item.ownerLabel || `浏览器 ${index + 1}`} · {item.domain ?? '空白页'}</option>)}</select></label>}
-    {active && browser && <BrowserViewport key={browser.id} browser={browser} expanded={expanded} onExpand={() => setExpanded(value => !value)} onStatus={next => { statusRevision.current += 1; setBrowsers(current => current.map(item => item.id === next.id && item.epoch <= next.epoch ? next : item)); }} />}
+    {loaded && !error && visible.length === 0 && <div className="browser-empty">还没有活动的浏览器。Mira 使用浏览器时会显示在这里。</div>}
+    {visible.length > 0 && <label className="browser-select">当前浏览器<select value={selected} onChange={event => setSelected(event.target.value)}>{visible.map((item, index) => <option key={item.id} value={item.id}>{item.ownerLabel || `浏览器 ${index + 1}`} · {item.domain ?? '空白页'}</option>)}</select></label>}
+    {active && browser && <BrowserViewport key={browser.id} browser={browser} expanded={expanded} onExpand={() => setExpanded(value => !value)} onStatus={next => { statusRevision.current += 1; setBrowsers(current => current.map(item => item.id === next.id && item.epoch <= next.epoch ? next : item)); }} onReplace={fresh => { statusRevision.current += 1; setBrowsers(current => { const next = current.map(item => item.id === fresh.replaces ? { ...item, state: 'closed' as const, replacedBy: fresh.id } : item); return next.some(item => item.id === fresh.id) ? next.map(item => item.id === fresh.id ? fresh : item) : [...next, fresh]; }); setSelected(fresh.id); setVersion(value => value + 1); }} />}
     {window.location.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname) && <p className="browser-note">当前远程连接未加密。输入账号密码前，请使用 HTTPS 连接 Mira。</p>}
     <p className="browser-note">{standalone ? '关闭此窗口' : '关闭设置'}或连接中断不会自动交还控制权。文件选择、上传和下载暂不支持。</p>
   </div>;
 }
 
-function BrowserViewport({ browser, expanded, onExpand, onStatus }: { browser: BrowserStatus; expanded: boolean; onExpand: () => void; onStatus: (browser: BrowserStatus) => void }) {
+function BrowserViewport({ browser, expanded, onExpand, onStatus, onReplace }: { browser: BrowserStatus; expanded: boolean; onExpand: () => void; onStatus: (browser: BrowserStatus) => void; onReplace: (browser: BrowserStatus) => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const bridgeRef = useRef<HTMLTextAreaElement>(null);
+  const reopenButtonRef = useRef<HTMLButtonElement>(null);
+  const confirmButtonRef = useRef<HTMLButtonElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const browserRef = useRef(browser); browserRef.current = browser;
   const statusRef = useRef(onStatus); statusRef.current = onStatus;
+  const replaceRef = useRef(onReplace); replaceRef.current = onReplace;
   const readyRef = useRef(false);
   const composingRef = useRef(false);
   const pressedRef = useRef(false);
@@ -84,12 +97,17 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus }: { browser: B
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorDetail, setErrorDetail] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [reopening, setReopening] = useState(false);
   const [connectionVersion, setConnectionVersion] = useState(0);
   const [currentDomain, setCurrentDomain] = useState(browser.domain);
   const clearInput = () => { pressedRef.current = false; if (bridgeRef.current) bridgeRef.current.value = ''; composingRef.current = false; compositionCommitRef.current = null; };
-  // Unknown/closed browsers never mint tickets (the server answers 409), so a
-  // fail-closed browser shows an explanation instead of a dead reconnect loop.
-  const unavailable = browser.state === 'unknown' || browser.state === 'closed';
+  // Cleanup-lock and closed browsers never mint tickets. An outcome lock stays
+  // viewable and read-only; entering it changes the epoch, so reconnect then.
+  const unavailable = browser.state === 'closed' || (browser.state === 'unknown' && browser.lock !== 'outcome');
+  const lockEpoch = browser.state === 'unknown' ? browser.epoch : -1;
+  useLayoutEffect(() => { if (confirming && browser.state === 'unknown') confirmButtonRef.current?.focus(); }, [confirming, browser.state]);
   useEffect(() => {
     if (unavailable) { setConnected(false); setHasFrame(false); return; }
     const controller = new AbortController();
@@ -146,7 +164,7 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus }: { browser: B
       socket.onerror = () => { if (!stopped) setError('暂时无法连接浏览器画面。'); };
     }).catch(() => { if (!stopped) setError('暂时无法连接浏览器画面，请重试。'); });
     return () => { stopped = true; aliveRef.current = false; controller.abort(); invalidate(); socket?.close(); socketRef.current = null; };
-  }, [browser.id, connectionVersion, unavailable]);
+  }, [browser.id, connectionVersion, unavailable, lockEpoch]);
 
   useLayoutEffect(() => { readyRef.current = false; renderedRef.current = null; clearInput(); }, [browser.epoch, browser.state]);
   // The server closes epoch-bound streams on every control change. After the
@@ -219,14 +237,32 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus }: { browser: B
     } catch { followEpochRef.current = null; socketRef.current?.close(); if (aliveRef.current) setError('操作结果尚未确认，请刷新状态后再试。'); }
     finally { busyRef.current = false; if (aliveRef.current) setBusy(false); }
   };
+  const confirmReopen = async () => {
+    if (busyRef.current) return;
+    busyRef.current = true; setReopening(true); setError(null); setErrorDetail(null);
+    const previous = browserRef.current;
+    try {
+      const fresh = await api<BrowserStatus>(`/api/browser/${encodeURIComponent(previous.id)}/reopen`, { method: 'POST', body: JSON.stringify({ epoch: previous.epoch }) });
+      if (!aliveRef.current) return;
+      const { lock: _lock, ...rest } = previous;
+      statusRef.current({ ...rest, state: 'closed', replacedBy: fresh.id, epoch: previous.epoch + 1 });
+      replaceRef.current(fresh);
+    } catch (caught) {
+      if (!aliveRef.current) return;
+      const info = errorInfo(caught); setError(info.summary); setErrorDetail(info.detail); setConfirming(false);
+    } finally { busyRef.current = false; if (aliveRef.current) setReopening(false); }
+  };
+  const address = currentDomain || browser.domain || '原地址';
   return <div className="browser-view">
     <div className="browser-toolbar"><span className="browser-domain">当前标签页 · {currentDomain ?? browser.domain ?? '空白页'}</span><button type="button" onClick={onExpand}>{expanded ? '收起画面' : '放大画面'}</button></div>
-    <p className="browser-control-state" role="status">{stateLabels[browser.state]}</p>
+    <p className="browser-control-state" role="status">{browser.state === 'unknown' && browser.lock === 'outcome' ? '只读查看 · 状态待确认' : stateLabels[browser.state]}</p>
     {!!browser.cancelledInputs && <p className="browser-note" role="status">已取消 {browser.cancelledInputs} 条尚未发送的输入。请核对页面结果，不要重复提交。</p>}
     {browser.state === 'returning' && !!browser.queuedInputs && <p className="browser-note">正在取消尚未发送的输入，并等待当前操作响应。</p>}
     {!!browser.pressedButtons?.length && <p className="browser-note" role="status">鼠标仍处于按下状态，暂不能交还。请继续接手，看到当前画面后显式松开鼠标。</p>}
-    {unavailable ? <p className="browser-note" role="status">{browser.state === 'closed' ? '这个浏览器已关闭。' : '上一次浏览器操作失败或结果无法确认。为避免重复操作，已停止查看和接手这个浏览器；请让 Mira 关闭它后重新打开。'}</p>
-      : browser.message && <p className="browser-note">{browser.message}</p>}
+    {browser.state === 'unknown' && browser.lock === 'outcome' && <p className="browser-note" role="status">上一次浏览器操作失败或结果无法确认。为避免重复操作，这个浏览器已锁定：你可以查看当前画面，但不能操作，Mira 也不能继续使用它。</p>}
+    {browser.state === 'unknown' && browser.lock !== 'outcome' && <p className="browser-note" role="status">浏览器关闭未能确认。可以重试关闭并重开。</p>}
+    {browser.state === 'closed' && <p className="browser-note" role="status">这个浏览器已关闭。</p>}
+    {browser.state !== 'unknown' && browser.state !== 'closed' && !!browser.message && !browser.replaces && <p className="browser-note">{browser.message}</p>}
     {!unavailable && <div className="browser-viewport">
       <canvas ref={canvasRef} aria-label="远程浏览器画面" className={hasFrame ? '' : 'browser-canvas-empty'} onPointerDown={event => { event.preventDefault(); if (browserRef.current.state !== 'human' || !readyRef.current) return; pressedRef.current = true; pressedButtonRef.current = event.button; event.currentTarget.setPointerCapture(event.pointerId); mouse(event, 'mousePressed'); }} onPointerMove={event => mouse(event, 'mouseMoved')} onPointerUp={event => { releasePointer(event); if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }} onPointerCancel={abandonPointer} onLostPointerCapture={abandonPointer} onContextMenu={event => event.preventDefault()} />
       {!hasFrame && <span className="browser-placeholder">{connected ? '等待当前页面画面…' : '画面尚未连接'}</span>}
@@ -237,13 +273,20 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus }: { browser: B
         text(value);
       }} onPaste={event => { event.preventDefault(); text(event.clipboardData.getData('text/plain')); }} onBlur={clearInput} />
     </div>}
-    {error && <p className="browser-error" role="alert">{error}</p>}
+    {error && <p className="browser-error" role="alert"><span>{error}</span>{errorDetail && <span className="browser-error-detail">{errorDetail}</span>}</p>}
     <div className="browser-actions">
       {browser.state === 'human' && browser.pressedButtons?.map(button => <button key={button} type="button" disabled={!connected || !hasFrame} onClick={() => send({ type: 'input_release', button })}>松开{({ left: '左键', middle: '中键', right: '右键' } as Record<string, string>)[button] ?? '鼠标'}</button>)}
-      {(browser.state === 'agent' || browser.state === 'held') && <button type="button" disabled={busy} onClick={() => void changeControl('takeover')}>{browser.state === 'held' ? '继续接手' : '接手操作'}</button>}
-      {['human', 'held', 'requesting'].includes(browser.state) && <button type="button" disabled={busy} onClick={() => void changeControl('return')}>交还 Mira</button>}
-      {!connected && !unavailable && <button type="button" disabled={busy} onClick={() => setConnectionVersion(value => value + 1)}>重新连接</button>}
+      {(browser.state === 'agent' || browser.state === 'held') && <button type="button" disabled={busy || reopening} onClick={() => void changeControl('takeover')}>{browser.state === 'held' ? '继续接手' : '接手操作'}</button>}
+      {['human', 'held', 'requesting'].includes(browser.state) && <button type="button" disabled={busy || reopening} onClick={() => void changeControl('return')}>交还 Mira</button>}
+      {browser.state === 'unknown' && <button ref={reopenButtonRef} type="button" disabled={reopening} onClick={() => { setError(null); setErrorDetail(null); setConfirming(true); }}>关闭并重开浏览器</button>}
+      {!connected && !unavailable && <button type="button" disabled={busy || reopening} onClick={() => setConnectionVersion(value => value + 1)}>重新连接</button>}
     </div>
+    {browser.state === 'unknown' && confirming && <div className="browser-confirm">
+      <p role="status">关闭后，当前页面、登录状态和未保存的内容都会丢失；将在 {address} 重新打开一个新的浏览器。Mira 会在查看浏览器列表或继续操作时得知旧页面已不存在。</p>
+      {reopening && <p role="status">正在关闭并重开…</p>}
+      <button ref={confirmButtonRef} type="button" className="browser-reopen" disabled={reopening} onClick={() => void confirmReopen()}>确认关闭并重开</button>
+      <button type="button" disabled={reopening} onClick={() => { setConfirming(false); reopenButtonRef.current?.focus(); }}>取消</button>
+    </div>}
     {browser.state === 'human' && !connected && <p className="browser-note">已保留控制权。请点击“重新连接”，看到新画面后再操作。</p>}
     {browser.state === 'human' && <p className="browser-note">点击画面后可输入或粘贴文字，按 Escape 离开键盘输入。完成后请点击“交还 Mira”。</p>}
   </div>;

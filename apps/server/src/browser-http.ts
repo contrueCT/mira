@@ -7,11 +7,13 @@ import type { WebAccessAuth } from './web-auth.ts';
 
 export interface BrowserView {
   id: string; state: string; epoch: number; ownerLabel: string; domain?: string | null; message?: string;
+  lock?: 'outcome' | 'cleanup'; replacedBy?: string; replaces?: string;
 }
 export interface BrowserWebBackend {
   list(): BrowserView[];
   takeover(id: string): Promise<BrowserView>;
   release(id: string, epoch: number): Promise<BrowserView>;
+  reopen(id: string, epoch: number): Promise<BrowserView>;
   disconnect(id: string, epoch: number): void;
   stream(id: string): string | Promise<string>;
   invalidate(id: string): void;
@@ -28,6 +30,7 @@ const domain = (value: unknown): string | null => {
 };
 const finite = (value: unknown, limit: number): value is number => typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= limit;
 const integer = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
+const viewing = (browser: BrowserView) => !['closed', 'returning', 'requesting'].includes(browser.state) && (browser.state !== 'unknown' || browser.lock === 'outcome');
 /** Frame and navigation channels are independent upstream. Arrival order is not capture order. */
 export class BrowserFrameFence {
   generation = 0;
@@ -111,15 +114,16 @@ export function registerBrowserHttp(app: FastifyInstance, backend: BrowserWebBac
   const stopState = backend?.subscribe(browser => {
     for (const connection of [...connections]) if (connection.browser.id === browser.id) {
       send(connection, { type: 'mira_state', browser });
-      if (connection.browser.epoch !== browser.epoch || ['returning', 'unknown', 'closed'].includes(browser.state)) close(connection);
+      if (connection.browser.epoch !== browser.epoch || browser.state === 'returning' || browser.state === 'closed' || (browser.state === 'unknown' && !(browser.lock === 'outcome' && connection.browser.epoch === browser.epoch))) close(connection);
     }
   });
   app.get('/api/browser', { schema: { querystring: empty } }, async () => ({ browsers: backend?.list() ?? [] }));
   app.post<{ Params: { id: string } }>('/api/browser/:id/takeover', { schema: { params, querystring: empty, body: empty } }, async request => available().takeover(request.params.id));
   app.post<{ Params: { id: string }; Body: { epoch: number } }>('/api/browser/:id/return', { schema: { params, querystring: empty, body: object({ epoch: { type: 'integer', minimum: 0 } }, ['epoch']) } }, async request => available().release(request.params.id, request.body.epoch));
+  app.post<{ Params: { id: string }; Body: { epoch: number } }>('/api/browser/:id/reopen', { schema: { params, querystring: empty, body: object({ epoch: { type: 'integer', minimum: 0 } }, ['epoch']) } }, async (request, reply) => { try { return await available().reopen(request.params.id, request.body.epoch); } catch (error) { if (error instanceof Error && error.name === 'BrowserControlError') return reply.code(409).send({ error: error.message }); throw error; } });
   app.post<{ Params: { id: string } }>('/api/browser/:id/ticket', { schema: { params, querystring: empty, body: empty } }, async (request, reply) => {
     const browser = view(request.params.id);
-    if (!browser || ['closed', 'unknown', 'returning', 'requesting'].includes(browser.state)) return reply.code(409).send({ error: 'Browser is not available for viewing' });
+    if (!browser || !viewing(browser)) return reply.code(409).send({ error: 'Browser is not available for viewing' });
     for (const [key, ticket] of tickets) if (ticket.expires <= Date.now()) tickets.delete(key);
     if (tickets.size >= 32 || connections.size >= 16) return reply.code(429).send({ error: 'Too many browser connections' });
     const ticket = randomBytes(32).toString('base64url');
@@ -133,7 +137,7 @@ export function registerBrowserHttp(app: FastifyInstance, backend: BrowserWebBac
     if (protocols?.length !== 2 || protocols[0] !== 'mira-browser' || !/^[A-Za-z0-9_-]{43}$/.test(protocols[1]!)) { reject(socket); return; }
     const key = digest(protocols[1]!); const ticket = tickets.get(key); tickets.delete(key);
     const browser = ticket ? view(ticket.id) : undefined;
-    if (!ticket || ticket.expires <= Date.now() || ticket.cookie !== digest(request.headers.cookie ?? '') || !browser || ticket.epoch !== browser.epoch || ['requesting', 'returning', 'unknown', 'closed'].includes(browser.state)) { reject(socket); return; }
+    if (!ticket || ticket.expires <= Date.now() || ticket.cookie !== digest(request.headers.cookie ?? '') || !browser || ticket.epoch !== browser.epoch || !viewing(browser)) { reject(socket); return; }
     const inputOwner = browser.state === 'human';
     if (inputOwner && owners.has(browser.id)) { reject(socket); return; }
     server.handleUpgrade(request, socket, head, client => {

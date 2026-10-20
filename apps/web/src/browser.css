@@ -22,6 +22,10 @@
 .browser-actions { padding: 12px; }
 .browser-view > .browser-note, .browser-view > .browser-error { margin: 10px 12px; }
 .browser-error { color: #a14b4b; font-size: 13px; line-height: 1.7; }
+.browser-error-detail { display: block; margin-top: 2px; font-size: 11px; line-height: 1.6; }
+.browser-confirm { margin: 10px 12px; color: #5f6a7d; font-size: 12px; line-height: 1.7; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.browser-confirm p { flex-basis: 100%; margin: 0; }
+.browser-panel button.browser-reopen { color: #8a3b2e; background: #fff; border-color: #e2b9b0; }
 .browser-empty { padding: 30px 16px; border: 1px dashed #dce2ec; border-radius: 12px; color: #5f6a7d; font-size: 13px; line-height: 1.8; }
 .settings-dialog.browser-expanded { width: min(1280px, calc(100vw - 40px)); }
 @media (max-width: 600px) { .browser-dialog { width: calc(100vw - 22px); } .browser-panel { padding: 16px 14px; } .settings-dialog.browser-expanded { width: calc(100vw - 22px); } .browser-toolbar { gap: 6px; } }

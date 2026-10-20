@@ -783,6 +783,11 @@ test('visible text meets WCAG AA contrast and an 11px minimum size in chat, erro
       { id: 'c-reply', role: 'user', text: '一定', occurredAt: '2026-10-14T08:02:00Z', reply: { messageId: 'c-mira', role: 'assistant', text: '好呀，带上相机。' } },
       { id: 'c-notice', role: 'notice', text: '外部程序 calendar\n周六 9:00 提醒', occurredAt: '2026-10-14T08:03:00Z' },
     ], nextCursor: 'older' } }));
+  const lockedBrowser = { id: 'locked-browser', state: 'unknown', lock: 'outcome', epoch: 2, ownerLabel: 'Mira', domain: 'example.test', message: 'Browser outcome unknown. Do not replay commands. Close this browser and explicitly open a new one.' };
+  let browserList: Array<Record<string, unknown>> = [];
+  await page.route('**/api/browser', route => route.fulfill({ json: { browsers: browserList } }));
+  await page.route('**/api/browser/locked-browser/ticket', route => route.fulfill({ json: { ticket: 'locked-ticket', epoch: lockedBrowser.epoch } }));
+  await page.routeWebSocket('**/api/browser/stream', ws => { ws.send(JSON.stringify({ type: 'mira_state', browser: lockedBrowser })); });
   const check = async (scene: string) => {
     const result = await textContrast(page, CONTRAST_EXCEPTIONS);
     expect(result.failing, `${scene}: ${JSON.stringify(result.failing)}`).toEqual([]);
@@ -808,9 +813,15 @@ test('visible text meets WCAG AA contrast and an 11px minimum size in chat, erro
     await page.getByRole('button', { name: '模型设置', exact: true }).click(); await expect(page.getByRole('dialog')).toBeVisible();
     await check(`settings ${size.width}`);
     await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
-    await page.route('**/api/browser', route => route.fulfill({ json: { browsers: [] } }));
+    browserList = [];
     await page.getByRole('button', { name: '浏览器', exact: true }).click(); await expect(page.getByText('还没有活动的浏览器', { exact: false })).toBeVisible();
     await check(`browser ${size.width}`);
+    await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
+    browserList = [lockedBrowser];
+    await page.getByRole('button', { name: '浏览器', exact: true }).click();
+    await page.getByRole('button', { name: '关闭并重开浏览器', exact: true }).click();
+    await expect(page.getByRole('button', { name: '确认关闭并重开', exact: true })).toBeVisible();
+    await check(`locked browser ${size.width}`);
     await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
     empty = true; await page.reload(); await expect(page.getByText('和 Mira 说点什么')).toBeVisible();
     await check(`empty ${size.width}`);
