@@ -344,3 +344,30 @@ export async function snapshotMemory(options: MemorySnapshotOptions): Promise<Me
   if (!result) throw new Error('Memory snapshot receipt disappeared after publication');
   return result;
 }
+
+/** UTF-8 bytes of MEMORY.md injected into the system prompt. Memory is a
+ * prefix compaction cannot shrink, so an unbounded file would eventually make
+ * every request exceed the context window (Codex caps AGENTS.md at 32KiB). */
+export const MEMORY_PROMPT_BYTES = 49_152;
+/** Bound prompt Memory text: keep whole leading lines within the budget and
+ * append a note naming the file, so the model reads the rest on demand. The
+ * file itself is never modified. */
+export function boundPromptMemory(content: string, memoryPath: string, maxBytes: number = MEMORY_PROMPT_BYTES): string {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1024) throw new Error('Invalid Memory prompt limit');
+  const total = Buffer.byteLength(content);
+  if (total <= maxBytes) return content;
+  const note = (kept: number) => `\n\n[MEMORY.md is ${total} UTF-8 bytes; only the first ${kept} bytes are included in this prompt. Read the rest from ${JSON.stringify(memoryPath)} with ordinary read offset/limit when relevant. Keep MEMORY.md concise: move details into separate Memory files and leave short pointers here.]`;
+  const budget = maxBytes - Buffer.byteLength(note(total));
+  const buffer = Buffer.from(content);
+  let end = Math.max(0, budget);
+  while (end > 0 && (buffer[end]! & 0xc0) === 0x80) end--;
+  let kept = buffer.subarray(0, end).toString('utf8');
+  const line = kept.lastIndexOf('\n');
+  if (line > kept.length / 2) kept = kept.slice(0, line);
+  return kept + note(Buffer.byteLength(kept));
+}
+/** Bootstrap Memory as injected into the prompt, bounded by `maxBytes`. */
+export async function loadPromptMemory(options: { memoryRoot: string; signal?: AbortSignal; maxBytes?: number }): Promise<string> {
+  const { memory } = await loadMemoryBootstrap({ memoryRoot: options.memoryRoot, ...(options.signal ? { signal: options.signal } : {}) });
+  return boundPromptMemory(memory.content, memory.path, options.maxBytes);
+}
