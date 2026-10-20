@@ -26,10 +26,12 @@ async function login(page: Page) {
   await page.getByRole('button', { name: '进入 Mira', exact: true }).click();
   await expect(page.locator('form.composer')).toBeVisible();
 }
+// After the user's own takeover/continue the panel reconnects to the new
+// epoch by itself; no manual "重新连接" step and no lingering disconnect error.
 async function reconnect(page: Page) {
-  const button = page.getByRole('button', { name: '重新连接', exact: true });
-  await expect(button).toBeVisible(); await button.click();
   await expect(page.locator('.browser-viewport canvas')).not.toHaveClass(/browser-canvas-empty/);
+  await expect(page.getByRole('button', { name: '重新连接', exact: true })).toHaveCount(0);
+  await expect(page.getByText(/画面连接已断开/)).toHaveCount(0);
 }
 
 test('official native startup diagnostic uses an empty isolated profile', async ({}, testInfo) => {

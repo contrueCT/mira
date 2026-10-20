@@ -150,16 +150,20 @@ for (const interruption of ['pointercancel', 'lostpointercapture', 'return'] as 
     }
     await frame(2); // Flush preceding socket input before checking that no release was invented.
     expect(received.filter(input => input.eventType === 'mouseReleased' || input.type === 'input_release')).toEqual([]);
+    const originalSocket = socket;
     await page.getByRole('button', { name: '交还 Mira', exact: true }).evaluate(element => (element as HTMLElement).click());
     await expect.poll(() => status.state).toBe('held');
     await page.mouse.up();
     await expect(page.getByText('连接中断 · 已保留你的控制权', { exact: true })).toBeVisible();
     expect(status.pressedButtons).toEqual(['left']); expect(returns).toBe(1);
     expect(received.filter(input => input.eventType === 'mouseReleased' || input.type === 'input_release')).toEqual([]);
+    // The user's own return closed the epoch-bound stream; the panel follows
+    // the new epoch by itself (no manual reconnect) and stays read-only until
+    // the user explicitly continues.
+    await expect.poll(() => socket !== originalSocket).toBe(true);
+    await expect(page.getByRole('button', { name: '重新连接', exact: true })).toHaveCount(0);
     await page.getByRole('button', { name: '继续接手', exact: true }).click();
-    const previousSocket = socket;
-    await page.getByRole('button', { name: '重新连接', exact: true }).click();
-    await expect.poll(() => socket !== previousSocket).toBe(true); await frame(3);
+    await expect(page.getByText('由你操作', { exact: true })).toBeVisible(); await frame(3);
     await page.getByRole('button', { name: '松开左键', exact: true }).click();
     await expect.poll(() => status.pressedButtons).toEqual([]);
     expect(received.filter(input => input.type === 'input_release')).toHaveLength(1);
@@ -282,4 +286,17 @@ test('header browser entry sits immediately left of Settings and opens Mira’s 
   await page.getByRole('button', { name: '关闭浏览器', exact: true }).click(); await expect(page.getByRole('dialog')).toHaveCount(0);
   await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '浏览器', exact: true }).click();
   await expect(page.getByRole('heading', { name: '浏览器', level: 3 })).toBeVisible();
+});
+
+test('fail-closed unknown browser explains itself in Chinese and never requests a ticket or offers reconnect/takeover', async ({ page }) => {
+  await page.route('**/api/browser', route => route.fulfill({ json: { browsers: [{ id: 'lost', state: 'unknown', epoch: 3, ownerLabel: 'Mira', domain: 'example.test', message: 'Browser outcome unknown. Do not replay commands. Close this browser and explicitly open a new one.' }] } }));
+  let tickets = 0; await page.route('**/api/browser/lost/ticket', route => { tickets++; return route.fulfill({ status: 409, json: { error: 'Browser is not available for viewing' } }); });
+  await page.goto('/'); await page.getByRole('button', { name: '浏览器', exact: true }).click();
+  await expect(page.getByText('状态待确认', { exact: true })).toBeVisible();
+  await expect(page.getByText(/上一次浏览器操作失败或结果无法确认/)).toBeVisible();
+  await expect(page.getByText(/Browser outcome unknown/)).toHaveCount(0);
+  await expect(page.locator('.browser-viewport')).toHaveCount(0);
+  for (const name of ['重新连接', '接手操作', '交还 Mira']) await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await page.waitForTimeout(200); expect(tickets).toBe(0);
 });

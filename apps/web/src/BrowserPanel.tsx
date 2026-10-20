@@ -76,6 +76,9 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus }: { browser: B
   const renderedRef = useRef<{ epoch: number; generation: number; seq: number; width: number; height: number } | null>(null);
   const generationRef = useRef(-1);
   const aliveRef = useRef(true);
+  // Epoch before the user's own takeover/return; cleared once a stream for the
+  // newer epoch renders (it survived) or after one automatic reconnect.
+  const followEpochRef = useRef<number | null>(null);
   const [connected, setConnected] = useState(false);
   const [hasFrame, setHasFrame] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -84,7 +87,11 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus }: { browser: B
   const [connectionVersion, setConnectionVersion] = useState(0);
   const [currentDomain, setCurrentDomain] = useState(browser.domain);
   const clearInput = () => { pressedRef.current = false; if (bridgeRef.current) bridgeRef.current.value = ''; composingRef.current = false; compositionCommitRef.current = null; };
+  // Unknown/closed browsers never mint tickets (the server answers 409), so a
+  // fail-closed browser shows an explanation instead of a dead reconnect loop.
+  const unavailable = browser.state === 'unknown' || browser.state === 'closed';
   useEffect(() => {
+    if (unavailable) { setConnected(false); setHasFrame(false); return; }
     const controller = new AbortController();
     let socket: WebSocket | null = null;
     let serial = 0;
@@ -127,6 +134,7 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus }: { browser: B
           if (!canvas || !context || !image.naturalWidth || !image.naturalHeight) return;
           canvas.width = image.naturalWidth; canvas.height = image.naturalHeight; context.drawImage(image, 0, 0);
           const metadata = message.metadata as { deviceWidth?: number; deviceHeight?: number } | undefined;
+          if (followEpochRef.current !== null && epoch > followEpochRef.current) followEpochRef.current = null;
           renderedRef.current = { epoch, generation: streamGeneration, seq, width: metadata?.deviceWidth || image.naturalWidth, height: metadata?.deviceHeight || image.naturalHeight }; readyRef.current = true; setHasFrame(true);
           if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'ack', seq }));
           image.onload = null; image.onerror = null; image.src = '';
@@ -138,9 +146,17 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus }: { browser: B
       socket.onerror = () => { if (!stopped) setError('暂时无法连接浏览器画面。'); };
     }).catch(() => { if (!stopped) setError('暂时无法连接浏览器画面，请重试。'); });
     return () => { stopped = true; aliveRef.current = false; controller.abort(); invalidate(); socket?.close(); socketRef.current = null; };
-  }, [browser.id, connectionVersion]);
+  }, [browser.id, connectionVersion, unavailable]);
 
   useLayoutEffect(() => { readyRef.current = false; renderedRef.current = null; clearInput(); }, [browser.epoch, browser.state]);
+  // The server closes epoch-bound streams on every control change. After the
+  // user's own takeover/return, reconnect once the new epoch is viewable instead
+  // of leaving a "connection lost" error and a manual reconnect step.
+  useEffect(() => {
+    const from = followEpochRef.current;
+    if (from === null || connected || browser.epoch <= from || !['agent', 'human', 'held'].includes(browser.state)) return;
+    followEpochRef.current = null; setError(null); setConnectionVersion(value => value + 1);
+  }, [browser.epoch, browser.state, connected]);
   const send = (payload: Record<string, unknown>) => {
     const frame = renderedRef.current; const socket = socketRef.current; const current = browserRef.current;
     if (busyRef.current || !readyRef.current || !frame || frame.epoch !== current.epoch || current.state !== 'human' || socket?.readyState !== WebSocket.OPEN) return;
@@ -196,10 +212,11 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus }: { browser: B
   const changeControl = async (action: 'takeover' | 'return') => {
     if (busyRef.current) return;
     busyRef.current = true; setBusy(true); setError(null); readyRef.current = false; clearInput();
+    followEpochRef.current = browserRef.current.epoch;
     try {
       const next = await api<BrowserStatus>(`/api/browser/${encodeURIComponent(browser.id)}/${action}`, { method: 'POST', body: JSON.stringify(action === 'return' ? { epoch: browserRef.current.epoch } : {}) });
       if (aliveRef.current && next.epoch >= browserRef.current.epoch) { browserRef.current = next; statusRef.current(next); }
-    } catch { socketRef.current?.close(); if (aliveRef.current) setError('操作结果尚未确认，请刷新状态后再试。'); }
+    } catch { followEpochRef.current = null; socketRef.current?.close(); if (aliveRef.current) setError('操作结果尚未确认，请刷新状态后再试。'); }
     finally { busyRef.current = false; if (aliveRef.current) setBusy(false); }
   };
   return <div className="browser-view">
@@ -208,8 +225,9 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus }: { browser: B
     {!!browser.cancelledInputs && <p className="browser-note" role="status">已取消 {browser.cancelledInputs} 条尚未发送的输入。请核对页面结果，不要重复提交。</p>}
     {browser.state === 'returning' && !!browser.queuedInputs && <p className="browser-note">正在取消尚未发送的输入，并等待当前操作响应。</p>}
     {!!browser.pressedButtons?.length && <p className="browser-note" role="status">鼠标仍处于按下状态，暂不能交还。请继续接手，看到当前画面后显式松开鼠标。</p>}
-    {browser.message && <p className="browser-note">{browser.message}</p>}
-    <div className="browser-viewport">
+    {unavailable ? <p className="browser-note" role="status">{browser.state === 'closed' ? '这个浏览器已关闭。' : '上一次浏览器操作失败或结果无法确认。为避免重复操作，已停止查看和接手这个浏览器；请让 Mira 关闭它后重新打开。'}</p>
+      : browser.message && <p className="browser-note">{browser.message}</p>}
+    {!unavailable && <div className="browser-viewport">
       <canvas ref={canvasRef} aria-label="远程浏览器画面" className={hasFrame ? '' : 'browser-canvas-empty'} onPointerDown={event => { event.preventDefault(); if (browserRef.current.state !== 'human' || !readyRef.current) return; pressedRef.current = true; pressedButtonRef.current = event.button; event.currentTarget.setPointerCapture(event.pointerId); mouse(event, 'mousePressed'); }} onPointerMove={event => mouse(event, 'mouseMoved')} onPointerUp={event => { releasePointer(event); if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }} onPointerCancel={abandonPointer} onLostPointerCapture={abandonPointer} onContextMenu={event => event.preventDefault()} />
       {!hasFrame && <span className="browser-placeholder">{connected ? '等待当前页面画面…' : '画面尚未连接'}</span>}
       <textarea ref={bridgeRef} className="browser-input-bridge" aria-label="浏览器键盘输入，按 Escape 离开" autoComplete="off" autoCapitalize="off" spellCheck={false} disabled={browser.state !== 'human' || !connected || !hasFrame} onKeyDown={event => key(event, 'keyDown')} onKeyUp={event => key(event, 'keyUp')} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={event => { composingRef.current = false; text(event.data); compositionCommitRef.current = event.data; setTimeout(() => { compositionCommitRef.current = null; }, 0); }} onInput={event => {
@@ -218,13 +236,13 @@ function BrowserViewport({ browser, expanded, onExpand, onStatus }: { browser: B
         if (committed !== null && value === committed) { event.currentTarget.value = ''; return; }
         text(value);
       }} onPaste={event => { event.preventDefault(); text(event.clipboardData.getData('text/plain')); }} onBlur={clearInput} />
-    </div>
+    </div>}
     {error && <p className="browser-error" role="alert">{error}</p>}
     <div className="browser-actions">
       {browser.state === 'human' && browser.pressedButtons?.map(button => <button key={button} type="button" disabled={!connected || !hasFrame} onClick={() => send({ type: 'input_release', button })}>松开{({ left: '左键', middle: '中键', right: '右键' } as Record<string, string>)[button] ?? '鼠标'}</button>)}
       {(browser.state === 'agent' || browser.state === 'held') && <button type="button" disabled={busy} onClick={() => void changeControl('takeover')}>{browser.state === 'held' ? '继续接手' : '接手操作'}</button>}
       {['human', 'held', 'requesting'].includes(browser.state) && <button type="button" disabled={busy} onClick={() => void changeControl('return')}>交还 Mira</button>}
-      {!connected && <button type="button" disabled={busy} onClick={() => setConnectionVersion(value => value + 1)}>重新连接</button>}
+      {!connected && !unavailable && <button type="button" disabled={busy} onClick={() => setConnectionVersion(value => value + 1)}>重新连接</button>}
     </div>
     {browser.state === 'human' && !connected && <p className="browser-note">已保留控制权。请点击“重新连接”，看到新画面后再操作。</p>}
     {browser.state === 'human' && <p className="browser-note">点击画面后可输入或粘贴文字，按 Escape 离开键盘输入。完成后请点击“交还 Mira”。</p>}
