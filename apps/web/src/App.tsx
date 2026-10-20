@@ -8,8 +8,9 @@ import { attachmentSize } from './attachments.ts';
 import { api, ApiError, errorInfo, isAbort } from './api.ts';
 import type { ErrorInfo } from './api.ts';
 import { createStatusPolling } from './status-polling.ts';
-import { ArrowUp, ChevronDown, SettingsIcon } from './icons.tsx';
+import { ArrowUp, BrowserIcon, ChevronDown, SettingsIcon } from './icons.tsx';
 import { SettingsDialog } from './SettingsDialog.tsx';
+import { BrowserDialog } from './BrowserDialog.tsx';
 import { createMemoryRequest, readMemoryRequest, recoverMemoryRequest, writeMemoryRequest } from './management.ts';
 import type { MemoryRequestIdentity } from './management.ts';
 import { composerBudget, envelopeBytes, MESSAGE_BODY_LIMIT } from './composer.ts';
@@ -77,6 +78,9 @@ export function App() {
   const [sending, setSending] = useState(false);
   const [nearBottom, setNearBottom] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(() => window.location.hash === '#settings');
+  const [browserOpen, setBrowserOpen] = useState(() => window.location.hash === '#browser');
+  const browserButtonRef = useRef<HTMLButtonElement>(null);
+  const closingBrowserRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
@@ -187,7 +191,7 @@ export function App() {
   }, [refresh]);
 
   useEffect(() => {
-    const sync = () => { cancelQuoteNavigation(); closingSettingsRef.current = false; closingPreviewRef.current = false; setSettingsOpen(window.location.hash === '#settings'); setPreviewId(window.location.hash.startsWith('#attachment=') ? window.location.hash.slice(12) : null); };
+    const sync = () => { cancelQuoteNavigation(); closingSettingsRef.current = false; closingPreviewRef.current = false; setSettingsOpen(window.location.hash === '#settings'); closingBrowserRef.current = false; setBrowserOpen(window.location.hash === '#browser'); setPreviewId(window.location.hash.startsWith('#attachment=') ? window.location.hash.slice(12) : null); };
     window.addEventListener('hashchange', sync); window.addEventListener('popstate', sync);
     return () => { window.removeEventListener('hashchange', sync); window.removeEventListener('popstate', sync); };
   }, [cancelQuoteNavigation]);
@@ -323,6 +327,13 @@ export function App() {
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); submit(); }
   };
   const openSettings = () => { if (window.location.hash === '#settings') return; cancelQuoteNavigation(); closingSettingsRef.current = false; window.history.pushState({ ...window.history.state, miraSettings: true }, '', '#settings'); setSettingsOpen(true); };
+  const openBrowser = () => { if (window.location.hash === '#browser') return; cancelQuoteNavigation(); closingBrowserRef.current = false; window.history.pushState({ ...window.history.state, miraBrowser: true }, '', '#browser'); setBrowserOpen(true); };
+  const closeBrowser = () => {
+    if (closingBrowserRef.current) return;
+    closingBrowserRef.current = true;
+    if (window.history.state?.miraBrowser) window.history.back();
+    else { window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}`); closingBrowserRef.current = false; setBrowserOpen(false); }
+  };
   const closeSettings = () => {
     if (closingSettingsRef.current) return;
     cancelQuoteNavigation();
@@ -428,7 +439,7 @@ export function App() {
   };
 
   return <>
-    <div className="mira-app" inert={settingsOpen || !!preview}
+    <div className="mira-app" inert={settingsOpen || browserOpen || !!preview}
       onFocusCapture={() => {
         // All main-surface focus invalidates a late send's restoration. Keep lookup
         // cancellation in its existing handlers so focusing Cancel cannot remove it.
@@ -441,6 +452,7 @@ export function App() {
           <h1>Mira</h1>
           <p className="identity-detail"><span className={`status-dot ${status?.state === 'working' ? 'working' : ''} ${connectionError || status?.state === 'error' ? 'warning' : ''}`} />{stateLabel}<span className="detail-divider">·</span>{status?.model ?? (status?.mode === 'synthetic' ? '模拟模式' : '本地连接')}{status?.mode === 'synthetic' && status.model ? <span className="mode-label">模拟</span> : null}</p>
         </div>
+        <button ref={browserButtonRef} className="icon-button browser-button" type="button" onClick={openBrowser} aria-label="浏览器" title="浏览器：查看或接管 Mira 的浏览器"><BrowserIcon /></button>
         <button ref={settingsButtonRef} className="icon-button settings-button" type="button" onClick={openSettings} aria-label="模型设置" title="模型设置"><SettingsIcon /></button>
       </header>
 
@@ -528,6 +540,7 @@ export function App() {
       </footer>
     </div>
     {preview && <AttachmentPreview key={preview.id} attachment={preview} onClose={closePreview} returnFocus={previewFocusRef.current} />}
+    {browserOpen && !settingsOpen && <BrowserDialog onClose={closeBrowser} returnFocus={browserButtonRef} />}
     {settingsOpen && <SettingsDialog synthetic={status?.mode === 'synthetic'} onClose={closeSettings} onSaved={() => { void refresh(); }} returnFocus={settingsButtonRef} memoryRequest={memoryRequest} memoryPending={pending.find(message => message.id === memoryRequest?.id) ?? null} sending={sending} storageError={storageError} onMemorySubmit={submitMemory} onMemoryRetry={message => { void sendEnvelope(message, true, true); }} />}
   </>;
 }

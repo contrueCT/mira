@@ -771,7 +771,7 @@ async function textContrast(page: import('@playwright/test').Page, exceptions: A
   }, exceptions);
 }
 
-test('visible text meets WCAG AA contrast and an 11px minimum size in chat, errors, empty state and settings', async ({ page }) => {
+test('visible text meets WCAG AA contrast and an 11px minimum size in chat, errors, empty state, settings and the browser dialog', async ({ page }) => {
   // Regression for audit #5: muted labels measured 1.7-2.9:1 and 9-10px.
   const file = { id: '10000000-0000-4000-8000-000000000031', name: 'report.txt', mimeType: 'text/plain', size: 7, sha256: 'f'.repeat(64) };
   let failOlder = false; let empty = false;
@@ -807,6 +807,10 @@ test('visible text meets WCAG AA contrast and an 11px minimum size in chat, erro
     await check(`chat ${size.width}`);
     await page.getByRole('button', { name: '模型设置', exact: true }).click(); await expect(page.getByRole('dialog')).toBeVisible();
     await check(`settings ${size.width}`);
+    await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
+    await page.route('**/api/browser', route => route.fulfill({ json: { browsers: [] } }));
+    await page.getByRole('button', { name: '浏览器', exact: true }).click(); await expect(page.getByText('还没有活动的浏览器', { exact: false })).toBeVisible();
+    await check(`browser ${size.width}`);
     await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
     empty = true; await page.reload(); await expect(page.getByText('和 Mira 说点什么')).toBeVisible();
     await check(`empty ${size.width}`);

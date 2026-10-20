@@ -220,3 +220,66 @@ for (const stale of [{ state: 'agent', epoch: 1 }, { state: 'requesting', epoch:
     await expect(page.getByLabel('浏览器键盘输入，按 Escape 离开', { exact: true })).toBeEnabled();
   });
 }
+
+test('header browser entry sits immediately left of Settings and opens Mira’s own browser directly on desktop and phone', async ({ page }, testInfo) => {
+  const task = { id: 'task-browser', state: 'agent', epoch: 1, ownerLabel: 'Task', domain: 'task.test' };
+  let mira = { id: 'mira-browser', state: 'agent', epoch: 1, ownerLabel: 'Mira', domain: 'example.test' };
+  let takeovers = 0; const tickets: string[] = [];
+  // Task's browser is listed first; the header entry must still select Mira's own.
+  await page.route('**/api/browser', route => route.fulfill({ json: { browsers: [task, mira] } }));
+  await page.route('**/api/browser/*/ticket', route => { tickets.push(route.request().url()); return route.fulfill({ json: { ticket: 'fixture-ticket', epoch: 1 } }); });
+  await page.route('**/api/browser/mira-browser/takeover', async route => { takeovers++; mira = { ...mira, state: 'requesting', epoch: 2 }; await route.fulfill({ json: mira }); });
+  await page.routeWebSocket('**/api/browser/stream', ws => { ws.send(JSON.stringify({ type: 'mira_state', browser: mira })); });
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
+    await page.setViewportSize(viewport); await page.goto('/');
+    const entry = page.getByRole('button', { name: '浏览器', exact: true });
+    const settings = page.getByRole('button', { name: '模型设置', exact: true });
+    await expect(entry).toBeVisible();
+    const a = (await entry.boundingBox())!; const b = (await settings.boundingBox())!;
+    expect(Math.abs(a.y - b.y), 'same row').toBeLessThanOrEqual(1);
+    expect(a.x + a.width, 'left of Settings').toBeLessThanOrEqual(b.x);
+    expect(b.x - (a.x + a.width), 'adjacent').toBeLessThanOrEqual(8);
+    expect(a.width).toBeGreaterThanOrEqual(36); expect(a.height).toBeGreaterThanOrEqual(36);
+    const identity = (await page.locator('.identity').boundingBox())!;
+    const ring = await page.locator('.mira-ring').boundingBox();
+    for (const box of [ring, (await page.locator('.identity h1').boundingBox())!].filter(Boolean)) {
+      const overlap = a.x < box!.x + box!.width && box!.x < a.x + a.width && a.y < box!.y + box!.height && box!.y < a.y + a.height;
+      expect(overlap, `${viewport.width}: no overlap with the identity`).toBe(false);
+    }
+    expect(identity.width).toBeGreaterThan(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    // Icon (non-text) contrast ≥ 3:1 against the header.
+    const iconContrast = await entry.evaluate(element => {
+      const parse = (c: string) => (c.match(/[\d.]+/g) ?? []).map(Number);
+      const lum = ([r, g, b]: number[]) => { const f = (v: number) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r!) + 0.7152 * f(g!) + 0.0722 * f(b!); };
+      const x = lum(parse(getComputedStyle(element).color)), y = lum(parse(getComputedStyle(element.closest('header')!).backgroundColor));
+      return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+    });
+    expect(iconContrast).toBeGreaterThanOrEqual(3);
+    // Keyboard: Tab order reaches the browser entry right before Settings; Enter opens it.
+    await settings.focus(); await page.keyboard.press('Shift+Tab'); await expect(entry).toBeFocused();
+    await page.screenshot({ path: testInfo.outputPath(`header-browser-entry-${viewport.width}.png`) });
+    await page.keyboard.press('Enter');
+    const dialog = page.getByRole('dialog', { name: '浏览器' });
+    await expect(dialog).toBeVisible(); expect(new URL(page.url()).hash).toBe('#browser');
+    await expect(page.getByRole('button', { name: '关闭浏览器', exact: true })).toBeFocused();
+    await expect(dialog.getByRole('combobox')).toHaveValue('mira-browser');
+    await expect(dialog.getByText('Mira 操作中 · 只读查看', { exact: true })).toBeVisible();
+    await expect.poll(() => tickets.some(url => url.includes('/mira-browser/'))).toBe(true);
+    expect(await page.evaluate(() => { const d = document.querySelector('dialog')!.getBoundingClientRect(); return d.left >= 0 && d.right <= innerWidth + 0.5; })).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`browser-dialog-${viewport.width}.png`) });
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0); await expect(entry).toBeFocused(); expect(new URL(page.url()).hash).toBe('');
+  }
+  // Take over from the direct entry; history back closes the dialog without returning control.
+  await page.setViewportSize({ width: 1440, height: 1000 }); await page.goto('/');
+  await page.getByRole('button', { name: '浏览器', exact: true }).click();
+  await page.getByRole('button', { name: '接手操作', exact: true }).click();
+  await expect.poll(() => takeovers).toBe(1);
+  await page.goBack(); await expect(page.getByRole('dialog')).toHaveCount(0);
+  // A reload at #browser reopens the same dialog; Settings still offers its browser tab.
+  await page.goto('/#browser'); await expect(page.getByRole('dialog', { name: '浏览器' })).toBeVisible();
+  await page.getByRole('button', { name: '关闭浏览器', exact: true }).click(); await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '浏览器', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '浏览器', level: 3 })).toBeVisible();
+});

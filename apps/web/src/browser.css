@@ -2,12 +2,12 @@
 .browser-heading, .browser-toolbar, .browser-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .browser-heading { justify-content: space-between; margin-bottom: 14px; }
 .browser-heading h3 { margin: 0; font-size: 16px; }
-.browser-heading p, .browser-note { color: #707b8f; font-size: 12px; line-height: 1.7; }
+.browser-heading p, .browser-note { color: #5f6a7d; font-size: 12px; line-height: 1.7; }
 .browser-heading p { margin: 6px 0 0; }
 .browser-panel button { padding: 8px 12px; border: 1px solid #dde2eb; border-radius: 9px; background: #fff; color: #405d82; cursor: pointer; font-size: 12px; }
 .browser-panel button:disabled { opacity: .5; cursor: default; }
 .browser-panel button:focus-visible, .browser-panel select:focus-visible { outline: 2px solid #7a9ed6; outline-offset: 3px; }
-.browser-select { display: block; color: #68748a; font-size: 12px; margin-bottom: 16px; }
+.browser-select { display: block; color: #5f6a7d; font-size: 12px; margin-bottom: 16px; }
 .browser-select select { display: block; margin-top: 6px; }
 .browser-view { border: 1px solid #e5e8ee; border-radius: 13px; overflow: hidden; }
 .browser-toolbar { padding: 10px 12px; background: #f7f9fc; justify-content: space-between; }
@@ -16,14 +16,18 @@
 .browser-viewport { position: relative; display: flex; justify-content: center; align-items: center; min-height: 200px; background: #eef1f6; overflow: hidden; }
 .browser-viewport canvas { display: block; width: 100%; height: auto; cursor: default; }
 .browser-viewport canvas.browser-canvas-empty { visibility: hidden; height: 200px; }
-.browser-placeholder { position: absolute; color: #7c899d; font-size: 13px; }
+.browser-placeholder { position: absolute; color: #5b687c; font-size: 13px; }
 .settings-dialog textarea.browser-input-bridge { position: absolute; bottom: 0; left: 0; opacity: .01; width: 1px; height: 1px; min-height: 0; padding: 0; border: 0; resize: none; }
 .browser-viewport:focus-within { outline: 2px solid #7198ce; outline-offset: -2px; }
 .browser-actions { padding: 12px; }
 .browser-view > .browser-note, .browser-view > .browser-error { margin: 10px 12px; }
 .browser-error { color: #a14b4b; font-size: 13px; line-height: 1.7; }
-.browser-empty { padding: 30px 16px; border: 1px dashed #dce2ec; border-radius: 12px; color: #788398; font-size: 13px; line-height: 1.8; }
+.browser-empty { padding: 30px 16px; border: 1px dashed #dce2ec; border-radius: 12px; color: #5f6a7d; font-size: 13px; line-height: 1.8; }
 .settings-dialog.browser-expanded { width: min(1280px, calc(100vw - 40px)); }
-@media (max-width: 600px) { .browser-panel { padding: 16px 14px; } .settings-dialog.browser-expanded { width: calc(100vw - 22px); } .browser-toolbar { gap: 6px; } }
+@media (max-width: 600px) { .browser-dialog { width: calc(100vw - 22px); } .browser-panel { padding: 16px 14px; } .settings-dialog.browser-expanded { width: calc(100vw - 22px); } .browser-toolbar { gap: 6px; } }
 
 .browser-viewport canvas { touch-action: none; }
+
+/* Standalone browser dialog opened from the header. */
+.browser-dialog { width: min(760px, calc(100vw - 40px)); }
+.browser-dialog-body { overflow-y: auto; overscroll-behavior: contain; min-height: 0; }

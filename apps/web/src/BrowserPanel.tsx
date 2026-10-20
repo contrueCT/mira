@@ -25,7 +25,9 @@ function modifiers(event: { altKey: boolean; ctrlKey: boolean; metaKey: boolean;
   return (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0);
 }
 
-export function BrowserPanel({ active }: { active: boolean }) {
+/** `preferOwner` selects that owner's browser first (the header entry opens
+ * Mira's own browser); `standalone` omits the heading when the dialog has one. */
+export function BrowserPanel({ active, preferOwner, standalone = false }: { active: boolean; preferOwner?: string; standalone?: boolean }) {
   const [browsers, setBrowsers] = useState<BrowserStatus[]>([]);
   const [selected, setSelected] = useState('');
   const [loaded, setLoaded] = useState(false);
@@ -39,7 +41,7 @@ export function BrowserPanel({ active }: { active: boolean }) {
       const result = await api<{ browsers: BrowserStatus[] }>('/api/browser', { signal });
       if (signal.aborted || revision !== statusRevision.current) return;
       setBrowsers(result.browsers); setLoaded(true); setError(null);
-      setSelected(current => result.browsers.some(browser => browser.id === current) ? current : result.browsers[0]?.id ?? '');
+      setSelected(current => result.browsers.some(browser => browser.id === current) ? current : (preferOwner ? result.browsers.find(browser => browser.ownerLabel === preferOwner) : undefined)?.id ?? result.browsers[0]?.id ?? '');
     } catch { if (!signal.aborted && revision === statusRevision.current) { setLoaded(true); setError('暂时无法读取浏览器状态，请重试。'); } }
   }, 2500, version);
   useEffect(() => {
@@ -49,14 +51,14 @@ export function BrowserPanel({ active }: { active: boolean }) {
   }, [active, expanded]);
   const browser = browsers.find(item => item.id === selected);
   return <div className="browser-panel">
-    <div className="browser-heading"><div><h3>浏览器</h3><p>查看 Mira 正在使用的浏览器，需要时接手操作。</p></div><button type="button" onClick={() => setVersion(value => value + 1)}>刷新</button></div>
+    <div className="browser-heading"><div>{!standalone && <h3>浏览器</h3>}<p>查看 Mira 正在使用的浏览器，需要时接手操作。</p></div><button type="button" onClick={() => setVersion(value => value + 1)}>刷新</button></div>
     {error && <p className="browser-error" role="alert">{error}</p>}
     {!loaded && <p role="status">正在读取浏览器…</p>}
     {loaded && !error && browsers.length === 0 && <div className="browser-empty">还没有活动的浏览器。Mira 使用浏览器时会显示在这里。</div>}
     {browsers.length > 0 && <label className="browser-select">当前浏览器<select value={selected} onChange={event => setSelected(event.target.value)}>{browsers.map((item, index) => <option key={item.id} value={item.id}>{item.ownerLabel || `浏览器 ${index + 1}`} · {item.domain ?? '空白页'}</option>)}</select></label>}
     {active && browser && <BrowserViewport key={browser.id} browser={browser} expanded={expanded} onExpand={() => setExpanded(value => !value)} onStatus={next => { statusRevision.current += 1; setBrowsers(current => current.map(item => item.id === next.id && item.epoch <= next.epoch ? next : item)); }} />}
     {window.location.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname) && <p className="browser-note">当前远程连接未加密。输入账号密码前，请使用 HTTPS 连接 Mira。</p>}
-    <p className="browser-note">关闭设置或连接中断不会自动交还控制权。文件选择、上传和下载暂不支持。</p>
+    <p className="browser-note">{standalone ? '关闭此窗口' : '关闭设置'}或连接中断不会自动交还控制权。文件选择、上传和下载暂不支持。</p>
   </div>;
 }
 
