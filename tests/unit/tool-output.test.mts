@@ -31,7 +31,8 @@ test('large tool output under a writable ancestor remains readable by the model 
       const output = context.messages.find(message => message.role === 'toolResult' && message.toolCallId === 'extension-large');
       assert.ok(output?.role === 'toolResult');
       assert.ok(textBytes(output) <= TOOL_OUTPUT_TEXT_BYTES);
-      assert.ok(!JSON.stringify(output.content).includes('FULL_ORIGINAL_TAIL'));
+      // Head+tail preview: the tail (where errors and hints sit) survives; the middle is marked.
+      assert.ok(JSON.stringify(output.content).includes('FULL_ORIGINAL_TAIL')); assert.match(JSON.stringify(output.content), /bytes omitted from the middle of this preview/);
       const full = await fullOutput(output);
       assert.equal(full.content[0]?.type === 'text' && full.content[0].text, largeToolText);
       assert.deepEqual(writer.state.executions[0]?.outcome?.payload, full);
@@ -161,7 +162,7 @@ test('compaction sees bounded tool evidence and ordinary-file references while c
     const options = { model: largeModel, writeOverflowInput: outputSpool(path.join(root, 'spool')) };
     const state = await runtime(writer, (_model, context) => {
       summaries++; const text = JSON.stringify(context.messages);
-      assert.ok(!text.includes('FULL_ORIGINAL_TAIL')); assert.match(text, /partial preview/); assert.match(text, /Original History ID/);
+      assert.ok(text.includes('FULL_ORIGINAL_TAIL')); assert.match(text, /omitted from the middle/); assert.match(text, /partial preview/); assert.match(text, /Original History ID/);
       return streamOf(assistant('Earlier tool evidence was partial; consult its original History record before exact quotations.'));
     }, options).compact({ keepRecentTokens: 256, reserveTokens: 512 });
     assert.equal(summaries, 1); assert.deepEqual(state.snapshot.records.slice(0, before.records.length), before.records);
@@ -196,6 +197,11 @@ test('native bash keeps its existing full-output reference and truncation metada
     const original = await readFile(nativePath, 'utf8');
     assert.match(original, /native-line-0001/); assert.match(original, /native-line-3000/);
     assert.ok(JSON.stringify(full.content).includes(nativePath));
+    // Regression: the 16KiB preview kept only the head, dropping Pi's own
+    // trailing "[Showing lines … Full output: …]" hint and the last lines.
+    const preview = output.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
+    assert.match(preview, /native-line-3000/); assert.ok(preview.includes(nativePath), 'Pi full-output hint survives the preview');
+    assert.match(preview, /\[Showing lines \d+-\d+ of \d+[^\]]*Full output:[^\]]*\]/); assert.match(preview, /omitted from the middle/);
   } finally { if (nativePath) await rm(nativePath, { force: true }); await rm(root, { recursive: true, force: true }); }
 });
 

@@ -370,7 +370,8 @@ export default defineExtension({ name: 'large-output', apply(api) { api.register
         const output = context.messages.find(message => message.role === 'toolResult' && message.toolCallId === 'large-browser-call');
         expect(output?.role).toBe('toolResult'); if (output?.role !== 'toolResult') throw Error('Missing known result');
         expect(output.content.reduce((bytes, block) => bytes + (block.type === 'text' ? Buffer.byteLength(block.text) : 0), 0)).toBeLessThanOrEqual(16_384);
-        expect(JSON.stringify(output.content)).not.toContain('FULL_ORIGINAL_TAIL');
+        // Head+tail preview keeps the end of the output; the middle is marked as omitted.
+        expect(JSON.stringify(output.content)).toContain('FULL_ORIGINAL_TAIL'); expect(JSON.stringify(output.content)).toContain('omitted from the middle');
         const full = await fullOutput(output); expect(full.content[0]?.type === 'text' && full.content[0].text).toBe(largeToolText);
         savedPath = outputPath(output);
         if (requests === 2) {

@@ -17,6 +17,37 @@ function prefix(text: string, bytes: number): string {
   return buffer.subarray(0, end).toString('utf8');
 }
 
+function suffix(text: string, bytes: number): string {
+  if (bytes <= 0) return '';
+  if (Buffer.byteLength(text) <= bytes) return text;
+  const buffer = Buffer.from(text);
+  let start = Math.max(0, buffer.length - bytes);
+  while (start < buffer.length && (buffer[start]! & 0xc0) === 0x80) start++;
+  return buffer.subarray(start).toString('utf8');
+}
+// A trailing bracketed tool hint, such as Pi bash's "[Showing lines … Full
+// output: …]" or read's "[… Use offset=N to continue.]". Losing it hides where
+// the rest of the output is, so it is kept whole when it fits.
+const trailingHint = /\n?\[[^\[\]\n]{1,1024}\]\s*$/u;
+/** Head and tail with an explicit middle marker (Codex/dsh shape). Errors and
+ * continuation hints usually sit at the end of tool output, so the tail and any
+ * trailing hint survive alongside the head. Always within `bytes`. */
+export function headTail(text: string, bytes: number): string {
+  if (Buffer.byteLength(text) <= bytes) return text;
+  if (bytes <= 0) return '';
+  const total = Buffer.byteLength(text);
+  const marker = (omitted: number) => `\n[… ${omitted} bytes omitted from the middle of this preview …]\n`;
+  const markerBytes = Buffer.byteLength(marker(total));
+  if (bytes <= markerBytes + 16) return prefix(text, bytes);
+  const available = bytes - markerBytes;
+  const hint = text.match(trailingHint)?.[0] ?? '';
+  const hintBytes = Buffer.byteLength(hint);
+  const tailBytes = hintBytes > 0 && hintBytes <= available - 16 ? Math.max(hintBytes, Math.floor(available / 2)) : Math.floor(available / 2);
+  const tail = suffix(text, tailBytes);
+  const head = prefix(text, available - Buffer.byteLength(tail));
+  return `${head}${marker(total - Buffer.byteLength(head) - Buffer.byteLength(tail))}${tail}`;
+}
+
 /** Ordinary read is line-paged. Encode even a giant single-line result in small
  * JSONL string chunks, so every byte remains reachable without a new reader.
  * Joining the decoded `text` values reconstructs the exact canonical JSON. */
@@ -47,22 +78,34 @@ const textBytes = (content: ToolResultMessage['content']) => textPayloadBytes(co
  * Keep each run bounded while constructing it, including its joined separators. */
 function previewBlocks(content: ToolResultMessage['content']): ToolResultMessage['content'] {
   const output: ToolResultMessage['content'] = [];
-  let previous: { type: 'text'; text: string } | undefined;
-  let remaining = 0;
+  let run: string[] | undefined;
+  const flush = () => { if (run) output.push({ type: 'text', text: headTail(run.join('\n'), TOOL_OUTPUT_TEXT_BYTES) }); run = undefined; };
   for (const block of content) {
     if (block.type !== 'text' || Object.keys(block).some(key => key !== 'type' && key !== 'text')) {
-      output.push(structuredClone(block)); previous = undefined; continue;
+      flush(); output.push(structuredClone(block)); continue;
     }
-    if (!previous) {
-      previous = { type: 'text', text: prefix(block.text, TOOL_OUTPUT_TEXT_BYTES) };
-      remaining = TOOL_OUTPUT_TEXT_BYTES - Buffer.byteLength(previous.text);
-      output.push(previous);
-    } else if (remaining > 0) {
-      const text = prefix('\n' + block.text, remaining);
-      previous.text += text; remaining -= Buffer.byteLength(text);
-    }
+    (run ??= []).push(block.text);
   }
+  flush();
   return output;
+}
+/** Fit text blocks into `remaining` bytes. The last text block (the output's
+ * end, with errors and continuation hints) reserves up to half the budget;
+ * earlier blocks share the rest in order; each keeps its own head and tail. */
+function fitText<T extends ToolResultMessage['content'][number]>(blocks: T[], remaining: number, eligible: (position: number) => boolean): T[] {
+  const positions = blocks.flatMap((block, position) => block.type === 'text' && eligible(position) ? [position] : []);
+  const last = positions.at(-1);
+  const lastBytes = last === undefined ? 0 : Buffer.byteLength((blocks[last] as { text: string }).text);
+  const reserve = Math.min(lastBytes, Math.floor(remaining / 2));
+  let shared = remaining - reserve;
+  const fitted = new Map<number, string>();
+  for (const position of positions) {
+    if (position === last) continue;
+    const text = headTail((blocks[position] as { text: string }).text, shared);
+    shared -= Buffer.byteLength(text); fitted.set(position, text);
+  }
+  if (last !== undefined) fitted.set(last, headTail((blocks[last] as { text: string }).text, reserve + shared));
+  return blocks.map((block, position) => fitted.has(position) ? { ...structuredClone(block), text: fitted.get(position)! } : structuredClone(block));
 }
 
 /** Disposable derived-file bookkeeping, never recovery authority. Fresh instances
@@ -105,14 +148,9 @@ export class ToolOutputProjector {
       if (!active.has(entry.id)) { projected.push(entry); continue; }
       const notice = this.#notices.get(message.toolCallId)!;
       const preview = previewBlocks(message.content);
-      let remaining = TOOL_OUTPUT_TEXT_BYTES - Buffer.byteLength(notice) - separatorBytes([...preview, { type: 'text', text: notice }]);
+      const remaining = TOOL_OUTPUT_TEXT_BYTES - Buffer.byteLength(notice) - separatorBytes([...preview, { type: 'text', text: notice }]);
       if (remaining < 0) throw new Error('Tool output reference and unmergeable text separators exceed the text budget');
-      const content = preview.map(block => {
-        if (block.type !== 'text') return structuredClone(block);
-        const text = prefix(block.text, remaining);
-        remaining -= Buffer.byteLength(text);
-        return { ...structuredClone(block), text };
-      });
+      const content = fitText(preview, remaining, () => true);
       content.push({ type: 'text', text: notice });
       projected.push({ ...entry, message: { ...structuredClone(message), content } });
     }
@@ -131,13 +169,9 @@ export class ToolOutputProjector {
         || source.content.at(-1)?.type !== 'text' || (source.content.at(-1) as { text: string }).text !== notice)
         throw new Error('Oversized hydrated tool text has no canonical evidence reference');
       const originalLength = source.content.length;
-      let remaining = TOOL_OUTPUT_TEXT_BYTES - Buffer.byteLength(notice) - textPayloadBytes(message.content.slice(originalLength)) - separatorBytes(message.content);
+      const remaining = TOOL_OUTPUT_TEXT_BYTES - Buffer.byteLength(notice) - textPayloadBytes(message.content.slice(originalLength)) - separatorBytes(message.content);
       if (remaining < 0) throw new Error('Tool media annotations and evidence reference exceed the text budget');
-      const content = message.content.map((block, position) => {
-        if (block.type !== 'text' || position >= originalLength - 1) return structuredClone(block);
-        const text = prefix(block.text, remaining); remaining -= Buffer.byteLength(text);
-        return { ...structuredClone(block), text };
-      });
+      const content = fitText(message.content, remaining, position => position < originalLength - 1);
       return { ...message, content };
     });
   }
