@@ -43,9 +43,18 @@ export function headTail(text: string, bytes: number): string {
   const hint = text.match(trailingHint)?.[0] ?? '';
   const hintBytes = Buffer.byteLength(hint);
   const tailBytes = hintBytes > 0 && hintBytes <= available - 16 ? Math.max(hintBytes, Math.floor(available / 2)) : Math.floor(available / 2);
-  const tail = suffix(text, tailBytes);
-  const head = prefix(text, available - Buffer.byteLength(tail));
-  return `${head}${marker(total - Buffer.byteLength(head) - Buffer.byteLength(tail))}${tail}`;
+  const tail = suffix(text, tailBytes); const tailLength = Buffer.byteLength(tail);
+  // The marker was sized with the total's digit count; the omitted count may be
+  // shorter. Give that slack back to the head so the preview fills `bytes`
+  // (the marker only shrinks as the head grows, so this never overshoots).
+  let headBudget = available - tailLength; let head = prefix(text, headBudget);
+  for (let round = 0; round < 4; round++) {
+    const slack = bytes - Buffer.byteLength(head) - Buffer.byteLength(marker(total - Buffer.byteLength(head) - tailLength)) - tailLength;
+    if (slack <= 0) break;
+    headBudget += slack; const grown = prefix(text, headBudget);
+    if (grown === head) break; head = grown;
+  }
+  return `${head}${marker(total - Buffer.byteLength(head) - tailLength)}${tail}`;
 }
 
 /** Ordinary read is line-paged. Encode even a giant single-line result in small
