@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, PointerEvent, ReactNode } from 'react';
-import { api, errorInfo } from './api.ts';
+import { api, ApiError, errorInfo } from './api.ts';
 import { BrowserEmpty, BrowserSwitcher, CheckIcon, CloseIcon, CollapseIcon, ExpandIcon, EyeIcon, HandIcon, InfoIcon, KeyboardIcon, LockIcon, PlugIcon, ReloadIcon, ReopenConfirm, StatusPill, WarnIcon, useDocumentHidden, useMediaQuery } from './BrowserChrome.tsx';
 import type { BrowserTone, SwitcherItem } from './BrowserChrome.tsx';
 import { BrowserAddressBar, BrowserTabRows, BrowserTabSheet, BrowserTabStrip, useBrowserNavigation } from './BrowserNavigation.tsx';
@@ -124,6 +124,7 @@ function BrowserSession({ browser, switcher, phone, standalone, shell, onClose, 
   const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
+  const [lockNotice, setLockNotice] = useState(false);
   const report = (summary: string | null, detail: string | null = null) => { setError(summary); setErrorDetail(detail); };
   const [confirming, setConfirming] = useState(false);
   const [ratio, setRatio] = useState(1.6);
@@ -276,12 +277,25 @@ function BrowserSession({ browser, switcher, phone, standalone, shell, onClose, 
   };
   const changeControl = async (action: 'takeover' | 'return') => {
     if (busyRef.current) return;
-    busyRef.current = true; setBusy(true); report(null); readyRef.current = false; clearInput();
+    busyRef.current = true; setBusy(true); report(null); setLockNotice(false); readyRef.current = false; clearInput();
     followEpochRef.current = browserRef.current.epoch;
     try {
       const next = await api<BrowserStatus>(`/api/browser/${encodeURIComponent(browser.id)}/${action}`, { method: 'POST', body: JSON.stringify(action === 'return' ? { epoch: browserRef.current.epoch } : {}) });
       if (aliveRef.current && next.epoch >= browserRef.current.epoch) { browserRef.current = next; statusRef.current(next); }
-    } catch { followEpochRef.current = null; socketRef.current?.close(); if (aliveRef.current) report('操作结果尚未确认，请刷新状态后再试。'); }
+    } catch (caught) {
+      followEpochRef.current = null;
+      if (aliveRef.current && caught instanceof ApiError && caught.status === 409 && caught.code === 'browser_locked') {
+        setLockNotice(true);
+        try {
+          const listed = await api<{ browsers: BrowserStatus[] }>('/api/browser');
+          const next = listed.browsers.find(item => item.id === browser.id);
+          if (aliveRef.current && next && next.epoch >= browserRef.current.epoch) { browserRef.current = next; statusRef.current(next); }
+        } catch { /* the status poll will catch up */ }
+      } else {
+        socketRef.current?.close();
+        if (aliveRef.current) report('操作结果尚未确认，请刷新状态后再试。');
+      }
+    }
     finally { busyRef.current = false; if (aliveRef.current) setBusy(false); }
   };
   const confirmReopen = async () => {
@@ -379,6 +393,9 @@ function BrowserSession({ browser, switcher, phone, standalone, shell, onClose, 
   const tone = toneOf(browser);
   const locked = state === 'unknown';
   const offline = phase === 'closed' && !hasFrame;
+  const zoomAvailable = !unavailable && hasFrame && !offline;
+  useEffect(() => { if (!zoomAvailable) setZoomed(false); }, [zoomAvailable]);
+  useLayoutEffect(() => { if (lockNotice && locked) reopenButtonRef.current?.focus(); }, [lockNotice, locked]);
   const mode = unavailable || offline ? 'off' : tone === 'agent' ? 'ai' : tone === 'human' ? 'user' : tone === 'lock' ? 'lock' : 'off';
   const pill = <StatusPill tone={tone}>{pillText(browser)}</StatusPill>;
   const releaseButtons = state === 'human' ? (browser.pressedButtons ?? []).map(button => <button key={button} type="button" className="bp-btn" disabled={!connected || !hasFrame} onClick={() => send({ type: 'input_release', button })}>松开{buttonNames[button] ?? '鼠标'}</button>) : [];
@@ -389,11 +406,11 @@ function BrowserSession({ browser, switcher, phone, standalone, shell, onClose, 
     : state === 'requesting' ? <button ref={primaryRef} type="button" className="bp-btn" disabled={busy || reopening} onClick={() => void changeControl('return')}>交还 Mira</button>
     : state === 'human' || state === 'held' ? <button ref={primaryRef} type="button" className="bp-btn is-primary" disabled={busy || reopening} onClick={() => void changeControl('return')}><CheckIcon />交还 Mira</button>
     : state === 'returning' ? <button ref={primaryRef} type="button" className="bp-btn is-primary" disabled><CheckIcon />交还 Mira</button>
-    : locked ? <button ref={node => { reopenButtonRef.current = node; primaryRef.current = node; }} type="button" className="bp-btn is-danger" disabled={reopening} aria-haspopup="dialog" aria-expanded={confirming} onClick={() => { report(null); setConfirming(true); }}><ReloadIcon />关闭并重开浏览器</button>
+    : locked ? <button ref={node => { reopenButtonRef.current = node; primaryRef.current = node; }} type="button" className="bp-btn is-danger" disabled={reopening} aria-haspopup="dialog" aria-expanded={confirming} onClick={() => { report(null); setLockNotice(false); setConfirming(true); }}><ReloadIcon />关闭并重开浏览器</button>
     : null;
   const actions = <>{releaseButtons}{secondary}{primary}</>;
   const view = phone
-    ? <button type="button" className="bp-ib" aria-label={zoomed ? '缩小画面' : '放大画面'} aria-pressed={zoomed} disabled={unavailable} onClick={() => setZoomed(value => !value)}>{zoomed ? <CollapseIcon /> : <ExpandIcon />}</button>
+    ? <button type="button" className="bp-ib" aria-label={zoomed ? '缩小画面' : '放大画面'} aria-pressed={zoomed} disabled={!zoomAvailable} onClick={() => setZoomed(value => !value)}>{zoomed ? <CollapseIcon /> : <ExpandIcon />}</button>
     : <button type="button" className="bp-ib" aria-label={focusMode ? '退出专注画面' : '专注画面'} title={focusMode ? '退出专注画面' : '专注画面（隐藏标签页和地址栏）'} aria-pressed={focusMode} disabled={unavailable} onClick={() => setFocusMode(value => !value)}>{focusMode ? <CollapseIcon /> : <ExpandIcon />}</button>;
   const chromeHint = locked ? '已锁定 · 不能切换标签页或输入网址' : state === 'held' ? '继续接手后可切换标签页、输入网址' : state === 'human' && !navEnabled ? '画面连接后可切换标签页、输入网址' : state === 'human' ? undefined : '接手后可切换标签页、输入网址';
   const closeWord = standalone ? '关闭此窗口' : '关闭设置';
@@ -401,6 +418,7 @@ function BrowserSession({ browser, switcher, phone, standalone, shell, onClose, 
   if (insecureRemote()) banners.push(<div key="insecure" className="bp-banner is-amber" role="status"><WarnIcon /><div>当前远程连接未加密。输入账号密码前，请使用 HTTPS 连接 Mira。</div></div>);
   if (locked && browser.lock === 'outcome') banners.push(<div key="lock" className="bp-banner is-amber" role="status"><WarnIcon /><div><b>上一次操作没有确认结果，浏览器已锁定。</b>你可以只读查看当前画面，核对页面是否已经提交；在关闭并重开之前，你和 Mira 都不能再操作它，以免重复提交。</div></div>);
   if (locked && browser.lock !== 'outcome') banners.push(<div key="cleanup" className="bp-banner is-amber" role="status"><WarnIcon /><div><b>浏览器关闭未能确认。</b>画面已停止，可以重试关闭并重开。</div></div>);
+  if (lockNotice && locked) banners.push(<div key="lock-takeover" className="bp-banner" role="status"><InfoIcon /><div>这个浏览器已锁定，不能接手。可以关闭并重开。</div></div>);
   if (state === 'closed') banners.push(<div key="closed" className="bp-banner" role="status"><InfoIcon /><div>这个浏览器已关闭。</div></div>);
   if ((state === 'held' || state === 'human') && offline) banners.push(<div key="offline" className="bp-banner is-blue" role="status"><PlugIcon /><div><b>画面连接中断，你仍保留着控制权。</b>{state === 'held' ? '上次关闭窗口或断网时没有交还，Mira 正在等你。' : ''}重新连接、看到最新画面后再继续操作。</div></div>);
   else if (state === 'held') banners.push(<div key="held" className="bp-banner is-blue" role="status"><HandIcon /><div><b>你仍保留着控制权。</b>上次关闭窗口或断网时没有交还，Mira 正在等你。点「继续接手」看到最新画面后再操作，或直接交还。</div></div>);
@@ -452,7 +470,7 @@ function BrowserSession({ browser, switcher, phone, standalone, shell, onClose, 
         {!zoomed && tag}
       </div>
       {(offline || (unavailable && state !== 'closed')) && <div className="bp-offline" role="status"><PlugIcon /><b>画面尚未连接</b><span>{unavailable ? '浏览器已锁定，画面已停止' : '连接恢复前不会发送任何输入'}</span></div>}
-      {showRows && <><p className="bp-under">点右上角放大按钮可按 2 倍查看细节。</p><BrowserTabRows tabs={navigation.tabs} enabled={false} pending={navPending} onSwitch={() => undefined} header={<div className="bp-tlh"><span>标签页 · {navigation.tabs.length}</span><span className="bp-tlh-hint"><LockIcon />{locked ? '已锁定' : '接手后可切换'}</span></div>} /></>}
+      {showRows && <>{zoomAvailable && <p className="bp-under">点右上角放大按钮可按 2 倍查看细节。</p>}<BrowserTabRows tabs={navigation.tabs} enabled={false} pending={navPending} onSwitch={() => undefined} header={<div className="bp-tlh"><span>标签页 · {navigation.tabs.length}</span><span className="bp-tlh-hint"><LockIcon />{locked ? '已锁定' : '接手后可切换'}</span></div>} /></>}
     </div>
     {zoomed && tag}
     </div>

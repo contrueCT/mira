@@ -247,6 +247,56 @@ test('phone: fullscreen sheet, read-only tab rows, bottom action bar, tab sheet,
   await context.close();
 });
 
+test('desktop: takeover of a locked browser is 409, shows the locked UI, and focuses reopen', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const fx = await fixture(page, [agent]);
+  await page.route('**/api/browser/*/takeover', async route => {
+    fx.control['takeover'] = (fx.control['takeover'] ?? 0) + 1;
+    const locked = { ...fx.get()[0]!, state: 'unknown', lock: 'outcome' };
+    // Only the REST list knows about the lock (no mira_state push), so the panel
+    // must refresh on the 409 itself rather than wait for the 2.5s poll.
+    fx.set([locked]);
+    await route.fulfill({ status: 409, contentType: 'application/json', json: { error: 'Browser is locked after an unconfirmed outcome; close and reopen it before taking over', code: 'browser_locked' } });
+  });
+  await open(page);
+  await expect(page.getByRole('button', { name: '接手操作', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '接手操作', exact: true }).click();
+  await expect.poll(() => fx.control['takeover']).toBe(1);
+  await expect(page.getByText('上一次操作没有确认结果，浏览器已锁定。')).toBeVisible({ timeout: 1500 });
+  await expect(page.getByText('这个浏览器已锁定，不能接手。可以关闭并重开。')).toBeVisible();
+  await expect(page.getByText('操作结果尚未确认')).toHaveCount(0);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.locator('.bp-screen')).toHaveClass(/is-lock/);
+  const reopen = page.getByRole('button', { name: '关闭并重开浏览器', exact: true });
+  await expect(reopen).toBeVisible();
+  await expect(reopen).toBeFocused();
+  await shot(page, 'fix-1-desktop-locked-takeover-409');
+});
+
+test('phone: zoom hint and button follow whether a frame is available', async ({ browser }) => {
+  const context = await browser.newContext({ baseURL: 'http://127.0.0.1:3211', viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
+  const page = await context.newPage();
+  const fx = await fixture(page, [agent]);
+  await open(page);
+  await expect(page.locator('.bp-tlist [role="tab"]')).toHaveCount(3);
+  await expect(page.getByText('点右上角放大按钮可按 2 倍查看细节。')).toBeVisible();
+  await shot(page, 'fix-2a-phone-connected-hint');
+  const zoom = page.getByRole('button', { name: '放大画面', exact: true });
+  await expect(zoom).toBeEnabled();
+  await zoom.tap();
+  await expect(page.getByRole('button', { name: '缩小画面', exact: true })).toBeEnabled();
+  fx.set([{ ...agent, state: 'held', epoch: 1 }]);
+  await fx.sockets.at(-1)!.close();
+  await expect(page.getByText('点右上角放大按钮可按 2 倍查看细节。')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '放大画面', exact: true })).toBeDisabled();
+  await expect(page.locator('.bp-tlist [role="tab"]')).toHaveCount(3);
+  await shot(page, 'fix-2b-phone-disconnected-no-hint');
+  await page.getByRole('button', { name: '重新连接', exact: true }).tap();
+  await expect(page.getByText('点右上角放大按钮可按 2 倍查看细节。')).toBeVisible();
+  await expect(page.getByRole('button', { name: '放大画面', exact: true })).toBeEnabled();
+  await context.close();
+});
+
 test('reduced motion stops the sweep but keeps a static highlight', async ({ browser }) => {
   const context = await browser.newContext({ baseURL: 'http://127.0.0.1:3211', viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce' });
   const page = await context.newPage();

@@ -64,7 +64,7 @@ REST 继续原 API 的精确 Host/Origin、X-Mira-Client、cookie 和 CSRF 规�
 
 命令、交还、人工输入或画面流的结果无法确认时，会话进入 `unknown` 并增加 epoch。`lock` 只在该状态下出现：`outcome` 表示操作结果不明、daemon 仍可能在运行；`cleanup` 表示关闭本身未能确认。
 
-`outcome` 可以申请画面票据并建立只读连接。代理仍只转发 frame、url、tabs 和 status。`inputOwner` 只在 `state === 'human'` 时为真，因此鼠标、键盘和文本消息都被忽略，不会调用 humanInput。接手、交还、人工输入和 agent 命令在 `unknown` 下继续拒绝。进入 `unknown` 会增加 epoch，已有画面连接因此关闭；客户端再用同一 epoch 打开新的只读连接。`cleanup` 与 `closed`、`returning`、`requesting` 仍拒绝票据和升级。上游 `status.connected === false` 仍使该浏览器失效并关闭连接。已经处于 `unknown` 时，画面流失败只抛出错误，不再改状态。
+`outcome` 可以申请画面票据并建立只读连接。代理仍只转发 frame、url、tabs 和 status。`inputOwner` 只在 `state === 'human'` 时为真，因此鼠标、键盘和文本消息都被忽略，不会调用 humanInput。接手、交还、人工输入和 agent 命令在 `unknown` 下继续拒绝。锁定时请求接手返回 409 与 code browser_locked。进入 `unknown` 会增加 epoch，已有画面连接因此关闭；客户端再用同一 epoch 打开新的只读连接。`cleanup` 与 `closed`、`returning`、`requesting` 仍拒绝票据和升级。上游 `status.connected === false` 仍使该浏览器失效并关闭连接。已经处于 `unknown` 时，画面流失败只抛出错误，不再改状态。
 
 用户可以在两种锁定上选择“关闭并重开浏览器”。界面先要求确认：关闭后当前页面、登录状态和未保存内容都会丢失，并按最后一次成功打开的地址重新打开。确认后 `POST /api/browser/:id/reopen` 携带当前 epoch，沿用与交还相同的 CSRF 与 X-Mira-Client 保护。服务要求状态为 `unknown` 且 epoch 匹配，并要求会话记得成功打开过的地址。该地址只留在内存，不进入状态或日志，来自初次打开或之后成功的 agent `open`。关闭使用原来的会话队列，所以会等在途命令结束，并同步把状态改为 closed、epoch 增加。关闭未能确认时，会话变成 `cleanup` 锁定，不创建新浏览器。关闭成功后，为同一 owner 按既有容量规则打开新会话：新的 id，`replaces` 指向旧 id，旧会话 `replacedBy` 指向新 id。打开失败时，新会话仍按 `#open` 变成 `unknown`，两条链接仍然写下，界面可以跟着走。对旧 id 再点一次，或 epoch 已过期，都会被拒绝，避免打开两次。agent 对已关闭且带 `replacedBy` 的 id 下命令会得到 not_executed，说明应通过 browser_list 找到替代并重新 snapshot；对已关闭会话的 agent close 仍是空操作。
 

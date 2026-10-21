@@ -1,7 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { AgentBrowserDriver, validateBrowserCommand, browserHumanInput, type BrowserDriver } from './browser-driver.ts';
 
-export class BrowserControlError extends Error { constructor(message: string) { super(message); this.name = 'BrowserControlError'; } }
+export class BrowserControlError extends Error {
+  readonly code?: 'browser_locked';
+  constructor(message: string, code?: 'browser_locked') {
+    super(message);
+    this.name = 'BrowserControlError';
+    if (code) this.code = code;
+  }
+}
 export type BrowserState = 'agent' | 'requesting' | 'human' | 'held' | 'returning' | 'unknown' | 'closed';
 export interface BrowserStatus { id: string; state: BrowserState; epoch: number; observation: number; ownerLabel: string; pressedButtons?: string[]; queuedInputs?: number; cancelledInputs?: number; domain?: string; userActivity?: { navigations: number; tabSwitches: number; domain?: string }; message?: string; lock?: 'outcome' | 'cleanup'; replacedBy?: string; replaces?: string }
 export interface BrowserReleaseStatus extends BrowserStatus { cancelledInputs: number }
@@ -64,6 +71,7 @@ export class BrowserManager {
   }
   async takeover(id: string): Promise<BrowserStatus> {
     const s = this.#get(id);
+    if (s.state === 'unknown') throw new BrowserControlError(s.cleanupUnknown ? 'Browser close could not be confirmed; close and reopen it before taking over' : 'Browser is locked after an unconfirmed outcome; close and reopen it before taking over', 'browser_locked');
     if (!['agent', 'held'].includes(s.state)) throw new BrowserControlError('Browser cannot be taken over in its current state');
     delete s.cancelledInputs;
     s.state = 'requesting'; s.epoch++; s.observation++; s.observed = false; this.#notify(s);

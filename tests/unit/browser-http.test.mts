@@ -165,3 +165,39 @@ test('reopen validates the epoch, calls the backend, and maps a control error to
   assert.equal(calls.includes('humanInput'), false);
   await app.close();
 });
+
+test('takeover maps a locked browser to 409 with code browser_locked and other control errors to 409', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const calls: string[] = [];
+  let browser: BrowserView = { id, epoch: 4, state: 'unknown', lock: 'outcome', ownerLabel: 'Mira' };
+  const app = Fastify({ logger: false, ajv: { customOptions: { removeAdditional: false, coerceTypes: false, useDefaults: false } } });
+  registerBrowserHttp(app as Parameters<typeof registerBrowserHttp>[0], {
+    list: () => [browser],
+    takeover: async () => {
+      calls.push(`takeover:${browser.state}:${browser.lock ?? ''}`);
+      if (browser.state === 'unknown') throw new BrowserControlError(browser.lock === 'cleanup' ? 'Browser close could not be confirmed; close and reopen it before taking over' : 'Browser is locked after an unconfirmed outcome; close and reopen it before taking over', 'browser_locked');
+      throw new BrowserControlError('Browser cannot be taken over in its current state');
+    },
+    release: async () => browser, disconnect() {}, stream: async () => 'ws://127.0.0.1:9', invalidate() {}, humanInput: async () => { calls.push('humanInput'); }, humanNavigate: async () => browser, isHuman: () => false, subscribe: () => () => {},
+    reopen: async () => browser,
+  }, new Map([['127.0.0.1', 'http://127.0.0.1']]));
+  const post = (url: string) => app.inject({ method: 'POST', url, headers: { 'content-type': 'application/json' }, payload: {} });
+  const outcome = await post(`/api/browser/${id}/takeover`);
+  assert.equal(outcome.statusCode, 409);
+  assert.deepEqual(JSON.parse(outcome.body), { error: 'Browser is locked after an unconfirmed outcome; close and reopen it before taking over', code: 'browser_locked' });
+  assert.equal(browser.state, 'unknown');
+  assert.equal(browser.lock, 'outcome');
+  browser = { ...browser, lock: 'cleanup' };
+  const cleanup = await post(`/api/browser/${id}/takeover`);
+  assert.equal(cleanup.statusCode, 409);
+  assert.deepEqual(JSON.parse(cleanup.body), { error: 'Browser close could not be confirmed; close and reopen it before taking over', code: 'browser_locked' });
+  assert.equal(browser.state, 'unknown');
+  browser = { ...browser, state: 'closed' };
+  delete browser.lock;
+  const closed = await post(`/api/browser/${id}/takeover`);
+  assert.equal(closed.statusCode, 409);
+  assert.deepEqual(JSON.parse(closed.body), { error: 'Browser cannot be taken over in its current state' });
+  assert.equal(calls.includes('humanInput'), false);
+  assert.deepEqual(calls.filter(call => call.startsWith('takeover:')), ['takeover:unknown:outcome', 'takeover:unknown:cleanup', 'takeover:closed:']);
+  await app.close();
+});

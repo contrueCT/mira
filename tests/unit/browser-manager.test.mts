@@ -198,7 +198,13 @@ test('cleanup failure remains unknown with both control paths gated until explic
   assert.equal(manager.list()[0]!.state, 'unknown');
   assert.match(manager.list()[0]!.message!, /cleanup could not be verified/);
   await assert.rejects(owner.command(browser.id, ['snapshot']), BrowserControlError);
-  await assert.rejects(manager.takeover(browser.id), BrowserControlError);
+  await assert.rejects(manager.takeover(browser.id), (error: unknown) => {
+    assert.ok(error instanceof BrowserControlError);
+    assert.equal(error.code, 'browser_locked');
+    assert.equal(error.message, 'Browser close could not be confirmed; close and reopen it before taking over');
+    return true;
+  });
+  assert.equal(manager.list()[0]!.state, 'unknown');
   driver.fail = false; await owner.close(browser.id);
   assert.equal(manager.list()[0]!.state, 'closed'); await manager.close();
 });
@@ -331,7 +337,16 @@ test('unknown outcome lock is viewable and still rejects input; cleanup lock is 
   const locked = manager.list()[0]!;
   assert.equal(locked.state, 'unknown'); assert.equal(locked.lock, 'outcome');
   assert.equal(await manager.stream(locked.id), 'ws://127.0.0.1:12345');
-  await assert.rejects(manager.takeover(locked.id), BrowserControlError);
+  const before = driver.calls.length;
+  await assert.rejects(manager.takeover(locked.id), (error: unknown) => {
+    assert.ok(error instanceof BrowserControlError);
+    assert.equal(error.code, 'browser_locked');
+    assert.equal(error.message, 'Browser is locked after an unconfirmed outcome; close and reopen it before taking over');
+    return true;
+  });
+  assert.equal(manager.list()[0]!.state, 'unknown');
+  assert.equal(manager.list()[0]!.lock, 'outcome');
+  assert.equal(driver.calls.length, before);
   await assert.rejects(manager.humanInput(locked.id, locked.epoch, { action: 'press', key: 'Enter' }), BrowserControlError);
   await assert.rejects(manager.release(locked.id, locked.epoch), BrowserControlError);
   await assert.rejects(owner.command(locked.id, ['snapshot']), /not under agent/);
@@ -340,6 +355,14 @@ test('unknown outcome lock is viewable and still rejects input; cleanup lock is 
   assert.equal(manager.list()[0]!.state, 'unknown'); assert.equal(manager.list()[0]!.lock, 'outcome'); assert.equal(manager.list()[0]!.epoch, epoch);
   driver.failStream = false; driver.fail = true;
   await assert.rejects(owner.close(locked.id), /Cleanup/);
+  assert.equal(manager.list()[0]!.lock, 'cleanup');
+  await assert.rejects(manager.takeover(locked.id), (error: unknown) => {
+    assert.ok(error instanceof BrowserControlError);
+    assert.equal(error.code, 'browser_locked');
+    assert.equal(error.message, 'Browser close could not be confirmed; close and reopen it before taking over');
+    return true;
+  });
+  assert.equal(manager.list()[0]!.state, 'unknown');
   assert.equal(manager.list()[0]!.lock, 'cleanup');
   const streams = driver.calls.filter(call => call === 'stream').length;
   await assert.rejects(manager.stream(locked.id), /Browser stream unavailable/);

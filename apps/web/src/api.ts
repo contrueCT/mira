@@ -1,7 +1,13 @@
 import { getAccessSnapshot, requireAuthentication } from './auth.ts';
 export class ApiError extends Error {
   readonly status: number;
-  constructor(message: string, status: number) { super(message); this.name = 'ApiError'; this.status = status; }
+  readonly code?: string;
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    if (code) this.code = code;
+  }
 }
 export async function clientFetch(path: string, options: RequestInit = {}, notifyUnauthorized = true): Promise<Response> {
   const epoch = getAccessSnapshot().epoch;
@@ -20,9 +26,10 @@ export async function api<T>(path: string, options: RequestInit = {}, notifyUnau
   let data: unknown;
   try { data = await response.json(); } catch { throw new ApiError('服务返回了无法读取的响应', response.status); }
   if (!response.ok) {
-    const body = data as { error?: unknown; message?: unknown } | null;
+    const body = data as { error?: unknown; message?: unknown; code?: unknown } | null;
     const detail = typeof body?.error === 'string' ? body.error : typeof body?.message === 'string' ? body.message : '';
-    throw new ApiError(detail, response.status);
+    const code = typeof body?.code === 'string' ? body.code : undefined;
+    throw new ApiError(detail, response.status, code);
   }
   return data as T;
 }
