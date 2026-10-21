@@ -310,3 +310,25 @@ test('reduced motion stops the sweep but keeps a static highlight', async ({ bro
   await shot(page, 'p11-desktop-reduced-motion');
   await context.close();
 });
+
+test('embedded Settings panel: head controls are never covered by the switcher', async ({ page }) => {
+  // Regression: Settings → 浏览器 is ~400px wide even on desktop; the switcher
+  // overlapped 继续接手 so the real handoff test could not click it.
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await fixture(page, [{ ...agent, state: 'held', epoch: 1 }]);
+  await page.goto('/');
+  await page.getByRole('button', { name: '模型设置', exact: true }).click();
+  await page.getByRole('tab', { name: '浏览器', exact: true }).click();
+  const panel = page.locator('.bp-panel.is-embedded');
+  await expect(panel.getByRole('button', { name: '继续接手', exact: true })).toBeVisible();
+  const covered = await panel.locator('.bp-head button').evaluateAll(buttons => buttons.filter(button => {
+    const box = button.getBoundingClientRect(); if (!box.width) return false;
+    const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+    return !hit || !button.contains(hit);
+  }).map(button => button.getAttribute('aria-label') ?? button.textContent));
+  expect(covered).toEqual([]);
+  const head = await panel.locator('.bp-head').boundingBox(); const switcher = await panel.locator('.bp-select').boundingBox();
+  expect(switcher!.x + switcher!.width).toBeLessThanOrEqual(head!.x + head!.width);
+  await panel.getByRole('button', { name: '继续接手', exact: true }).click({ trial: true });
+  await shot(page, 'fix-3-embedded-settings-head');
+});
