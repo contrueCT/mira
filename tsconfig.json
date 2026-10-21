@@ -92,6 +92,7 @@
     "tests/unit/terminals.test.mts",
     "tests/unit/browser-manager.test.mts",
     "tests/unit/browser-http.test.mts",
+    "tests/unit/browser-navigation.test.mts",
     "tests/unit/task-live-input.test.mts",
     "tests/unit/extension-settings.test.mts",
     "tests/unit/extension-package-preparation.test.mts",
@@ -105,6 +106,7 @@
     "tests/unit/mcp-oauth-host.test.mts",
     "tests/unit/mcp-generated-install.test.mts",
     "tests/unit/mcp-catalog.test.mts",
-    "tests/unit/model-probe.test.mts"
+    "tests/unit/model-probe.test.mts",
+    "tests/unit/runtime-limits.test.mts"
   ]
 }

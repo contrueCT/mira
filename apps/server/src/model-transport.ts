@@ -6,7 +6,7 @@ import * as anthropicMessagesApi from '@earendil-works/pi-ai/api/anthropic-messa
 import * as googleGenerativeAiApi from '@earendil-works/pi-ai/api/google-generative-ai';
 import { withOpenCodeSessionHeader } from '@earendil-works/pi-ai/providers/opencode-headers';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
-import { boundedRetryAfter, retryableHttpStatus, retryableTransportError, retryModelRequest, type ModelRetryStatus } from './model-retry.ts';
+import { boundedRetryAfter, retryableHttpStatus, retryableTransportError, retryModelRequest, type ModelRetryPolicy, type ModelRetryStatus } from './model-retry.ts';
 import { prepareNativeVideoRequest } from './model-video-transport.ts';
 import { ModelRequestFailure, containsPercentEncodedSecret, providerFailureReason, secretVariants, transportFailureReason, type ModelFailureContext } from './model-errors.ts';
 import { builtinApiKeySupport, createBuiltinCatalog, protocolDescription } from './model-catalog.ts';
@@ -26,6 +26,23 @@ export interface ModelTransportOptions {
   resolveApiKey?: (signal: AbortSignal) => Promise<string | undefined>;
   /** Test injection; production uses global fetch with redirect and origin guards. */
   fetch?: typeof globalThis.fetch;
+  /** Overrides of the bounded exponential backoff (tests use short delays). */
+  retryPolicy?: Partial<ModelRetryPolicy>;
+  /** Abort a response body that delivers no bytes for this long; default 300s. */
+  streamIdleTimeoutMs?: number;
+}
+/** Explicit, retryable idle bound for streamed response bodies (Codex: 300s),
+ * independent of undici defaults and of injected fetch implementations. */
+export const defaultStreamIdleTimeoutMs = 300_000;
+class StreamIdleTimeout extends Error {
+  readonly code = 'MIRA_STREAM_IDLE_TIMEOUT';
+  constructor(milliseconds: number) { super(`Model stream sent no data for ${Math.round(milliseconds / 1000)} seconds`); }
+}
+async function withIdleTimeout<T>(read: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([read, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new StreamIdleTimeout(milliseconds)), milliseconds); })]);
+  } finally { clearTimeout(timer); }
 }
 export interface ModelTransport {
   thinkingLevel: ThinkingLevel;
@@ -47,7 +64,7 @@ export function resolveConfiguredApiKey(name: string, env: (name: string) => str
   return value;
 }
 /** Redirects are disabled even on the same host; a new destination needs explicit configuration. */
-function scopedModelFetch(baseUrl: string, fetch: typeof globalThis.fetch, headers: () => Headers, failure: ModelFailureContext, secret: () => string | undefined): typeof globalThis.fetch {
+function scopedModelFetch(baseUrl: string, fetch: typeof globalThis.fetch, headers: () => Headers, failure: ModelFailureContext, secret: () => string | undefined, idleTimeoutMs: number = defaultStreamIdleTimeoutMs): typeof globalThis.fetch {
   const origin = new URL(validateBaseUrl(baseUrl)).origin;
   return async (input, init) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
@@ -75,10 +92,11 @@ function scopedModelFetch(baseUrl: string, fetch: typeof globalThis.fetch, heade
       return new Response(new ReadableStream<Uint8Array>({
         async pull(controller) {
           try {
-            const next = await reader.read();
+            const next = await withIdleTimeout(reader.read(), idleTimeoutMs);
             if (next.done) { reader.releaseLock(); controller.close(); }
             else controller.enqueue(next.value);
           } catch (error) {
+            if (error instanceof StreamIdleTimeout) void reader.cancel(error).catch(() => undefined);
             const retryReason = retryableTransportError(error);
             if (retryReason) failure.retryReason = retryReason;
             failure.transportReason = transportFailureReason(error, secret());
@@ -284,7 +302,7 @@ export function createModelTransport(configuration: ModelConfiguration, selectio
           } else result.set('authorization', `Bearer ${key}`);
           return result;
         };
-        const fetch = canonicalModel.api === 'google-generative-ai' ? undefined : scopedModelFetch(canonicalModel.baseUrl, options.fetch ?? globalThis.fetch, headers, failure, () => key);
+        const fetch = canonicalModel.api === 'google-generative-ai' ? undefined : scopedModelFetch(canonicalModel.baseUrl, options.fetch ?? globalThis.fetch, headers, failure, () => key, options.streamIdleTimeoutMs);
         const requestOptions = safeOptions(requestSettings, canonicalModel, fetch);
         const cap = requestSettings.maxTokens ?? canonicalModel.maxTokens;
         requestOptions.onPayload = payload => {
@@ -326,7 +344,7 @@ export function createModelTransport(configuration: ModelConfiguration, selectio
           return undefined;
         };
         return maskProviderErrors(collection.streamSimple(structuredClone(canonicalModel), structuredClone(nativeVideo.context), requestOptions), canonicalModel, () => key, requestSettings.signal, failure, onFailure);
-      }, requestSettings.signal, options.onRetry, options.onFailure, options.maxAttempts);
+      }, requestSettings.signal, options.onRetry, options.onFailure, options.maxAttempts, options.retryPolicy);
     },
   };
 }

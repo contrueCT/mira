@@ -740,7 +740,6 @@ test('history inserted above is not announced; a newly arrived Mira reply is', a
 /** Deliberate, documented design exceptions to AA. Each keeps its own floor so
  * a regression below the chosen tone still fails; everything else must meet AA. */
 const CONTRAST_EXCEPTIONS: Array<{ selector: string; min: number; reason: string }> = [
-  { selector: '.message-row.user .message-bubble', min: 3.5, reason: 'user bubble: lighter blue chosen for the airy look; white 16px text measures 3.71:1' },
   { selector: '.composer-caption, .composer-caption span', min: 2.7, reason: 'shortcut hint under the composer: quiet secondary hint, 2.8:1' },
 ];
 async function textContrast(page: import('@playwright/test').Page, exceptions: Array<{ selector: string; min: number }> = []) {
@@ -771,7 +770,49 @@ async function textContrast(page: import('@playwright/test').Page, exceptions: A
   }, exceptions);
 }
 
-test('visible text meets WCAG AA contrast and an 11px minimum size in chat, errors, empty state and settings', async ({ page }) => {
+/** Non-text contrast (WCAG 1.4.11, 3:1) of the browser live-view frame and the global focus ring.
+ * Same pattern as CONTRAST_EXCEPTIONS: a documented exception keeps its own floor. */
+const NON_TEXT_CONTRAST_EXCEPTIONS: Record<string, { min: number; reason: string }> = {
+  ring: { min: 2.75, reason: 'decorative flowing ring while Mira operates, base #3b8cff (「晴空蓝」, design §8.1) on the #eceef2 stage measures 2.83:1; state is carried by the status pill text (>= 5.8:1), the stage badge and the role=status live region' },
+  user: { min: 1.55, reason: 'decorative calm user-control frame #93c2ff on #eceef2 measures 1.59:1, deliberately lighter than the AI ring; same pill/badge/live-region carry the state, and the focused bridge shows the darker #1f6feb outline' },
+};
+test('browser live-view frame and the global focus ring meet non-text contrast, with the documented decorative ring and user-frame exceptions', async ({ page }) => {
+  const parse = (c: string) => (c.match(/[\d.]+/g) ?? []).map(Number);
+  const lum = ([r, g, b]: number[]) => { const f = (v: number) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r!) + 0.7152 * f(g!) + 0.0722 * f(b!); };
+  const ratio = (x: string, y: string) => { const a = lum(parse(x)), b = lum(parse(y)); return Math.round((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05) * 100) / 100; };
+  let state: Record<string, unknown> = { id: 'b1', state: 'human', epoch: 2, ownerLabel: 'Mira', domain: 'example.test' };
+  await page.route('**/api/browser', route => route.fulfill({ json: { browsers: [state] } }));
+  await page.route('**/api/browser/b1/ticket', route => route.fulfill({ json: { ticket: 't', epoch: 2 } }));
+  await page.routeWebSocket('**/api/browser/stream', ws => { ws.send(JSON.stringify({ type: 'mira_state', browser: state })); });
+  const frame = async () => page.locator('.bp-screen .bp-clip').evaluate(element => ({ outline: getComputedStyle(element).outlineColor, width: getComputedStyle(element).outlineWidth, stage: getComputedStyle(element.closest('.bp-stage')!).backgroundColor }));
+  await page.setViewportSize({ width: 1200, height: 860 });
+  for (const [kind, browser] of [['user', { state: 'human' }], ['lock', { state: 'unknown', lock: 'outcome' }]] as const) {
+    state = { ...state, ...browser };
+    await page.goto('/'); await page.getByRole('button', { name: '浏览器', exact: true }).click();
+    await expect(page.locator(`.bp-screen.is-${kind}`)).toBeAttached();
+    const measured = await frame(); const value = ratio(measured.outline, measured.stage);
+    expect(measured.width).toBe('2px');
+    expect(value, `${kind} frame ${measured.outline} on ${measured.stage}`).toBeGreaterThanOrEqual(NON_TEXT_CONTRAST_EXCEPTIONS[kind]?.min ?? 3);
+    if (kind === 'user') expect(value, 'documented exception value').toBeLessThan(3);
+  }
+  // The AI ring base colour is read from its custom property (the ring itself is a gradient).
+  state = { ...state, state: 'agent', lock: undefined };
+  await page.goto('/'); await page.getByRole('button', { name: '浏览器', exact: true }).click();
+  await expect(page.locator('.bp-screen.is-ai')).toBeAttached();
+  const ringBase = await page.locator('.bp-panel').evaluate(element => { const probe = document.createElement('i'); probe.style.color = getComputedStyle(element).getPropertyValue('--browser-glow-base'); element.append(probe); const color = getComputedStyle(probe).color; probe.remove(); return color; });
+  const stage = await page.locator('.bp-stage').evaluate(element => getComputedStyle(element).backgroundColor);
+  const ringValue = ratio(ringBase, stage);
+  expect(ringValue, `ring ${ringBase} on ${stage}`).toBeGreaterThanOrEqual(NON_TEXT_CONTRAST_EXCEPTIONS['ring']!.min);
+  expect(ringValue, 'documented exception value').toBeLessThan(3);
+  await expect(page.getByRole('status').filter({ hasText: 'Mira 正在操作 · 你在旁观' })).toBeVisible();
+  // Global focus ring #2f86ff (accent V2) against the light surfaces it is drawn on, incl. the Mira bubble.
+  await page.goto('/'); await page.getByLabel('给 Mira 发消息', { exact: true }).focus(); await page.keyboard.press('Shift+Tab');
+  const ring = await page.evaluate(() => getComputedStyle(document.activeElement!).outlineColor);
+  expect(parse(ring).slice(0, 3)).toEqual([47, 134, 255]);
+  for (const surface of ['rgb(255, 255, 255)', 'rgb(246, 247, 249)', 'rgb(247, 249, 252)', 'rgb(243, 243, 245)']) expect(ratio(ring, surface), `focus ring on ${surface}`).toBeGreaterThanOrEqual(3);
+});
+
+test('visible text meets WCAG AA contrast and an 11px minimum size in chat, errors, empty state, settings and the browser dialog', async ({ page }) => {
   // Regression for audit #5: muted labels measured 1.7-2.9:1 and 9-10px.
   const file = { id: '10000000-0000-4000-8000-000000000031', name: 'report.txt', mimeType: 'text/plain', size: 7, sha256: 'f'.repeat(64) };
   let failOlder = false; let empty = false;
@@ -783,6 +824,18 @@ test('visible text meets WCAG AA contrast and an 11px minimum size in chat, erro
       { id: 'c-reply', role: 'user', text: '一定', occurredAt: '2026-10-14T08:02:00Z', reply: { messageId: 'c-mira', role: 'assistant', text: '好呀，带上相机。' } },
       { id: 'c-notice', role: 'notice', text: '外部程序 calendar\n周六 9:00 提醒', occurredAt: '2026-10-14T08:03:00Z' },
     ], nextCursor: 'older' } }));
+  const lockedBrowser = { id: 'locked-browser', state: 'unknown', lock: 'outcome', epoch: 2, ownerLabel: 'Mira', domain: 'example.test', message: 'Browser outcome unknown. Do not replay commands. Close this browser and explicitly open a new one.' };
+  let browserList: Array<Record<string, unknown>> = [];
+  await page.route('**/api/browser', route => route.fulfill({ json: { browsers: browserList } }));
+  await page.route('**/api/browser/locked-browser/ticket', route => route.fulfill({ json: { ticket: 'locked-ticket', epoch: lockedBrowser.epoch } }));
+  await page.routeWebSocket('**/api/browser/stream', ws => {
+    ws.send(JSON.stringify({ type: 'mira_state', browser: lockedBrowser }));
+    ws.send(JSON.stringify({ type: 'tabs', generation: 1, tabs: [
+      { tabId: 't1', active: true, title: '示例页面', domain: 'example.test', url: 'https://example.test/' },
+      { tabId: 't2', active: false, title: '另一页', domain: 'example.org', url: 'https://example.org/' },
+    ] }));
+    ws.send(JSON.stringify({ type: 'url', generation: 1, domain: 'example.test', url: 'https://example.test/' }));
+  });
   const check = async (scene: string) => {
     const result = await textContrast(page, CONTRAST_EXCEPTIONS);
     expect(result.failing, `${scene}: ${JSON.stringify(result.failing)}`).toEqual([]);
@@ -807,6 +860,23 @@ test('visible text meets WCAG AA contrast and an 11px minimum size in chat, erro
     await check(`chat ${size.width}`);
     await page.getByRole('button', { name: '模型设置', exact: true }).click(); await expect(page.getByRole('dialog')).toBeVisible();
     await check(`settings ${size.width}`);
+    await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
+    browserList = [];
+    await page.getByRole('button', { name: '浏览器', exact: true }).click(); await expect(page.getByText('Mira 还没有打开浏览器', { exact: true })).toBeVisible();
+    await check(`browser ${size.width}`);
+    await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
+    browserList = [lockedBrowser];
+    await page.getByRole('button', { name: '浏览器', exact: true }).click();
+    await page.getByRole('button', { name: '关闭并重开浏览器', exact: true }).click();
+    await expect(page.getByRole('button', { name: '确认关闭并重开', exact: true })).toBeVisible();
+    await expect(page.getByText('示例页面', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('另一页', { exact: true }).first()).toBeVisible();
+    await expect(page.getByRole('textbox', { name: '浏览器地址' })).toHaveAttribute('aria-readonly', 'true');
+    await expect(page.getByRole('button', { name: '前往', exact: true })).toHaveCount(0);
+    await check(`locked browser ${size.width}`);
+    // Escape first dismisses the confirmation (focus returns to its trigger), then the panel.
+    await page.keyboard.press('Escape'); await expect(page.getByRole('alertdialog')).toHaveCount(0);
+    await check(`locked browser banner ${size.width}`);
     await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
     empty = true; await page.reload(); await expect(page.getByText('和 Mira 说点什么')).toBeVisible();
     await check(`empty ${size.width}`);

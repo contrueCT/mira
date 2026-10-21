@@ -1,8 +1,16 @@
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { IncomingMessage } from 'node:http';
-import { BrowserFrameFence, browserInput, trustedBrowserUpgrade } from '../../apps/server/src/browser-http.ts';
+import { BrowserControlError } from '../../apps/server/src/browser-manager.ts';
+import { BrowserFrameFence, browserInput, browserNavigation, browserPageUrl, browserTabs, registerBrowserHttp, trustedBrowserUpgrade, type BrowserView } from '../../apps/server/src/browser-http.ts';
+
+// fastify is a server dependency; resolve it from that package so this test stays outside the server project.
+const Fastify = createRequire(new URL('../../apps/server/package.json', import.meta.url))('fastify') as (options?: object) => {
+  inject(options: { method: string; url: string; headers?: Record<string, string>; payload?: unknown }): Promise<{ statusCode: number; body: string }>;
+  close(): Promise<void>;
+};
 
 const origins = new Map([['127.0.0.1:3210', 'http://127.0.0.1:3210'], ['mira.example', 'https://mira.example']]);
 const request = (patch: Partial<IncomingMessage> = {}) => ({ method: 'GET', url: '/api/browser/stream', rawHeaders: ['Host', 'mira.example', 'Origin', 'https://mira.example'], headers: { host: 'mira.example', origin: 'https://mira.example' }, ...patch }) as IncomingMessage;
@@ -79,4 +87,117 @@ test('stream identity verification buffers only bounded viewport traffic, never 
 
 test('development HTTP and WebSocket proxy rewrite only the trusted local origin', () => {
   execFileSync(process.execPath, ['tests/browser-dev-proxy.mjs'], { timeout: 15_000, stdio: 'pipe' });
+});
+
+test('outcome lock can take a ticket, cleanup lock cannot, and a read-only socket never forwards input', () => {
+  execFileSync(process.execPath, ['tests/browser-readonly-lock.mjs'], { timeout: 15_000, stdio: 'pipe' });
+});
+
+test('viewer projection keeps http(s) tab urls and titles and drops everything else', () => {
+  const title = '标'.repeat(250);
+  const tabs = browserTabs([
+    { tabId: 't1', active: true, title: '  Example  ', url: 'https://example.com/a' },
+    { tabId: 'bad id', active: false, title: 'dropped', url: 'https://example.com/nope' },
+    { tabId: 't2', active: false, title, url: 'javascript:alert(1)' },
+    { tabId: 't3', active: false, title: 5, url: 'file:///etc/passwd' },
+    { tabId: 't4', active: false, title: 'creds', url: 'https://user:s3cret@hidden.test/path' },
+    { active: true, title: 'missing', url: 'https://missing-id.test/' },
+    null,
+    { tabId: 't5', active: false, title: 'long', url: 'https://ok.test/' + 'a'.repeat(2100) },
+    ...Array.from({ length: 40 }, (_item, index) => ({ tabId: `x${index}`, active: false, title: 'extra', url: 'https://extra.test/' })),
+  ]);
+  assert.equal(tabs.length, 32);
+  assert.deepEqual(tabs.slice(0, 5).map(tab => tab.tabId), ['t1', 't2', 't3', 't4', 't5']);
+  assert.equal(tabs[0]!.title, 'Example'); assert.equal(tabs[0]!.url, 'https://example.com/a'); assert.equal(tabs[0]!.domain, 'example.com'); assert.equal(tabs[0]!.active, true);
+  assert.equal(tabs[1]!.url, null); assert.equal(tabs[1]!.domain, null); assert.equal(tabs[1]!.title.length, 200);
+  assert.equal(tabs[2]!.url, null); assert.equal(tabs[2]!.title, '');
+  assert.equal(tabs[3]!.url, null); assert.equal(tabs[3]!.domain, 'hidden.test');
+  assert.equal(JSON.stringify(tabs[3]).includes('s3cret'), false);
+  assert.equal(tabs[4]!.url, null); assert.equal(tabs[4]!.domain, 'ok.test');
+  assert.equal(tabs.at(-1)!.tabId, 'x26');
+  assert.deepEqual(browserPageUrl('https://httpbin.org/html'), { domain: 'httpbin.org', url: 'https://httpbin.org/html' });
+  assert.deepEqual(browserPageUrl('javascript:alert(1)'), { domain: null, url: null });
+  assert.deepEqual(browserPageUrl('file:///etc/passwd'), { domain: null, url: null });
+  assert.deepEqual(browserPageUrl('https://user:s3cret@hidden.test/path'), { domain: 'hidden.test', url: null });
+  assert.deepEqual(browserNavigation({ type: 'nav_open', epoch: 3, url: 'https://example.org/' }), { kind: 'open', url: 'https://example.org/' });
+  assert.deepEqual(browserNavigation({ type: 'nav_tab', epoch: 3, tabId: 't2' }), { kind: 'tab', tabId: 't2' });
+  for (const value of [
+    { type: 'nav_open', epoch: 3, url: 'https://example.org/', extra: true },
+    { type: 'nav_open', epoch: 3, url: 'x'.repeat(2049) },
+    { type: 'nav_open', epoch: 3 },
+    { type: 'nav_tab', epoch: 3, tabId: 'bad id' },
+    { type: 'nav_tab', epoch: 3, tabId: 't2', url: 'https://example.org/' },
+    { type: 'input_text', epoch: 3, text: 'nope' },
+  ]) assert.equal(browserNavigation(value), null);
+});
+
+test('owner navigation is proxied without a rendered frame, and a bad shape closes the socket', () => {
+  for (const scenario of ['owner', 'fatal', 'malformed']) execFileSync(process.execPath, ['tests/browser-navigation-proxy.mjs', scenario], { timeout: 15_000, stdio: 'pipe' });
+});
+
+test('reopen validates the epoch, calls the backend, and maps a control error to 409', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const calls: string[] = [];
+  let browser: BrowserView = { id, epoch: 4, state: 'unknown', lock: 'outcome', ownerLabel: 'Mira' };
+  const app = Fastify({ logger: false, ajv: { customOptions: { removeAdditional: false, coerceTypes: false, useDefaults: false } } });
+  registerBrowserHttp(app as Parameters<typeof registerBrowserHttp>[0], {
+    list: () => [browser], takeover: async () => browser, release: async () => browser, disconnect() {}, stream: async () => 'ws://127.0.0.1:9', invalidate() {}, humanInput: async () => { calls.push('humanInput'); }, humanNavigate: async () => browser, isHuman: () => false, subscribe: () => () => {},
+    reopen: async (browserId, epoch) => { calls.push(`reopen:${browserId}:${epoch}`); if (epoch === 9) throw new BrowserControlError('Browser is not locked in an indeterminate state or the view is stale; refresh and retry'); return { id: '22222222-2222-4222-8222-222222222222', state: 'agent', epoch: 0, ownerLabel: 'Mira', replaces: browserId }; },
+  }, new Map([['127.0.0.1', 'http://127.0.0.1']]));
+  const post = (url: string, payload: unknown) => app.inject({ method: 'POST', url, headers: { 'content-type': 'application/json' }, payload: payload as object });
+  const allowed = await post(`/api/browser/${id}/ticket`, {});
+  assert.equal(allowed.statusCode, 200); assert.equal(typeof JSON.parse(allowed.body).ticket, 'string');
+  browser = { ...browser, lock: 'cleanup' };
+  const denied = await post(`/api/browser/${id}/ticket`, {});
+  assert.equal(denied.statusCode, 409); assert.equal(JSON.parse(denied.body).error, 'Browser is not available for viewing');
+  for (const payload of [{}, { epoch: -1 }, { epoch: 1.5 }, { epoch: 1, extra: true }]) {
+    const invalid = await post(`/api/browser/${id}/reopen`, payload);
+    assert.equal(invalid.statusCode, 400, JSON.stringify(payload));
+  }
+  assert.equal(calls.some(call => call.startsWith('reopen:')), false);
+  const conflict = await post(`/api/browser/${id}/reopen`, { epoch: 9 });
+  assert.equal(conflict.statusCode, 409);
+  assert.deepEqual(JSON.parse(conflict.body), { error: 'Browser is not locked in an indeterminate state or the view is stale; refresh and retry' });
+  const opened = await post(`/api/browser/${id}/reopen`, { epoch: 4 });
+  assert.equal(opened.statusCode, 200);
+  assert.equal(JSON.parse(opened.body).replaces, id);
+  assert.deepEqual(calls.filter(call => call.startsWith('reopen:')), [`reopen:${id}:9`, `reopen:${id}:4`]);
+  assert.equal(calls.includes('humanInput'), false);
+  await app.close();
+});
+
+test('takeover maps a locked browser to 409 with code browser_locked and other control errors to 409', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const calls: string[] = [];
+  let browser: BrowserView = { id, epoch: 4, state: 'unknown', lock: 'outcome', ownerLabel: 'Mira' };
+  const app = Fastify({ logger: false, ajv: { customOptions: { removeAdditional: false, coerceTypes: false, useDefaults: false } } });
+  registerBrowserHttp(app as Parameters<typeof registerBrowserHttp>[0], {
+    list: () => [browser],
+    takeover: async () => {
+      calls.push(`takeover:${browser.state}:${browser.lock ?? ''}`);
+      if (browser.state === 'unknown') throw new BrowserControlError(browser.lock === 'cleanup' ? 'Browser close could not be confirmed; close and reopen it before taking over' : 'Browser is locked after an unconfirmed outcome; close and reopen it before taking over', 'browser_locked');
+      throw new BrowserControlError('Browser cannot be taken over in its current state');
+    },
+    release: async () => browser, disconnect() {}, stream: async () => 'ws://127.0.0.1:9', invalidate() {}, humanInput: async () => { calls.push('humanInput'); }, humanNavigate: async () => browser, isHuman: () => false, subscribe: () => () => {},
+    reopen: async () => browser,
+  }, new Map([['127.0.0.1', 'http://127.0.0.1']]));
+  const post = (url: string) => app.inject({ method: 'POST', url, headers: { 'content-type': 'application/json' }, payload: {} });
+  const outcome = await post(`/api/browser/${id}/takeover`);
+  assert.equal(outcome.statusCode, 409);
+  assert.deepEqual(JSON.parse(outcome.body), { error: 'Browser is locked after an unconfirmed outcome; close and reopen it before taking over', code: 'browser_locked' });
+  assert.equal(browser.state, 'unknown');
+  assert.equal(browser.lock, 'outcome');
+  browser = { ...browser, lock: 'cleanup' };
+  const cleanup = await post(`/api/browser/${id}/takeover`);
+  assert.equal(cleanup.statusCode, 409);
+  assert.deepEqual(JSON.parse(cleanup.body), { error: 'Browser close could not be confirmed; close and reopen it before taking over', code: 'browser_locked' });
+  assert.equal(browser.state, 'unknown');
+  browser = { ...browser, state: 'closed' };
+  delete browser.lock;
+  const closed = await post(`/api/browser/${id}/takeover`);
+  assert.equal(closed.statusCode, 409);
+  assert.deepEqual(JSON.parse(closed.body), { error: 'Browser cannot be taken over in its current state' });
+  assert.equal(calls.includes('humanInput'), false);
+  assert.deepEqual(calls.filter(call => call.startsWith('takeover:')), ['takeover:unknown:outcome', 'takeover:unknown:cleanup', 'takeover:closed:']);
+  await app.close();
 });

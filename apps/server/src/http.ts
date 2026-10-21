@@ -98,7 +98,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   const active = new WeakSet<FastifyRequest>(); let inFlight = 0;
   let interval = performance.now(); let reads = 0; let writes = 0; let discoveries = 0; let discovering = false; let probing = false;
   const methods = new Map<string, readonly string[]>([
-    ['/api/browser', ['GET']], ['/api/browser/:id/takeover', ['POST']], ['/api/browser/:id/return', ['POST']], ['/api/browser/:id/ticket', ['POST']],
+    ['/api/browser', ['GET']], ['/api/browser/:id/takeover', ['POST']], ['/api/browser/:id/return', ['POST']], ['/api/browser/:id/reopen', ['POST']], ['/api/browser/:id/ticket', ['POST']],
     ['/api/auth/status', ['GET']], ['/api/auth/login', ['POST']], ['/api/auth/logout', ['POST']], ['/api/auth/settings', ['GET', 'PUT']],
     ['/api/attachments', ['POST']], ['/api/attachments/:id', ['GET']], ['/api/status', ['GET']], ['/api/timeline', ['GET', 'POST']], ['/api/timeline/locate', ['POST']], ['/api/messages', ['POST']], ['/api/settings', ['GET', 'PUT']],
     ['/api/memory', ['GET']], ['/api/messages/:id/status', ['GET']], ['/api/extensions', ['GET']], ['/api/extensions/:id', ['POST']], ['/api/extensions/:id/settings', ['GET', 'POST']], ['/api/extensions/:id/settings/actions', ['POST']], ['/api/extensions/:id/settings/cancel', ['POST']], ['/api/runs', ['GET']], ['/api/runs/:id', ['GET']], ['/api/runs/:id/requests', ['GET']],

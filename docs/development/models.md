@@ -149,7 +149,7 @@ Web 既有模型设置及 CLI configuration 可保存 `defaultThinkingLevel`，�
 ## Transient request failures
 
 The explicit transport retries a buffered, not-yet-published model request up to
-three attempts for verified transient HTTP/network failures. Backoff is 250 ms,
+five attempts for verified transient HTTP/network failures (ADR 0029 amendment: 1 s exponential to 60 s, ±10% jitter, Retry-After up to 60 s, 5 min stream idle timeout). The original policy was three attempts. Backoff was 250 ms,
 then 1 s; HTTP Retry-After can raise each wait to at most 10 s. Cancellation stops
 backoff and prevents another dispatch. Partial responses do not enter history or
 execute tools. Authentication, configuration, invalid output, unknown failures,

@@ -27,7 +27,7 @@ test('real PostgreSQL recovery under a writable ancestor restores full evidence 
     const state = JSON.parse((await child('recover')).stdout) as RecoveredContext;
     assert.deepEqual(state.snapshot.executions, before.executions); assert.deepEqual(state.recovery.operations, []);
     const output = state.messages.find(message => message.role === 'toolResult'); assert.ok(output?.role === 'toolResult');
-    assert.ok(!JSON.stringify(output.content).includes('FULL_ORIGINAL_TAIL'));
+    assert.ok(JSON.stringify(output.content).includes('FULL_ORIGINAL_TAIL')); assert.match(JSON.stringify(output.content), /omitted from the middle/);
     assert.deepEqual(await fullOutput(output), before.executions[0]?.outcome?.payload);
     const original = await readFile(outputPath(output), 'utf8'); await rm(outputPath(output));
     const restarted = JSON.parse((await child('recover')).stdout) as RecoveredContext;

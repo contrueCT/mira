@@ -7,15 +7,18 @@ import type { WebAccessAuth } from './web-auth.ts';
 
 export interface BrowserView {
   id: string; state: string; epoch: number; ownerLabel: string; domain?: string | null; message?: string;
+  lock?: 'outcome' | 'cleanup'; replacedBy?: string; replaces?: string;
 }
 export interface BrowserWebBackend {
   list(): BrowserView[];
   takeover(id: string): Promise<BrowserView>;
   release(id: string, epoch: number): Promise<BrowserView>;
+  reopen(id: string, epoch: number): Promise<BrowserView>;
   disconnect(id: string, epoch: number): void;
   stream(id: string): string | Promise<string>;
   invalidate(id: string): void;
   humanInput(id: string, epoch: number, input: Record<string, unknown>, current: () => boolean): Promise<void>;
+  humanNavigate(id: string, epoch: number, action: { kind: 'open'; url: string } | { kind: 'tab'; tabId: string }): Promise<BrowserView>;
   isHuman(id: string, epoch: number): boolean;
   subscribe(listener: (browser: BrowserView) => void): () => void;
 }
@@ -28,6 +31,7 @@ const domain = (value: unknown): string | null => {
 };
 const finite = (value: unknown, limit: number): value is number => typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= limit;
 const integer = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
+const viewing = (browser: BrowserView) => !['closed', 'returning', 'requesting'].includes(browser.state) && (browser.state !== 'unknown' || browser.lock === 'outcome');
 /** Frame and navigation channels are independent upstream. Arrival order is not capture order. */
 export class BrowserFrameFence {
   generation = 0;
@@ -46,7 +50,34 @@ export class BrowserFrameFence {
   }
   accepts(timestamp: unknown): boolean { return this.#target !== null && typeof timestamp === 'number' && Number.isFinite(timestamp) && timestamp > this.#capturedAfter; }
 }
-/** Strict projection: no commands, raw CDP, URLs, console output or arbitrary object forwarding. */
+const httpAddress = (value: unknown): string | null => {
+  if (typeof value !== 'string' || value.length > 2048) return null;
+  try { const url = new URL(value); if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) return null; return value; } catch { return null; }
+};
+const tabTitle = (value: unknown) => typeof value === 'string' ? value.trim().slice(0, 200) : '';
+const sameKeys = (value: Record<string, unknown>, keys: readonly string[]) => { const actual = Object.keys(value); return actual.length === keys.length && keys.every(key => actual.includes(key)); };
+/** Viewer-only http(s) page URL. Credentials and other schemes become null. Never log or persist this. */
+export function browserPageUrl(value: unknown): { domain: string | null; url: string | null } { return { domain: domain(value), url: httpAddress(value) }; }
+/** Viewer-only tab list. Invalid ids are dropped; titles are trimmed to 200 characters. */
+export function browserTabs(value: unknown): Array<{ tabId: string; active: boolean; domain: string | null; url: string | null; title: string }> {
+  if (!Array.isArray(value)) return [];
+  const tabs: Array<{ tabId: string; active: boolean; domain: string | null; url: string | null; title: string }> = [];
+  for (const item of value) {
+    if (tabs.length >= 32) break;
+    if (!item || typeof item !== 'object') continue;
+    const tab = item as Record<string, unknown>;
+    if (typeof tab.tabId !== 'string' || !/^[\w-]{1,128}$/.test(tab.tabId)) continue;
+    tabs.push({ tabId: tab.tabId, active: tab.active === true, domain: domain(tab.url), url: httpAddress(tab.url), title: tabTitle(tab.title) });
+  }
+  return tabs;
+}
+/** Owner navigation payload. Null means the shape is invalid and the caller closes the socket. */
+export function browserNavigation(value: Record<string, unknown>): { kind: 'open'; url: string } | { kind: 'tab'; tabId: string } | null {
+  if (value.type === 'nav_open' && sameKeys(value, ['type', 'epoch', 'url']) && typeof value.url === 'string' && value.url.length <= 2048) return { kind: 'open', url: value.url };
+  if (value.type === 'nav_tab' && sameKeys(value, ['type', 'epoch', 'tabId']) && typeof value.tabId === 'string' && /^[\w-]{1,128}$/.test(value.tabId)) return { kind: 'tab', tabId: value.tabId };
+  return null;
+}
+/** Strict projection to the authenticated viewer: bounded frame/status plus http(s) URL and title. No commands, raw CDP, console, credentials, or arbitrary objects. */
 export function browserInput(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
@@ -111,15 +142,16 @@ export function registerBrowserHttp(app: FastifyInstance, backend: BrowserWebBac
   const stopState = backend?.subscribe(browser => {
     for (const connection of [...connections]) if (connection.browser.id === browser.id) {
       send(connection, { type: 'mira_state', browser });
-      if (connection.browser.epoch !== browser.epoch || ['returning', 'unknown', 'closed'].includes(browser.state)) close(connection);
+      if (connection.browser.epoch !== browser.epoch || browser.state === 'returning' || browser.state === 'closed' || (browser.state === 'unknown' && !(browser.lock === 'outcome' && connection.browser.epoch === browser.epoch))) close(connection);
     }
   });
   app.get('/api/browser', { schema: { querystring: empty } }, async () => ({ browsers: backend?.list() ?? [] }));
-  app.post<{ Params: { id: string } }>('/api/browser/:id/takeover', { schema: { params, querystring: empty, body: empty } }, async request => available().takeover(request.params.id));
+  app.post<{ Params: { id: string } }>('/api/browser/:id/takeover', { schema: { params, querystring: empty, body: empty } }, async (request, reply) => { try { return await available().takeover(request.params.id); } catch (error) { if (error instanceof Error && error.name === 'BrowserControlError') return reply.code(409).send((error as { code?: unknown }).code === 'browser_locked' ? { error: error.message, code: 'browser_locked' } : { error: error.message }); throw error; } });
   app.post<{ Params: { id: string }; Body: { epoch: number } }>('/api/browser/:id/return', { schema: { params, querystring: empty, body: object({ epoch: { type: 'integer', minimum: 0 } }, ['epoch']) } }, async request => available().release(request.params.id, request.body.epoch));
+  app.post<{ Params: { id: string }; Body: { epoch: number } }>('/api/browser/:id/reopen', { schema: { params, querystring: empty, body: object({ epoch: { type: 'integer', minimum: 0 } }, ['epoch']) } }, async (request, reply) => { try { return await available().reopen(request.params.id, request.body.epoch); } catch (error) { if (error instanceof Error && error.name === 'BrowserControlError') return reply.code(409).send({ error: error.message }); throw error; } });
   app.post<{ Params: { id: string } }>('/api/browser/:id/ticket', { schema: { params, querystring: empty, body: empty } }, async (request, reply) => {
     const browser = view(request.params.id);
-    if (!browser || ['closed', 'unknown', 'returning', 'requesting'].includes(browser.state)) return reply.code(409).send({ error: 'Browser is not available for viewing' });
+    if (!browser || !viewing(browser)) return reply.code(409).send({ error: 'Browser is not available for viewing' });
     for (const [key, ticket] of tickets) if (ticket.expires <= Date.now()) tickets.delete(key);
     if (tickets.size >= 32 || connections.size >= 16) return reply.code(429).send({ error: 'Too many browser connections' });
     const ticket = randomBytes(32).toString('base64url');
@@ -133,7 +165,7 @@ export function registerBrowserHttp(app: FastifyInstance, backend: BrowserWebBac
     if (protocols?.length !== 2 || protocols[0] !== 'mira-browser' || !/^[A-Za-z0-9_-]{43}$/.test(protocols[1]!)) { reject(socket); return; }
     const key = digest(protocols[1]!); const ticket = tickets.get(key); tickets.delete(key);
     const browser = ticket ? view(ticket.id) : undefined;
-    if (!ticket || ticket.expires <= Date.now() || ticket.cookie !== digest(request.headers.cookie ?? '') || !browser || ticket.epoch !== browser.epoch || ['requesting', 'returning', 'unknown', 'closed'].includes(browser.state)) { reject(socket); return; }
+    if (!ticket || ticket.expires <= Date.now() || ticket.cookie !== digest(request.headers.cookie ?? '') || !browser || ticket.epoch !== browser.epoch || !viewing(browser)) { reject(socket); return; }
     const inputOwner = browser.state === 'human';
     if (inputOwner && owners.has(browser.id)) { reject(socket); return; }
     server.handleUpgrade(request, socket, head, client => {
@@ -141,7 +173,7 @@ export function registerBrowserHttp(app: FastifyInstance, backend: BrowserWebBac
       connections.add(connection); if (inputOwner) owners.set(browser.id, connection);
       send(connection, { type: 'mira_state', browser });
       client.on('error', () => close(connection)); client.on('close', () => close(connection));
-      const fence = new BrowserFrameFence(); let frame: { seq: number; generation: number; width: number; height: number } | null = null; let rendered: { seq: number; generation: number; width: number; height: number } | null = null;
+      const fence = new BrowserFrameFence(); let tabList = ""; let frame: { seq: number; generation: number; width: number; height: number } | null = null; let rendered: { seq: number; generation: number; width: number; height: number } | null = null;
       let inputWindow = Date.now(); let inputCount = 0; let upstreamVerified = false;
       client.on('message', (data, binary) => {
         if (connection.closed || binary || !connection.upstream || connection.upstream.readyState !== WebSocket.OPEN || (auth && !auth.status(connection.cookie).authenticated)) { close(connection); return; }
@@ -152,11 +184,23 @@ export function registerBrowserHttp(app: FastifyInstance, backend: BrowserWebBac
           if (!frame || value.seq !== frame.seq) return;
           rendered = frame; connection.upstream.send(JSON.stringify({ type: 'ack', seq: frame.seq })); return;
         }
-        if (!upstreamVerified || !connection.inputOwner || owners.get(browser.id) !== connection || !backend.isHuman(browser.id, browser.epoch) || value.epoch !== browser.epoch || !rendered || rendered.generation !== fence.generation || value.generation !== fence.generation || value.frameSeq !== rendered.seq) return;
+        const navigating = value.type === 'nav_open' || value.type === 'nav_tab';
+        // Read-only and stale sockets ignore navigation the same way they ignore input.
+        if (!upstreamVerified || !connection.inputOwner || owners.get(browser.id) !== connection || !backend.isHuman(browser.id, browser.epoch) || value.epoch !== browser.epoch) return;
+        if (!navigating && (!rendered || rendered.generation !== fence.generation || value.generation !== fence.generation || value.frameSeq !== rendered.seq)) return;
         if (Date.now() - inputWindow >= 1000) { inputWindow = Date.now(); inputCount = 0; }
         if (++inputCount > 240) { close(connection); return; }
+        if (navigating) {
+          const action = browserNavigation(value);
+          if (!action) { close(connection); return; }
+          void backend.humanNavigate(browser.id, browser.epoch, action).then(() => send(connection, { type: 'nav_done' }), (error: unknown) => {
+            send(connection, { type: 'nav_error', message: error instanceof Error && error.message ? error.message : 'Browser navigation failed' });
+            if (!(error instanceof Error) || error.name !== 'BrowserControlError') close(connection);
+          });
+          return;
+        }
         const input = browserInput(value);
-        if (!input || (input.action === 'input_mouse' && input.x !== undefined && (Number(input.x) > rendered.width || Number(input.y) > rendered.height))) { close(connection); return; }
+        if (!input || !rendered || (input.action === 'input_mouse' && input.x !== undefined && (Number(input.x) > rendered.width || Number(input.y) > rendered.height))) { close(connection); return; }
         const generation = fence.generation;
         void backend.humanInput(browser.id, browser.epoch, input, () => !connection.closed && fence.generation === generation && (!auth || auth.status(connection.cookie).authenticated)).catch(() => close(connection));
       });
@@ -212,13 +256,19 @@ export function registerBrowserHttp(app: FastifyInstance, backend: BrowserWebBac
               const active = tabs.find(tab => tab?.active === true);
               if (!active || typeof active.targetId !== 'string' || typeof active.url !== 'string') { backend.invalidate(browser.id); close(connection); return; }
               changed = fence.page(active.targetId, active.url, emittedAt);
+              const listed = JSON.stringify(browserTabs(value.tabs));
+              // Same active page, different list (a title finished loading, a background
+              // tab changed): refresh the viewer's tab list only. Not a document boundary,
+              // so no generation bump, frame reset or ack.
+              if (!changed && listed !== tabList) { tabList = listed; send(connection, { type: 'tab_list', generation: fence.generation, tabs: JSON.parse(listed) as unknown }); }
+              if (changed) tabList = listed;
             }
             if (!changed) return;
             if (frame) upstream.send(JSON.stringify({ type: 'ack', seq: frame.seq }));
             rendered = null; frame = null;
             const generation = fence.generation;
-            if (value.type === 'url') send(connection, { type: 'url', domain: domain(value.url), generation });
-            else send(connection, { type: 'tabs', generation, tabs: Array.isArray(value.tabs) ? value.tabs.slice(0, 32).map(item => ({ active: !!(item && typeof item === 'object' && 'active' in item && item.active), domain: domain(item && typeof item === 'object' && 'url' in item ? item.url : null) })) : [] });
+            if (value.type === 'url') send(connection, { type: 'url', ...browserPageUrl(value.url), generation });
+            else send(connection, { type: 'tabs', generation, tabs: browserTabs(value.tabs) });
           } else if (value.type === 'status') {
             send(connection, { type: 'status', connected: value.connected === true, screencasting: value.screencasting === true, viewportWidth: finite(value.viewportWidth, 16384) ? value.viewportWidth : 0, viewportHeight: finite(value.viewportHeight, 16384) ? value.viewportHeight : 0 });
             if (value.connected === false) { backend.invalidate(browser.id); close(connection); }

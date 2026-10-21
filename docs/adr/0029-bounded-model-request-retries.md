@@ -10,7 +10,7 @@ No whole Wake, tool batch, unknown external effect or persistence operation is a
 
 ## Policy
 
-- At most three attempts, including the original request. Pi/SDK `maxRetries` remains explicitly zero; no provider internal retry settings or Pi package versions change.
+- (Superseded 2026-10-20, see Amendment.) At most three attempts, including the original request. Pi/SDK `maxRetries` remains explicitly zero; no provider internal retry settings or Pi package versions change.
 - Backoff before attempts two and three is 250 ms and 1,000 ms. An observed HTTP `Retry-After` may raise a delay up to 10 seconds. No timer survives cancellation or process exit.
 - Explicit retryable HTTP statuses are 408, 429, 500, 502, 503, 504 and 529.
 - Explicit transport codes are `ETIMEDOUT`, `UND_ERR_CONNECT_TIMEOUT`, `UND_ERR_HEADERS_TIMEOUT`, `UND_ERR_BODY_TIMEOUT`, `ECONNRESET`, `ECONNREFUSED`, `EPIPE`, `EAI_AGAIN` and `UND_ERR_SOCKET`. Inspect at most three cause levels, without guessing from diagnostic text. Response-body errors are observed at the actual fetch/reader boundary before the SDK flattens them.
@@ -52,3 +52,10 @@ The pinned public eager OpenAI Completions, OpenAI Responses, Anthropic Messages
 No global environment, console, SDK package or logging implementation is mutated. Static loading adds the already-installed SDK modules to startup, with no credential resolution or network request. Builtin identity, model metadata, compatibility options and headers remain intact; OpenCode/OpenCode Go reuse the public `withOpenCodeSessionHeader` wrapper. Deferred Cloudflare/Copilot integrations remain excluded. Unrelated implementations, including Mistral, keep their provider-owned dispatch.
 
 Fresh-process real-SDK regression tests cover all three logging protocols, custom and builtin connections, credential-resolution changes, the former lazy-load window, HTTP-200 response-header echoes, and Google cloud-mode changes. Permanent HTTP broken-body failures remain single-attempt; retryable 5xx and 2xx stream resets retain retries. A real runtime path verifies settled tool → 429 → 400 context overflow → transient summary retry → one compaction → final response, without repeating the tool. These are injected protocol responses, not live provider validation.
+
+## Amendment (2026-10-20): longer bounded backoff and stream idle timeout
+
+Transient provider outages (rate limits, 5xx bursts) regularly outlast ~1.3 s of total backoff. The default policy is now at most **five** attempts including the original, exponential backoff starting at 1 s and doubling up to 60 s, with ±10% jitter; an observed `Retry-After` may raise a wait up to 60 s. The policy (`ModelRetryPolicy`) is an injectable option of the transport and `LocalWebService` (`modelRetryPolicy`) so tests can use short delays; production uses the default. Everything else above (fresh per-attempt state, no retry after partial output/tool effects, sanitized terminal error, transient status) is unchanged.
+
+Streams created through Mira's scoped fetch (OpenAI-compatible and Anthropic protocols) also abort when no body bytes arrive for 5 minutes; that failure (`MIRA_STREAM_IDLE_TIMEOUT`) is retryable under the same rules only when nothing was emitted. The Google adapter does not use the scoped fetch and therefore has no idle timer.
+

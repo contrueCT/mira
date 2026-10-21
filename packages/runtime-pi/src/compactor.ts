@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Agent, type StreamFn } from '@earendil-works/pi-agent-core';
-import { InMemoryCredentialStore, normalizeContext, type Api, type Model } from '@earendil-works/pi-ai';
+import { InMemoryCredentialStore, isContextOverflow, normalizeContext, type Api, type AssistantMessage, type Model } from '@earendil-works/pi-ai';
 import {
   AgentSession, convertToLlm, createExtensionRuntime, CURRENT_SESSION_VERSION,
   ModelRuntime, SessionManager, SettingsManager, createSyntheticSourceInfo,
@@ -10,7 +10,11 @@ import { compactionThinkingLevel } from './reasoning.ts';
 import { estimateRequestTokens } from './budget.ts';
 import { validateMessage } from './records.ts';
 import { type RecoveryOperation } from './observations.ts';
+import { compactionReductions, type CompactionRequestInput } from './compaction-fit.ts';
 import { compactionInput, MIRA_COMPACTION_MODES, MIRA_COMPACTION_PROMPT, TASK_COMPACTION_PROMPT, type CompactionReferences } from './compaction-prompt.ts';
+
+/** Summary dispatches per compaction, including reduced overflow retries. */
+const maxCompactionAttempts = 3;
 
 export interface CompactionOptions {
   signal?: AbortSignal;
@@ -68,15 +72,29 @@ export async function compactSnapshot(
       options.signal?.throwIfAborted();
       event.signal.throwIfAborted();
       const maxTokens = Math.min(options.reserveTokens ?? 512, model.maxTokens);
-      const input = compactionInput(event, references, maxTokens, recoveryOperations);
-      const systemPrompt = (references.scope === 'task' ? TASK_COMPACTION_PROMPT : MIRA_COMPACTION_PROMPT) + '\n' + MIRA_COMPACTION_MODES[input.mode] +
+      const original = compactionInput(event, references, maxTokens, recoveryOperations);
+      const systemPrompt = (references.scope === 'task' ? TASK_COMPACTION_PROMPT : MIRA_COMPACTION_PROMPT) + '\n' + MIRA_COMPACTION_MODES[original.mode] +
         (options.instructions ? `\n\nAdditional focus: ${options.instructions}` : '');
-      const context = normalizeContext({ systemPrompt, messages: [{ role: 'user', content: JSON.stringify(input), timestamp: Date.now() }] });
-      if (estimateRequestTokens(context.messages) + maxTokens > model.contextWindow) throw new Error('Compaction summary request exceeds model context budget');
+      const requestFor = (input: CompactionRequestInput) => normalizeContext({ systemPrompt, messages: [{ role: 'user', content: JSON.stringify(input), timestamp: Date.now() }] });
+      const fits = (context: ReturnType<typeof requestFor>) => estimateRequestTokens(context.messages) + maxTokens <= model.contextWindow;
       // The caller sees the original model, no SDK auth lookup/provider routing.
       const thinkingLevel = compactionThinkingLevel(model);
-      const stream = await streamFn(model, context, { ...(thinkingLevel === 'off' ? {} : { reasoning: thinkingLevel }), signal: event.signal, maxTokens, cacheRetention: 'none' });
-      const response = await stream.result();
+      // Unchanged when it fits. Otherwise, and after a provider overflow of the
+      // summary request itself, retry with the next bounded reduction.
+      let response: AssistantMessage | undefined; let dispatched = 0;
+      for (const candidate of compactionReductions(original as unknown as CompactionRequestInput, model.contextWindow * 4)) {
+        const context = requestFor(candidate.input);
+        if (!fits(context)) continue;
+        if (dispatched >= maxCompactionAttempts) break;
+        dispatched++;
+        const stream = await streamFn(model, context, { ...(thinkingLevel === 'off' ? {} : { reasoning: thinkingLevel }), signal: event.signal, maxTokens, cacheRetention: 'none' });
+        response = await stream.result();
+        options.signal?.throwIfAborted();
+        event.signal.throwIfAborted();
+        if (response.role === 'assistant' && isContextOverflow(response, model.contextWindow)) { response = undefined; continue; }
+        break;
+      }
+      if (!response) throw new Error(dispatched ? 'Compaction summary request overflowed the provider context after bounded reductions' : 'Compaction summary request exceeds model context budget');
       options.signal?.throwIfAborted();
       event.signal.throwIfAborted();
       if (response.role !== 'assistant') throw new Error('Compaction completion must have assistant role');

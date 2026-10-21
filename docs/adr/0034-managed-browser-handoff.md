@@ -9,6 +9,13 @@
 - 官方 native daemon 由 Mira 监督；初始 launch 后仅通过同代官方 socket 协议通信。协议映射限定在 `browser-driver.ts`；不调用会自动重启 daemon 的 CLI 命令，不 fork 上游。
 - 上游依据为 v0.39.1 commit `1165952d74ceed98fdc2dd97190ad41f44dd0e24` 的 `cli/src/native/stream/{mod,websocket}.rs`、命令协议和官方 streaming 文档。版本升级必须重新验收。
 
+
+## 头部浏览器入口（2026-10-20 修订）
+
+用户要求把入口从设置中提出：头部增加与设置并列、位于设置左侧的“浏览器”按钮，点击直接打开 `#browser` 原生 dialog，优先选中 Mira（主线）自己的浏览器。dialog 复用 BrowserPanel，租约、输入桥、断线保持与明确交还语义不变；关闭此窗口与关闭设置一样不自动交还。设置内“浏览器”页保留。上面“不增加常驻按钮”一条由此修订；仍不增加主聊天卡片或独立 Dashboard。
+
+同时：用户自己的接手/继续接手/交还成功后，服务端会按 epoch 关闭旧画面流；面板在新 epoch 可查看时自动重连一次（不再要求手动“重新连接”）。其他断线（网络、登出、关闭窗口）仍需用户显式重新连接。cleanup 锁定与 closed 的浏览器不再申请画面票据；outcome 锁定仍申请只读票据。界面用中文说明，不展示面向模型的英文提示。
+
 ## 已安装浏览器发现（2026-10-18）
 
 CLI 的浏览器路径配置不会自动传给 Mira 直接监督的 native daemon。默认缓存优先在 Ubuntu 上可能选中没有对应 AppArmor profile 的下载版 Chrome，即使系统官方 Chrome 已能正常启动。
@@ -52,3 +59,33 @@ REST 继续原 API 的精确 Host/Origin、X-Mira-Client、cookie 和 CSRF 规�
 ## 已知上游恢复边界
 
 固定版本的页面命令（包括 snapshot/get/tab/navigation/输入）可能在 daemon 尚存但 Chromium 断线时内部 auto-launch；stream/status/session-info/close 不走该路径。适配器从不重试命令或重启 daemon，但这不等于能事先否决上游单条命令内部的重新启动。适配器核对上游响应的 lifecycle.launched/relaunchedBrowser/restartedBackground，出现新实例时将旧受管句柄失效并报告 unknown，不能把新页面冒充恢复。检测发生在命令之后：例如 navigate/tab-new 可能已经访问 URL，不能承诺该副作用未发生。不得用故意无效的环境变量充当隐藏开关；进一步强化需公开的上游接口与独立验收。
+
+## 锁定状态的只读查看与用户关闭并重开（2026-10-20 修订）
+
+命令、交还、人工输入或画面流的结果无法确认时，会话进入 `unknown` 并增加 epoch。`lock` 只在该状态下出现：`outcome` 表示操作结果不明、daemon 仍可能在运行；`cleanup` 表示关闭本身未能确认。
+
+`outcome` 可以申请画面票据并建立只读连接。代理仍只转发 frame、url、tabs 和 status。`inputOwner` 只在 `state === 'human'` 时为真，因此鼠标、键盘和文本消息都被忽略，不会调用 humanInput。接手、交还、人工输入和 agent 命令在 `unknown` 下继续拒绝。锁定时请求接手返回 409 与 code browser_locked。进入 `unknown` 会增加 epoch，已有画面连接因此关闭；客户端再用同一 epoch 打开新的只读连接。`cleanup` 与 `closed`、`returning`、`requesting` 仍拒绝票据和升级。上游 `status.connected === false` 仍使该浏览器失效并关闭连接。已经处于 `unknown` 时，画面流失败只抛出错误，不再改状态。
+
+用户可以在两种锁定上选择“关闭并重开浏览器”。界面先要求确认：关闭后当前页面、登录状态和未保存内容都会丢失，并按最后一次成功打开的地址重新打开。确认后 `POST /api/browser/:id/reopen` 携带当前 epoch，沿用与交还相同的 CSRF 与 X-Mira-Client 保护。服务要求状态为 `unknown` 且 epoch 匹配，并要求会话记得成功打开过的地址。该地址只留在内存，不进入状态或日志，来自初次打开或之后成功的 agent `open`。关闭使用原来的会话队列，所以会等在途命令结束，并同步把状态改为 closed、epoch 增加。关闭未能确认时，会话变成 `cleanup` 锁定，不创建新浏览器。关闭成功后，为同一 owner 按既有容量规则打开新会话：新的 id，`replaces` 指向旧 id，旧会话 `replacedBy` 指向新 id。打开失败时，新会话仍按 `#open` 变成 `unknown`，两条链接仍然写下，界面可以跟着走。对旧 id 再点一次，或 epoch 已过期，都会被拒绝，避免打开两次。agent 对已关闭且带 `replacedBy` 的 id 下命令会得到 not_executed，说明应通过 browser_list 找到替代并重新 snapshot；对已关闭会话的 agent close 仍是空操作。
+
+Mira 不会因此收到新的历史注入，工具声明也不变。它从 `browser_list` 的状态说明得知旧页面已关闭、新页面在第一次 snapshot 之前什么都没继承；继续操作旧 id 时得到上述 not_executed。人工画面和输入仍然不进入模型、历史或日志。
+
+## 接手期间的标签页与地址栏（2026-10-20 修订）
+
+画面工具栏和视口之间增加标签列表与地址栏（`BrowserNavigation.tsx`）。控件只在 human 租约、当前连接已建立且已有画面时可用；包括锁定后的只读查看在内，其余状态仍然展示 URL 和标签，但不能前往或切换。服务端在输入所有者的 WebSocket 上强制执行同一租约：`nav_open` / `nav_tab` 与人工输入共用上游已核对、所有者、`isHuman(epoch)`、epoch 一致、登录仍有效和同一速率计数，但不要求已渲染帧匹配。只读连接上的这两类消息被忽略，不转发，连接保持。形状必须恰好是 `{type, epoch, url}`（url 为长度不超过 2048 的字符串）或 `{type, epoch, tabId}`（`/^[\w-]{1,128}$/`）；不合法则关闭连接。
+
+地址在浏览器和服务器两侧都只接受带主机、不含用户名或密码、长度不超过 2048 的 http 或 https。`javascript:`、`file:`、`data:`、`chrome:`、`about:`、`ftp:` 以及嵌入凭据一律拒绝。标签切换使用上游 tabId。导航进入该会话队列，启动前再次核对仍是当前 human 租约；驱动失败与人工输入一样失败关闭为 `unknown`，不重放。成功的前往会更新内存中的重开地址和主机名。
+
+代理现在把标签的完整 http(s) URL 和页面标题转发给已认证的查看者，修订此前“只转发 domain / 仅显示当前标签”的投影。非 http(s)、超长或带凭据的 URL 变为 null，非法 tabId 丢弃，标题截断到 200 字，最多 32 个标签。这些字段只到查看者套接字，仍然不进入模型、数据库或日志。
+
+工具声明不变，也不注入历史。用户的前往和切标签累计为 `userActivity`（次数，以及最后打开网址的主机名）。交还后若状态为 `agent` 且该活动仍在，`browser_list` 与工具结果里的状态说明会要求先取新的 snapshot。Mira 的 agent `snapshot` 成功后清除该活动。`release` 已使旧观察失效；它内部的 snapshot 不清除 `userActivity`。
+
+## 浏览器面板视觉重做（2026-10-20 修订）
+
+按用户批准的设计（design.md v3，含 §8 动效与 §8.1「晴空蓝」配色）重做面板外观，控制语义不变：租约、输入栅栏、断线不自动交还、锁定只读、关闭并重开、接手期间导航等规则全部沿用上文。
+
+- 结构：桌面接近全屏（四周 20–24px），手机全屏；顶栏为浏览器切换器（listbox，按所有者分别编号）、状态胶囊（`role="status"`）和主操作；其下是标签条（`role="tablist"`，只读时 `aria-disabled`）、地址栏（只读时为 `aria-readonly` 文本框）和画面。手机端用标签数按钮加底部表单切换标签，底部固定操作栏，并提供「释放键盘」和 2 倍放大（双指平移不发送输入）；桌面提供「专注画面」。移除「刷新」按钮，状态仍每 2.5 秒轮询，出错时提供「重试」。
+- 画面边框：Mira 操作中为流光光环（CSS 旋转 conic-gradient 加遮罩，只动画 `rotate` / `opacity`），外光晕按 §8 的降级方案用静态 box-shadow 加透明度呼吸；用户接手后为静态浅蓝描边；锁定时为静态琥珀色。`prefers-reduced-motion` 时完全不动；`document.hidden` 或非 AI 状态时暂停动画。颜色集中在 `browser.css` 的 `--browser-glow-*` / `--browser-user-*` / `--browser-lock-*` 自定义属性。
+- 性能取舍：本机无 GPU，属于软件合成，实测弹窗 `::backdrop` 的 `backdrop-filter` 和模糊光晕层会在动画期间每帧整屏重算，所以去掉了这两项（帧率 17 → 55 fps，CPU 4 倍降速）。
+- 对比度：流光底色 `#3b8cff` 对画面底色 2.83:1，接手描边 `#93c2ff` 为 1.59:1，按装饰处理并在 e2e 中记录为例外。状态由胶囊文字、画面角标和播报承载，不只靠颜色表达。
+- 标签标题：服务端 `tabs` 消息带页面标题（见上一节）；没有标题时前端显示网址的主机和路径。上游在活动页面不变时也会发来新的标签列表（例如标题加载完成、后台标签变化），代理此前把它们丢弃。现在这类更新以 `tab_list` 消息转发，只更新标签列表，不算文档边界：不增加 generation，不重置已渲染画面，也不确认帧，所以输入栅栏不受影响；内容相同的列表不重复发送。

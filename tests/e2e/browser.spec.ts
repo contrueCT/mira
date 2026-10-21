@@ -14,7 +14,7 @@ test('browser settings: read-only, takeover, rendered-frame fence, input bridge,
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto('/'); await page.getByRole('button', { name: '模型设置', exact: true }).click();
   await page.getByRole('tab', { name: '浏览器', exact: true }).click();
-  await expect(page.getByText('Mira 操作中 · 只读查看', { exact: true })).toBeVisible();
+  await expect(page.getByText('Mira 正在操作 · 你在旁观', { exact: true })).toBeVisible();
   await expect.poll(() => tickets).toBe(1);
   const data = await page.evaluate(() => {
     const canvas = document.createElement('canvas'); canvas.width = 1000; canvas.height = 600;
@@ -31,11 +31,11 @@ test('browser settings: read-only, takeover, rendered-frame fence, input bridge,
   expect(received.filter(item => item.type === 'input_mouse')).toHaveLength(0);
   await page.getByRole('button', { name: '接手操作', exact: true }).dblclick();
   await expect.poll(() => takeovers).toBe(1);
-  await expect(page.getByText('等待当前操作结束', { exact: true })).toBeVisible();
+  await expect(page.getByText('等待当前操作结束…', { exact: true })).toBeVisible();
   status = { ...status, state: 'human', epoch: 3 }; socket!.send(JSON.stringify({ type: 'mira_state', browser: status }));
-  await expect(page.getByText('由你操作', { exact: true })).toBeVisible();
+  await expect(page.getByText('由你操作 · Mira 已暂停', { exact: true })).toBeVisible();
   frame(2); await expect.poll(() => received.some(item => item.type === 'ack' && item.seq === 2)).toBe(true);
-  await page.getByRole('button', { name: '放大画面', exact: true }).click();
+  await page.getByRole('button', { name: '专注画面', exact: true }).click();
   await page.locator('.browser-viewport canvas').click({ position: { x: 100, y: 100 } });
   await expect.poll(() => received.some(item => item.type === 'input_mouse' && item.epoch === 3 && item.generation === 1 && item.frameSeq === 2)).toBe(true);
   const bridge = page.getByLabel('浏览器键盘输入，按 Escape 离开', { exact: true });
@@ -77,12 +77,14 @@ test('browser settings: read-only, takeover, rendered-frame fence, input bridge,
   socket!.close(); status = { ...status, state: 'held', epoch: 4 };
   await expect(page.getByRole('button', { name: '重新连接', exact: true })).toBeVisible();
   expect(returns).toBe(0);
-  await page.getByRole('button', { name: '刷新', exact: true }).click();
-  await expect(page.getByText('连接中断 · 已保留你的控制权', { exact: true })).toBeVisible();
+  // The scheduled status poll (no refresh button) reports the held lease.
+  await expect(page.getByText('你仍保留控制权', { exact: true })).toBeVisible();
+  await expect(page.getByText('画面连接中断，你仍保留着控制权。')).toBeVisible();
+  await expect(page.getByText(/画面连接已断开/)).toHaveCount(0); // not repeated as an error
   await page.getByRole('button', { name: '交还 Mira', exact: true }).click();
   await expect.poll(() => returns).toBe(1);
   await expect(page.getByText('已取消 2 条尚未发送的输入。请核对页面结果，不要重复提交。')).toBeVisible();
-  await expect(page.getByText('Mira 操作中 · 只读查看', { exact: true })).toBeVisible();
+  await expect(page.getByText('Mira 正在操作 · 你在旁观', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '关闭设置', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   expect(returns).toBe(1);
@@ -150,16 +152,20 @@ for (const interruption of ['pointercancel', 'lostpointercapture', 'return'] as 
     }
     await frame(2); // Flush preceding socket input before checking that no release was invented.
     expect(received.filter(input => input.eventType === 'mouseReleased' || input.type === 'input_release')).toEqual([]);
+    const originalSocket = socket;
     await page.getByRole('button', { name: '交还 Mira', exact: true }).evaluate(element => (element as HTMLElement).click());
     await expect.poll(() => status.state).toBe('held');
     await page.mouse.up();
-    await expect(page.getByText('连接中断 · 已保留你的控制权', { exact: true })).toBeVisible();
+    await expect(page.getByText('你仍保留控制权', { exact: true })).toBeVisible();
     expect(status.pressedButtons).toEqual(['left']); expect(returns).toBe(1);
     expect(received.filter(input => input.eventType === 'mouseReleased' || input.type === 'input_release')).toEqual([]);
+    // The user's own return closed the epoch-bound stream; the panel follows
+    // the new epoch by itself (no manual reconnect) and stays read-only until
+    // the user explicitly continues.
+    await expect.poll(() => socket !== originalSocket).toBe(true);
+    await expect(page.getByRole('button', { name: '重新连接', exact: true })).toHaveCount(0);
     await page.getByRole('button', { name: '继续接手', exact: true }).click();
-    const previousSocket = socket;
-    await page.getByRole('button', { name: '重新连接', exact: true }).click();
-    await expect.poll(() => socket !== previousSocket).toBe(true); await frame(3);
+    await expect(page.getByText('由你操作 · Mira 已暂停', { exact: true })).toBeVisible(); await frame(3);
     await page.getByRole('button', { name: '松开左键', exact: true }).click();
     await expect.poll(() => status.pressedButtons).toEqual([]);
     expect(received.filter(input => input.type === 'input_release')).toHaveLength(1);
@@ -172,15 +178,16 @@ test('browser settings empty/error states and canceled late ticket cannot open a
   await page.route('**/api/browser', route => route.fulfill({ json: { browsers: [] } }));
   await page.goto('/'); await page.getByRole('button', { name: '模型设置', exact: true }).click();
   await page.getByRole('tab', { name: '浏览器', exact: true }).click();
-  await expect(page.getByText('还没有活动的浏览器。Mira 使用浏览器时会显示在这里。')).toBeVisible();
+  await expect(page.getByText('Mira 还没有打开浏览器')).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: '暂无浏览器' })).toBeVisible();
   await page.route('**/api/browser', route => route.fulfill({ status: 503, json: { error: 'not exposed' } }));
-  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  // Status is polled; the redesign has no separate refresh button.
   await expect(page.getByText('暂时无法读取浏览器状态，请重试。')).toBeVisible();
   let resolveTicket: (() => void) | undefined;
   await page.route('**/api/browser', route => route.fulfill({ json: { browsers: [{ id: 'late', state: 'agent', epoch: 1, ownerLabel: 'Mira', domain: null }] } }));
   await page.route('**/api/browser/late/ticket', async route => { await new Promise<void>(resolve => { resolveTicket = resolve; }); await route.fulfill({ json: { ticket: 'late-ticket', epoch: 1 } }).catch(() => {}); });
   let sockets = 0; await page.routeWebSocket('**/api/browser/stream', () => { sockets++; });
-  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await page.getByRole('button', { name: '重试', exact: true }).click();
   await expect.poll(() => !!resolveTicket).toBe(true);
   await page.getByRole('tab', { name: '模型', exact: true }).click(); resolveTicket!();
   await page.waitForTimeout(100); expect(sockets).toBe(0);
@@ -203,20 +210,239 @@ for (const stale of [{ state: 'agent', epoch: 1 }, { state: 'requesting', epoch:
     await page.goto('/'); await page.getByRole('button', { name: '模型设置', exact: true }).click();
     await page.getByRole('tab', { name: '浏览器', exact: true }).click();
     await expect.poll(() => !!socket).toBe(true);
-    defer = true; await page.getByRole('button', { name: '刷新', exact: true }).click();
+    defer = true; // the next scheduled status poll is held back
     await expect.poll(() => !!release).toBe(true);
     status = { ...status, state: 'human', epoch: 2 };
     socket!.send(JSON.stringify({ type: 'mira_state', browser: status }));
-    await expect(page.getByText('由你操作', { exact: true })).toBeVisible();
+    await expect(page.getByText('由你操作 · Mira 已暂停', { exact: true })).toBeVisible();
     const data = await page.evaluate(() => { const canvas = document.createElement('canvas'); canvas.width = 100; canvas.height = 100; return canvas.toDataURL('image/jpeg').split(',')[1]!; });
     socket!.send(JSON.stringify({ type: 'frame', seq: 1, generation: 1, epoch: 2, data, metadata: { deviceWidth: 100, deviceHeight: 100 } }));
     await expect.poll(() => received.some(item => item.type === 'ack')).toBe(true);
     const response = page.waitForResponse(response => new URL(response.url()).pathname === '/api/browser');
     await release!(); await response;
     await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-    await expect(page.getByText('由你操作', { exact: true })).toBeVisible();
+    await expect(page.getByText('由你操作 · Mira 已暂停', { exact: true })).toBeVisible();
     await page.locator('.browser-viewport canvas').click();
     await expect.poll(() => received.some(item => item.type === 'input_mouse' && item.epoch === 2 && item.frameSeq === 1)).toBe(true);
     await expect(page.getByLabel('浏览器键盘输入，按 Escape 离开', { exact: true })).toBeEnabled();
   });
 }
+
+test('header browser entry sits immediately left of Settings and opens Mira’s own browser directly on desktop and phone', async ({ page }, testInfo) => {
+  const task = { id: 'task-browser', state: 'agent', epoch: 1, ownerLabel: 'Task', domain: 'task.test' };
+  let mira = { id: 'mira-browser', state: 'agent', epoch: 1, ownerLabel: 'Mira', domain: 'example.test' };
+  let takeovers = 0; const tickets: string[] = [];
+  // Task's browser is listed first; the header entry must still select Mira's own.
+  await page.route('**/api/browser', route => route.fulfill({ json: { browsers: [task, mira] } }));
+  await page.route('**/api/browser/*/ticket', route => { tickets.push(route.request().url()); return route.fulfill({ json: { ticket: 'fixture-ticket', epoch: 1 } }); });
+  await page.route('**/api/browser/mira-browser/takeover', async route => { takeovers++; mira = { ...mira, state: 'requesting', epoch: 2 }; await route.fulfill({ json: mira }); });
+  await page.routeWebSocket('**/api/browser/stream', ws => { ws.send(JSON.stringify({ type: 'mira_state', browser: mira })); });
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
+    await page.setViewportSize(viewport); await page.goto('/');
+    const entry = page.getByRole('button', { name: '浏览器', exact: true });
+    const settings = page.getByRole('button', { name: '模型设置', exact: true });
+    await expect(entry).toBeVisible();
+    const a = (await entry.boundingBox())!; const b = (await settings.boundingBox())!;
+    expect(Math.abs(a.y - b.y), 'same row').toBeLessThanOrEqual(1);
+    expect(a.x + a.width, 'left of Settings').toBeLessThanOrEqual(b.x);
+    expect(b.x - (a.x + a.width), 'adjacent').toBeLessThanOrEqual(8);
+    expect(a.width).toBeGreaterThanOrEqual(36); expect(a.height).toBeGreaterThanOrEqual(36);
+    const identity = (await page.locator('.identity').boundingBox())!;
+    const ring = await page.locator('.mira-ring').boundingBox();
+    for (const box of [ring, (await page.locator('.identity h1').boundingBox())!].filter(Boolean)) {
+      const overlap = a.x < box!.x + box!.width && box!.x < a.x + a.width && a.y < box!.y + box!.height && box!.y < a.y + a.height;
+      expect(overlap, `${viewport.width}: no overlap with the identity`).toBe(false);
+    }
+    expect(identity.width).toBeGreaterThan(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    // Icon (non-text) contrast ≥ 3:1 against the header.
+    const iconContrast = await entry.evaluate(element => {
+      const parse = (c: string) => (c.match(/[\d.]+/g) ?? []).map(Number);
+      const lum = ([r, g, b]: number[]) => { const f = (v: number) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r!) + 0.7152 * f(g!) + 0.0722 * f(b!); };
+      const x = lum(parse(getComputedStyle(element).color)), y = lum(parse(getComputedStyle(element.closest('header')!).backgroundColor));
+      return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+    });
+    expect(iconContrast).toBeGreaterThanOrEqual(3);
+    // Keyboard: Tab order reaches the browser entry right before Settings; Enter opens it.
+    await settings.focus(); await page.keyboard.press('Shift+Tab'); await expect(entry).toBeFocused();
+    await page.screenshot({ path: testInfo.outputPath(`header-browser-entry-${viewport.width}.png`) });
+    await page.keyboard.press('Enter');
+    const dialog = page.getByRole('dialog', { name: '浏览器' });
+    await expect(dialog).toBeVisible(); expect(new URL(page.url()).hash).toBe('#browser');
+    await expect(dialog.getByRole('button', { name: '接手操作', exact: true })).toBeFocused();
+    await expect(dialog.getByRole('button', { name: '切换浏览器，当前：Mira 的浏览器 1' })).toBeVisible();
+    await expect(dialog.getByText('Mira 正在操作 · 你在旁观', { exact: true })).toBeVisible();
+    await expect.poll(() => tickets.some(url => url.includes('/mira-browser/'))).toBe(true);
+    expect(await page.evaluate(() => { const d = document.querySelector('dialog')!.getBoundingClientRect(); return d.left >= 0 && d.right <= innerWidth + 0.5; })).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`browser-dialog-${viewport.width}.png`) });
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0); await expect(entry).toBeFocused(); expect(new URL(page.url()).hash).toBe('');
+  }
+  // Take over from the direct entry; history back closes the dialog without returning control.
+  await page.setViewportSize({ width: 1440, height: 1000 }); await page.goto('/');
+  await page.getByRole('button', { name: '浏览器', exact: true }).click();
+  await page.getByRole('button', { name: '接手操作', exact: true }).click();
+  await expect.poll(() => takeovers).toBe(1);
+  await page.goBack(); await expect(page.getByRole('dialog')).toHaveCount(0);
+  // A reload at #browser reopens the same dialog; Settings still offers its browser tab.
+  await page.goto('/#browser'); await expect(page.getByRole('dialog', { name: '浏览器' })).toBeVisible();
+  await page.getByRole('button', { name: '关闭浏览器', exact: true }).click(); await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '浏览器', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '浏览器', level: 3 })).toBeVisible();
+});
+
+test('locked outcome browser is read-only, and the user can close and reopen it', async ({ page }) => {
+  const locked = { id: 'lost', state: 'unknown', lock: 'outcome', epoch: 3, ownerLabel: 'Mira', domain: 'example.test', message: 'Browser outcome unknown. Do not replay commands. Close this browser and explicitly open a new one.' };
+  let browsers: Array<Record<string, unknown>> = [locked];
+  const received: Record<string, unknown>[] = [];
+  let socket: WebSocketRoute | undefined; let tickets = 0; let reopenBody: unknown;
+  await page.route('**/api/browser', route => route.fulfill({ json: { browsers } }));
+  await page.route('**/api/browser/lost/ticket', route => { tickets++; return route.fulfill({ json: { ticket: 'locked-ticket', epoch: locked.epoch } }); });
+  await page.route('**/api/browser/fresh-browser/ticket', route => route.fulfill({ json: { ticket: 'fresh-ticket', epoch: 0 } }));
+  await page.route('**/api/browser/lost/reopen', async route => {
+    reopenBody = route.request().postDataJSON();
+    const fresh = { id: 'fresh-browser', state: 'agent', epoch: 0, ownerLabel: 'Mira', domain: 'example.test', replaces: 'lost' };
+    browsers = [{ ...locked, state: 'closed', replacedBy: 'fresh-browser', epoch: 4 }, fresh];
+    await route.fulfill({ json: fresh });
+  });
+  await page.routeWebSocket('**/api/browser/stream', ws => { socket = ws; ws.onMessage(message => received.push(JSON.parse(String(message)) as Record<string, unknown>)); ws.send(JSON.stringify({ type: 'mira_state', browser: locked })); });
+  await page.goto('/'); await page.getByRole('button', { name: '浏览器', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '浏览器' });
+  await expect(dialog.getByText('状态待确认 · 只读', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('上一次操作没有确认结果，浏览器已锁定。')).toBeVisible();
+  await expect(dialog.getByText(/Browser outcome unknown/)).toHaveCount(0);
+  for (const name of ['接手操作', '交还 Mira']) await expect(dialog.getByRole('button', { name, exact: true })).toHaveCount(0);
+  await expect.poll(() => tickets).toBeGreaterThan(0);
+  await expect.poll(() => socket !== undefined).toBe(true);
+  const data = await page.evaluate(() => {
+    const canvas = document.createElement('canvas'); canvas.width = 40; canvas.height = 20;
+    const ctx = canvas.getContext('2d')!; ctx.fillStyle = '#123456'; ctx.fillRect(0, 0, 40, 20);
+    return canvas.toDataURL('image/jpeg').split(',')[1]!;
+  });
+  socket!.send(JSON.stringify({ type: 'frame', seq: 1, generation: 1, epoch: locked.epoch, data, metadata: { deviceWidth: 40, deviceHeight: 20 } }));
+  await expect.poll(() => received.some(item => item.type === 'ack')).toBe(true);
+  const canvas = dialog.locator('.browser-viewport canvas');
+  await expect(canvas).not.toHaveClass(/browser-canvas-empty/);
+  await expect.poll(() => canvas.evaluate(element => (element as HTMLCanvasElement).width)).toBeGreaterThan(0);
+  await canvas.click(); await page.keyboard.type('secret-locked');
+  await page.waitForTimeout(150);
+  expect(received.filter(item => String(item.type).startsWith('input_'))).toHaveLength(0);
+  socket!.close();
+  await expect(dialog.getByRole('button', { name: '重新连接', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: '接手操作', exact: true })).toHaveCount(0);
+  const reopen = dialog.getByRole('button', { name: '关闭并重开浏览器', exact: true });
+  await reopen.click();
+  const confirm = dialog.getByRole('button', { name: '确认关闭并重开', exact: true });
+  // The destructive confirmation defaults to 取消 (design §3).
+  await expect(dialog.getByRole('alertdialog').getByRole('button', { name: '取消', exact: true })).toBeFocused();
+  await expect(dialog.getByText(/会在 example\.test 打开一个全新的浏览器/)).toBeVisible();
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(confirm).toHaveCount(0);
+  await expect(reopen).toBeFocused();
+  await reopen.click(); await confirm.click();
+  await expect.poll(() => reopenBody).toEqual({ epoch: locked.epoch });
+  await expect(dialog.getByRole('button', { name: '接手操作', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('status').filter({ hasText: 'Mira 正在操作 · 你在旁观' })).toBeVisible();
+  await dialog.getByRole('button', { name: /^切换浏览器/ }).click();
+  // The replaced (closed) browser is hidden; only the fresh one is listed.
+  await expect(dialog.getByRole('option')).toHaveCount(1);
+  await expect(dialog.getByRole('option')).toHaveAttribute('aria-selected', 'true');
+});
+
+test('reopen reports a stale lock in Chinese with the HTTP detail', async ({ page }) => {
+  const locked = { id: 'lost', state: 'unknown', lock: 'outcome', epoch: 3, ownerLabel: 'Mira', domain: 'example.test', message: 'Browser outcome unknown. Do not replay commands. Close this browser and explicitly open a new one.' };
+  await page.route('**/api/browser', route => route.fulfill({ json: { browsers: [locked] } }));
+  await page.route('**/api/browser/lost/ticket', route => route.fulfill({ json: { ticket: 'locked-ticket', epoch: locked.epoch } }));
+  await page.route('**/api/browser/lost/reopen', route => route.fulfill({ status: 409, json: { error: 'Browser is not locked in an indeterminate state or the view is stale; refresh and retry' } }));
+  await page.routeWebSocket('**/api/browser/stream', ws => { ws.send(JSON.stringify({ type: 'mira_state', browser: locked })); });
+  await page.goto('/'); await page.getByRole('button', { name: '浏览器', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '浏览器' });
+  await dialog.getByRole('button', { name: '关闭并重开浏览器', exact: true }).click();
+  await dialog.getByRole('button', { name: '确认关闭并重开', exact: true }).click();
+  const alert = dialog.getByRole('alert');
+  await expect(alert).toContainText('内容已被其他操作更新');
+  await expect(alert).toContainText('HTTP 409');
+  await expect(dialog.getByRole('button', { name: '确认关闭并重开', exact: true })).toHaveCount(0);
+});
+
+test('cleanup lock explains that close was not confirmed and does not request a ticket', async ({ page }) => {
+  const locked = { id: 'lost', state: 'unknown', lock: 'cleanup', epoch: 5, ownerLabel: 'Mira', domain: 'example.test', message: 'Browser cleanup could not be verified. Agent and human control remain disabled; closing may be retried.' };
+  let tickets = 0;
+  await page.route('**/api/browser', route => route.fulfill({ json: { browsers: [locked] } }));
+  await page.route('**/api/browser/lost/ticket', route => { tickets++; return route.fulfill({ status: 409, json: { error: 'Browser is not available for viewing' } }); });
+  await page.goto('/'); await page.getByRole('button', { name: '浏览器', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '浏览器' });
+  await expect(dialog.getByText('浏览器关闭未能确认。')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: '关闭并重开浏览器', exact: true })).toBeVisible();
+  await expect(dialog.locator('.bp-screen')).toHaveClass(/is-hidden/);
+  await expect(dialog.getByText(/Browser cleanup/)).toHaveCount(0);
+  for (const name of ['重新连接', '接手操作', '交还 Mira']) await expect(dialog.getByRole('button', { name, exact: true })).toHaveCount(0);
+  await page.waitForTimeout(3000); expect(tickets).toBe(0); // across a status poll
+});
+
+test('address bar and tabs stay read-only until takeover, then navigate on the owner socket', async ({ page }) => {
+  let status = { id: 'nav-browser', state: 'agent', epoch: 1, ownerLabel: 'Mira', domain: 'example.test' };
+  const received: Record<string, unknown>[] = [];
+  let socket: WebSocketRoute | undefined;
+  let takeovers = 0;
+  await page.route('**/api/browser', route => route.fulfill({ json: { browsers: [status] } }));
+  await page.route('**/api/browser/nav-browser/ticket', route => route.fulfill({ json: { ticket: 'nav-ticket', epoch: status.epoch } }));
+  await page.route('**/api/browser/nav-browser/takeover', async route => {
+    takeovers++; status = { ...status, state: 'requesting', epoch: 2 }; await route.fulfill({ json: status });
+  });
+  await page.routeWebSocket('**/api/browser/stream', ws => {
+    socket = ws;
+    ws.onMessage(message => {
+      const input = JSON.parse(String(message)) as Record<string, unknown>; received.push(input);
+      if (input.type === 'nav_open') ws.send(JSON.stringify({ type: 'nav_done' }));
+    });
+    ws.send(JSON.stringify({ type: 'mira_state', browser: status }));
+  });
+  await page.goto('/'); await page.getByRole('button', { name: '浏览器', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '浏览器' });
+  await expect.poll(() => socket !== undefined).toBe(true);
+  socket!.send(JSON.stringify({ type: 'tabs', generation: 1, tabs: [
+    { tabId: 't1', active: true, title: '示例', domain: 'example.test', url: 'https://example.test/start' },
+    { tabId: 't2', active: false, title: '另一页', domain: 'example.org', url: 'https://example.org/other' },
+  ] }));
+  socket!.send(JSON.stringify({ type: 'url', generation: 1, domain: 'example.test', url: 'https://example.test/start' }));
+  const address = dialog.getByLabel('浏览器地址');
+  const tablist = dialog.getByRole('tablist', { name: '标签页' });
+  const tabs = tablist.getByRole('tab');
+  await expect(address).toHaveText('https://example.test/start');
+  await expect(address).toHaveAttribute('aria-readonly', 'true');
+  await expect(dialog.getByRole('button', { name: '前往', exact: true })).toHaveCount(0);
+  await expect(tabs).toHaveCount(2);
+  await expect(tablist).toHaveAttribute('aria-disabled', 'true');
+  await expect(tabs.nth(0)).toHaveAttribute('aria-selected', 'true');
+  await tabs.nth(1).click({ force: true }); expect(received.filter(item => item.type === 'nav_tab')).toHaveLength(0);
+  await dialog.getByRole('button', { name: '接手操作', exact: true }).click();
+  await expect.poll(() => takeovers).toBe(1);
+  status = { ...status, state: 'human', epoch: 3 };
+  socket!.send(JSON.stringify({ type: 'mira_state', browser: status }));
+  await expect(dialog.getByText('由你操作 · Mira 已暂停', { exact: true })).toBeVisible();
+  await expect(address).toHaveAttribute('aria-readonly', 'true');
+  const data = await page.evaluate(() => { const canvas = document.createElement('canvas'); canvas.width = 40; canvas.height = 20; return canvas.toDataURL('image/jpeg').split(',')[1]!; });
+  socket!.send(JSON.stringify({ type: 'frame', seq: 1, generation: 1, epoch: 3, data, metadata: { deviceWidth: 40, deviceHeight: 20 } }));
+  await expect.poll(() => received.some(item => item.type === 'ack' && item.seq === 1)).toBe(true);
+  await expect(address).toBeEditable();
+  await expect(dialog.getByRole('button', { name: '前往', exact: true })).toBeEnabled();
+  await expect(tablist).not.toHaveAttribute('aria-disabled', 'true');
+  await address.fill('example.org');
+  await dialog.getByRole('button', { name: '前往', exact: true }).click();
+  await expect.poll(() => received.some(item => item.type === 'nav_open')).toBe(true);
+  expect(received.find(item => item.type === 'nav_open')).toEqual({ type: 'nav_open', epoch: 3, url: 'https://example.org/' });
+  await expect(dialog.getByRole('button', { name: '前往', exact: true })).toBeEnabled();
+  await address.fill('javascript:alert(1)');
+  await dialog.getByRole('button', { name: '前往', exact: true }).click();
+  await expect(dialog.getByText('只支持 http 或 https 网址')).toBeVisible();
+  expect(received.filter(item => item.type === 'nav_open')).toHaveLength(1);
+  await tabs.nth(1).click();
+  await expect.poll(() => received.some(item => item.type === 'nav_tab')).toBe(true);
+  expect(received.find(item => item.type === 'nav_tab')).toEqual({ type: 'nav_tab', epoch: 3, tabId: 't2' });
+  await expect(tabs.nth(0)).toHaveAttribute('aria-selected', 'true');
+  socket!.send(JSON.stringify({ type: 'nav_error', message: 'Only http(s) addresses without credentials can be opened' }));
+  const alert = dialog.locator('.bp-banner.is-error');
+  await expect(alert).toContainText('浏览器导航未完成');
+  await expect(alert).toContainText('Only http(s) addresses without credentials can be opened');
+});
