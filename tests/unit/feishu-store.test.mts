@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { chmod, link, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
@@ -156,4 +157,38 @@ test('bounded large SQLite JSON updates stay readable and private', async t => {
   assert.deepEqual(await new FeishuPrivateStore(file, source).load(), { value: 'small again' });
   await link(`${file}.sqlite`, `${file}.linked`); await assert.rejects(store.load(), FeishuStoreError); await rm(`${file}.linked`);
   await chmod(`${file}.sqlite`, 0o644); await assert.rejects(store.load(), FeishuStoreError);
+});
+
+test('receipt updates share the global CAS, remain bounded per call and continue after the database exceeds the old file cap', async t => {
+  const { file, source, store } = await fixture(t); await store.load(); await store.save({ value: 'owner and inbox' });
+  const stale = new FeishuPrivateStore(file, source); await stale.load();
+  await store.saveReceipt('call-000', { text: 'x'.repeat(90_000) }, true, 'binding-a');
+  await assert.rejects(stale.save({ value: 'stale owner' }), error => error instanceof FeishuStoreError && error.code === 'conflict');
+  await assert.rejects(stale.saveReceipt('stale-call', {}, false, 'binding-a'), FeishuStoreError);
+  for (let index = 1; index < 100; index++) await store.saveReceipt(`call-${String(index).padStart(3, '0')}`, { text: 'x'.repeat(90_000) }, true, index === 1 ? 'binding-b' : 'binding-a');
+  assert.ok((await stat(`${file}.sqlite`)).size > 8_000_000);
+  assert.equal((await store.nextPendingReceipt<{ text: string }>('binding-b'))!.callId, 'call-001');
+  assert.equal((await store.nextPendingReceipt('binding-a', 'call-000'))!.callId, 'call-002');
+  await assert.rejects(store.saveReceipt('oversize', { text: 'x'.repeat(2_000_001) }, true, 'binding-a'), FeishuStoreError);
+  assert.equal(await store.loadReceipt('oversize'), null);
+  await store.save({ value: 'new inbox remains writable' });
+  const reopened = new FeishuPrivateStore(file, source); assert.deepEqual(await reopened.load(), { value: 'new inbox remains writable' });
+  assert.equal((await reopened.loadReceipt<{ text: string }>('call-099'))!.text.length, 90_000);
+});
+
+test('the current single-row schema upgrades atomically with archived receipts and rolls back failed migration', async t => {
+  const { file, source, store } = await fixture(t); await mkdir(path.dirname(file), { mode: 0o700 });
+  const legacy = '{"value":"current single row"}'; await writeFile(file, legacy, { mode: 0o600 });
+  const revision = createHash('sha256').update(legacy).digest('hex');
+  const schema = 'CREATE TABLE ledger (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT, revision TEXT NOT NULL, legacy_revision TEXT NOT NULL) STRICT';
+  let db = new DatabaseSync(`${file}.sqlite`); db.exec(`${schema}; PRAGMA application_id=1296454472; PRAGMA user_version=1`);
+  db.prepare('INSERT INTO ledger VALUES(1,?,?,?)').run(legacy, revision, revision); db.close(); await chmod(`${file}.sqlite`, 0o600);
+  assert.deepEqual(await store.load(), { value: 'current single row' });
+  await assert.rejects(store.save({ value: 'must roll back' }, { bad: { value: { text: 'x'.repeat(2_000_001) }, pending: true, bindingId: 'binding' } }), FeishuStoreError);
+  db = new DatabaseSync(`${file}.sqlite`);
+  try { assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, 1); assert.equal(db.prepare('SELECT value FROM ledger').get()!.value, legacy); } finally { db.close(); }
+  await store.save({ value: 'split current row' }, { saved: { value: { status: 'unknown', uuid: 'permanent-identity' }, pending: false, bindingId: 'binding' } });
+  assert.deepEqual(await store.loadReceipt('saved'), { status: 'unknown', uuid: 'permanent-identity' }); assert.equal(await readFile(file, 'utf8'), legacy);
+  const current = new FeishuPrivateStore(file, source); assert.deepEqual(await current.load(), { value: 'split current row' });
+  db = new DatabaseSync(`${file}.sqlite`); try { assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, 2); } finally { db.close(); }
 });

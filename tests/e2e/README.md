@@ -54,3 +54,6 @@ UI. One click must add 50 visible messages with one POST for this sample. It
 records real driver connection counts, request durations and desktop/narrow
 screenshots in `test-results/pagination-real/`. No live model or account is used;
 missing database/browser support fails the gate rather than substituting mocks.
+The far-quote case verifies the stretch from the located message through the
+newest page, then explicitly reads the separate older-history frontier before
+asserting that every seeded message is present exactly once.

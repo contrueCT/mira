@@ -366,6 +366,77 @@ test('provider usage alone triggers automatic compaction even when chars/4 says 
   assert.equal(summaries, 1, 'reported 7,010 of 7,680 input tokens crosses the 80% threshold');
 });
 
+test('8K Mira requests count a prepared prompt once across time updates and runtime restart', async () => {
+  const writer = new MemoryWriter(); let calls = 0; let tick = 0; let memoryLoads = 0;
+  const miraPrompt = { ...prompt, now: () => new Date(1_000 + tick++), loadMemory: async () => { memoryLoads++; return 'Frozen Memory'; } };
+  const selected = { ...model, contextWindow: 8_192 };
+  const stream: PiRuntimeOptions['streamFn'] = (_model, context) => {
+    calls++;
+    const measured = estimateRequestTokens(context.messages, [], selected);
+    assert.ok(measured < 6_500, `short requests fit the 8K model, got ${measured}`);
+    return streamOf({ ...assistant('hello'), usage: { input: measured, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: measured + 2,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
+  };
+  const instance = runtime(writer, stream, { model: selected, miraPrompt });
+  await instance.run(input('one'));
+  await instance.run(input('two'));
+  await runtime(writer, stream, { model: selected, miraPrompt }).run(input('three after restart'));
+  assert.equal(calls, 3); assert.equal(memoryLoads, 1, 'request budget recovery keeps the frozen Memory snapshot');
+});
+
+test('usage source mapping survives an omitted recovered tool-only assistant without replay', async () => {
+  const writer = new MemoryWriter(); let calls = 0; let effects = 0; let tick = 0;
+  const miraPrompt = { ...prompt, now: () => new Date(1_000 + tick++) };
+  const tools = [effectTool(async () => { effects++; throw Error('Synthetic receipt lost'); })];
+  const stream: PiRuntimeOptions['streamFn'] = (_model, context) => {
+    calls++;
+    assert.ok(context.messages.every(message => message.role !== 'assistant' || message.content.length > 0));
+    if (calls === 1) return streamOf(toolCalls('unknown-budget-effect'));
+    const measured = estimateRequestTokens(context.messages, tools, model);
+    return streamOf({ ...assistant('Unknown effect acknowledged'), usage: { input: measured, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: measured + 2,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
+  };
+  await runtime(writer, stream, { miraPrompt, tools }).run(input('Do the synthetic operation'));
+  const state = await runtime(writer, stream, { miraPrompt, tools }).run(input('Follow up after the unknown effect'));
+  assert.equal(calls, 3); assert.equal(effects, 1); assert.equal(state.recovery.operations.length, 1);
+});
+
+for (const change of ['environment', 'tools'] as const) test(`provider anchor still accounts for genuine ${change} system growth after prompt replacement`, async () => {
+  const writer = new MemoryWriter(); let calls = 0; let tick = 0; let grown = false;
+  const miraPrompt = { ...prompt, now: () => new Date(1_000 + tick++) };
+  const selected = { ...model, contextWindow: 16_384 };
+  const registry = () => grown && change === 'tools' ? [{ ...effectTool(async () => result), description: 'Added tool metadata '.repeat(500) }] : [];
+  const stream: PiRuntimeOptions['streamFn'] = () => {
+    calls++;
+    return streamOf({ ...assistant('hello'), usage: { input: 13_000, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 13_002,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
+  };
+  await runtime(writer, stream, { model: selected, miraPrompt, prepareTools: async () => registry(), autoCompaction: disabled }).run(input('one'));
+  grown = true;
+  if (change === 'environment') miraPrompt.environmentContext += 'Added environment context '.repeat(500);
+  await assert.rejects(runtime(writer, stream, { model: selected, miraPrompt, prepareTools: async () => registry(), autoCompaction: disabled }).run(input('two')), /input budget/);
+  assert.equal(calls, 1, 'real growth is checked before dispatch even when the full-request heuristic alone fits');
+});
+
+test('retained pre-checkpoint usage cannot anchor the compacted request with refreshed Memory', async () => {
+  const writer = new MemoryWriter(); let memory = 'OLD_MEMORY';
+  const miraPrompt = { ...prompt, loadMemory: async () => memory };
+  const highUsage = { input: 30_000, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 30_002,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  await runtime(writer, () => streamOf({ ...assistant('Kept answer'), usage: highUsage }), { model: largeModel, miraPrompt, autoCompaction: disabled }).run(input('Kept question'));
+  memory = 'NEW_MEMORY '.repeat(100);
+  await runtime(writer, () => streamOf(assistant('Checkpoint summary')), { model: largeModel, miraPrompt, autoCompaction: disabled }).compact({ keepRecentTokens: 100 });
+  let calls = 0;
+  await runtime(writer, (_model, context) => {
+    calls++; assert.match(systemText(context), /NEW_MEMORY/);
+    return streamOf({ ...assistant('After checkpoint'), usage: { ...highUsage, input: 13_000, totalTokens: 13_002 } });
+  }, { model: memoryModel, miraPrompt, autoCompaction: disabled }).run(input('Continue after compaction'));
+  assert.equal(calls, 1, 'discard old provider usage rather than reject a request that fits after compaction');
+  miraPrompt.environmentContext += 'Post-checkpoint environment growth '.repeat(400);
+  await assert.rejects(runtime(writer, () => { calls++; return streamOf(assistant()); }, { model: memoryModel, miraPrompt, autoCompaction: disabled }).run(input('New request')), /input budget/);
+  assert.equal(calls, 1, 'a response after the checkpoint becomes a valid anchor and still enforces subsequent growth');
+});
+
 test('invalid automatic compaction settings fail before any persistence or provider request', () => {
   const invalid: NonNullable<PiRuntimeOptions['autoCompaction']>[] = [
     { threshold: NaN }, { threshold: Infinity }, { threshold: 0 }, { threshold: -1 }, { threshold: 1.01 },

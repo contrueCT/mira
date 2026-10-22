@@ -109,10 +109,16 @@ function BrowserSession({ browser, switcher, phone, standalone, shell, onClose, 
   const composingRef = useRef(false);
   const pressedRef = useRef(false);
   const pressedButtonRef = useRef(0);
+  const pressedClickCountRef = useRef(1);
+  const mouseButtonsRef = useRef(new Map<number, number>());
+  const mousePointerIdRef = useRef<number | null>(null);
   const compositionCommitRef = useRef<string | null>(null);
   const renderedRef = useRef<{ epoch: number; generation: number; seq: number; width: number; height: number } | null>(null);
   const generationRef = useRef(-1);
   const aliveRef = useRef(true);
+  // HTTP control requests outlive an individual stream (reopen closes it before
+  // returning). Only unmounting this keyed browser session invalidates them.
+  useLayoutEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false; }; }, []);
   // Epoch before the user's own takeover/return; cleared once a stream for the
   // newer epoch renders (it survived) or after one automatic reconnect.
   const followEpochRef = useRef<number | null>(null);
@@ -136,7 +142,7 @@ function BrowserSession({ browser, switcher, phone, standalone, shell, onClose, 
   const navErrorRef = useRef(false);
   const navigation = useBrowserNavigation();
   const navigationRef = useRef(navigation); navigationRef.current = navigation;
-  const clearInput = () => { pressedRef.current = false; if (bridgeRef.current) bridgeRef.current.value = ''; composingRef.current = false; compositionCommitRef.current = null; };
+  const clearInput = () => { pressedRef.current = false; mouseButtonsRef.current.clear(); if (bridgeRef.current) bridgeRef.current.value = ''; composingRef.current = false; compositionCommitRef.current = null; };
   // Cleanup-lock and closed browsers never mint tickets. An outcome lock stays
   // viewable and read-only; entering it changes the epoch, so reconnect then.
   const unavailable = browser.state === 'closed' || (browser.state === 'unknown' && browser.lock !== 'outcome');
@@ -147,7 +153,7 @@ function BrowserSession({ browser, switcher, phone, standalone, shell, onClose, 
     let socket: WebSocket | null = null;
     let serial = 0;
     let stopped = false;
-    aliveRef.current = true; generationRef.current = -1;
+    generationRef.current = -1;
     readyRef.current = false; renderedRef.current = null; setPhase('connecting'); setHasFrame(false); clearInput();
     navigationRef.current.reset(); navPendingRef.current = false; setNavPending(false); navErrorRef.current = false;
     const invalidate = () => { serial += 1; readyRef.current = false; renderedRef.current = null; setHasFrame(false); clearInput(); canvasRef.current?.getContext('2d')?.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height); };
@@ -211,7 +217,7 @@ function BrowserSession({ browser, switcher, phone, standalone, shell, onClose, 
       socket.onclose = () => { if (stopped) return; invalidate(); setConnected(false); if (!navErrorRef.current) report(STREAM_CLOSED); };
       socket.onerror = () => { if (!stopped) report('暂时无法连接浏览器画面。'); };
     }).catch(() => { if (!stopped) { setPhase('closed'); report('暂时无法连接浏览器画面，请重试。'); } });
-    return () => { stopped = true; aliveRef.current = false; controller.abort(); invalidate(); socket?.close(); socketRef.current = null; };
+    return () => { stopped = true; controller.abort(); invalidate(); socket?.close(); socketRef.current = null; };
   }, [browser.id, connectionVersion, unavailable, lockEpoch]);
 
   useLayoutEffect(() => { readyRef.current = false; renderedRef.current = null; clearInput(); }, [browser.epoch, browser.state]);
@@ -248,7 +254,7 @@ function BrowserSession({ browser, switcher, phone, standalone, shell, onClose, 
     else if (value) send({ type: 'input_text', text: value });
     clearInput();
   };
-  const mouse = (event: PointerSample, eventType: string) => {
+  const mouse = (event: PointerSample, eventType: string, button = eventType === 'mouseReleased' ? pressedButtonRef.current : event.button, clickCount = pressedClickCountRef.current) => {
     const canvas = canvasRef.current; if (!canvas) return;
     const rect = canvas.getBoundingClientRect(); if (!rect.width || !rect.height) return;
     if (eventType === 'mousePressed' && browserRef.current.state === 'human') bridgeRef.current?.focus({ preventScroll: true });
@@ -257,14 +263,20 @@ function BrowserSession({ browser, switcher, phone, standalone, shell, onClose, 
     // at the nearest viewport edge rather than sending invalid coordinates.
     const x = Math.max(0, Math.min(width, Math.round((event.clientX - rect.left) * width / rect.width)));
     const y = Math.max(0, Math.min(height, Math.round((event.clientY - rect.top) * height / rect.height)));
-    send({ type: 'input_mouse', eventType, x, y, button: ['left', 'middle', 'right'][eventType === 'mouseReleased' ? pressedButtonRef.current : event.button] ?? 'none', clickCount: eventType === 'mousePressed' ? Math.min(2, Math.max(1, event.detail)) : 0, modifiers: modifiers(event) });
+    send({ type: 'input_mouse', eventType, x, y, button: ['left', 'middle', 'right'][button] ?? 'none', clickCount: eventType === 'mouseMoved' ? 0 : clickCount, modifiers: modifiers(event) });
   };
   const releasePointer = (event: PointerSample) => {
     if (!pressedRef.current) return; pressedRef.current = false; mouse(event, 'mouseReleased');
   };
+  const releaseMouse = (event: PointerSample) => {
+    const clickCount = mouseButtonsRef.current.get(event.button);
+    if (clickCount === undefined) return;
+    mouseButtonsRef.current.delete(event.button);
+    mouse(event, 'mouseReleased', event.button, clickCount);
+  };
   // Cancellation/capture loss does not mean the user released the button.
   // Keep the remote press intact so return stays held until an explicit release.
-  const abandonPointer = () => { pressedRef.current = false; };
+  const abandonPointer = () => { pressedRef.current = false; mouseButtonsRef.current.clear(); };
   const key = (event: KeyboardEvent<HTMLTextAreaElement>, eventType: string) => {
     if (event.nativeEvent.isComposing || composingRef.current || event.key === 'Process') return;
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); clearInput(); bridgeRef.current?.blur(); return; }
@@ -352,10 +364,21 @@ function BrowserSession({ browser, switcher, phone, standalone, shell, onClose, 
   const press = (value: PointerSample, pointerId: number, target: HTMLCanvasElement) => {
     if (browserRef.current.state !== 'human' || !readyRef.current) return;
     pressedRef.current = true; pressedButtonRef.current = value.button;
+    pressedClickCountRef.current = Math.min(2, Math.max(1, value.detail));
     try { target.setPointerCapture(pointerId); } catch { /* pointer already gone */ }
     mouse(value, 'mousePressed');
   };
+  const pressMouse = (value: PointerSample, target: HTMLCanvasElement) => {
+    if (browserRef.current.state !== 'human' || !readyRef.current || mousePointerIdRef.current === null) return;
+    const clickCount = Math.min(2, Math.max(1, value.detail));
+    mouseButtonsRef.current.set(value.button, clickCount);
+    try { target.setPointerCapture(mousePointerIdRef.current); } catch { /* pointer already gone */ }
+    mouse(value, 'mousePressed', value.button, clickCount);
+  };
   const pointerDown = (event: PointerEvent<HTMLCanvasElement>) => {
+    // Chromium pointer events have detail=0. Keep the native mouse event so its
+    // click count uses the browser's own double-click timing and distance rules.
+    if (event.pointerType === 'mouse') { mousePointerIdRef.current = event.pointerId; return; }
     event.preventDefault();
     if (zoomed && event.pointerType === 'touch') {
       touchesRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
@@ -376,6 +399,13 @@ function BrowserSession({ browser, switcher, phone, standalone, shell, onClose, 
     mouse(sample(event), 'mouseMoved');
   };
   const pointerUp = (event: PointerEvent<HTMLCanvasElement>) => {
+    // Mouse pointerup only fires for the final button. Release it before native
+    // capture loss, then let mouseup release intermediate buttons (or no-op).
+    if (event.pointerType === 'mouse') {
+      releaseMouse(sample(event));
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+      return;
+    }
     const wasTouch = touchesRef.current.delete(event.pointerId);
     if (panRef.current) { if (touchesRef.current.size === 0) panRef.current = null; return; }
     if (wasTouch && pendingRef.current?.pointerId === event.pointerId) { const pending = pendingRef.current; clearTimeout(pending.timer); pendingRef.current = null; press(pending.sample, event.pointerId, event.currentTarget); }
@@ -458,7 +488,7 @@ function BrowserSession({ browser, switcher, phone, standalone, shell, onClose, 
       <div className={`bp-screen is-${mode}${hasFrame ? '' : ' is-empty'}${offline || unavailable ? ' is-hidden' : ''}${hidden ? ' is-paused' : ''}`} style={screenStyle}>
         <div className="bp-fx" aria-hidden="true"><i className="bp-glow"><b /></i><i className="bp-ring"><b /></i></div>
         <div className="bp-clip browser-viewport">
-          <canvas ref={canvasRef} aria-label="远程浏览器画面" className={hasFrame ? '' : 'browser-canvas-empty'} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerCancel} onLostPointerCapture={abandonPointer} onContextMenu={event => event.preventDefault()} />
+          <canvas ref={canvasRef} aria-label="远程浏览器画面" className={hasFrame ? '' : 'browser-canvas-empty'} onPointerDown={pointerDown} onMouseDown={event => { event.preventDefault(); pressMouse(sample(event), event.currentTarget); }} onMouseUp={event => releaseMouse(sample(event))} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerCancel} onLostPointerCapture={abandonPointer} onContextMenu={event => event.preventDefault()} />
           {placeholder && <span className="bp-placeholder">{placeholder}</span>}
           <textarea ref={bridgeRef} className="browser-input-bridge" aria-label="浏览器键盘输入，按 Escape 离开" autoComplete="off" autoCapitalize="off" spellCheck={false} disabled={browser.state !== 'human' || !connected || !hasFrame} onFocus={() => setKeyboard(true)} onKeyDown={event => key(event, 'keyDown')} onKeyUp={event => key(event, 'keyUp')} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={event => { composingRef.current = false; text(event.data); compositionCommitRef.current = event.data; setTimeout(() => { compositionCommitRef.current = null; }, 0); }} onInput={event => {
             if (composingRef.current) return;

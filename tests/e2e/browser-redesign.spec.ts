@@ -198,8 +198,8 @@ test('desktop: held disconnected banner, empty state and browser switcher listbo
   await expect(page.getByRole('dialog', { name: '浏览器' })).toBeVisible();
 });
 
-test('phone: fullscreen sheet, read-only tab rows, bottom action bar, tab sheet, 2× zoom and two-finger pan', async ({ browser }) => {
-  const context = await browser.newContext({ baseURL: 'http://127.0.0.1:3211', viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
+test('phone: fullscreen sheet, read-only tab rows, bottom action bar, tab sheet, 2× zoom and two-finger pan', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ baseURL: baseURL!, viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
   const page = await context.newPage();
   const fx = await fixture(page, [agent]);
   const dialog = await open(page);
@@ -273,8 +273,8 @@ test('desktop: takeover of a locked browser is 409, shows the locked UI, and foc
   await shot(page, 'fix-1-desktop-locked-takeover-409');
 });
 
-test('phone: zoom hint and button follow whether a frame is available', async ({ browser }) => {
-  const context = await browser.newContext({ baseURL: 'http://127.0.0.1:3211', viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
+test('phone: zoom hint and button follow whether a frame is available', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ baseURL: baseURL!, viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
   const page = await context.newPage();
   const fx = await fixture(page, [agent]);
   await open(page);
@@ -297,8 +297,8 @@ test('phone: zoom hint and button follow whether a frame is available', async ({
   await context.close();
 });
 
-test('reduced motion stops the sweep but keeps a static highlight', async ({ browser }) => {
-  const context = await browser.newContext({ baseURL: 'http://127.0.0.1:3211', viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce' });
+test('reduced motion stops the sweep but keeps a static highlight', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ baseURL: baseURL!, viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce' });
   const page = await context.newPage();
   await fixture(page, [agent]);
   await open(page);

@@ -113,8 +113,17 @@ test('real PG: a far quoted message is found in one lookup, focused, and the ski
     await page.screenshot({ path: testInfo.outputPath('far-quote.png') });
     // The unread messages between the located window and the newest page remain reachable.
     const fill = page.getByRole('button', { name: '补齐尚未读取的消息' });
-    for (let clicks = 0; clicks < 40 && await fill.count(); clicks++) { await fill.click(); await expect(fill).not.toHaveText('正在读取…').catch(() => {}); }
+    const historyButton = page.locator('.history-controls button');
+    const settled = () => expect.poll(async () => !await historyButton.count() || await historyButton.isEnabled()).toBe(true);
+    for (let clicks = 0; clicks < 40 && await fill.count(); clicks++) { await fill.click(); await settled(); }
     await expect(fill).toHaveCount(0);
+    const throughQuote = await page.locator('[data-message-id]').evaluateAll(elements => elements.map(element => element.getAttribute('data-message-id')));
+    expect(fixture.ids.slice(3).filter(id => !throughQuote.includes(id))).toEqual([]);
+    // Messages before the quote are a separate older-history frontier. Read it
+    // explicitly before requiring the entire seeded history to be present.
+    const earlier = page.getByRole('button', { name: '查看更早的消息' });
+    for (let clicks = 0; clicks < 40 && await earlier.count(); clicks++) { await earlier.click(); await settled(); }
+    await expect(historyButton).toHaveCount(0);
     const shown = await page.locator('[data-message-id]').evaluateAll(elements => elements.map(element => element.getAttribute('data-message-id')));
     expect(new Set(shown).size).toBe(shown.length);
     // Every seeded message plus the reply (and any synthetic answer to it) is shown exactly once.

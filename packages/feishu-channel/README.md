@@ -89,7 +89,20 @@ prerequisites still require an authorized real-tenant check; denial fails closed
 ## Conversation and delivery
 
 - Inbound: only the paired tenant + user open ID + private chat, from a human sender.
-  Full source IDs, original timestamp, text and quote IDs are preserved. Other senders,
+  Full source IDs, original timestamp, text and quote IDs are preserved in the Event payload.
+  Empty, oversized or forbidden-control display text uses an explicit bounded preview;
+  truncation ends at a Unicode code-point boundary. The full original text remains in
+  `payload.text`. NUL and lone UTF-16 surrogates cannot be materialized by PostgreSQL
+  JSON field extraction. Only these texts use `textEncoding: "json-string"` and
+  `payload.text = JSON.stringify(originalText)`; `JSON.parse(payload.text)` recovers
+  the exact original JavaScript string. Ordinary text remains unchanged. The display
+  preview is well-formed Unicode, escaping forbidden controls and visibly replacing
+  unpaired surrogates; full fidelity remains in the explicitly encoded payload.
+  This repairs pending input that Host has not accepted. Already committed invalid
+  Unicode in authoritative History is preserved and requires explicit reconciliation;
+  the extension never replaces an existing Event or changes its ID to bypass a conflict.
+  Existing current-format pending inbox entries apply both encoding and projection
+  before retrying Host acceptance, retaining their original stable Event/Wake IDs. Other senders,
   bots and groups do not wake Mira. Unsupported media is an explicit text notice;
   this version does not fetch media or implement voice.
 - Startup replay and newly arriving messages share the same state-write queue.
@@ -106,8 +119,12 @@ prerequisites still require an authorized real-tenant check; denial fails closed
 - The SDK refreshes tenant tokens normally. Effectful message create/reply calls have no
   automatic retry, reply fallback or Channel message splitting. Binding/reconnect never sends a message. Actual ordinary send outcomes are
   reported by the send tool and durable receipts.
-- The private JSON ledger has a 2 MB bound. Capacity/storage failure stops intake or
-  further sends with a visible failure rather than dropping queued evidence. Source
+- The active owner/inbox JSON row and each per-call receipt have separate 2 MB bounds.
+  A permanent receipt row retains call identity, digest, piece UUID/status and message IDs.
+  Published piece bodies are removed only after durable Host acceptance; pending
+  publication bodies and unknown outcomes remain. Ordinary completed sends therefore
+  cannot fill the owner/inbox row. Capacity/storage failure remains visible and preserves
+  queued evidence; the database grows with retained call identities and pending evidence. Source
   code, Memory and artifact folders do not hold channel state.
 
 ## SDK reliability boundary
@@ -122,9 +139,10 @@ redelivery is still not guaranteed. Repair storage and reconcile missing message
 Official reconnect lifecycle callback order is covered explicitly by synthetic tests.
 
 Credentials use the host's private store. The extension owns an ordinary private
-SQLite file containing one JSON row for owner binding, pending inbox and delivery receipts. Trusted extension
+SQLite file containing the owner/inbox row and separate per-call delivery receipts. Trusted extension
 code runs as the host OS user; these facilities are not a sandbox. Unbind clears local
-credentials/binding; it does **not** delete the remote app or revoke tenant grants.
+credentials/binding and retains historical call receipts. Pending publications belong to
+their original binding and are not automatically published after unbind/re-pairing; it does **not** delete the remote app or revoke tenant grants.
 Disable retains local state for explicit re-enable. Remove follows generic uninstall
 credential cleanup; retained historical private files are not silently deleted.
 
@@ -134,7 +152,17 @@ credential cleanup; retained historical private files are not silently deleted.
   responses, callback ordering, minimal registration options, no effectful replay.
 - `tests/unit/feishu-channel.test.mts`: real private files + synthetic SDK, explicit
   pairing, identity rejection, durable replay, unknown outcomes and activation cleanup.
-- `tests/unit/feishu-store.test.mts`: private modes, symlink/hardlink and path checks.
+- `tests/unit/feishu-store.test.mts`: private modes, symlink/hardlink and path checks,
+  cross-process CAS, crash recovery, atomic schema upgrade/rollback and per-call bounds.
+- `tests/unit/feishu-dialogue.test.mts`: actual Cordis Host + SQLite, repeated 100 KB
+  sends, pending display/unknown preservation, restart and binding isolation, plus
+  oversized/control/Unicode inbound previews and current pending inbox repair.
+- `tests/recovery/feishu-inbound.test.mts`: actual Cordis Host → SQLite → PostgreSQL
+  Event/Wake/History, source-field extraction, restart deduplication and pending repair.
+  NUL, lone high/low surrogates, ordinary emoji and oversized text are retained; later
+  ordinary messages, History reads/search/page and Dreaming selection remain healthy.
+  This requires the explicit isolated localhost `mira_test` database like other
+  recovery tests, and still performs no live tenant or model calls.
 - `tests/unit/extension-package-preparation.test.mts`: ordinary dependency preparation.
 - `tests/unit/feishu-generated-install.test.mts`: real prepare/stage/hash/test/install/
   activate/disable/re-enable/remove on the actual shipped package and dependency closure.
@@ -184,27 +212,42 @@ storage must first be repaired rather than overwritten.
 
 ## Atomic private ledger and preview upgrade
 
-Node 24's built-in `node:sqlite` stores the existing ledger as one JSON row with its
-content revision in `feishu-state.json.sqlite`; no npm/native system dependency,
-ORM or core storage framework is added. Short `BEGIN IMMEDIATE` transactions check
-and replace that revision atomically across processes. SQLite rollback journaling
-recovers interrupted writes; no PID/timeout lock stealing or manual orphan-lock
-cleanup is used. Unknown schema is rejected without replacing its evidence.
+Node 24's built-in `node:sqlite` stores the owner/inbox ledger and one receipt row per
+call ID in `feishu-state.json.sqlite`. Schema version 2 fixes the earlier single-row
+capacity defect; it adds no npm/native dependency, ORM or core storage framework.
+Short `BEGIN IMMEDIATE` transactions compare one installation-wide revision for
+both ledger and receipt changes. Each value has its own digest; SQLite rollback
+journaling recovers interrupted writes. There is no PID/timeout lock stealing or
+manual orphan-lock cleanup. Unknown schema is rejected without replacing evidence.
 
-The JSON payload remains bounded to 2 MB. Transactions use synchronous SQLite calls
-with a 100 ms busy timeout, only for this single local row; no network or awaited
-work runs inside them. Disk I/O can still block the event loop. Busy/conflict errors
-are explicit failures, never a reason to repeat an unknown send. The existing
-per-activation state queue and durable unknown-before-HTTP ordering are unchanged.
+The active JSON row and each individual receipt remain bounded to 2 MB. Normal
+send lookup and publication recovery read individual indexed receipts, without
+loading all delivery history into memory or rewriting it. A binding-scoped pending
+index excludes retired bindings. Retained identities and unresolved/pending evidence
+can grow the database beyond the earlier 8 MB whole-file cap; disk exhaustion still
+fails visibly and never authorizes replay. Published bodies are already in durable
+Host Event history before they are compacted out of receipts. Unknown and
+not-started pieces are retained and never resumed automatically.
 
-For an earlier preview installation, stop **all old Mira processes using that
-installation before upgrading**. With no SQLite state, `load()` reads the original
-`feishu-state.json`; normal channel validation still runs before the first write.
-The first successful `save()` initializes and updates the SQLite row in one
-transaction. Concurrent new-version migrations use the same transaction CAS. The
-original JSON is retained byte-for-byte as evidence, not deleted or overwritten.
-Every later access checks its original revision and fails closed if it changes.
-This detects old-version writes; it does not isolate a still-running old binary
-that writes JSON after that check. Running old and new versions together or
-reverting to the old binary is unsupported: stop them and reconcile both preserved
-files rather than deleting evidence or replaying uncertain deliveries.
+Transactions use synchronous SQLite calls with a 100 ms busy timeout; no network or
+awaited work runs inside them. Disk I/O can still block the event loop. Busy/conflict
+errors are explicit failures, never a reason to repeat an unknown send. Inbound
+writes and receipt updates share the same CAS, including across processes.
+
+Stop **all old Mira processes using this installation before upgrading**. A current
+version-1 SQLite ledger is read and validated first. Its existing `sends` entries are
+split into per-call rows in the same transaction that clears `sends` from the active
+row and advances schema/revision. Failure rolls the complete migration back; an old
+binary rejects schema 2 rather than overwriting newer evidence. Unknown receipts,
+piece identities and unpublished Events survive the split; already-published bodies
+are compacted. This is a storage repair for the current private ledger, not a generic
+legacy-data compatibility framework.
+
+With no SQLite state, `load()` reads the existing `feishu-state.json`; normal channel
+validation runs before writing. The first successful `save()` initializes the SQLite
+state in one transaction. The original JSON is retained byte-for-byte as evidence,
+not deleted or overwritten. Every later access checks its original revision and
+fails closed if it changes. This detects old-version writes; it does not isolate a
+still-running old binary that writes JSON after that check. Running old and new
+versions together or reverting to the old binary is unsupported: stop them and
+reconcile preserved evidence rather than deleting it or replaying uncertain sends.

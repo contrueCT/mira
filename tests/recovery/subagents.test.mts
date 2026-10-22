@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import { getCurrentSystemMessage, getSystemMessageText } from '@earendil-works/pi-ai';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { PiDurableRuntime, encodeEntry, messageEntry, jsonValue } from '@mira/runtime-pi';
+import { WakeLoop } from '@mira/life';
 import { SubagentManager, createSubagentTools } from '../../apps/server/src/subagents.ts';
 import { LocalWebService } from '@mira/server';
 import { writeWakeInput } from '@mira/workspace';
@@ -15,6 +16,46 @@ import { assistant, streamOf, model, input, deferred, seed, effectTool, result }
 
 async function until(check: () => boolean | Promise<boolean>, limit = 10_000) { const end = Date.now() + limit; while (!await check()) { if (Date.now() > end) throw Error('Condition did not settle'); await new Promise(resolve => setTimeout(resolve, 10)); } }
 const childContext = (messages: Parameters<StreamFn>[1]['messages']) => { const system = getCurrentSystemMessage(messages); return !!system && getSystemMessageText(system).includes('task-scoped worker'); };
+
+test('PostgreSQL long Unicode child completion survives History, parent Wake consumption and Dreaming', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-child-unicode-')); let manager: SubagentManager | undefined;
+  try {
+    const writer = await db.acquire('unicode-parent'); await writer.initializeDreaming();
+    const source = 'x'.repeat(3_999) + '😀' + 'x'.repeat(20_000);
+    const failures: unknown[] = [];
+    const overflow = (runId: string, content: string) => writeWakeInput({ rootDirectory: path.join(root, 'spool'), sourceDirectory: process.cwd(), runId, content });
+    manager = new SubagentManager({ writer, acquire: id => db.acquire(id), tools: () => [], writeOverflowInput: overflow,
+      onCompletion: () => {}, onFailure: error => failures.push(error) });
+    await manager.initialize(); let requests = 0;
+    const transport = { model: { ...model, contextWindow: 65_536 }, streamFn: ((_model, context) => {
+      if (childContext(context.messages)) return streamOf(assistant(source));
+      return streamOf(++requests === 1 ? { ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'unicode-child', name: 'subagent_spawn', arguments: { task: 'Return the synthetic long Unicode result.', fork: 'none' } }] } : assistant('Delegated.'));
+    }) as StreamFn };
+    await new PiDurableRuntime({ writer, ...transport, tools: createSubagentTools(manager, transport), writeOverflowInput: overflow }).run(input('Delegate synthetic Unicode output.'));
+    await until(() => !manager!.hasActiveWork);
+    const child = (await writer.listSubagents()).children[0]!;
+    const turn = (await writer.getSubagent(child.id))!.turns[0]!;
+    assert.equal(turn.status, 'completed'); assert.ok(turn.result!.text.isWellFormed());
+    assert.ok(Buffer.byteLength(turn.result!.text) <= 16_384); assert.equal(await readFile(turn.result!.fullResultPath!, 'utf8'), source);
+    const event = (await db.admin.query<{ history_id: string }>("SELECT history_id FROM life_events WHERE mira_id=$1 AND event->>'type'='subagent.result'", [writer.miraId])).rows[0]!;
+    const history = db.store.history(writer.miraId);
+    assert.ok((await history.page({ kinds: ['event'] })).hits.length > 0);
+    const original = await history.read({ id: event.history_id });
+    assert.ok(JSON.stringify(original).includes('😀'), 'History reads the complete preview character through PostgreSQL JSON functions');
+    await writer.receive({ id: 'unicode-followup', type: 'user.message', source: 'user', occurredAt: new Date().toISOString(), payload: { text: 'Review the delegated result.' } },
+      { id: 'unicode-followup-wake', reason: 'Synthetic user followup' });
+    let consumed = 0;
+    await new WakeLoop({ writer, createRuntime: () => new PiDurableRuntime({ writer, model: transport.model,
+      streamFn: (_model, context) => { consumed++; assert.ok(JSON.stringify(context.messages).includes('😀')); return streamOf(assistant('Reviewed delegated result.')); },
+      writeOverflowInput: overflow }), writeOverflowInput: overflow }).drain();
+    assert.equal(consumed, 1, 'completion Wake is consumed once');
+    await db.admin.query("UPDATE dreaming_progress SET last_triggered_at = clock_timestamp() - interval '1 hour', idle_since = clock_timestamp() - interval '1 minute' WHERE mira_id=$1", [writer.miraId]);
+    const dreaming = await writer.requestDreaming({ idleMs: 1, intervalMs: 1, minCompactions: 1, instruction: 'Synthetic Memory check' });
+    assert.equal(dreaming.status, 'inserted', 'Dreaming can inspect the Unicode completion Event and enqueue a fresh ordinary Wake');
+    assert.equal(writer.signal.aborted, false, 'valid Unicode completion cannot poison the parent writer during Dreaming');
+    assert.deepEqual(failures, []);
+  } finally { await manager?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
 
 test('PostgreSQL actual Pi spawn dedupe, terminal receipt atomicity, followup and independent transcript recovery', { timeout: 30_000 }, async () => {
   const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-subagent-pg-')); let manager: SubagentManager | undefined;

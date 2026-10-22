@@ -66,11 +66,46 @@ install/activate 处理。无自动安装、catalog、全 node_modules 打包或
 
 ## 私有记录原子更新
 
-插件使用 Node 24 内置 SQLite 的单表单行保存既有 JSON ledger 和 revision，短事务
-CAS 防止 PostgreSQL ownership 丢失交接时仍存活的旧插件回调与新进程覆盖彼此证据。
-同步操作仅限 2 MB 内单行、本地短事务，busy timeout 为 100 ms；不在事务中联网，
-不新增 npm 依赖、通用存储框架或供应商核心分支。进程中断由 SQLite journal 恢复，
-busy/conflict 不自动重发消息。早期预览 JSON 首次成功 save 时幂等导入且保留原字节。
-升级必须停止所有旧版本实例；legacy revision 检查可检测继续写旧 JSON，但不能隔离
-仍在运行的旧二进制。未知 schema/失败迁移不覆盖原证据。Host 在 writer abort 时未
-统一停止扩展的生命周期问题另行跟踪，本 PR 不扩大该通用生命周期范围。
+插件使用 Node 24 内置 SQLite，在同一私有数据库保存 owner/inbox 主行与按 callId
+分行的发送 receipt。schema 2 修复原单行累计保存全部已发送正文导致的容量故障：
+每个自然发送查询只读取对应 receipt，待发布事件经 binding/pending 索引逐行补投，
+不把全部发送历史装入内存。主行与单个 receipt 各自保持 2 MB 限制；全库随永久
+调用身份与未决证据增长，取消旧 8 MB 整库限制。磁盘满仍明确失败，保留未决记录。
+
+所有主行与 receipt 更新共用一个安装级 revision CAS，防止 ownership 交接后的旧
+回调覆盖新证据；每份 JSON 另存内容 digest。短同步事务仍使用 100 ms busy timeout，
+不在事务内联网，不新增 npm 依赖、通用存储框架或供应商核心分支。SQLite journal
+恢复进程中断，busy/conflict 不自动重发。每段确认发送先持久保存完整待发布 Event，
+Host 持久接收后才删除 receipt 中的 publication 正文；uuid、状态、message ID、
+内容摘要和 callId 永久保留。unknown、未开始尾段与未发布正文不因容量而删除。
+解绑保留旧调用证据；旧 binding 的待发布记录不会被新 binding 自动补投。
+
+当前有效 schema 1 台账先校验再迁移：旧 sends 拆分、主行移除 sends 内容、schema
+与全局 revision 更新处于同一事务，失败整体回滚。schema 2 使旧二进制拒绝继续写入。
+早期预览 JSON 原字节仍保留，每次访问核对 legacy revision。升级须停止所有旧实例，
+legacy 检查不能隔离仍在运行的旧二进制；未知 schema/失败迁移不覆盖证据。
+
+入站保留完整原文的可逆表示。普通正文仍直接存于 `payload.text`；只有 NUL 或
+孤立 UTF-16 surrogate 使用 `textEncoding: "json-string"` 与 `text: JSON.stringify(raw)`，
+读取时 `JSON.parse(text)` 精确还原。这两类字符串即使可存入 PostgreSQL `json`，
+后续 `event->>'source'` 也会分别报 22P05/22P02，故编码必须先于入队和 Event 接收。
+聊天预览用 well-formed Unicode 显示孤立 surrogate 的替代字符；payload 可逆保留
+原始码元。当前 pending 即使已有合法预览，也检查原始 payload 并补充同一编码。
+只有聊天投影受 Host 的 100000 UTF-16 单元和
+禁控字符边界约束：超限、空正文或含禁控字符时生成明确预览，转义控制字符，并在
+完整码点处截断及提示。当前格式既有 pending inbox 在补投前应用同一投影，保留
+原 Event/Wake 身份、来源和原文，不放宽通用 Host 校验或删除历史。
+这覆盖 Host 尚未接收的待投递输入。旧版若已将非法 Unicode 提交到权威 History，
+本轮不会改写记录或更换 Event ID 来绕过冲突；保留 pending 与原始证据，须人工
+对账后恢复，不能宣称已修复这类既有坏历史。
+
+`feishu-dialogue` 通过真实 Cordis Host 与 SQLite 验证重复大消息、重启/同 callId、
+unknown/outcome 保存失败、当前 schema 迁移、未发布消息补投及 binding 隔离、
+超长/Unicode/控制字符入站与既有 pending 恢复；`feishu-store` 验证逐行容量、
+超过旧整库限制、全局 CAS 与事务迁移回滚。这些仍为合成协议验证，未接真实租户。
+
+`recovery/feishu-inbound.test.mts` 穿过真实 Cordis Host、SQLite、PostgreSQL、
+Event/Wake 和 History，确认 NUL/高低孤立 surrogate 可逆保存、普通emoji/超长预览、
+重启去重及旧 pending 修复；随后普通消息、History read/search/page、来源提取和
+Dreaming selection 均继续可用。测试使用显式 localhost mira_test 独立临时 schema，
+无真实飞书账户或模型调用。

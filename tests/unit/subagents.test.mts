@@ -229,13 +229,15 @@ test('restart marks pending work interrupted without running it; explicit follow
   await f.manager.close();
 });
 
-test('result budget keeps full text in an ordinary file and a bounded completion payload', async () => {
-  const f = fixture(); const text = '结果🌍'.repeat(10_000);
+for (const text of ['结果🌍'.repeat(10_000), 'x'.repeat(3_999) + '😀' + 'x'.repeat(20_000), '😀'.repeat(5_000)]) test('result budget keeps complete Unicode characters in the preview and full text in an ordinary file', async () => {
+  const f = fixture();
   try {
     await f.manager.spawn('long-result', 'Return detailed findings', 'none', transport(() => streamOf(assistant(text))));
     await until(() => f.parent.children[0]?.turns[0]?.status === 'completed');
     const value = f.parent.children[0]!.turns[0]!.result!;
     assert.equal(value.truncated, true); assert.equal(f.spooled[0], text); assert.equal(value.fullResultPath, '/tmp/synthetic-full-result.txt'); assert.ok(Buffer.byteLength(value.text) <= 16_384);
+    assert.ok(value.text.isWellFormed(), 'completion Event must remain valid Unicode for PostgreSQL JSON operations');
+    assert.ok(text.startsWith(value.text.split('\n[Full result')[0]!), 'preview ends at an original complete character');
   } finally { await f.manager.close(); }
 });
 

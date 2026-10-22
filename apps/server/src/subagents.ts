@@ -164,8 +164,7 @@ export class SubagentManager {
     const text = final.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
     if (Buffer.byteLength(text) <= 16_384) return { text, truncated: false, fullResultPath: null, finalRecordId: final.id };
     const full = await this.#options.writeOverflowInput(turn.id, text);
-    let excerpt = text.slice(0, 4_000);
-    while (Buffer.byteLength(excerpt) > 16_000) excerpt = excerpt.slice(0, -1);
+    const excerpt = boundedText(text, 16_000, 4_000);
     return { text: `${excerpt}\n[Full result preserved in the referenced ordinary file.]`, truncated: true, fullResultPath: full.path, finalRecordId: final.id };
   }
   async #run(id: string, abort: AbortSignal): Promise<void> {
@@ -282,10 +281,14 @@ export function createSubagentTools(manager: SubagentManager, transport: Subagen
   ];
 }
 
-function boundedText(text: string, bytes: number): string {
-  let value = text;
-  while (Buffer.byteLength(value) > bytes) value = value.slice(0, -1);
-  return value.toWellFormed();
+function boundedText(text: string, bytes: number, codePoints = Infinity): string {
+  let value = ''; let used = 0; let count = 0;
+  for (const character of text.toWellFormed()) {
+    const size = Buffer.byteLength(character);
+    if (count >= codePoints || used + size > bytes) break;
+    value += character; used += size; count++;
+  }
+  return value;
 }
 /** Only explicit worker-authored public text is accepted. Structural observations
  * never contain model reasoning, request bodies, raw tool arguments or errors. */
