@@ -1,6 +1,102 @@
 import { expect, test } from '@playwright/test';
 import type { WebSocketRoute } from '@playwright/test';
 
+test('native mouse double-click reaches a remote CDP page with matching press/release counts', async ({ page, context }) => {
+  const remote = await context.newPage();
+  await remote.setViewportSize({ width: 1000, height: 600 });
+  await remote.setContent('<button style="position:fixed;inset:0;width:100%;height:100%">Double click target</button><pre id="events">[]</pre><script>const events=[]; for (const type of ["mousedown","mouseup","click","dblclick"]) document.querySelector("button").addEventListener(type,event=>{events.push({type:event.type,detail:event.detail});document.querySelector("#events").textContent=JSON.stringify(events)});</script>');
+  const cdp = await context.newCDPSession(remote);
+  const data = (await remote.screenshot({ type: 'jpeg' })).toString('base64');
+  const status = { id: 'double-click', state: 'human', epoch: 1, ownerLabel: 'Mira', domain: 'example.test' };
+  const received: Record<string, unknown>[] = [];
+  let dispatch = Promise.resolve();
+  let dispatchError: unknown;
+  await page.route('**/api/browser', route => route.fulfill({ json: { browsers: [status] } }));
+  await page.route('**/api/browser/double-click/ticket', route => route.fulfill({ json: { ticket: 'double-click-ticket', epoch: 1 } }));
+  await page.routeWebSocket('**/api/browser/stream', ws => {
+    ws.onMessage(value => {
+      const input = JSON.parse(String(value)) as Record<string, unknown>; received.push(input);
+      if (input.type !== 'input_mouse') return;
+      dispatch = dispatch.then(async () => { await cdp.send('Input.dispatchMouseEvent', {
+        type: input.eventType as 'mousePressed' | 'mouseReleased' | 'mouseMoved',
+        x: Number(input.x), y: Number(input.y), button: input.button as 'none' | 'left' | 'middle' | 'right',
+        clickCount: Number(input.clickCount), modifiers: Number(input.modifiers),
+      }); }).catch(error => { dispatchError = error; });
+    });
+    ws.send(JSON.stringify({ type: 'mira_state', browser: status }));
+    ws.send(JSON.stringify({ type: 'frame', seq: 1, generation: 1, epoch: 1, data, metadata: { deviceWidth: 1000, deviceHeight: 600 } }));
+  });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto('/#browser');
+  await expect.poll(() => received.some(input => input.type === 'ack')).toBe(true);
+  await page.locator('.browser-viewport canvas').dblclick({ position: { x: 100, y: 100 } });
+  await expect.poll(() => received.filter(input => input.eventType === 'mouseReleased').length).toBe(2);
+  await dispatch;
+  expect(dispatchError).toBeUndefined();
+  expect(received.filter(input => ['mousePressed', 'mouseReleased'].includes(String(input.eventType))).map(input => [input.eventType, input.clickCount])).toEqual([
+    ['mousePressed', 1], ['mouseReleased', 1], ['mousePressed', 2], ['mouseReleased', 2],
+  ]);
+  expect(await remote.locator('#events').textContent()).toBe(JSON.stringify([
+    { type: 'mousedown', detail: 1 }, { type: 'mouseup', detail: 1 }, { type: 'click', detail: 1 },
+    { type: 'mousedown', detail: 2 }, { type: 'mouseup', detail: 2 }, { type: 'click', detail: 2 }, { type: 'dblclick', detail: 2 },
+  ]));
+  await remote.close();
+});
+
+for (const releaseOrder of [['right', 'left'], ['left', 'right']] as const) {
+  test(`native mouse chord releases ${releaseOrder.join(' then ')} outside the canvas without leaving a remote button pressed`, async ({ page, context }) => {
+    const remote = await context.newPage();
+    await remote.setViewportSize({ width: 1000, height: 600 });
+    await remote.setContent('<main style="position:fixed;inset:0">Mouse chord target</main><pre id="events">{"events":[],"pressed":[]}</pre><script>const events=[],pressed=new Set();document.addEventListener("contextmenu",event=>event.preventDefault());for(const type of ["mousedown","mouseup"])document.addEventListener(type,event=>{events.push({type:event.type,button:event.button,detail:event.detail});if(type==="mousedown")pressed.add(event.button);else pressed.delete(event.button);document.querySelector("#events").textContent=JSON.stringify({events,pressed:[...pressed]})});</script>');
+    const cdp = await context.newCDPSession(remote);
+    const data = (await remote.screenshot({ type: 'jpeg' })).toString('base64');
+    let status = { id: 'mouse-chord', state: 'human', epoch: 1, ownerLabel: 'Mira', domain: 'example.test', pressedButtons: [] as string[] };
+    const received: Record<string, unknown>[] = [];
+    let dispatch = Promise.resolve(); let dispatchError: unknown;
+    await page.route('**/api/browser', route => route.fulfill({ json: { browsers: [status] } }));
+    await page.route('**/api/browser/mouse-chord/ticket', route => route.fulfill({ json: { ticket: 'mouse-chord-ticket', epoch: 1 } }));
+    await page.routeWebSocket('**/api/browser/stream', ws => {
+      ws.onMessage(value => {
+        const input = JSON.parse(String(value)) as Record<string, unknown>; received.push(input);
+        if (input.type !== 'input_mouse') return;
+        dispatch = dispatch.then(async () => {
+          await cdp.send('Input.dispatchMouseEvent', { type: input.eventType as 'mousePressed' | 'mouseReleased' | 'mouseMoved', x: Number(input.x), y: Number(input.y), button: input.button as 'none' | 'left' | 'middle' | 'right', clickCount: Number(input.clickCount), modifiers: Number(input.modifiers) });
+          if (input.eventType === 'mousePressed') status = { ...status, pressedButtons: [...new Set([...status.pressedButtons, String(input.button)])] };
+          else if (input.eventType === 'mouseReleased') status = { ...status, pressedButtons: status.pressedButtons.filter(button => button !== input.button) };
+          ws.send(JSON.stringify({ type: 'mira_state', browser: status }));
+        }).catch(error => { dispatchError = error; });
+      });
+      ws.send(JSON.stringify({ type: 'mira_state', browser: status }));
+      ws.send(JSON.stringify({ type: 'frame', seq: 1, generation: 1, epoch: 1, data, metadata: { deviceWidth: 1000, deviceHeight: 600 } }));
+    });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto('/#browser');
+    await expect.poll(() => received.some(input => input.type === 'ack')).toBe(true);
+    const canvas = page.locator('.browser-viewport canvas');
+    const bounds = await canvas.boundingBox(); if (!bounds) throw Error('Missing canvas');
+    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    await page.mouse.down({ button: 'left' }); await page.mouse.down({ button: 'right' });
+    await expect.poll(() => status.pressedButtons).toEqual(['left', 'right']);
+    await page.mouse.move(bounds.x - 20, bounds.y + bounds.height / 2);
+    for (const button of releaseOrder) await page.mouse.up({ button });
+    await expect.poll(() => received.filter(input => input.eventType === 'mouseReleased').length).toBe(2);
+    await dispatch; expect(dispatchError).toBeUndefined();
+    expect(received.filter(input => ['mousePressed', 'mouseReleased'].includes(String(input.eventType))).map(input => [input.eventType, input.button, input.clickCount])).toEqual([
+      ['mousePressed', 'left', 1], ['mousePressed', 'right', 1], ...releaseOrder.map(button => ['mouseReleased', button, 1]),
+    ]);
+    const remoteResult = JSON.parse((await remote.locator('#events').textContent())!) as { events: { type: string; button: number; detail: number }[]; pressed: number[] };
+    // Chromium may report mouseup.detail=0 for a chord that ended outside the
+    // press location; the protocol above still pairs each key's original count.
+    expect(remoteResult.events.map(({ type, button }) => ({ type, button }))).toEqual([
+      { type: 'mousedown', button: 0 }, { type: 'mousedown', button: 2 },
+      ...releaseOrder.map(button => ({ type: 'mouseup', button: button === 'left' ? 0 : 2 })),
+    ]);
+    expect(remoteResult.pressed).toEqual([]); expect(status.pressedButtons).toEqual([]);
+    await expect(page.getByRole('button', { name: /^松开/ })).toHaveCount(0);
+    await remote.close();
+  });
+}
+
 test('browser settings: read-only, takeover, rendered-frame fence, input bridge, disconnect and explicit return', async ({ page }, testInfo) => {
   let status = { id: 'fixture-browser', state: 'agent', epoch: 1, ownerLabel: 'Mira', domain: 'example.test', cancelledInputs: 0 };
   const received: Record<string, unknown>[] = [];
@@ -364,6 +460,92 @@ test('reopen reports a stale lock in Chinese with the HTTP detail', async ({ pag
   await expect(alert).toContainText('HTTP 409');
   await expect(dialog.getByRole('button', { name: '确认关闭并重开', exact: true })).toHaveCount(0);
 });
+
+for (const outcome of ['success', 'cleanup failure'] as const) {
+  test(`reopen survives the production closed notification before ${outcome}`, async ({ page }) => {
+    let status: Record<string, unknown> = { id: 'closing', state: 'unknown', lock: 'outcome', epoch: 3, ownerLabel: 'Mira', domain: 'example.test' };
+    let browsers = [status];
+    let socket: WebSocketRoute | undefined;
+    let attempts = 0; let finishReopen: (() => void) | undefined;
+    await page.route('**/api/browser', route => route.fulfill({ json: { browsers } }));
+    await page.route('**/api/browser/*/ticket', route => route.fulfill({ json: { ticket: 'closing-ticket', epoch: status.epoch } }));
+    await page.route('**/api/browser/closing/reopen', async route => {
+      attempts++;
+      await new Promise<void>(resolve => { finishReopen = resolve; });
+      if (outcome === 'cleanup failure' && attempts === 1) return route.fulfill({ status: 503, json: { error: 'Browser cleanup failed' } });
+      const fresh = { id: 'replacement', state: 'agent', epoch: 0, ownerLabel: 'Mira', domain: 'example.test', replaces: 'closing' };
+      browsers = [{ ...status, state: 'closed', replacedBy: fresh.id }, fresh];
+      await route.fulfill({ json: fresh });
+    });
+    await page.routeWebSocket('**/api/browser/stream', ws => { socket = ws; ws.send(JSON.stringify({ type: 'mira_state', browser: status })); });
+    await page.goto('/#browser');
+    await expect.poll(() => !!socket).toBe(true);
+    await page.getByRole('button', { name: '关闭并重开浏览器', exact: true }).click();
+    await page.getByRole('button', { name: '确认关闭并重开', exact: true }).click();
+    await expect.poll(() => attempts).toBe(1);
+    // Production closes/invalidate the old stream before driver.close finishes.
+    status = { ...status, state: 'closed', epoch: 4 }; browsers = [status];
+    socket!.send(JSON.stringify({ type: 'mira_state', browser: status })); socket!.close();
+    await expect(page.locator('.bp-status')).toHaveText('浏览器已关闭');
+    await expect(page.locator('.bp-placeholder')).toHaveText('这个浏览器已关闭');
+    if (outcome === 'cleanup failure') {
+      status = { ...status, state: 'unknown', lock: 'cleanup' }; browsers = [status];
+      finishReopen!();
+      await expect(page.getByRole('alert')).toContainText('HTTP 503');
+      await expect(page.getByRole('button', { name: '确认关闭并重开', exact: true })).toHaveCount(0);
+      await expect(page.getByText('正在关闭并重开…', { exact: true })).toHaveCount(0);
+      const retry = page.getByRole('button', { name: '关闭并重开浏览器', exact: true });
+      await expect(retry).toBeEnabled(); await retry.click();
+      await expect(page.getByRole('button', { name: '取消', exact: true })).toBeEnabled();
+      await page.getByRole('button', { name: '确认关闭并重开', exact: true }).click();
+      await expect.poll(() => attempts).toBe(2);
+    }
+    finishReopen!();
+    await expect(page.getByRole('button', { name: '接手操作', exact: true })).toBeEnabled();
+    await expect(page.getByRole('button', { name: '切换浏览器，当前：Mira 的浏览器 1', exact: true })).toBeVisible();
+    expect(attempts).toBe(outcome === 'success' ? 1 : 2);
+  });
+}
+
+for (const leave of ['switch', 'close'] as const) for (const outcome of ['success', 'failure'] as const) {
+  test(`late reopen ${outcome} after browser ${leave} cannot replace the selected browser or publish an old error`, async ({ page }) => {
+    const locked = { id: 'old-browser', state: 'unknown', lock: 'cleanup', epoch: 3, ownerLabel: 'Mira', domain: 'old.example' };
+    const other = { id: 'other-browser', state: 'human', epoch: 1, ownerLabel: 'Other', domain: 'current.example' };
+    let finishReopen: (() => void) | undefined; let responseFinished = false;
+    const tickets: string[] = [];
+    await page.route('**/api/browser', route => route.fulfill({ json: { browsers: [locked, other] } }));
+    await page.route('**/api/browser/*/ticket', route => { tickets.push(route.request().url()); return route.fulfill({ json: { ticket: 'other-ticket', epoch: 1 } }); });
+    await page.route('**/api/browser/old-browser/reopen', async route => {
+      await new Promise<void>(resolve => { finishReopen = resolve; });
+      await route.fulfill(outcome === 'failure' ? { status: 503, json: { error: 'Late old cleanup failure' } } : { json: { id: 'late-replacement', replaces: locked.id, state: 'agent', epoch: 0, ownerLabel: 'Mira', domain: 'old.example' } });
+      responseFinished = true;
+    });
+    await page.routeWebSocket('**/api/browser/stream', ws => ws.send(JSON.stringify({ type: 'mira_state', browser: other })));
+    await page.goto('/#browser');
+    await page.getByRole('button', { name: '关闭并重开浏览器', exact: true }).click();
+    await page.getByRole('button', { name: '确认关闭并重开', exact: true }).click();
+    await expect.poll(() => !!finishReopen).toBe(true);
+    if (leave === 'close') {
+      await page.getByRole('button', { name: '关闭浏览器', exact: true }).click();
+      await expect(page.getByRole('dialog')).toHaveCount(0);
+    } else {
+      await page.getByRole('button', { name: /^切换浏览器/ }).click();
+      await page.getByRole('option').filter({ hasText: 'Other 的浏览器 1' }).click();
+      await expect(page.locator('.bp-status')).toHaveText('由你操作 · Mira 已暂停');
+    }
+    finishReopen!();
+    await expect.poll(() => responseFinished).toBe(true);
+    // Flush the response promise through the browser before inspecting the view.
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    if (leave === 'close') await expect(page.getByRole('dialog')).toHaveCount(0);
+    else {
+      await expect(page.getByRole('button', { name: '切换浏览器，当前：Other 的浏览器 1', exact: true })).toBeVisible();
+      await expect(page.locator('.bp-status')).toHaveText('由你操作 · Mira 已暂停');
+    }
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    expect(tickets.some(url => url.includes('late-replacement'))).toBe(false);
+  });
+}
 
 test('cleanup lock explains that close was not confirmed and does not request a ticket', async ({ page }) => {
   const locked = { id: 'lost', state: 'unknown', lock: 'cleanup', epoch: 5, ownerLabel: 'Mira', domain: 'example.test', message: 'Browser cleanup could not be verified. Agent and human control remain disabled; closing may be retried.' };

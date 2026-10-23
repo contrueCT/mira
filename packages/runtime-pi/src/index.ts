@@ -77,6 +77,22 @@ export interface RecoveredContext {
   projectionEntries: SessionEntry[];
   recovery: { status: 'complete' | 'observed-incomplete'; operations: RecoveryOperation[] };
 }
+/** The provider view removes obsolete Mira sections. Resolve usage baselines
+ * against original source entries, where the previous request system survives.
+ * Retained pre-checkpoint assistants cannot anchor the new compacted context. */
+function recoveredPressure(state: RecoveredContext, messages: AgentMessage[], tools: AgentTool[], model: Model<Api>) {
+  const observed = new Set(state.recovery.operations.map(operation => operation.assistantRecordId));
+  const sources = buildSessionProjection(state.projectionEntries).entries.flatMap(projected => projected.messages
+    .filter(message => !(message.role === 'assistant' && message.content.length === 0 && observed.has(projected.sourceEntry.id)))
+    .map(() => projected.sourceEntry.id));
+  const checkpoint = state.entries.findLastIndex(entry => entry.type === 'compaction');
+  return contextPressure(messages, tools, model, anchorIndex => {
+    const position = state.entries.findIndex(entry => entry.id === sources[anchorIndex]);
+    if (position < 0) throw new Error('Context usage anchor has no authoritative source');
+    if (position <= checkpoint) return null;
+    return { system: getCurrentSystemMessage(buildSessionProjection(state.entries.slice(0, position)).messages) };
+  });
+}
 /** Caller-owned notification hints; task persistence remains authoritative. */
 export interface TaskTurnOptions {
   id: string;
@@ -645,9 +661,11 @@ export class PiDurableRuntime implements CognitionRuntime {
         attemptGate();
         return wrapTools(registry);
       };
+      let pressureState = current;
       const refreshMessages = async (): Promise<AgentMessage[]> => {
         const state = await this.recoverInternal();
         if (state.snapshot.version !== version) throw new Error('Context changed during run');
+        pressureState = state;
         return continuedMessages(state);
       };
       const agent = new Agent({
@@ -739,16 +757,17 @@ export class PiDurableRuntime implements CognitionRuntime {
             const budget = contextBudget(this.options.model, this.options.autoCompaction);
             // Provider usage anchors the measurement; chars/4 alone badly
             // underestimates CJK and lets real overflows happen first.
-            const estimate = contextPressure(messages, context.tools ?? [], this.options.model).tokens;
+            const estimate = recoveredPressure(pressureState, messages, context.tools ?? [], this.options.model).tokens;
             const history = messages.filter(message => message.role !== 'system');
             const hasOlderHistory = history.length > 1 && estimateRequestTokens(history, [], this.options.model) > budget.keepRecentTokens;
             if (budget.enabled && hasOlderHistory && estimate >= budget.inputTokens * budget.threshold) {
               const compacted = await this.compactInternal({}, true, context.tools ?? []);
               version = compacted.snapshot.version;
               parentId = compacted.entries.at(-1)?.id ?? null;
+              pressureState = compacted;
               messages = continuedMessages(compacted);
             }
-            if (contextPressure(messages, context.tools ?? [], this.options.model).tokens > budget.inputTokens) throw new Error('Context exceeds input budget after compaction; a very large Memory file or single message may not be compactable');
+            if (recoveredPressure(pressureState, messages, context.tools ?? [], this.options.model).tokens > budget.inputTokens) throw new Error('Context exceeds input budget after compaction; a very large Memory file or single message may not be compactable');
             await checkLiveInput();
             return { context: { messages, tools: context.tools ?? [] } };
           } catch (error) { throw fail(error); }
@@ -989,7 +1008,7 @@ export class PiDurableRuntime implements CognitionRuntime {
       validateProjection(messages);
       const afterTokens = estimateRequestTokens(messages, tools, this.options.model);
       if (afterTokens > budget.inputTokens) throw new Error('Compacted context exceeds input budget');
-      if (requireReduction && afterTokens >= contextPressure(before.messages, tools, this.options.model).tokens) throw new Error('Compaction cannot reduce this context');
+      if (requireReduction && afterTokens >= recoveredPressure(before, before.messages, tools, this.options.model).tokens) throw new Error('Compaction cannot reduce this context');
       await this.verified();
       options.signal?.throwIfAborted();
       const record = encodeEntry(checkpoint);

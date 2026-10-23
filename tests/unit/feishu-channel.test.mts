@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import type { ExtensionContext, ExtensionTool, ExtensionEvent, ExtensionWake, ContextProvider, Json } from '@mira/extension-sdk';
 import { createFeishuExtension } from '../../packages/feishu-channel/src/index.ts';
@@ -29,7 +30,7 @@ function fakeSdk() {
   return { sdk, connections, sends, calls, setRegister(fn: FeishuSdk['register']) { register = fn; }, setSend(fn: FeishuSdk['send']) { send = fn; }, receive(message = incoming()) { return connections.at(-1)!.onMessage(message); } };
 }
 async function fixture(t: test.TestContext, options: { directory?: string; secrets?: Map<string, string>; sdk?: ReturnType<typeof fakeSdk>; config?: Json } = {}) {
-  const directory = options.directory ?? await mkdtemp(path.join(os.tmpdir(), 'mira-feishu-channel-'));
+  const directory = options.directory ?? await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-feishu-channel-')));
   if (!options.directory) t.after(() => rm(directory, { recursive: true, force: true }));
   const secrets = options.secrets ?? new Map([['appSecret', secret]]);
   const sdk = options.sdk ?? fakeSdk(); const tools = new Map<string, ExtensionTool>(); const providers: ContextProvider[] = [];
@@ -48,7 +49,13 @@ async function fixture(t: test.TestContext, options: { directory?: string; secre
   const action = (id: string, signal = new AbortController().signal) => settings.actions.find(item => item.id === id)!.execute({ signal });
   const send = async (callId: string, text: string, replyToMessageId?: string, signal = new AbortController().signal) => (await tools.get('feishu_send_message')!.execute({ text, ...(replyToMessageId ? { replyToMessageId } : {}) }, { callId, signal })).details as { status: string; sentParts: number; totalParts: number };
   const pair = async () => { await action('pair'); const challenge = settings.status().details!.find(item => item.value.startsWith('/mira pair '))!.value; await sdk.receive(incoming({ text: challenge, messageId: 'pair-message' })); };
-  return { directory, secrets, sdk, settings, tools, providers, reads, wakes, events, failEvent(value: boolean) { failEvent = value; }, close, action, send, pair, failWake(value: boolean) { failWake = value; }, state: async () => JSON.parse(JSON.stringify(await new FeishuPrivateStore(path.join(directory, 'feishu-state.json'), path.resolve('packages/feishu-channel')).load())) };
+  return { directory, secrets, sdk, settings, tools, providers, reads, wakes, events, failEvent(value: boolean) { failEvent = value; }, close, action, send, pair, failWake(value: boolean) { failWake = value; }, state: async () => {
+    const value = JSON.parse(JSON.stringify(await new FeishuPrivateStore(path.join(directory, 'feishu-state.json'), path.resolve('packages/feishu-channel')).load()));
+    if (!value) return value;
+    const db = new DatabaseSync(path.join(directory, 'feishu-state.json.sqlite'));
+    try { if (db.prepare("SELECT name FROM sqlite_schema WHERE name='receipts'").get()) value.sends = Object.fromEntries(db.prepare('SELECT call_id, value FROM receipts').all().map(row => [row.call_id, JSON.parse(row.value as string)])); } finally { db.close(); }
+    return value;
+  } };
 }
 
 test('Feishu activation is lazy; manual configuration explicitly verifies and connects', async t => {

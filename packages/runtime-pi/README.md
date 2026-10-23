@@ -218,6 +218,15 @@ limits fail explicitly; server demo and Web assembly inherit these defaults.
 Their programmatic `DemoOptions` / `WebServiceOptions.autoCompaction` pass through
 the same configuration; no new CLI/environment/UI switch is introduced.
 
+Pressure also uses the latest successful response usage from the same model,
+plus newly appended messages and genuine merged-system growth. The previous
+request system is reconstructed from its original durable entries, preserving
+older prompt snapshots that the provider projection removes. Timestamp or other
+same-size prompt replacements therefore do not count the full persona twice;
+larger environment/skill/tool sections still increase pressure after restart.
+A checkpoint discards usage from all earlier source entries, including retained
+tail assistants, and the full-request estimate includes its refreshed Memory.
+
 At safe `prepareRequest`, after tool declarations, completed tool batches and
 awaited durable appends, the runtime checks the current system/messages/tools.
 When older history exists and the threshold is reached, it uses the same full

@@ -1,6 +1,6 @@
 import { attachmentRequestPlans } from './attachments.ts';
 import type { AgentMessage, AgentTool } from '@earendil-works/pi-agent-core';
-import { getCurrentSystemMessage, toToolDeclaration, type Api, type AssistantMessage, type Model } from '@earendil-works/pi-ai';
+import { getCurrentSystemMessage, toToolDeclaration, type Api, type AssistantMessage, type Model, type SystemMessage } from '@earendil-works/pi-ai';
 import { estimateTokens, convertToLlm } from '@earendil-works/pi-coding-agent';
 
 export interface AutoCompactionOptions {
@@ -70,13 +70,16 @@ export interface ContextPressure {
   /** Index of the anchoring assistant message in `messages`, if any. */
   anchorIndex: number | null;
 }
+/** Resolve the actual request system preceding a projected assistant. A null
+ * result means its usage predates the active compaction checkpoint. */
+export type UsageAnchorSystem = (anchorIndex: number) => { system: SystemMessage | undefined } | null;
 /** Codex/dsh style pressure: the latest provider usage from this model is the
  * baseline (it already counts the real system prompt, tools, history and the
  * reply that becomes input next), plus an estimate of messages appended since
  * and any growth of the merged system prompt. A compaction checkpoint starts a
  * new projection, so no earlier usage survives it. The heuristic remains a
  * floor: never report less than the CJK-aware estimate. */
-export function contextPressure(messages: AgentMessage[], tools: AgentTool[] = [], model?: Model<Api>): ContextPressure {
+export function contextPressure(messages: AgentMessage[], tools: AgentTool[] = [], model?: Model<Api>, anchorSystem?: UsageAnchorSystem): ContextPressure {
   const estimatedTokens = estimateRequestTokens(messages, tools, model);
   if (!model) return { tokens: estimatedTokens, estimatedTokens, anchoredTokens: null, anchorIndex: null };
   let anchorIndex = -1; let anchor: number | undefined;
@@ -87,10 +90,13 @@ export function contextPressure(messages: AgentMessage[], tools: AgentTool[] = [
     if (anchor !== undefined) { anchorIndex = index; break; }
   }
   if (anchor === undefined) return { tokens: estimatedTokens, estimatedTokens, anchoredTokens: null, anchorIndex: null };
+  const source = anchorSystem?.(anchorIndex);
+  if (source === null) return { tokens: estimatedTokens, estimatedTokens, anchoredTokens: null, anchorIndex: null };
   const trailing = messages.slice(anchorIndex + 1);
   const added = trailing.filter(message => message.role !== 'system');
   const systemAt = (list: AgentMessage[]) => { const system = getCurrentSystemMessage(list as never); return system ? estimateMessageTokens(system as AgentMessage) : 0; };
-  const systemGrowth = trailing.some(message => message.role === 'system') ? Math.max(0, systemAt(messages) - systemAt(messages.slice(0, anchorIndex + 1))) : 0;
+  const previousSystemTokens = source ? (source.system ? estimateMessageTokens(source.system) : 0) : systemAt(messages.slice(0, anchorIndex + 1));
+  const systemGrowth = trailing.some(message => message.role === 'system') ? Math.max(0, systemAt(messages) - previousSystemTokens) : 0;
   const addedTokens = added.length ? estimateRequestTokens(added, [], model) - 32 : 0;
   const anchoredTokens = anchor + Math.max(0, addedTokens) + systemGrowth;
   return { tokens: Math.max(estimatedTokens, anchoredTokens), estimatedTokens, anchoredTokens, anchorIndex };

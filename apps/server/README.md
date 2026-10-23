@@ -127,6 +127,11 @@ read-only child details with explicit public progress, actual model/tool activit
 and bounded results; no permanent main UI entry point or control panel is added. See ADR 0025 for context and cancellation
 limits and the distinction from a sandbox or persistent job platform.
 
+Completion previews keep complete Unicode code points within the 16 KiB UTF-8
+limit. Larger results retain their exact full text in the ordinary spool file;
+the bounded preview and reference flow through the same durable completion Event,
+History reads, parent input and Dreaming accounting.
+
 ### Combined scheduling, live input and children
 
 Committed supplemental input (Web user messages or another child result) can
