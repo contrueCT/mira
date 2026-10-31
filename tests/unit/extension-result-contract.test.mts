@@ -10,7 +10,7 @@ import { assistant, input, MemoryWriter, runtime, streamOf } from '../recovery/f
 
 const entry = path.resolve('skills/mira-extension-authoring/examples/finite-sum.ts');
 
-async function assertKnownResult(values: number[], expected: Json): Promise<void> {
+async function assertKnownResult(values: number[], expected: Json, isError: boolean): Promise<void> {
   const writer = new MemoryWriter();
   const host = new ExtensionHost({ entries: [{ id: 'numeric-example', path: entry }], receive: extensionReceiver(writer) });
   let requests = 0;
@@ -24,7 +24,7 @@ async function assertKnownResult(values: number[], expected: Json): Promise<void
       assert.equal(requests, 2);
       const message = context.messages.find(message => message.role === 'toolResult' && message.toolCallId === 'sum-call');
       assert.ok(message?.role === 'toolResult');
-      assert.equal(message.isError, false, 'a known business result is not a Pi execution error');
+      assert.equal(message.isError, isError, 'Pi stores the extension isError flag on the tool result');
       assert.deepEqual(message.details, expected);
       assert.ok(message.content[0]?.type === 'text');
       assert.deepEqual(JSON.parse(message.content[0].text), expected, 'text and details describe the same result');
@@ -39,7 +39,10 @@ async function assertKnownResult(values: number[], expected: Json): Promise<void
     const execution = writer.state.executions[0]!;
     assert.deepEqual(execution.intent.requestedArguments, { values });
     assert.deepEqual(execution.intent.arguments, { values });
-    assert.ok(execution.outcome, 'a known business result has a durable outcome');
+    assert.ok(execution.outcome, 'a returned result is a durable known outcome');
+    const payload = execution.outcome.payload;
+    assert.ok(payload !== null && typeof payload === 'object' && !Array.isArray(payload));
+    assert.equal(payload['isError'], isError, 'the durable outcome keeps Pi isError');
     const message = completed.messages.find(message => message.role === 'toolResult' && message.toolCallId === 'sum-call');
     assert.ok(message?.role === 'toolResult');
     assert.deepEqual(execution.outcome.payload, message, 'the exact provider-visible outcome is saved');
@@ -59,13 +62,13 @@ test('authoring numeric example preserves valid finite outputs through the real 
   assert.deepEqual(numericExample.inject, []);
   for (const [values, total] of [
     [[], 0], [[1, 2, -0.5], 2.5], [[Number.MAX_VALUE], Number.MAX_VALUE],
-  ] satisfies Array<[number[], number]>) await assertKnownResult(values, { ok: true, total });
+  ] satisfies Array<[number[], number]>) await assertKnownResult(values, { ok: true, total }, false);
 });
 
-test('finite inputs can overflow; the authoring example returns a known JSON business result', { timeout: 15_000 }, async () => {
+test('finite inputs can overflow; the authoring example returns a known failed outcome', { timeout: 15_000 }, async () => {
   for (const values of [[Number.MAX_VALUE, Number.MAX_VALUE], [-Number.MAX_VALUE, -Number.MAX_VALUE]]) {
     assert.ok(values.every(Number.isFinite), 'the regression uses valid finite inputs');
     assert.equal(Number.isFinite(values.reduce((sum, value) => sum + value, 0)), false);
-    await assertKnownResult(values, { ok: false, reason: 'numeric-overflow' });
+    await assertKnownResult(values, { ok: false, reason: 'numeric-overflow' }, true);
   }
 });

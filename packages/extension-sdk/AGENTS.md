@@ -5,7 +5,8 @@
 ## 入口与状态
 
 - `README.md` 描述职责；`package.json` 是包名和公开 exports 的事实来源
-- `src/index.ts` 为唯一公开 API；`defineExtension` 不导入 Cordis/Pi/数据库类型。
+- `src/index.ts` 为运行时公开 API；`defineExtension` 不导入 Cordis/Pi/数据库类型。
+- `src/testing.ts` 由包导出 `./testing`（`@mira/extension-sdk/testing`）提供 `createFakeHost`。它只复现扩展能观察到的事件/Wake 回执，不导入 host、persistence 或 Node。真 `PersistenceError` 的私有 `event-content-conflict` 品牌不在此伪造。
 - 本目录负责扩展唯一的 Mira 公共契约入口。
 
 ## 本地约束与跨包陷阱

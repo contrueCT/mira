@@ -66,7 +66,7 @@ same-computer callback or explicitly configured existing HTTPS route requirement
   software filtering, stable IDs, cancellation, and observed failures. It needs a
   source service; it does not contact an account or install itself
 - Adapt [finite-sum.ts](examples/finite-sum.ts) for input narrowing, computed-output
-  validation, and known business results using only the SDK's `text` and `details`
+  validation, and known failures that return `isError: true` with `details.ok: false`
 
 The authoritative contract is [extension-sdk/src/index.ts](../../packages/extension-sdk/src/index.ts).
 Check it and the [host README](../../packages/extension-host/README.md) before
@@ -86,7 +86,10 @@ checkout before running commands; do not guess a machine-specific path.
    ordinary Memory file edit does not itself warrant cognition or reinjection.
    Retrying one ID requires the same full event and optional Wake, including the
    original `occurredAt`, payload, Wake ID, and reason. A changed source fact needs
-   a new ID; changing its timestamp to the retry time is not deduplication
+   a new ID; changing its timestamp to the retry time is not deduplication.
+   Generated unit tests use `createFakeHost()` from `@mira/extension-sdk/testing`
+   for that receipt behavior. A hand-written stub that returns `duplicate` does not
+   exercise it
 3. Register resources in `apply`. Capture injected services there. Track async work,
    observe its errors, and cancel/join it in `onCleanup`; never detach a promise and
    assume Cordis will stop it

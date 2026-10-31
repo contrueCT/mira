@@ -2,7 +2,8 @@
 
 Use the actual [public source](../../../packages/extension-sdk/src/index.ts) and
 [SDK README](../../../packages/extension-sdk/README.md) as the signature authority.
-`@mira/extension-sdk` is private, local, and exports only its package root. Do not
+`@mira/extension-sdk` is private and local. Runtime code imports the package root.
+Unit tests import `createFakeHost` from `@mira/extension-sdk/testing`. Do not
 import Cordis, Pi, `extension-host`, core internals, or a database into an extension.
 Ordinary Node APIs and deliberately supplied local dependencies may implement its
 work; SDK access is an interface convention, not process isolation.
@@ -43,7 +44,7 @@ Cordis `__jsExpr` expressions are rejected by the host.
   `required`, `additionalProperties`. Declare a narrow schema; ordinarily reject
   additional properties
 - `execute(arguments_: Json, { callId: string, signal: AbortSignal })`:
-  `Promise<{ text: string; details?: Json }>`
+  `Promise<{ text: string; details?: Json; isError?: boolean }>`
 
 Narrow Json before reading fields, honor the signal in long-running I/O, and return
 useful text plus optional structured details. Pass an idempotency key derived from
@@ -52,19 +53,24 @@ transactional. The runtime handles technical argument validation, provenance and
 persisted intent/outcome. It does not provide a separate authorization callback.
 An unknown remote result needs reconciliation, not an assumed-safe repeat.
 
-`text` and optional `details` are the entire SDK return contract; it has no
-`isError`, `outcome`, or success-status field. Choose business fields such as
-`details.ok` deliberately and describe them in text. Returned `details: { ok: false }`
-is still a known business result, with a durable outcome; it does not set Pi's
-`isError` or make the execution outcome unknown. Throwing is different:
-the runtime cannot infer whether effects already happened, so it preserves an
-unresolved intent for reconciliation. Do not throw merely to encode a known
-business rejection or invent a failure-status API.
+The return contract is `{ text, details?, isError? }`. A successful result returns
+`details.ok: true` and omits `isError` or sets it false. A known business failure
+returns `isError: true` together with `details.ok: false` and a machine-readable
+reason code such as `details.reason`. The text explains that same result. Known
+failures include numeric overflow, an argument outside an allowed range, and an
+external service that explicitly refuses the request. Pi records `isError: true`
+on the tool-result message, and the runtime saves that message as a durable known
+outcome (ADR 0040).
 
-Check each computed number before returning it. For example, after validating an
-array of finite inputs, a sum still needs `Number.isFinite(total)`. Return a useful
-known business result on overflow, or choose a representation the tool's contract
-explicitly supports; do not let serialization replace the result with `null`.
+Throw only when the outcome is genuinely unknown: you cannot tell whether the
+effect happened, for example when transport is lost after the request was sent.
+The runtime then records the outcome as unknown and preserves the intent for
+reconciliation. Do not throw to encode a known rejection.
+
+Check each computed number with `Number.isFinite` before returning it. Finite
+inputs can still overflow. `JSON.stringify` silently converts `Infinity`,
+`-Infinity`, and `NaN` to `null`, so check before serialization and return the
+known overflow failure above.
 The [finite-sum example](../examples/finite-sum.ts) and its
 [real Host/Pi offline contract test](../../../tests/unit/extension-result-contract.test.mts)
 exercise this boundary without a live model or alternative writer implementation.
@@ -142,11 +148,17 @@ each attempt. Fixed dates are appropriate only for explicitly synthetic tests.
   fact; do not first `emitEvent` it and then expect a second submission of the same
   event to create a Wake
 
-Test identical full-body retries and changed-body rejections through the real host
-and PostgreSQL receive path, including a restarted writer. A permissive SDK test
-stub returning `duplicate` proves neither persistence nor exact-body identity.
-The [real event/Wake contract test](../../../tests/recovery/extension-event-contract.test.mts)
-also checks that one event-only fact creates no Wake or cognitive record.
+Generated unit tests use `createFakeHost()` from `@mira/extension-sdk/testing`
+for Event and Wake receipts. An exact body and Wake choice returns `duplicate`;
+any changed field, or adding, removing, or retargeting the Wake, rejects with
+the same messages the host surfaces. Do not stub `emitEvent` / `requestWake` to
+always return `duplicate`. The fake mirrors the real host contract. The shared
+case table
+[`tests/shared/extension-event-contract-cases.mts`](../../../tests/shared/extension-event-contract-cases.mts)
+runs against both the fake and the real Host/PostgreSQL path. Real Host/PostgreSQL
+tests remain the authority for persistence, restart, and History identity. See
+[the recovery contract test](../../../tests/recovery/extension-event-contract.test.mts),
+which also checks that one event-only fact creates no Wake or cognitive record.
 
 The host binds configured source identity and namespaces event/Wake IDs. A payload
 field cannot impersonate another extension or user authorization. Wake continues

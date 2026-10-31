@@ -70,16 +70,22 @@ node --test tests/*.test.mts
 Use the template's strict NodeNext configuration with full declaration checking.
 Extend its tests around actual behavior: valid/invalid arguments and config,
 finite computed outputs (including overflow from finite inputs), known business
-rejections, matching/nonmatching facts, exact full-body retries, abort, non-overlap, rejected
+rejections (`isError: true` with `details.ok: false` and a reason code),
+matching/nonmatching facts, exact full-body retries, abort, non-overlap, rejected
 promises, cleanup joins, and dependency generation changes where relevant. Inject
-synthetic source data and fake SDK contexts for local behavior; do not call a live
-account or model just to prove the contract. A stub returning `duplicate` cannot
-prove ingestion. Check Event/Wake duplicate and conflict behavior against the real
-Host/PostgreSQL receive path; check provider-visible results against the real Host
-and Pi runtime with the existing offline writer fixture. Use the SDK reference's
-contract tests as examples, keep database prerequisites explicit, and report a
-missing database as unverified. Testing/importing still runs with the current OS
-account and can have effects.
+synthetic source data for local behavior; do not call a live account or model just
+to prove the contract. For Event and Wake receipts, build the `apply` context with
+`createFakeHost()` from `@mira/extension-sdk/testing`. The same full body and Wake
+choice returns `duplicate`; a changed field, or adding, removing, or retargeting
+the Wake, rejects with the messages the host surfaces. A hand-written stub that
+always returns `duplicate` does not exercise that contract. The fake is checked
+against the same case table as the real Host/PostgreSQL path
+(`tests/shared/extension-event-contract-cases.mts`). Those real Host/PostgreSQL
+tests remain the authority for persistence, restart, and History identity. Check
+provider-visible results against the real Host and Pi runtime with the existing
+offline writer fixture. Use the SDK reference's contract tests as examples, keep
+database prerequisites explicit, and report a missing database as unverified.
+Testing/importing still runs with the current OS account and can have effects.
 
 ## 4. Stage immutable content and test that digest
 

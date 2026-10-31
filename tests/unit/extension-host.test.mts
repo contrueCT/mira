@@ -8,7 +8,9 @@ import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ExtensionHost, type ExtensionHostOptions, type RegisteredTool } from '@mira/extension-host';
-import { defineExtension, serviceKey, type ExtensionEvent, type Json } from '@mira/extension-sdk';
+import { defineExtension, serviceKey, type ExtensionEvent, type ExtensionWake, type Json } from '@mira/extension-sdk';
+import { createFakeHost } from '@mira/extension-sdk/testing';
+import { cloneRejectionCases, hostNormalizedDeliveries, hostValidationCases } from '../shared/extension-event-contract-cases.mts';
 
 const sdkUrl = import.meta.resolve('@mira/extension-sdk');
 const received: ExtensionHostOptions['receive'] = async () => 'inserted';
@@ -1148,5 +1150,90 @@ test('owner loss during async plugin startup drains before returning and cannot 
       assert.equal(entry.state.cleaned, true); assert.equal(entry.state.late, false);
       await assert.rejects(host.start());
     } finally { entry.state.release?.(); await failed; await host.close(); }
+  });
+});
+
+test('host event validation and clone failures match createFakeHost', async () => {
+  await withDirectory(async directory => {
+    const entry = await fixture<{ cases: Array<{ event: unknown; wake?: { id: unknown; reason: unknown } }>; results: Array<{ name?: string; message?: string; code?: unknown; receipt?: string } | null> }>(directory, 'event-validator', `
+      export const state = { cases: [], results: [] };
+      export default defineExtension({
+        name: 'event-validation',
+        async apply(ctx) {
+          state.results = [];
+          for (const item of state.cases) {
+            try {
+              const receipt = item.wake
+                ? await ctx.requestWake({ id: item.wake.id, reason: item.wake.reason, event: item.event })
+                : await ctx.emitEvent(item.event);
+              state.results.push({ receipt });
+            } catch (error) {
+              state.results.push({ name: error.name, message: error.message, code: Object.hasOwn(error, 'code') ? error.code : null });
+            }
+          }
+        },
+      });
+    `);
+    const validation = hostValidationCases();
+    const clones = cloneRejectionCases();
+    const occurredAt = '2026-10-07T08:15:00.000Z';
+    entry.state.cases = [
+      ...validation.map(item => item.wake ? { event: item.event, wake: item.wake } : { event: item.event }),
+      ...clones.map(item => ({ event: { id: item.name, type: 'fixture.validation', occurredAt, payload: item.payload() } })),
+    ];
+    let received = 0;
+    const host = new ExtensionHost({ entries: [{ id: 'event-validator', path: entry.path }], receive: async () => { received += 1; return 'inserted'; } });
+    const fake = createFakeHost();
+    const fakeResults: Array<{ name: string; message: string; code: unknown } | { receipt: string }> = [];
+    const runFake = async (event: unknown, wake?: { id: unknown; reason: unknown }) => {
+      try {
+        const receipt = wake
+          ? await fake.requestWake({ id: wake.id, reason: wake.reason, event } as ExtensionWake)
+          : await fake.emitEvent(event as ExtensionEvent);
+        fakeResults.push({ receipt });
+      } catch (error) {
+        fakeResults.push({ name: error instanceof Error ? error.name : '', message: error instanceof Error ? error.message : '', code: typeof error === 'object' && error !== null && Object.hasOwn(error, 'code') ? (error as { code: unknown }).code : null });
+      }
+    };
+    try {
+      await host.start();
+      assert.equal(received, 0);
+      for (const item of validation) await runFake(item.event, item.wake);
+      for (const item of clones) await runFake({ id: item.name, type: 'fixture.validation', occurredAt, payload: item.payload() });
+      assert.deepEqual(entry.state.results, fakeResults);
+      assert.deepEqual(fakeResults.slice(0, validation.length), validation.map(item => ({ name: item.errorName, message: item.message, code: null })));
+      for (const result of fakeResults.slice(validation.length)) {
+        assert.equal(result && 'name' in result ? result.name : '', 'DataCloneError');
+        assert.match(result && 'message' in result ? result.message ?? '' : '', /could not be cloned/);
+      }
+    } finally { await host.close(); }
+  });
+});
+
+test('host structuredClone normalization matches createFakeHost stored payloads', async () => {
+  await withDirectory(async directory => {
+    const entry = await fixture<{ events: unknown[]; results: string[] }>(directory, 'normalize', `
+      export const state = { events: [], results: [] };
+      export default defineExtension({
+        name: 'normalize',
+        async apply(ctx) {
+          state.results = [];
+          for (const event of state.events) state.results.push(await ctx.emitEvent(event));
+        },
+      });
+    `);
+    const deliveries = hostNormalizedDeliveries();
+    entry.state.events = deliveries.map(item => item.event());
+    const received: unknown[] = [];
+    const host = new ExtensionHost({ entries: [{ id: 'normalizer', path: entry.path }], receive: async (_source, event) => { received.push(structuredClone(event.payload)); return 'inserted'; } });
+    const fake = createFakeHost();
+    try {
+      await host.start();
+      for (const item of deliveries) assert.equal(await fake.emitEvent(item.event() as ExtensionEvent), 'inserted', item.name);
+      const expected = deliveries.map(item => item.storedPayload);
+      assert.deepEqual(entry.state.results, expected.map(() => 'inserted'));
+      assert.deepEqual(received, expected);
+      assert.deepEqual(fake.events().map(event => event.payload), expected);
+    } finally { await host.close(); }
   });
 });
