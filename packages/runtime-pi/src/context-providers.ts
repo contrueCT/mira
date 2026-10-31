@@ -5,7 +5,7 @@ export interface ContextProviderSample {
   activation: string;
   providerId: string;
   digest?: string;
-  status: 'ok' | 'empty' | 'failed' | 'stale' | 'too-large' | 'budget-exceeded';
+  status: 'ok' | 'empty' | 'failed' | 'stale' | 'too-large' | 'budget-exceeded' | 'timeout';
   text?: string;
 }
 
@@ -20,7 +20,7 @@ export function formatContextProviders(samples: readonly ContextProviderSample[]
       || typeof activation !== 'string' || !/^[0-9a-f-]{36}$/.test(activation)
       || typeof providerId !== 'string' || !/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(providerId)
       || (digest !== undefined && (typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest)))
-      || !['ok', 'empty', 'failed', 'stale', 'too-large', 'budget-exceeded'].includes(status)
+      || !['ok', 'empty', 'failed', 'stale', 'too-large', 'budget-exceeded', 'timeout'].includes(status)
       || (status === 'ok' ? typeof text !== 'string' || !text.length : text !== undefined)) throw new Error('Invalid context provider sample');
     const key = `${extensionId}/${providerId}`;
     if (seen.has(key)) throw new Error('Duplicate context provider sample');

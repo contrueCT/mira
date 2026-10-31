@@ -15,7 +15,9 @@ interface Session {
   done: Promise<void>; resolveDone: () => void; closing: boolean;
   requests: Map<string, { resolve: () => void; reject: (error: Error) => void }>;
 }
-export interface TerminalExec { command: string; cwd?: string; shell?: string; tty?: boolean; yield_ms?: number; max_output_bytes?: number }
+export interface TerminalExec { command: string; cwd?: string; shell?: string; tty?: boolean; yield_ms?: number; max_output_bytes?: number; notify_on_exit?: boolean }
+/** A process that outlived its launch call ended (ADR 0049 exit notification). */
+export interface TerminalExit { sessionId: string; owner: string; launchCallId: string | null; status: Status; exitCode: number | null; signal: string | number | null; outputBytes: number }
 export interface TerminalWrite { session_id: string; offset: number; chars?: string; interrupt?: boolean; yield_ms?: number; max_output_bytes?: number }
 export interface TerminalResult {
   session_id: string; status: Status | 'unavailable'; output: string; offset: number; next_offset: number;
@@ -31,7 +33,8 @@ export class TerminalManager {
   readonly #writeFile: WriteOverflowInput;
   readonly #cwd: string;
   #closed = false;
-  constructor(options: { cwd: string; writeOverflowInput: WriteOverflowInput }) { this.#cwd = options.cwd; this.#writeFile = options.writeOverflowInput; }
+  readonly #onExit: ((exit: TerminalExit) => void) | undefined;
+  constructor(options: { cwd: string; writeOverflowInput: WriteOverflowInput; onExit?: (exit: TerminalExit) => void }) { this.#cwd = options.cwd; this.#writeFile = options.writeOverflowInput; this.#onExit = options.onExit; }
   #notify(session: Session): void { for (const notify of [...session.changes]) notify(); }
   #send(session: Session, message: unknown): void { if (session.host.connected) session.host.send(message as object, () => {}); }
   #request(session: Session, message: { type: string; text?: string }, signal?: AbortSignal): Promise<void> {
@@ -129,7 +132,19 @@ export class TerminalManager {
     });
     this.#send(session, { type: 'start', command: args.command, cwd: args.cwd ?? this.#cwd, shell: args.shell ?? '/bin/bash', tty: args.tty ?? false });
     // Cancellation after spawn only cancels this wait, never silently kills/replays the process.
-    return this.#serial(session, () => this.#collect(session, 0, args.yield_ms ?? 1000, args.max_output_bytes ?? terminalLimits.outputBytes, signal));
+    const launch = this.#serial(session, () => this.#collect(session, 0, args.yield_ms ?? 1000, args.max_output_bytes ?? terminalLimits.outputBytes, signal));
+    if (args.notify_on_exit && this.#onExit) {
+      const onExit = this.#onExit;
+      // Only a process still running when its launch result returned is
+      // reported; an explicit terminal_close or service shutdown is not.
+      void launch.then(async first => {
+        if (first.status !== 'running') return;
+        await session.done; await session.log.catch(() => {});
+        if (this.#closed || session.status === 'closed') return;
+        onExit({ sessionId: session.id, owner, launchCallId: session.callId, status: session.status, exitCode: session.code, signal: session.signal, outputBytes: session.bytes });
+      }, () => {});
+    }
+    return launch;
   }
   async write(owner: string, args: TerminalWrite, signal?: AbortSignal): Promise<TerminalResult> {
     this.#options(args.yield_ms, args.max_output_bytes);
@@ -213,7 +228,8 @@ export function createTerminalTools(manager: TerminalManager, owner: string): Ag
   return [
     { name: 'terminal_list', label: 'List owned terminals', description: 'List only this stream’s service-local terminal handles, including launch_call_id. Use this to inspect a launch whose durable result is unknown or was cancelled, without replaying it. Restart does not recover old handles.', parameters: Type.Object({}), execute: async () => result(manager.list(owner)) },
     { name: 'exec_command', label: 'Start terminal process', description: 'Start a fresh shell command, optionally with a real PTY. Returns incremental output and a session_id after bounded waiting; processes can continue across conversation turns until explicitly closed or the service stops. To retain cwd/env, explicitly start an interactive shell with tty=true and command="exec /bin/bash --noprofile --norc -i" and use write_stdin. Each exec is independent. Ordinary OS permissions, not a sandbox. Full output is in immutable ordinary files referenced by log_index. No restart/replay. Regrouped/reparented background jobs can outlive shell exit; close jobs explicitly while their shell is alive.',
-      parameters: Type.Object({ command: Type.String({ minLength: 1, maxLength: 32_768 }), cwd: Type.Optional(Type.String()), shell: Type.Optional(Type.String()), tty: Type.Optional(Type.Boolean()), yield_ms: yieldMs, max_output_bytes: maxBytes }),
+      parameters: Type.Object({ command: Type.String({ minLength: 1, maxLength: 32_768 }), cwd: Type.Optional(Type.String()), shell: Type.Optional(Type.String()), tty: Type.Optional(Type.Boolean()), yield_ms: yieldMs, max_output_bytes: maxBytes,
+        notify_on_exit: Type.Optional(Type.Boolean({ description: 'When true and the process is still running after this call returns, a terminal.exited event wakes you once it ends (exit code and output size only; read output with write_stdin). Use this instead of polling long jobs.' })) }),
       execute: (_id, args, signal) => call(() => manager.exec(owner, args as TerminalExec, signal, _id)) },
     { name: 'write_stdin', label: 'Continue terminal process', description: 'Read incremental output or send text to a live terminal in this stream. Copy next_offset. Empty chars only polls; interrupt=true sends Ctrl-C to a PTY foreground job or SIGINT to a pipe process group, and may leave an interactive shell alive. Cancelling the wait does not kill the process. Each input is at most 32 KiB UTF-8; the per-session cumulative input budget is 1 MiB. Acknowledgement means the supervisor queued it, not that the program consumed it. Writes are serialized per session; different sessions are independent. Service restart invalidates all handles.',
       parameters: Type.Object({ session_id: session, offset, chars: Type.Optional(Type.String({ maxLength: 32_768 })), interrupt: Type.Optional(Type.Boolean()), yield_ms: yieldMs, max_output_bytes: maxBytes }),

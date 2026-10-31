@@ -130,7 +130,10 @@ export async function runDemo(options: DemoOptions): Promise<{ completedRuns: nu
 
 /** Checkpoint intent, Git ref publication, receipt and completion are separate
  * recoverable steps. None claims atomicity or authorship of observed file edits. */
-export function memoryCheckpointHook(writer: MemoryCheckpointWriter, memoryRoot: string, repositoryId: string): (run: WakeRun, signal?: AbortSignal) => Promise<void> {
+/** ADR 0049: a hung Git snapshot fails this completion attempt (the Wake stays
+ * running and resumes later) instead of blocking the loop forever. */
+export const MEMORY_SNAPSHOT_TIMEOUT_MS = 60_000;
+export function memoryCheckpointHook(writer: MemoryCheckpointWriter, memoryRoot: string, repositoryId: string, snapshotTimeoutMs = MEMORY_SNAPSHOT_TIMEOUT_MS): (run: WakeRun, signal?: AbortSignal) => Promise<void> {
   return async (run, signal) => {
     signal?.throwIfAborted();
     await writer.verifyActive();
@@ -144,7 +147,7 @@ export function memoryCheckpointHook(writer: MemoryCheckpointWriter, memoryRoot:
     const payload = saved.checkpoint.payload;
     if (!payload || typeof payload !== 'object' || Array.isArray(payload) || payload['memoryRoot'] !== memoryRoot || payload['repositoryId'] !== repositoryId || payload['miraId'] !== writer.miraId) throw new Error('Restore the Memory repository configured for the pending checkpoint');
     if (saved.receipt) return;
-    const snapshotSignal = signal ? AbortSignal.any([writer.signal, signal]) : writer.signal;
+    const snapshotSignal = AbortSignal.any([writer.signal, AbortSignal.timeout(snapshotTimeoutMs), ...signal ? [signal] : []]);
     await writer.verifyActive();
     const snapshot = await snapshotMemory({ memoryRoot, miraId: writer.miraId, runId: run.id, expectedRepositoryId: repositoryId, signal: snapshotSignal });
     signal?.throwIfAborted();

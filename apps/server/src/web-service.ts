@@ -1,3 +1,4 @@
+import { BackgroundJobs } from './background-jobs.ts';
 import type { ModelRetryPolicy } from './model-retry.ts';
 import { createReplyTool, replyDescriptor, replyPublication, resolveReply, ReplyTargetError } from './replies.ts';
 import { BrowserManager } from './browser-manager.ts';
@@ -98,10 +99,12 @@ export interface WebServiceOptions {
   /** Durable marker of a Memory-only reset (ADR 0047): while it names this
    * life, the next Wake refreshes the frozen Memory snapshot once. */
   memoryRefreshFile?: string;
-  extensions?: { entries: LocalExtensionEntry[]; hmr?: boolean; configurationFile?: string; artifactsDirectory?: string };
+  extensions?: { entries: LocalExtensionEntry[]; hmr?: boolean; configurationFile?: string; artifactsDirectory?: string; contextProviderTimeoutMs?: number };
   synthetic?: boolean;
   /** Test injection at the real credential-bound HTTP transport; no live provider is required. */
   modelFetch?: typeof globalThis.fetch;
+  /** Test injection: shorter foreground bounds (ADR 0049); production uses 5 min / 20 s. */
+  foreground?: { hardLimitMs?: number; steerGraceMs?: number };
   /** Test injection: shorter backoff for the real transport; production uses the default policy. */
   modelRetryPolicy?: Partial<ModelRetryPolicy>;
   /** Deterministic test injection only; never obtains ambient credentials. */
@@ -273,7 +276,15 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     try {
       const roots = options.memoryRoot ? await setupMemoryWorkspace({ memoryRoot: options.memoryRoot, sourceDirectory: options.sourceDirectory }) : undefined;
       const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, ...(options.miraHome === undefined ? {} : { managedDataRoot: options.miraHome }), runId, content });
-      terminals = new TerminalManager({ cwd, writeOverflowInput });
+      terminals = new TerminalManager({ cwd, writeOverflowInput, onExit: exit => {
+        // Main-stream processes only; a child's processes belong to its task.
+        if (exit.owner !== writer.miraId || writer.signal.aborted) return;
+        const id = JSON.stringify(['terminal-exit', exit.sessionId]);
+        void writer.receive({ id, type: 'terminal.exited', source: 'system', occurredAt: new Date().toISOString(),
+          payload: { operation: 'terminal-exited', sessionId: exit.sessionId, launchCallId: exit.launchCallId, status: exit.status, exitCode: exit.exitCode,
+            signal: exit.signal, outputBytes: exit.outputBytes, note: 'Read remaining output with write_stdin using your last next_offset.' } }, { id, reason: 'terminal process exited' })
+          .then(receipt => { if (receipt === 'inserted' && service && !service.#error) service.#kick(); }, error => { if (service) service.#recordFailure(error); });
+      } });
       const terminalManager = terminals;
       browser = new BrowserManager({ cwd, mainOwner: writer.miraId, ...(options.miraHome === undefined ? {} : { miraHome: options.miraHome }) });
       const browserManager = browser;
@@ -298,6 +309,12 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       await subagents.initialize();
       writer.signal.throwIfAborted();
       const children = subagents;
+      const background = new BackgroundJobs({ writer, signal: writer.signal, activeSubagents: () => children.activeCount,
+        kick: () => { if (service && !service.#error) service.#kick(); },
+        onFailure: error => { if (service) service.#recordFailure(error); },
+        ...(options.foreground ? options.foreground : {}) });
+      // Jobs started by a previous process have an unknown outcome; record it once.
+      await background.recoverLost();
       const loop = new WakeLoop({ writer,
         writeOverflowInput,
         ...(roots ? { beforeComplete: memoryCheckpointHook(writer, roots.memoryRoot, roots.repositoryId) } : {}),
@@ -321,7 +338,8 @@ export class LocalWebService implements WebBackend, ManagementBackend {
           const childTransport = options.synthetic ? transport : settings.transport(current, { ...(options.modelFetch ? { fetch: options.modelFetch } : {}), ...(options.modelRetryPolicy ? { retryPolicy: options.modelRetryPolicy } : {}) });
           const childTools = createSubagentTools(children, childTransport, { hasPendingLiveInput: async () => (await writer.loadLiveInputs(run.id)).some(input => input.inputRecordId === null) });
           let contextProviders: RegisteredContextProvider[] = [];
-          return new PiDurableRuntime({ ...(options.autoCompaction ? { autoCompaction: options.autoCompaction } : {}), writer, ...transport, writeOverflowInput, resolveAttachment: reference => attachments.hydrate(reference), tools: [...baseTools, ...childTools], loadSkills,
+          return new PiDurableRuntime({ ...(options.autoCompaction ? { autoCompaction: options.autoCompaction } : {}), writer, ...transport,
+            foreground: background.foreground(), runtimeStatus: context => background.status(context), writeOverflowInput, resolveAttachment: reference => attachments.hydrate(reference), tools: [...baseTools, ...childTools], loadSkills,
             ...(extensionHost ? { prepareTools: async () => {
               const capabilities = await extensionHost.prepareCapabilities(); contextProviders = capabilities.contextProviders;
               return [...baseTools, ...childTools, ...management, ...extensionTools(capabilities.tools)];
