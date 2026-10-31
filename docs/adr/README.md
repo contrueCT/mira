@@ -97,3 +97,5 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 - [0046 用户自定义人设](0046-user-persona.md)：Accepted，2026-10-30；全局人设文件、Prompt v0.3 `<persona>` 段、Wake 开始时冻结、不唤醒的 Timeline 通知、可选整理冲突记忆与受保护头像上传。
 
 - [0047 记忆重置与从头开始](0047-memory-reset-and-new-life.md)：Accepted，2026-10-30；只清空长期记忆（Git 提交，可回退）或开始新的连续生命（归档、进程内重启、崩溃安全日志），预检令牌 + 输入确认；有意推翻 0006 的“不提供重置 API”，修订 0020 的一次性 Memory 刷新。
+
+- [0048 用量统计与余额不足暂停](0048-usage-and-balance-pause.md)：Accepted，2026-10-31；只读用量页（today/7d/30d、按来源/唤醒/模型、无费用）；402 与结构化余额代码不重试，持久暂停直到用户发新消息
