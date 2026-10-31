@@ -5,13 +5,15 @@ import { registerHooks } from 'node:module';
 // not evidence that PostgreSQL or the listener works.
 const cli = new URL('../../../apps/server/src/web-cli.mts', import.meta.url).href;
 const modules = {
-  './web-service.ts': `
+  './life-host.ts': `
     import { writeFile } from 'node:fs/promises';
-    export class LocalWebService {
+    export class MiraLifeHost {
       static async open(options) {
         if (!process.env.MIRA_TEST_CLI_CAPTURE) throw Error('Missing capture file');
-        await writeFile(process.env.MIRA_TEST_CLI_CAPTURE, JSON.stringify(options));
-        return { close: async () => {} };
+        // The life host resolves the active mira_id from PostgreSQL; the probe
+        // records the service options it would open the slot with.
+        await writeFile(process.env.MIRA_TEST_CLI_CAPTURE, JSON.stringify({ ...options.service, slot: options.slot, lifeHome: options.miraHome }));
+        return { backend: {}, external: {}, close: async () => {} };
       }
     }
   `,
