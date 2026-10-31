@@ -64,6 +64,10 @@ export interface MiraPromptOptions {
   loadMemory?: (signal: AbortSignal) => Promise<string>;
   /** Rendered user persona profile, frozen by the host for this runtime (one Wake). */
   persona?: string;
+  /** Pending explicit Memory reset (ADR 0047): the first natural request of
+   * this runtime compacts once, re-reading Memory into the frozen snapshot,
+   * then awaits this callback. Left pending when there is no older history. */
+  refreshMemory?: () => Promise<void>;
   now?: () => Date;
 }
 /** Raw-only rendering inputs make the sanctioned Memory replacement verifiable.

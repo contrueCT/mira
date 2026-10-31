@@ -371,3 +371,99 @@ export async function loadPromptMemory(options: { memoryRoot: string; signal?: A
   const { memory } = await loadMemoryBootstrap({ memoryRoot: options.memoryRoot, ...(options.signal ? { signal: options.signal } : {}) });
   return boundPromptMemory(memory.content, memory.path, options.maxBytes);
 }
+
+export interface MemoryResetOptions {
+  memoryRoot: string;
+  /** Random UUID of this reset; repeated calls with it are idempotent. */
+  resetId: string;
+  signal?: AbortSignal;
+}
+export interface MemoryResetResult {
+  /** The commit that cleared the workspace; `git revert` it to bring files back. */
+  commitId: string;
+  /** Commit preserving uncommitted worktree changes first, if there were any. */
+  preservedCommitId: string | null;
+  /** Ordinary files removed from the tracked tree (MEMORY.md is emptied instead). */
+  removedFiles: number;
+  recovered: boolean;
+}
+export interface MemoryUsage { files: number; bytes: number }
+
+/** Count non-ignored worktree files (MEMORY.md included) without reading them. */
+export async function memoryUsage(options: { memoryRoot: string; signal?: AbortSignal }): Promise<MemoryUsage> {
+  const { memoryRoot: root } = await registeredRoot(options.memoryRoot, options.signal);
+  const listed = (await git(root, ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], options.signal)).stdout.split('\0').filter(Boolean);
+  let files = 0; let bytes = 0;
+  for (const relative of new Set(listed)) {
+    const info = await lstat(path.join(root, relative)).catch(error => { if (errorCode(error) === 'ENOENT') return null; throw error; });
+    if (info?.isFile()) { files++; bytes += info.size; }
+  }
+  return { files, bytes };
+}
+
+function resetTrailers(message: string): { id: string; phase: string } | null {
+  const block = message.trimEnd().split('\n\n').at(-1)!.split('\n');
+  const id = block.find(line => line.startsWith('Mira-Reset-Id: '))?.slice(15);
+  const phase = block.find(line => line.startsWith('Mira-Reset-Phase: '))?.slice(18);
+  return id && phase ? { id, phase } : null;
+}
+/** Clear long-term Memory as ordinary Git history (ADR 0047, scope A):
+ * uncommitted changes are first preserved in their own commit, then every
+ * tracked file is removed and MEMORY.md is left empty in one commit carrying
+ * `Mira-Reset-Id`. Nothing is rewritten; `git revert <commitId>` restores it.
+ * Ignored files are not Memory history and are left in place. The host must
+ * call this only while no Wake can write Memory. */
+export async function resetMemoryWorkspace(options: MemoryResetOptions): Promise<MemoryResetResult> {
+  if (typeof options.resetId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(options.resetId)) throw new Error('resetId must be a random UUID');
+  const { memoryRoot: root } = await registeredRoot(options.memoryRoot, options.signal);
+  const head = async (): Promise<string | null> => {
+    const result = await git(root, ['rev-parse', '--verify', '--quiet', 'HEAD'], options.signal, undefined, [1]);
+    return result.code === 0 ? result.stdout.trim() : null;
+  };
+  const trailersOf = async (oid: string) => resetTrailers((await git(root, ['show', '-s', '--format=%B', oid], options.signal)).stdout);
+  const commit = async (phase: 'preserve' | 'clear', subject: string, parent: string | null): Promise<string> => {
+    await git(root, ['add', '-A', '--', '.'], options.signal);
+    const tree = (await git(root, ['write-tree'], options.signal)).stdout.trim();
+    const message = `${subject}\n\nMira-Reset-Id: ${options.resetId}\nMira-Reset-Phase: ${phase}\n`;
+    const oid = (await git(root, ['commit-tree', tree, ...(parent ? ['-p', parent] : []), '-m', message], options.signal)).stdout.trim();
+    await git(root, ['update-ref', '-m', `mira memory reset ${phase}`, 'HEAD', oid, parent ?? '0'.repeat(oid.length)], options.signal);
+    return oid;
+  };
+  let current = await head();
+  let preserved: string | null = null;
+  if (current) {
+    const marks = await trailersOf(current);
+    if (marks?.id === options.resetId && marks.phase === 'clear') {
+      const parent = (await git(root, ['show', '-s', '--format=%P', current], options.signal)).stdout.trim() || null;
+      const parentMarks = parent ? await trailersOf(parent) : null;
+      const removed = (await git(root, ['diff-tree', '--no-commit-id', '--name-only', '--no-renames', '--diff-filter=D', '-r', '-z', current], options.signal)).stdout.split('\0').filter(Boolean).length;
+      return { commitId: current, preservedCommitId: parentMarks?.id === options.resetId && parentMarks.phase === 'preserve' ? parent : null, removedFiles: removed, recovered: true };
+    }
+    if (marks?.id === options.resetId && marks.phase === 'preserve') preserved = current;
+  }
+  if (!preserved) {
+    // Snapshot whatever is in the worktree before removing anything, so a
+    // revert restores exactly what was there, not only the last Wake receipt.
+    await git(root, ['add', '-A', '--', '.'], options.signal);
+    const tree = (await git(root, ['write-tree'], options.signal)).stdout.trim();
+    const headTree = current ? (await git(root, ['rev-parse', `${current}^{tree}`], options.signal)).stdout.trim() : null;
+    if (tree !== headTree) { preserved = await commit('preserve', 'Memory before reset', current); current = preserved; }
+  }
+  const tracked = (await git(root, ['ls-files', '-z'], options.signal)).stdout.split('\0').filter(Boolean);
+  let removed = 0;
+  for (const relative of tracked) {
+    options.signal?.throwIfAborted();
+    if (relative === 'MEMORY.md') continue;
+    const location = path.join(root, relative);
+    if (!within(root, location) || relative.split('/').includes('.git')) throw new Error('Unexpected Memory path');
+    try { await rm(location, { force: false }); removed++; }
+    catch (error) { if (errorCode(error) !== 'ENOENT') throw error; removed++; }
+  }
+  // Leave directories that only held removed files out of the tree; Git does
+  // not track empty directories, and leftovers only contain ignored files.
+  const memory = path.join(root, 'MEMORY.md');
+  const handle = await open(memory, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
+  try { await handle.sync(); } finally { await handle.close(); }
+  const commitId = await commit('clear', 'Reset long-term memory', current);
+  return { commitId, preservedCommitId: preserved, removedFiles: removed, recovered: false };
+}

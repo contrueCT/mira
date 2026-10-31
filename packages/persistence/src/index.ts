@@ -10,6 +10,8 @@ import { assertJson, assertRecord } from '@mira/context';
 import type { RuntimeRecord } from '@mira/context';
 import type { DreamingRequest, DreamingRequestResult, DreamingWriter, LifeEvent, MemoryCheckpoint, MemoryCheckpointState, MemorySnapshotReceipt, RecoverySnapshot, ScheduledDelivery, ScheduledDeliveryInput, ScheduledMutation, SchedulingWriter, ToolIntent, ToolOutcome, WakeReceipt, WakeRun } from '@mira/life';
 export { migrate } from './migrate.ts';
+export { PostgresLives, LifeRegistryError } from './lives.ts';
+export type { MiraLife, LifeImpact, LifeSwitch } from './lives.ts';
 export type { MigrationOptions } from './migrate.ts';
 
 // Two-int advisory locks occupy a separate key space from bigint migration locks.

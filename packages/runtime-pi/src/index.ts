@@ -144,6 +144,7 @@ export class PiDurableRuntime implements CognitionRuntime {
   private readonly replyIndexes: ReplyIndexProjector;
   private stopped: Error | undefined;
   private busy = false;
+  private memoryRefreshStarted = false;
   private agent: Agent | undefined;
   private readonly controller = new AbortController();
 
@@ -761,7 +762,25 @@ export class PiDurableRuntime implements CognitionRuntime {
             const estimate = recoveredPressure(pressureState, messages, context.tools ?? [], this.options.model).tokens;
             const history = messages.filter(message => message.role !== 'system');
             const hasOlderHistory = history.length > 1 && estimateRequestTokens(history, [], this.options.model) > budget.keepRecentTokens;
-            if (budget.enabled && hasOlderHistory && estimate >= budget.inputTokens * budget.threshold) {
+            const refresh = config?.refreshMemory && !this.memoryRefreshStarted ? config.refreshMemory : undefined;
+            if (refresh) {
+              // An explicit Memory reset replaces the frozen snapshot through the
+              // ordinary compaction refresh (ADR 0016), once, at a natural boundary.
+              this.memoryRefreshStarted = true;
+              const snapshot = currentMemory(pressureState.entries);
+              // Already current (for example a context first initialized after
+              // the reset): nothing to replace.
+              const frozen = snapshot !== undefined && !!config?.loadMemory && snapshot !== await config.loadMemory(this.controller.signal);
+              attemptGate();
+              if (frozen && history.length > 1) {
+                const compacted = await this.compactInternal(hasOlderHistory ? {} : { keepRecentTokens: 1 }, false, context.tools ?? []);
+                version = compacted.snapshot.version;
+                parentId = compacted.entries.at(-1)?.id ?? null;
+                pressureState = compacted;
+                messages = continuedMessages(compacted);
+              }
+              if (!frozen || history.length > 1) { await refresh(); attemptGate(); }
+            } else if (budget.enabled && hasOlderHistory && estimate >= budget.inputTokens * budget.threshold) {
               const compacted = await this.compactInternal({}, true, context.tools ?? []);
               version = compacted.snapshot.version;
               parentId = compacted.entries.at(-1)?.id ?? null;
