@@ -30,6 +30,7 @@
 - [ADR 0049](docs/adr/0049-bounded-foreground-and-background-tools.md)：主 Wake 工具前台硬时限 5 分钟；有插话且已运行 ≥20 s 时转入后台（不终止），返回 backgrounded 回执，真实结果以唤醒事件 `tool.background.settled` 到达，重启记 `tool.background.lost`、不重跑；运行状态只追加在送达给模型的用户输入里，界面不显示。上下文提供方 5 s、`extension_manage` 60 s→pending、Memory 快照 60 s；`exec_command` 的 `notify_on_exit`。
 - [ADR 0050](docs/adr/0050-no-reply-and-read-receipt.md)：最终回复恰好为 `NO_REPLY` 时聊天不显示；最新一条用户消息被 Wake 接收后显示「已读」（余额暂停中不算）；系统提示 v0.4。
 - [ADR 0051](docs/adr/0051-subagent-control.md)：子任务文件工具每次 5 分钟并拒绝 FIFO/设备；取消只关闭该子任务自己的终端/浏览器，5 s 后释放槽位；空闲 15 分钟发一次 `subagent.stalled` 唤醒；子任务余额被拒会让 Mira 暂停；观测只给模型。
+- [ADR 0052](docs/adr/0052-subagent-reports-capabilities-close.md)：子任务用 `task_report {summary, question?}` 回报，有 question 时 Mira 用 `subagent_send` 回答；spawn 可带扩展 capabilities（mainOnly 工具不下发，delegated 调用不能改日程）、附件引用和 group（最后一个结束时唤醒一次）；`subagent_close` 完全收尾且不可再 send，`subagent_cancel` 只停当前轮；工具名只用 `[a-zA-Z0-9_-]`；系统提示 v0.5。
 - [ADR 0021](docs/adr/0021-chat-attachments.md)：聊天共用不可变附件存储与引用，正文/有序附件原子绑定既有 Event/Wake；send_attachment 仅显式已知发布投影。图片原生输入，视频统一普通文件，只有模型显式 read 后内置 Google Gemini 的 MP4/WebM 才通过公开 payload hook 原生理解；PDF/Word只给工具引用，历史不存媒体 base64。
 - [ADR 0024](docs/adr/0024-live-user-input.md)：普通 Web 插话先持久保存为冻结原始 Wake 之外的有序补充输入；生成请求让出，当前单工具完成后先读新输入，旧 siblings 保持 not-started；final 与输入原子仲裁，无暂停按钮/关键词判定。
 - [ADR 0023](docs/adr/0023-on-demand-public-skills.md)：公开 OpenAI pdf/doc/transcribe、agent-browser 与 Tavily CLI 指导；只随源码分发技能/必要脚本及许可，依赖由模型普通工具按需准备，应用不自动解析附件、不捆绑浏览器或模型。
