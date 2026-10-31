@@ -6,6 +6,7 @@ import { validateWakeInputArtifact, type WakeInputArtifact } from '@mira/cogniti
 import { messageAttachments } from './attachments.ts';
 import { checkpointReplyIndex, messageReplySources, messageReplies, replyPublication } from './replies.ts';
 import { validateObservation } from './observations.ts';
+import { RUNTIME_STATUS_FIELD, validRuntimeStatus } from './foreground.ts';
 import { validateMiraPromptSnapshot } from './system-prompt.ts';
 import type { SessionEntry, SessionMessageEntry } from '@earendil-works/pi-coding-agent';
 
@@ -164,6 +165,8 @@ export function validateMessage(value: unknown): asserts value is AgentMessage {
   messageReplies(value);
   replyPublication(value);
   messageOverflowInput(value);
+  if (Object.hasOwn(value, RUNTIME_STATUS_FIELD) && (role !== 'user' || !validRuntimeStatus(value[RUNTIME_STATUS_FIELD])
+    || typeof value['content'] !== 'string' || !value['content'].endsWith(`\n\n${value[RUNTIME_STATUS_FIELD]}`))) throw new Error('Invalid runtime status placement');
   if (Object.hasOwn(value, 'miraNativeVideos')) throw new Error('Hydrated media must never be persisted');
   if (role !== 'system' && (Object.hasOwn(value, 'miraMemory') || Object.hasOwn(value, 'miraPrompt') || Object.hasOwn(value, 'miraMemoryConfigured'))) throw new Error('Invalid Mira metadata placement');
   const content = value['content'];

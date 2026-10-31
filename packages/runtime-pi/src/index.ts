@@ -29,6 +29,8 @@ export type { ThinkingLevel } from './reasoning.ts';
 
 import { contextBudget, contextPressure, estimateRequestTokens, type AutoCompactionOptions } from './budget.ts';
 import { ToolOutputProjector } from './tool-output.ts';
+import { backgroundReceipt, boundedError, boundRuntimeStatus, foregroundLease, newJob, RUNTIME_STATUS_FIELD, validRuntimeStatus, type ForegroundOptions } from './foreground.ts';
+export { BACKGROUND_NOTE, RUNTIME_STATUS_PREFIX, type BackgroundJob, type BackgroundOutcome, type ForegroundOptions } from './foreground.ts';
 import { messageReplySources, messageReplies, replyIndexContent, replyIndexNotice, ReplyIndexProjector } from './replies.ts';
 export type { AutoCompactionOptions } from './budget.ts';
 /** Content-free observations at actual dispatch and durable completion boundaries. */
@@ -72,6 +74,32 @@ export interface PiRuntimeOptions {
   /** Sample once per natural model request. The host pins activation identity;
    * bounded sourced observations share the existing persisted system snapshot. */
   loadContextProviders?: (signal: AbortSignal) => Promise<ContextProviderSample[]>;
+  /** Bounded foreground execution for main Wake tools (ADR 0049). */
+  foreground?: ForegroundOptions;
+  /** Model-only runtime facts appended to a newly delivered Wake input. Never
+   * called during recovery; the persisted text is reused verbatim. */
+  runtimeStatus?: (context: { phase: 'initial' | 'live'; wakeStartedAt: string }) => string | null;
+}
+/** Append model-only runtime status to a new user input without altering its
+ * deterministic part; recovery strips it with `withoutRuntimeStatus`. */
+function withRuntimeStatus(message: AgentMessage, status: string | null | undefined): AgentMessage {
+  if (!status || message.role !== 'user' || typeof message.content !== 'string') return message;
+  const bounded = boundRuntimeStatus(status);
+  return Object.assign({ ...message, content: `${message.content}\n\n${bounded}` }, { [RUNTIME_STATUS_FIELD]: bounded });
+}
+function savedRuntimeStatus(message: AgentMessage): string | undefined {
+  if (!Object.hasOwn(message, RUNTIME_STATUS_FIELD)) return undefined;
+  const status = (message as unknown as Record<string, unknown>)[RUNTIME_STATUS_FIELD];
+  if (!validRuntimeStatus(status) || message.role !== 'user' || typeof message.content !== 'string' || !message.content.endsWith(`\n\n${status}`))
+    throw new RecoveryBlockedError('Invalid persisted runtime status');
+  return status;
+}
+/** The deterministic input text, without its model-only runtime status. */
+function withoutRuntimeStatus(message: AgentMessage): AgentMessage {
+  const status = savedRuntimeStatus(message);
+  if (status === undefined || message.role !== 'user' || typeof message.content !== 'string') return message;
+  const { [RUNTIME_STATUS_FIELD]: _status, ...rest } = message as unknown as Record<string, unknown>;
+  return { ...rest, content: message.content.slice(0, -(status.length + 2)) } as unknown as AgentMessage;
 }
 export interface RecoveredContext {
   snapshot: RecoverySnapshot; entries: SessionEntry[]; messages: AgentMessage[];
@@ -359,6 +387,12 @@ export class PiDurableRuntime implements CognitionRuntime {
     });
   }
 
+  /** A status provider failure never blocks delivering the user's message. */
+  private runtimeStatus(phase: 'initial' | 'live', wakeStartedAt: string): string | null {
+    try { return this.options.runtimeStatus?.({ phase, wakeStartedAt }) ?? null; }
+    catch { return null; }
+  }
+
   private wakeWriter(): WakeWriter {
     const writer = this.options.writer as WakeWriter;
     if (typeof writer.loadWakeRun !== 'function' || typeof writer.appendWakeInput !== 'function' || typeof writer.appendWakeFinal !== 'function') throw new Error('A WakeWriter is required for durable cognition turns');
@@ -420,9 +454,10 @@ export class PiDurableRuntime implements CognitionRuntime {
           input.overflowInput ? { miraOverflowInput: structuredClone(input.overflowInput) } : {});
       }
       if (inputRecordId) {
-        if (saved?.type !== 'message' || !isDeepStrictEqual(saved.message, message)) throw new RecoveryBlockedError('Live input differs from its persisted message');
+        if (saved?.type !== 'message' || !isDeepStrictEqual(withoutRuntimeStatus(saved.message), message)) throw new RecoveryBlockedError('Live input differs from its persisted message');
       } else {
         if (finalized) throw new RecoveryBlockedError('Finalized Wake has an unread live input');
+        if (supplemental.source === 'wake') message = withRuntimeStatus(message, this.runtimeStatus('live', turn.occurredAt));
         const entry = messageEntry(message, current.entries.at(-1)?.id ?? null);
         await this.publish(() => writer.appendInput(turn.id, supplemental.id, current.snapshot.version, encodeEntry(entry), this.controller.signal));
         current = await this.recoverInternal();
@@ -451,7 +486,7 @@ export class PiDurableRuntime implements CognitionRuntime {
       if (linkedInput?.type === 'message' && (!isDeepStrictEqual(messageReplySources(linkedInput.message), replySources) || !isDeepStrictEqual(messageReplies(linkedInput.message), replies))) throw new RecoveryBlockedError('Wake reply metadata differs from its durable input');
       if (turn.attachments !== undefined) validateAttachmentReferences(turn.attachments);
       if (turn.overflowInput !== undefined) validateWakeInputArtifact(turn.overflowInput);
-      if (linkedInput?.type === 'message' && linkedInput.message.role === 'user' && turn.input !== '' && (linkedInput.message.content !== turn.input || !isDeepStrictEqual(messageAttachments(linkedInput.message), turn.attachments ?? []) || !isDeepStrictEqual(messageOverflowInput(linkedInput.message), turn.overflowInput) || linkedInput.message.timestamp !== Date.parse(turn.occurredAt))) throw new RecoveryBlockedError('Wake input differs from its durable input; restore the original input configuration');
+      if (linkedInput?.type === 'message' && linkedInput.message.role === 'user' && turn.input !== '' && ((withoutRuntimeStatus(linkedInput.message) as { content?: unknown }).content !== turn.input || !isDeepStrictEqual(messageAttachments(linkedInput.message), turn.attachments ?? []) || !isDeepStrictEqual(messageOverflowInput(linkedInput.message), turn.overflowInput) || linkedInput.message.timestamp !== Date.parse(turn.occurredAt))) throw new RecoveryBlockedError('Wake input differs from its durable input; restore the original input configuration');
       if (run.finalRecordId) {
         await this.consumeLiveInputs(turn, true);
         const final = current.entries.find(entry => entry.id === run.finalRecordId);
@@ -462,7 +497,7 @@ export class PiDurableRuntime implements CognitionRuntime {
       current = await this.initializeEmpty(current);
       if (!run.inputRecordId) {
         const message: AgentMessage = Object.assign({ role: 'user' as const, content: turn.input, timestamp: Date.parse(turn.occurredAt) }, replySources.length ? { miraReplySources: structuredClone(replySources) } : {}, replies.length ? { miraReplies: structuredClone(replies) } : {}, turn.attachments?.length ? { miraAttachments: structuredClone(turn.attachments), miraAttachmentsInInput: true } : {}, turn.overflowInput ? { miraOverflowInput: structuredClone(turn.overflowInput) } : {});
-        const entry = messageEntry(message, current.entries.at(-1)?.id ?? null);
+        const entry = messageEntry(withRuntimeStatus(message, this.runtimeStatus('initial', turn.occurredAt)), current.entries.at(-1)?.id ?? null);
         const record = encodeEntry(entry);
         await this.publish(() => writer.appendWakeInput(turn.id, current.snapshot.version, record, this.controller.signal));
         current = await this.recoverInternal();
@@ -624,7 +659,49 @@ export class PiDurableRuntime implements CognitionRuntime {
                 await observe({ kind: 'tool', phase: 'started', name: tool.name, callId: id, status: null });
                 attemptGate();
                 toolSignal?.throwIfAborted();
-                try { result = await tool.execute(id, args as never, toolSignal, update); }
+                const foreground = this.options.foreground;
+                const wakeTurn = turn && !turn.task ? turn : undefined;
+                const leased = foreground && wakeTurn && (foreground.promotable?.(tool.name) ?? true) ? foreground : undefined;
+                try {
+                  if (!leased) result = await tool.execute(id, args as never, toolSignal, update);
+                  else {
+                    // Promoted work must survive this attempt's abort; only the
+                    // owner lifetime cancels it once it is in the background.
+                    const detached = new AbortController();
+                    let promoted = false;
+                    const forward = (reason: unknown) => { if (!detached.signal.aborted) detached.abort(reason); };
+                    const onAttemptAbort = () => { if (!promoted) forward(toolSignal?.reason); };
+                    toolSignal?.addEventListener('abort', onAttemptAbort, { once: true });
+                    const onOwnerAbort = () => forward(leased.signal?.reason);
+                    if (leased.signal?.aborted) onOwnerAbort(); else leased.signal?.addEventListener('abort', onOwnerAbort, { once: true });
+                    const started = Date.now();
+                    const execution = Promise.resolve().then(() => tool.execute(id, args as never, detached.signal, ((partial: never) => { if (!promoted) update?.(partial); }) as never));
+                    const lease = foregroundLease(leased, started,
+                      async () => !!live && (await live.loadInputs(wakeTurn!.id)).some(item => item.inputRecordId === null),
+                      live ? listener => live.onInput(runId => { if (runId === wakeTurn!.id) listener(); }) : undefined);
+                    const winner = await Promise.race([execution.then(value => ({ value }) as const), lease.promoted.then(reason => ({ reason }) as const)])
+                      .finally(() => lease.dispose());
+                    if ('value' in winner) {
+                      toolSignal?.removeEventListener('abort', onAttemptAbort);
+                      leased.signal?.removeEventListener('abort', onOwnerAbort);
+                      result = winner.value;
+                    } else {
+                      promoted = true;
+                      toolSignal?.removeEventListener('abort', onAttemptAbort);
+                      const job = newJob(id, tool.name, started, winner.reason);
+                      await leased.onBackground(job);
+                      execution.then(value => {
+                        let normalized: Awaited<ReturnType<AgentTool['execute']>>;
+                        try { normalized = normalizeToolResult(value); }
+                        catch (error) { return leased.onSettled(job, { status: 'rejected', error: `Invalid tool result: ${boundedError(error)}` }); }
+                        return leased.onSettled(job, { status: 'completed', result: normalized });
+                      }, error => leased.onSettled(job, { status: 'rejected', error: boundedError(error) }))
+                        .catch(() => { /* the owner reports its own write failures */ })
+                        .finally(() => leased.signal?.removeEventListener('abort', onOwnerAbort));
+                      result = backgroundReceipt(job, Date.now() - started);
+                    }
+                  }
+                }
                 catch (error) {
                   // Writer loss/cancellation remains fatal. A tool throw alone proves
                   // neither failure nor success, so stop this attempt without asking
