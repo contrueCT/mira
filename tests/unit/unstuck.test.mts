@@ -47,7 +47,7 @@ class EventWriter {
 
 test('background jobs record start (non-waking), one settled event that wakes, and lost-on-restart without replay', async () => {
   const writer = new EventWriter(); let kicks = 0; const owner = new AbortController();
-  const jobs = new BackgroundJobs({ writer: writer as never, signal: owner.signal, kick: () => { kicks++; }, activeSubagents: () => 2 });
+  const jobs = new BackgroundJobs({ writer: writer as never, signal: owner.signal, kick: () => { kicks++; }, subagents: () => [{ id: "11111111-1111-4111-8111-111111111111", title: "Build", runningForMs: 120_000, idleForMs: 5_000 }, { id: "22222222-2222-4222-8222-222222222222", title: null, runningForMs: 60_000, idleForMs: 60_000 }] });
   const options = jobs.foreground();
   assert.equal(options.hardLimitMs, 300_000); assert.equal(options.steerGraceMs, 20_000);
   assert.equal(options.promotable!('send_reply'), false); assert.equal(options.promotable!('exec_command'), true);
@@ -67,7 +67,9 @@ test('background jobs record start (non-waking), one settled event that wakes, a
   // A late settle for the same job id is a duplicate and does not wake again.
   await options.onSettled(job, { status: 'completed', result: { content: [{ type: 'text', text: 'ok' }], details: {} } });
   assert.equal(kicks, 0);
-  assert.equal(jobs.status({ phase: 'initial', wakeStartedAt: new Date().toISOString() }), 'Subagents running: 2.');
+  const initial = jobs.status({ phase: 'initial', wakeStartedAt: new Date().toISOString() })!;
+  // ADR 0051: one compact line per running child, model-only.
+  assert.deepEqual(initial.split('\n'), ['Subagents running: 2.', '- Build (11111111-1111-4111-8111-111111111111) · running 2 min · idle 5 s', '- 22222222 (22222222-2222-4222-8222-222222222222) · running 1 min · idle 1 min']);
   const other = { ...job, jobId: '22222222-2222-4222-8222-222222222222' };
   await options.onBackground(other);
   await options.onSettled(other, { status: 'completed', result: { content: [{ type: 'text', text: 'x'.repeat(20_000) }], details: {} } });

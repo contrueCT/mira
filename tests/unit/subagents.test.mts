@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { test } from 'node:test';
-import { getCurrentSystemMessage, getSystemMessageText, getCurrentTools } from '@earendil-works/pi-ai';
+import { getCurrentSystemMessage, getSystemMessageText, getCurrentTools, createAssistantMessageEventStream } from '@earendil-works/pi-ai';
 import type { RuntimeRecord } from '@mira/context';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { SubagentError, emptySubagentActivity, type SubagentActivityInput, type SubagentWriter, type SubagentRecord, type SubagentSpec, type SubagentResult, type SubagentFollowupReceipt, type TaskInputWriter, type TaskTurnState, type ToolIntent, type LifeEvent, type WakeReceipt } from '@mira/life';
 import { PiDurableRuntime, freezeSubagentContext, encodeEntry, decodeRecords, type PiRuntimeActivity } from '@mira/runtime-pi';
-import { SubagentManager, createSubagentTools } from '../../apps/server/src/subagents.ts';
+import { SubagentManager, createSubagentTools, type SubagentManagerOptions, type SubagentStall } from '../../apps/server/src/subagents.ts';
 import { MemoryWriter, assistant, streamOf, model, deferred, seed, input, effectTool, result } from '../recovery/fixtures.mts';
 
 /** Only test storage; production never uses an in-memory fallback. */
@@ -125,13 +125,13 @@ class ChildWriter extends MemoryWriter implements TaskInputWriter {
   }
 }
 async function until(check: () => boolean | Promise<boolean>) { const end = Date.now() + 3000; while (!await check()) { if (Date.now() > end) throw Error('Condition did not settle'); await new Promise(resolve => setTimeout(resolve, 5)); } }
-function fixture(parent = new Parent(), tools = () => [] as ReturnType<typeof createSubagentTools>, maxConcurrent?: number) {
+function fixture(parent = new Parent(), tools = () => [] as ReturnType<typeof createSubagentTools>, maxConcurrent?: number, extra: Partial<SubagentManagerOptions> = {}) {
   const writers = new Map<string, ChildWriter>(); const errors: unknown[] = []; const spooled: string[] = []; let notifications = 0;
   const manager = new SubagentManager({ writer: parent, ...(maxConcurrent === undefined ? {} : { maxConcurrent }), acquire: async id => {
     let writer = writers.get(id);
     if (!writer || writer.signal.aborted) { const next = new ChildWriter(parent, id); if (writer) next.state = structuredClone(writer.state); writer = next; writers.set(id, writer); }
     return writer;
-  }, tools, writeOverflowInput: async (_id, content) => { spooled.push(content); return { path: '/tmp/synthetic-full-result.txt', bytes: Buffer.byteLength(content) }; }, memoryRoot: '/tmp/synthetic-main-Memory', onCompletion: () => { notifications++; }, onFailure: error => errors.push(error) });
+  }, tools, writeOverflowInput: async (_id, content) => { spooled.push(content); return { path: '/tmp/synthetic-full-result.txt', bytes: Buffer.byteLength(content) }; }, memoryRoot: '/tmp/synthetic-main-Memory', onCompletion: () => { notifications++; }, onFailure: error => errors.push(error), ...extra });
   return { manager, parent, writers, errors, spooled, notifications: () => notifications };
 }
 const transport = (streamFn: StreamFn) => ({ model, streamFn });
@@ -873,4 +873,128 @@ test('followups before first claim join the same queued task in order and cannot
     assert.ok([...f.parent.followups.values()].every(value => value.status === 'consumed'));
     assert.deepEqual(f.errors, []);
   } finally { release.resolve(); await f.manager.close(); }
+});
+
+
+// ADR 0051: subagent control.
+test('cancel frees a slot held by a tool that ignores abort after a bounded wait; the abandoned work writes nothing and a queued followup starts once it stops', async () => {
+  const release = deferred(); let effects = 0; const closed: string[] = [];
+  const f = fixture(new Parent(), () => [effectTool(async () => { effects++; await release.promise; return result; })], 1,
+    { cancelSettleMs: 50, closeOwner: async streamId => { closed.push(streamId); return { closed: 2, kept: 0 }; } });
+  let calls = 0;
+  const t = transport(() => ++calls === 1 ? streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'stuck-effect', name: 'effect', arguments: {} }] }) : streamOf(assistant(`done ${calls}`)));
+  try {
+    const child = await f.manager.spawn('zombie-spawn', 'Get stuck', 'none', t); await until(() => effects === 1);
+    const cancelled = await f.manager.cancel(child.id) as { cleanup: { closedSessions: number } };
+    assert.deepEqual(closed, [f.parent.children[0]!.streamId], 'only the cancelled child stream is cleaned up');
+    assert.equal(cancelled.cleanup.closedSessions, 2);
+    assert.equal(f.manager.hasActiveWork, true, 'the slot is held during the bounded settle wait');
+    await until(() => !f.manager.hasActiveWork);
+    assert.equal(f.manager.abandonedCount, 1); assert.equal(f.manager.activeCount, 0);
+    const turn = structuredClone(f.parent.children[0]!.turns[0]);
+    assert.equal(turn!.status, 'cancelled');
+    // The freed slot admits new work, and a followup to the abandoned child waits for it to stop.
+    const fresh = await f.manager.spawn('after-zombie', 'Fresh work', 'none', t);
+    await until(() => f.parent.children[1]!.turns[0]!.status === 'completed');
+    await f.manager.send('zombie-followup', child.id, 'Continue after checking', t);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(f.parent.children[0]!.turns[1]!.status, 'queued');
+    release.resolve();
+    await until(() => f.parent.children[0]!.turns[1]?.status === 'completed');
+    assert.equal(f.manager.abandonedCount, 0);
+    assert.deepEqual(f.parent.children[0]!.turns[0], turn, 'abandoned work never overwrote the cancelled turn');
+    assert.ok(fresh.id); assert.deepEqual(f.errors, []);
+  } finally { release.resolve(); await f.manager.close(); }
+});
+
+test('close waits a bounded time per child and does not hang on work that ignores abort', async () => {
+  const never = deferred(); let effects = 0;
+  const f = fixture(new Parent(), () => [effectTool(async () => { effects++; await never.promise; return result; })], undefined, { closeWaitMs: 50 });
+  const t = transport(() => streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: randomUUID(), name: 'effect', arguments: {} }] }));
+  await f.manager.spawn('hung-close', 'Hang', 'none', t); await until(() => effects === 1);
+  const started = Date.now(); await f.manager.close();
+  assert.ok(Date.now() - started < 2_000, 'close is bounded');
+  assert.equal(f.parent.children[0]!.turns[0]!.status, 'interrupted');
+  never.resolve();
+});
+
+test('no new activity for the stall window emits one stall per episode; activity resets idle; status shows lastActivityAt and currentFor; the model snapshot lists the child', async () => {
+  const release = deferred(); let effects = 0; const stalls: SubagentStall[] = [];
+  const f = fixture(new Parent(), () => [effectTool(async () => { effects++; await release.promise; return result; })], undefined,
+    { stallMs: 60, stallCheckMs: 10, onStalled: async stall => { stalls.push(stall); } });
+  let calls = 0;
+  const t = transport(() => ++calls === 1 ? streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'quiet-effect', name: 'effect', arguments: {} }] }) : streamOf(assistant('finished')));
+  try {
+    const child = await f.manager.spawn('stall-spawn', 'Quiet work', 'none', t, 'Quiet build'); await until(() => effects === 1);
+    const running = f.manager.running();
+    assert.equal(running.length, 1); assert.equal(running[0]!.title, 'Quiet build');
+    const status = await f.manager.status(child.id) as { lastActivityAt: string; currentFor: { kind: string; name: string; ms: number } | null };
+    assert.ok(Date.parse(status.lastActivityAt) > 0); assert.equal(status.currentFor?.kind, 'tool'); assert.equal(status.currentFor?.name, 'effect');
+    await until(() => stalls.length === 1);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(stalls.length, 1, 'deduplicated while still idle');
+    assert.equal(stalls[0]!.childId, child.id); assert.equal(stalls[0]!.episode, 1); assert.equal(stalls[0]!.current?.name, 'effect');
+    // Process output on the child's own stream counts as activity and starts a new episode.
+    f.manager.noteActivity(f.parent.children[0]!.streamId);
+    f.manager.noteActivity('another-stream');
+    assert.ok(f.manager.running()[0]!.idleForMs < 50);
+    await until(() => stalls.length === 2);
+    assert.equal(stalls[1]!.episode, 2);
+    release.resolve(); await until(() => f.parent.children[0]!.turns[0]!.status === 'completed');
+    assert.deepEqual(f.manager.running(), []);
+  } finally { release.resolve(); await f.manager.close(); }
+});
+
+test('streamed model events count as child activity', async () => {
+  const stalls: SubagentStall[] = []; const gate = deferred();
+  const f = fixture(new Parent(), () => [], undefined, { stallMs: 80, stallCheckMs: 10, onStalled: async stall => { stalls.push(stall); } });
+  // A long streamed answer: one event every 20 ms for ~300 ms never goes idle.
+  const t = transport(() => { const stream = createAssistantMessageEventStream(); void (async () => {
+    const partial = assistant('');
+    stream.push({ type: 'start', partial });
+    for (let i = 0; i < 15; i++) { await new Promise(resolve => setTimeout(resolve, 20)); stream.push({ type: 'text_delta', contentIndex: 0, delta: 'x', partial }); }
+    stream.push({ type: 'done', reason: 'stop', message: assistant('streamed') }); gate.resolve();
+  })(); return stream; });
+  try {
+    await f.manager.spawn('streaming', 'Stream', 'none', t);
+    await gate.promise; await until(() => f.parent.children[0]!.turns[0]!.status === 'completed');
+    assert.deepEqual(stalls, []);
+  } finally { await f.manager.close(); }
+});
+
+test('a balance refusal marks the child turn with the balance reason, notifies the owner, and blocked work is refused', async () => {
+  let balance: unknown = null; let blocked: string | null = null;
+  const f = fixture(new Parent(), () => [], undefined, {
+    balanceFailure: error => error instanceof Error && error.message === 'BALANCE_TERMINAL' ? { status: 402, requestId: 'req-402' } : null,
+    onBalance: failure => { balance = failure; blocked = 'paused for balance'; },
+    blocked: () => blocked });
+  const t = transport(() => streamOf({ ...assistant(), stopReason: 'error', errorMessage: 'BALANCE_TERMINAL' }));
+  try {
+    await f.manager.spawn('balance-child', 'Work', 'none', t);
+    await until(() => f.parent.children[0]!.turns[0]!.status === 'failed');
+    const text = f.parent.children[0]!.turns[0]!.result!.text;
+    assert.match(text, /insufficient balance \(HTTP 402, request req-402\)/); assert.match(text, /until the user tops up/);
+    assert.deepEqual(balance, { status: 402, requestId: 'req-402' });
+    await assert.rejects(f.manager.spawn('blocked-spawn', 'More', 'none', t), (error: unknown) => error instanceof SubagentError && error.code === 'paused');
+    await assert.rejects(f.manager.send('blocked-send', f.parent.children[0]!.id, 'More', t), (error: unknown) => error instanceof SubagentError && error.code === 'paused');
+    // The recorded spawn call still returns its receipt (recovery is not blocked).
+    assert.equal((await f.manager.spawn('balance-child', 'Work', 'none', t)).id, f.parent.children[0]!.id);
+    blocked = null;
+    await f.manager.spawn('after-topup', 'Work', 'none', transport(() => streamOf(assistant('ok'))));
+    await until(() => f.parent.children[1]?.turns[0]?.status === 'completed');
+  } finally { await f.manager.close(); }
+});
+
+test('status keeps output small: only the newest turn carries recent activity events', async () => {
+  const f = fixture();
+  try {
+    const t = transport(() => streamOf(assistant('ok')));
+    const child = await f.manager.spawn('small-1', 'One', 'none', t);
+    await until(() => f.parent.children[0]!.turns[0]!.status === 'completed');
+    await f.manager.send('small-2', child.id, 'Two', t);
+    await until(() => f.parent.children[0]!.turns[1]?.status === 'completed');
+    const status = await f.manager.status(child.id) as { turns: Array<{ activity: { events: unknown[]; omittedEvents?: number } }>; lastActivityAt: string | null; currentFor: unknown };
+    assert.equal(status.turns.length, 2); assert.deepEqual(status.turns[0]!.activity.events, []); assert.equal(typeof status.turns[0]!.activity.omittedEvents, 'number');
+    assert.ok(status.turns[1]!.activity.events.length <= 8); assert.equal(status.currentFor, null);
+  } finally { await f.manager.close(); }
 });
