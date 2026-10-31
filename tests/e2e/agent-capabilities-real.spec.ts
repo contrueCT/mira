@@ -3,7 +3,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile, realpath } from 'node:
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
-import { getCurrentSystemPrompt, getCurrentTools, type TranscriptContext } from '@earendil-works/pi-ai';
+import { getCurrentSystemPrompt, getCurrentTools, type JsonObject, type TranscriptContext } from '@earendil-works/pi-ai';
 import { createLocalHttp, LocalWebService, WebSettingsStore } from '@mira/server';
 import { readExtensionConfiguration } from '@mira/extension-host';
 import { createTestDatabase } from '../integration/database.mts';
@@ -294,6 +294,43 @@ test('long child compacts through real tools and PostgreSQL, remains inspectable
   } finally { summaryRelease.resolve(); await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+
+test('a child question, its answer and subagent_close stay out of the chat in a real browser over PostgreSQL', async ({ page }) => {
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-child-report-browser-'));
+  let app: ReturnType<typeof createLocalHttp> | undefined; let service: LocalWebService | undefined; let childId = '';
+  const resultOf = (context: TranscriptContext, id: string) => { const found = context.messages.find(message => message.role === 'toolResult' && message.toolCallId === id); return found ? JSON.stringify(found.content) : null; };
+  const tool = (id: string, name: string, args: JsonObject) => streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id, name, arguments: args }] });
+  const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'report-browser-parent', sourceDirectory,
+    workingDirectory: root, miraHome: root, memoryRoot: path.join(root, 'Memory'), spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'),
+    synthetic: true, syntheticModel: { ...model, contextWindow: 100_000 }, dreaming: { enabled: false }, autoCompaction: { enabled: false } };
+  try {
+    service = await LocalWebService.open({ ...options, syntheticStream: async (_m, context) => {
+      const text = JSON.stringify(context.messages);
+      if (getCurrentSystemPrompt(context.messages).includes('task-scoped worker')) {
+        if (text.includes('ANSWER_BLUE')) return resultOf(context, 'r2') === null ? tool('r2', 'task_report', { summary: 'REPORT_DONE_BLUE wrote /tmp/x.txt' }) : streamOf(assistant('done'));
+        return resultOf(context, 'r1') === null ? tool('r1', 'task_report', { summary: 'REPORT_SUMMARY_SECRET', question: 'QUESTION_WHICH_COLOR?' }) : streamOf(assistant('waiting'));
+      }
+      const spawned = resultOf(context, 'p-spawn');
+      if (spawned === null) return tool('p-spawn', 'subagent_spawn', { title: '问颜色', task: 'Ask which colour to use', fork: 'none' });
+      childId = /\\"id\\":\\"([0-9a-f-]{36})\\"/.exec(spawned)?.[1] ?? childId;
+      if (text.includes('QUESTION_WHICH_COLOR?') && resultOf(context, 'p-send') === null) return tool('p-send', 'subagent_send', { id: childId, message: 'ANSWER_BLUE' });
+      if (text.includes('REPORT_DONE_BLUE') && resultOf(context, 'p-close') === null) return tool('p-close', 'subagent_close', { id: childId });
+      if (resultOf(context, 'p-close') !== null) return streamOf(assistant('颜色定好了，用蓝色。'));
+      return streamOf(assistant('NO_REPLY'));
+    } });
+    app = createLocalHttp({ backend: service, port, assetsDirectory: path.join(sourceDirectory, 'apps/web/dist') });
+    await app.listen({ port, host: '127.0.0.1' });
+    await page.goto(origin);
+    await page.getByLabel('给 Mira 发消息', { exact: true }).fill('帮我定个颜色。');
+    await page.getByRole('button', { name: '发送消息', exact: true }).click();
+    await expect(page.getByText('颜色定好了，用蓝色。', { exact: true })).toBeVisible({ timeout: 60_000 });
+    await expectConversationOnly(page);
+    const chat = page.locator('.mira-app');
+    for (const hidden of ['REPORT_SUMMARY_SECRET', 'QUESTION_WHICH_COLOR', 'REPORT_DONE_BLUE', 'ANSWER_BLUE', 'NO_REPLY', 'task_report', 'subagent']) await expect(chat).not.toContainText(hidden);
+    expect((await db.admin.query('SELECT count(*)::int AS n FROM subagent_closures')).rows[0].n).toBe(1);
+    expect((await db.admin.query("SELECT result->'report'->>'question' AS q FROM subagent_turns ORDER BY sequence")).rows.map(row => row.q)).toEqual(['QUESTION_WHICH_COLOR?', null]);
+  } finally { await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
 
 test('reasoning saved in the real browser reaches credential-bound SDK payloads and survives restart', async ({ page }, testInfo) => {
   const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-reasoning-browser-'));
