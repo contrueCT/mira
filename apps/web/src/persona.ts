@@ -26,6 +26,14 @@ export function statusIdentity(status: { identity?: { name: string; ring: string
   const avatar = typeof value.avatar === 'string' && /^[a-f0-9]{64}$/.test(value.avatar) ? value.avatar : null;
   return { name: value.name, ring, avatar };
 }
+/** Ring and image are mutually exclusive: an uploaded image shows alone (neutral
+ * placeholder while it loads); the ring colour appears only without an image or if it fails to load. */
+export type AvatarMark = { mode: 'image'; url: string } | { mode: 'pending' } | { mode: 'ring'; color: string };
+export function avatarMark(ring: string, avatar: string | null, url: string | null, failed: boolean): AvatarMark {
+  if (avatar && url) return { mode: 'image', url };
+  if (avatar && !failed) return { mode: 'pending' };
+  return { mode: 'ring', color: (personaRings as readonly string[]).includes(ring) ? ringColors[ring as PersonaRing] : ringColors.lavender };
+}
 export const defaultLimits: PersonaLimits = { name: 24, userCallName: 24, identity: 600, personality: 600, speakingStyle: 600, boundaries: 400, examples: 3, exampleText: 200, extra: 1000, total: 4000, avatarBytes: 2 * 1_048_576 };
 
 export const blankPersona = (): Persona => ({ name: 'Mira', ring: 'lavender', avatar: null, userCallName: '', language: 'auto', identity: '', personality: '', speakingStyle: '', boundaries: '', examples: [], extra: '' });

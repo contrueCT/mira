@@ -13,7 +13,7 @@ import { SettingsDialog } from './SettingsDialog.tsx';
 import { BrowserDialog } from './BrowserDialog.tsx';
 import { createMemoryRequest, readMemoryRequest, recoverMemoryRequest, writeMemoryRequest } from './management.ts';
 import type { MemoryRequestIdentity } from './management.ts';
-import { PersonaAvatar, useAvatarUrl } from './PersonaAvatar.tsx';
+import { PersonaAvatar, useAvatarImage } from './PersonaAvatar.tsx';
 import { statusIdentity } from './persona.ts';
 import { composerBudget, envelopeBytes, MESSAGE_BODY_LIMIT } from './composer.ts';
 import { announce, applicableUpdates, arrivals, confirmsPending, dateLabel, replyReference, replySnippet, untilNextLocalDay, timelineSpacing, timelineView, quoteLookupNotice, QUOTE_LOOKUP_CANCELLED, latestPagination, loadOlderHistory, locatedPagination, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
@@ -40,7 +40,7 @@ export function App() {
   const [dismissedErrorId, setDismissedErrorId] = useState<string | null>(() => { try { return window.sessionStorage.getItem('mira.dismissedErrorId'); } catch { return null; } });
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const identity = statusIdentity(status);
-  const avatarUrl = useAvatarUrl(identity.avatar);
+  const avatarImage = useAvatarImage(identity.avatar); const avatarUrl = avatarImage.url;
   const identityNameRef = useRef(identity.name); identityNameRef.current = identity.name;
   const [loading, setLoading] = useState(true);
   const [connectionError, setConnectionError] = useState<ErrorInfo | null>(null);
@@ -453,7 +453,7 @@ export function App() {
       <button type="button" className="skip-link" onClick={() => { textareaRef.current?.focus(); }}>跳到输入框</button>
       <header className="app-header">
         <div className="identity" aria-label={identity.name}>
-          <PersonaAvatar identity={identity} url={avatarUrl} />
+          <PersonaAvatar identity={identity} image={avatarImage} />
           <h1>{identity.name}</h1>
           <p className="identity-detail"><span className={`status-dot ${status?.state === 'working' ? 'working' : ''} ${connectionError || status?.state === 'error' ? 'warning' : ''}`} />{stateLabel}<span className="detail-divider">·</span>{status?.model ?? (status?.mode === 'synthetic' ? '模拟模式' : '本地连接')}{status?.mode === 'synthetic' && status.model ? <span className="mode-label">模拟</span> : null}</p>
         </div>
@@ -489,7 +489,7 @@ export function App() {
                 <article tabIndex={item.id === rovingId ? 0 : -1} onFocus={() => setActiveMessageId(item.id)} onKeyDown={moveMessageFocus} data-message-id={item.id} className={`message-row ${item.role}${item.notice === 'persona' ? ' persona-notice' : ''} ${highlightId === item.id ? 'quote-highlight' : ''}`} aria-label={item.source ? `${item.source.label} 扩展消息` : item.role === 'user' ? '你的消息' : item.role === 'assistant' ? `${identity.name} 的消息` : item.notice === 'persona' ? '人设变更' : '服务通知'}>
                   {item.reply && <button type="button" className="reply-quote" tabIndex={rowTab} aria-label="查看引用的消息" title={replySnippet(item.reply)} disabled={quoteSearch} onClick={() => { void jumpToReply(item.reply!.messageId); }}><span aria-hidden="true">↪</span><span>{replySnippet(item.reply)}</span></button>}
                   <div className="message-content-line">
-                  {item.role === 'assistant' && avatarUrl && (items[index - 1]?.role !== 'assistant' || spacing.divider ? <PersonaAvatar identity={identity} url={avatarUrl} className="message-avatar" /> : <span className="message-avatar-spacer" aria-hidden="true" />)}
+                  {item.role === 'assistant' && avatarUrl && (items[index - 1]?.role !== 'assistant' || spacing.divider ? <PersonaAvatar identity={identity} image={avatarImage} className="message-avatar" /> : <span className="message-avatar-spacer" aria-hidden="true" />)}
                   <div className="message-payload">
                   {item.text && <div className="message-bubble">{item.text}</div>}
                   {!!item.attachments?.length && <AttachmentList attachments={item.attachments} onPreview={openPreview} tabIndex={rowTab} />}

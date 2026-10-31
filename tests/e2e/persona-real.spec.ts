@@ -20,8 +20,11 @@ function avatarPng(size = 96): Buffer {
   for (let y = 0; y < size; y++) {
     const row = Buffer.alloc(1 + size * 4); row[0] = 0;
     for (let x = 0; x < size; x++) {
-      const t = (x + y) / (2 * size);
-      let [r, g, b] = [Math.round(233 - 16 * t), Math.round(207 - 3 * t), Math.round(216 + 20 * t)];
+      // A full-bleed scene (sky over a hill), deliberately not concentric, so a screenshot cannot be
+      // mistaken for a coloured ring around the picture.
+      const t = y / size;
+      let [r, g, b] = [Math.round(120 + 90 * t), Math.round(176 + 50 * t), 236];
+      if (y > size * (0.78 - 0.12 * Math.sin(x / size * Math.PI))) [r, g, b] = [118, 172, 104];
       const dx = x - size / 2, dy = y - size / 2;
       if (Math.hypot(dx, dy) < size * 0.32) [r, g, b] = [250, 236, 226];
       if (Math.hypot(x - size * 0.4, y - size * 0.45) < size * 0.04 || Math.hypot(x - size * 0.6, y - size * 0.45) < size * 0.04) [r, g, b] = [70, 62, 92];
@@ -49,6 +52,11 @@ async function openPersona(page: Page) {
   await page.getByRole('tab', { name: '人设', exact: true }).click();
   await expect(page.getByRole('tabpanel', { name: '人设' })).toBeVisible();
 }
+/** Computed border width and colour of an identity mark: an image must have no ring at all. */
+const ring = (page: Page, selector: string) => page.locator(selector).first().evaluate(element => {
+  const style = getComputedStyle(element);
+  return { width: parseFloat(style.borderTopWidth), color: style.borderTopColor, mark: (element as HTMLElement).dataset['mark'] };
+});
 const shot = async (page: Page, name: string) => { await mkdir(shots, { recursive: true }); await page.screenshot({ path: path.join(shots, name) }); };
 
 // Production HTTP, PostgreSQL, Wake/runtime and persona files run unchanged; only
@@ -110,6 +118,17 @@ test('persona tab: preset, avatar upload, save notice, conflict-tidy request and
     await page.locator('#persona-avatar-file').setInputFiles({ name: 'avatar.png', mimeType: 'image/png', buffer: avatarPng() });
     await expect(panel.locator('.persona-ring img')).toBeVisible();
     await expect(panel.getByRole('button', { name: '更换图片' })).toBeVisible();
+    // Image replaces the ring: no coloured border, no colour picker, a short note with removal.
+    expect(await ring(page, '.persona-ring')).toMatchObject({ width: 0, mark: 'image' });
+    await expect(panel.getByRole('radiogroup', { name: '头像环颜色' })).toHaveCount(0);
+    await expect(panel.getByText('使用上传的图片')).toBeVisible();
+    await panel.getByRole('button', { name: '移除图片' }).click();
+    await expect(panel.getByRole('radio', { name: '玫瑰' })).toHaveAttribute('aria-checked', 'true');
+    expect(await ring(page, '.persona-ring')).toMatchObject({ width: 16, color: 'rgb(233, 207, 216)', mark: 'ring' });
+    await page.locator('#persona-avatar-file').setInputFiles({ name: 'avatar.png', mimeType: 'image/png', buffer: avatarPng() });
+    await expect(panel.locator('.persona-ring img')).toBeVisible();
+    await expect(panel.getByRole('radiogroup', { name: '头像环颜色' })).toHaveCount(0);
+    await shot(page, 'persona-tab-image-desktop.png');
     const avatarFiles = await import('node:fs/promises').then(fs => fs.readdir(path.join(root, 'persona-avatars')));
     expect(avatarFiles).toHaveLength(1); expect(avatarFiles[0]).toMatch(/^[a-f0-9]{64}\.png$/);
     expect(await panel.locator('.persona-ring img').getAttribute('src')).toMatch(/^blob:/);
@@ -119,6 +138,7 @@ test('persona tab: preset, avatar upload, save notice, conflict-tidy request and
     await expect(panel.getByRole('status')).toContainText('已请小凛整理冲突的记忆');
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('小凛');
     await expect(page.locator('.app-header .mira-ring img')).toBeVisible();
+    expect(await ring(page, '.app-header .mira-ring')).toMatchObject({ width: 0, mark: 'image' });
     expect((await stat(path.join(root, 'persona.json'))).mode & 0o777).toBe(0o600);
     const saved = JSON.parse(await readFile(path.join(root, 'persona.json'), 'utf8'));
     expect(saved.current.name).toBe('小凛'); expect(saved.current.presetId).toBe('tsundere');
@@ -150,6 +170,7 @@ test('persona tab: preset, avatar upload, save notice, conflict-tidy request and
     await expect(page.locator('.message-bubble', { hasText: replies[2]! })).toBeVisible();
     expect(profiles[2]).toContain('Additional notes: 早上第一条消息可以简短问候。');
     await expect(page.locator('.message-row.assistant .message-avatar img').first()).toBeVisible();
+    expect(await ring(page, '.message-row.assistant .message-avatar')).toMatchObject({ width: 0, mark: 'image' });
     await shot(page, 'persona-chat-notice-avatar-desktop.png');
 
     await page.setViewportSize({ width: 390, height: 844 });
@@ -157,6 +178,16 @@ test('persona tab: preset, avatar upload, save notice, conflict-tidy request and
     await shot(page, 'persona-chat-notice-avatar-phone.png');
     await openPersona(page);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(await ring(page, '.app-header .mira-ring')).toMatchObject({ width: 0, mark: 'image' });
+    expect(await ring(page, '.message-row.assistant .message-avatar')).toMatchObject({ width: 0, mark: 'image' });
+    expect(await ring(page, '.persona-ring')).toMatchObject({ width: 0, mark: 'image' });
+    await expect(page.getByRole('radiogroup', { name: '头像环颜色' })).toHaveCount(0);
+    await shot(page, 'persona-tab-image-phone.png');
+    await page.getByRole('tabpanel', { name: '人设' }).getByRole('button', { name: '移除图片' }).click();
+    await expect(page.getByRole('radio', { name: '玫瑰' })).toHaveAttribute('aria-checked', 'true');
+    expect(await ring(page, '.persona-ring')).toMatchObject({ width: 13, mark: 'ring' });
+    await page.getByRole('tabpanel', { name: '人设' }).getByRole('button', { name: '撤销修改' }).click();
+    await expect(page.getByText('使用上传的图片')).toBeVisible();
     await shot(page, 'persona-tab-phone.png');
     await page.getByRole('tabpanel', { name: '人设' }).getByRole('button', { name: '技术搭档', exact: true }).click();
     await shot(page, 'persona-preset-applied-phone.png');

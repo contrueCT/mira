@@ -160,13 +160,14 @@ export function PersonaPanel({ active, sending, storageError, onSaved, onMemoryS
             <PersonaAvatar identity={{ name, ring: draft.ring, avatar: draft.avatar }} className="persona-ring" />
             <input ref={fileRef} id="persona-avatar-file" className="sr-only" type="file" accept={avatarTypes.join(',')} onChange={event => { void chooseAvatar(event.target.files?.[0]); }} />
             <button type="button" className="text-button" disabled={uploading} onClick={() => fileRef.current?.click()}>{uploading ? '正在上传…' : draft.avatar ? '更换图片' : '上传图片'}</button>
-            {draft.avatar && <button type="button" className="text-button persona-avatar-remove" onClick={() => edit({ avatar: null })}>移除图片</button>}
           </div>
           <div>
             <label className="field-label" htmlFor="persona-name">名字 <span className="optional">显示在顶部，也是它自称的名字</span></label>
             <input id="persona-name" value={draft.name} maxLength={limits.name * 2} autoComplete="off" onChange={event => edit({ name: event.target.value })} />
-            <div className="ring-swatches" role="radiogroup" aria-label="头像环颜色"><span className="lbl" aria-hidden="true">头像环</span>{personaRings.map(ring => <button key={ring} type="button" role="radio" aria-checked={draft.ring === ring} aria-pressed={draft.ring === ring} aria-label={ringLabels[ring]} title={ringLabels[ring]} style={{ ['--c' as string]: ringColors[ring] }} onClick={() => edit({ ring })} />)}</div>
-            <p className="field-hint persona-avatar-hint">{draft.avatar ? '上传的图片显示在顶部；没有图片时显示头像环。' : `可上传 PNG、JPEG 或 WebP，不超过 ${Math.round(limits.avatarBytes / 1_048_576)} MB。`}</p>
+            {draft.avatar
+              ? <div className="persona-image-note"><span>使用上传的图片</span><button type="button" className="text-button" onClick={() => edit({ avatar: null })}>移除图片</button></div>
+              : <div className="ring-swatches" role="radiogroup" aria-label="头像环颜色"><span className="lbl" aria-hidden="true">头像环</span>{personaRings.map(ring => <button key={ring} type="button" role="radio" aria-checked={draft.ring === ring} aria-pressed={draft.ring === ring} aria-label={ringLabels[ring]} title={ringLabels[ring]} style={{ ['--c' as string]: ringColors[ring] }} onClick={() => edit({ ring })} />)}</div>}
+            <p className="field-hint persona-avatar-hint">{draft.avatar ? '有图片时只显示图片；移除后恢复之前选的头像环颜色。' : `也可上传 PNG、JPEG 或 WebP 图片（不超过 ${Math.round(limits.avatarBytes / 1_048_576)} MB），上传后替代头像环。`}</p>
             {avatarError && <p className="inline-error" role="alert">{avatarError}</p>}
           </div>
         </div>

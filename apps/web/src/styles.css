@@ -467,9 +467,12 @@ button:disabled { opacity: .48; }
 
 /* ADR 0046 人设: settings tab, identity marks and the persona-change divider.
  * Ring colours are the identity palette (not the accent); danger red is not used here. */
-.mira-ring.has-avatar, .persona-ring.has-avatar, .message-avatar { border-width: 3px; overflow: hidden; background: #f4f5f8; }
+.mira-ring.has-avatar, .persona-ring.has-avatar, .message-avatar.has-avatar { border: 0; overflow: hidden; background: none; }
+.mira-ring.avatar-pending, .persona-ring.avatar-pending, .message-avatar.avatar-pending { background: #f1f2f6; }
 .mira-ring img, .persona-ring img, .message-avatar img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
-.message-avatar { flex: 0 0 28px; width: 28px; height: 28px; border-style: solid; border-radius: 50%; align-self: flex-start; margin-top: 2px; }
+.message-avatar { flex: 0 0 28px; width: 28px; height: 28px; border-radius: 50%; align-self: flex-start; margin-top: 2px; }
+.persona-image-note { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 12px; color: #5d6676; min-height: 26px; }
+.persona-image-note .text-button { font-size: 12px; padding: 0; }
 .message-avatar-spacer { flex: 0 0 28px; }
 .message-row.notice.persona-notice { align-items: stretch; margin: 24px 0 10px; }
 .message-row.notice.persona-notice .message-content-line { max-width: 100%; width: 100%; }
@@ -493,7 +496,6 @@ button:disabled { opacity: .48; }
 .persona-identity { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 18px; align-items: center; padding: 16px; margin: 18px 0 4px; border: 1px solid #e9ecf1; background: #fbfcfe; border-radius: 13px; }
 .persona-avatar-column { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .persona-avatar-column .text-button { font-size: 11px; padding: 2px 0; }
-.persona-avatar-remove { color: #707485; }
 .persona-ring { width: 58px; height: 58px; border: 16px solid var(--lavender); border-radius: 50%; margin-bottom: 6px; }
 .persona-identity .field-label { margin-top: 0; }
 .persona-avatar-hint { margin: 8px 0 0; }

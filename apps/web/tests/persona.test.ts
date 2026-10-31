@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { avatarFileProblem, blankPersona, conflictMemoryRequest, draftFrom, draftProblem, isDefaultDraft, normalizedDraft, personaPayload, renderedLength, samePersona, statusIdentity, type Persona } from '../src/persona.ts';
+import { avatarFileProblem, avatarMark, blankPersona, conflictMemoryRequest, draftFrom, draftProblem, isDefaultDraft, normalizedDraft, personaPayload, renderedLength, samePersona, statusIdentity, type Persona } from '../src/persona.ts';
 import { createMemoryRequest, MEMORY_REQUEST_PREFIX } from '../src/management.ts';
 
 const partner = (): Persona => ({ ...blankPersona(), name: '小满', ring: 'sky', identity: '软件生命', examples: [{ user: '在吗', reply: '在。' }], presetId: 'partner' });
@@ -55,4 +55,16 @@ test('status identity falls back to Mira and drops malformed fields', () => {
   assert.deepEqual(statusIdentity({ identity: { name: '小满', ring: 'red', avatar: '../x' } }), { name: '小满', ring: 'lavender', avatar: null });
   assert.deepEqual(statusIdentity({ identity: { name: ' ', ring: 'sky', avatar: null } }), { name: 'Mira', ring: 'lavender', avatar: null });
   assert.deepEqual(normalizedDraft(partner()).name, '小满');
+});
+
+test('avatar image and ring colour are mutually exclusive, and the ring returns after removal', () => {
+  assert.deepEqual(avatarMark('rose', 'a'.repeat(64), 'blob:x', false), { mode: 'image', url: 'blob:x' });
+  assert.deepEqual(avatarMark('rose', 'a'.repeat(64), null, false), { mode: 'pending' }, 'no ring flash while the image loads');
+  assert.deepEqual(avatarMark('rose', 'a'.repeat(64), null, true), { mode: 'ring', color: '#e9cfd8' }, 'a failed image falls back to the ring');
+  assert.deepEqual(avatarMark('rose', null, null, false), { mode: 'ring', color: '#e9cfd8' });
+  assert.deepEqual(avatarMark('bogus', null, null, false), { mode: 'ring', color: '#bfc2d3' });
+  // Removing the image keeps the stored ring choice.
+  const withImage = { ...partner(), ring: 'rose' as const, avatar: 'a'.repeat(64) };
+  const removed = personaPayload({ ...withImage, avatar: null })!;
+  assert.equal(removed.ring, 'rose'); assert.equal(removed.avatar, null);
 });
