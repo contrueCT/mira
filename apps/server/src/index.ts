@@ -162,7 +162,9 @@ export { PersonaStore, PersonaError, parsePersona, renderPersona, personaPromptV
 export { personaPresets } from './persona-presets.ts';
 export { registerPersonaHttp, type PersonaBackend, type PersonaApplied } from './persona-http.ts';
 export { WebSettingsStore, WebSettingsError, parseWebSettings, parseWebSettingsWrite, hasSelectedWebApiKey, webSettingsMaxBytes, type WebSettings, type WebSettingsWrite } from './web-settings.ts';
-export { LocalWebService, type WebServiceOptions } from './web-service.ts';
+export { LocalWebService, readMemoryRefresh, type WebServiceOptions } from './web-service.ts';
+export { MiraLifeHost, SimulatedCrash, restoreArchivedLife, resetJournalFile, memoryRefreshFile, type LifeHostOptions, type LifeBackend, type ResetBackend, type ResetPreview, type ResetView, type ResetScope, type ResetState, type ResetStep } from './life-host.ts';
+export { registerResetHttp, type ResetHttpBackend } from './reset-http.ts';
 export { browserLaunchEnvironment } from './browser-launch.ts';
 export { localDatabaseUrl } from './web-config.ts';
 

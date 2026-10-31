@@ -54,3 +54,4 @@
 - Timeline replies: `replies.ts` resolves only same-Mira public main messages by canonical History UUID. Browser submits only `replyToMessageId`; frozen quote/source joins immutable Event/live input. Main-only `send_reply` publishes through successful durable tool outcome, never a channel send or mutable next-response flag. Both Timeline HTTP routes whitelist `reply`; child/internal/notice records remain unavailable as targets.
 
 - Web spool 写入显式使用 `miraHome` 为私有 managed data root，默认 `~/.mira/wake-input` 可存放输入及附件/回复索引；必须严格包含 spool，不能是 HOME/其祖先或与源码互相包含，保留链接、所有者和不可变发布保护。demo 仍要求显式源码/HOME 外 spool。
+- 记忆重置（ADR 0047）：`life-host.ts` 的 `MiraLifeHost` 持有当前 `LocalWebService`、预检令牌与 `MIRA_HOME/reset-journal.json`；HTTP 只经委托 backend 访问服务，重置期间返回 503。改动重置步骤时同步更新崩溃注入测试 `tests/recovery/memory-reset-service.test.mts`；旧生命只经 `pnpm life` 命令行恢复。

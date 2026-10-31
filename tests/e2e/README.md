@@ -12,6 +12,8 @@ Playwright 在 127.0.0.1:3211 启动 `fixture-server.mts`，测试发送/恢复�
 
 `pnpm test:management:e2e` 为独立真实管理链路 gate，同样强制隔离 PostgreSQL 与 Chromium。测试从设置 UI 提交记忆请求，核对实际 HTTP/Event/Wake、普通 read/edit 工具、Memory 文件、Git commit 与 lineage；关闭重开、重复点击、澄清不修改、运行记录、窄屏与重启冻结快照分别断言。另一条测试通过设置操作真实扩展启停/重载/配置/已有 stage 更新回滚，实际模型请求包含 ContextProvider，真实工具写入测试文件。模型 stream 为确定性合成，非真实模型质量验收。没有 route.fulfill、内存持久化或伪造工具完成；截图/trace 位于 `test-results/management-real/`。
 
+`pnpm test:memory-reset:e2e` 为记忆重置真实 gate（ADR 0047）：生产 `MiraLifeHost` + HTTP + PostgreSQL + Memory Git，桌面与 390px 窄屏各执行一次“只清空长期记忆”（Git 提交、Timeline 通知）和忙碌中的“从头开始”（停止工作、归档、进程内重启、页面重新加载为空聊天、另一标签页自动刷新）。只模拟模型输出；截图位于 `test-results/memory-reset-real-screenshots/`。
+
 `pnpm test:attachments:e2e` 是附件的独立真实链路 gate。使用隔离 PostgreSQL 18.6、真实 Chromium、生产 HTTP/service/runtime 与不可变附件目录；只有 provider 返回合成响应，不调用真实模型、不读取密钥。真实文件选择器、拖入与粘贴产生上传和 Event，多图顺序在实际 runtime 请求中断言；视频/PDF/Word 首先只保留文件引用，不自动解析。视频在首次提交及重启后都不自动注入；仅模型显式调用真实 read 后，支持的 Gemini 请求才收到该工具结果的原生视频数据。再次重启不重放 read，但保留工具结果可重新水合。实际 `send_attachment` 工具发布本地生成文件，再修改/删除源文件，核对受保护下载及重启后的稳定内容。重复/冲突 receipt、临时上传移除、失败重试、预览关闭/返回/Escape、桌面/窄屏截图与恢复都单列断言。不缺库跳过，不用 UI fixture 代替 PG。运行前 `pnpm build`，设置 `MIRA_TEST_DATABASE_URL`，安装 Chromium；截图/trace 在 `test-results/attachments-real/`。视频素材为合成有效 MP4，图片为有效 PNG，文档为最小有效 PDF/Word，均内嵌确定性测试素材，无外部下载。生产 Google SDK 的请求序列化另由 `tests/unit/model-video-transport.test.mts` 验证；本 gate 不代表 live 视频质量验收。
 
 `pnpm test:live-input:e2e` exercises ordinary sends through real Chromium, HTTP,

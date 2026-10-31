@@ -68,6 +68,7 @@
     "tests/unit/tool-diagnostics.test.mts",
     "tests/unit/extension-result-contract.test.mts",
     "tests/unit/auto-compaction.test.mts",
+    "tests/unit/memory-refresh.test.mts",
     "tests/unit/memory-checkpoint.test.mts",
     "tests/unit/compaction-continuity.test.mts",
     "tests/unit/external-http.test.mts",

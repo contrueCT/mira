@@ -30,3 +30,4 @@
 ## 验证
 
 从仓库根运行 `pnpm check`。`tests/unit/wake-spool.test.mts` 覆盖溢出输入、恢复、并发、冲突及路径安全；`tests/unit/memory-workspace.test.mts` 覆盖 Memory-only、bootstrap、Git 快照与失败恢复，无服务或模型调用。依赖或 exports 改动必须同时检查 `scripts/boundaries.json`，并添加允许/拒绝反例；本包不依赖其他 Mira 包或第三方库。
+- `resetMemoryWorkspace`（ADR 0047）只追加 preserve/clear 两个提交并以 update-ref CAS 推进 HEAD；保持幂等续做，不改写或删除历史。

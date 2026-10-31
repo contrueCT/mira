@@ -523,3 +523,54 @@ button:disabled { opacity: .48; }
   .message-avatar { flex-basis: 24px; width: 24px; height: 24px; }
   .message-avatar-spacer { flex-basis: 24px; }
 }
+
+/* Memory reset (ADR 0047): danger red borrowed from browser.css (--bp-red / ink / line). */
+:root { --danger: #a4473a; --danger-ink: #9a3d2f; --danger-line: #e5c0b8; --danger-tint: #fbf3f1; }
+/* Memory tab: danger zone */
+.danger-zone { margin-top: 26px; border-top: 1px solid var(--line); padding-top: 20px; }
+.danger-zone h3 { font-size: 15px; font-weight: 550; color: #535d6d; margin: 0 0 6px; }
+.danger-zone p { color: #6d7584; font-size: 12px; line-height: 1.8; margin: 0 0 12px; }
+.danger-button { padding: 10px 15px; font-size: 12px; line-height: 1.3; border-radius: 10px; background: #fff; border: 1px solid var(--danger-line); color: var(--danger-ink); }
+.danger-button:hover:not(:disabled) { background: var(--danger-tint); }
+.danger-fill { padding: 10px 15px; font-size: 12px; line-height: 1.3; border-radius: 10px; background: var(--danger); border: 1px solid var(--danger); color: #fff; }
+.danger-fill:disabled { opacity: 1; background: #ece7e6; border-color: #ece7e6; color: #7a6f6d; }
+/* Reset confirmation: a second native modal stacked over Settings */
+.confirm-dialog { border: 1px solid #e1e3e9; border-radius: 20px; padding: 0; width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); color: var(--ink); background: #fff; box-shadow: 0 28px 90px #2f314a40; overflow: hidden; }
+.confirm-dialog[open] { display: flex; flex-direction: column; }
+.confirm-dialog::backdrop { background: #252b3b30; }
+.confirm-head { padding: 22px 24px 4px; }
+.confirm-head h2 { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -.3px; color: #3b3f48; }
+.confirm-head p { margin: 8px 0 0; font-size: 12px; line-height: 1.8; color: #6d7584; }
+.confirm-body { padding: 14px 24px 6px; overflow-y: auto; font-size: 13px; }
+.scope-option { display: grid; grid-template-columns: 18px minmax(0,1fr); gap: 10px; padding: 13px 14px; border: 1px solid #e6e9ef; border-radius: 12px; margin-bottom: 8px; cursor: pointer; }
+.scope-option input { margin: 3px 0 0; accent-color: var(--danger); width: 15px; height: 15px; padding: 0; }
+.scope-option.selected { border-color: var(--danger-line); background: var(--danger-tint); }
+.scope-option strong { display: block; font-size: 13px; font-weight: 550; color: #3f4450; }
+.scope-option span { display: block; font-size: 11.5px; line-height: 1.7; color: #6a7080; margin-top: 2px; }
+.scope-option .tag { display: inline-block; margin-left: 6px; font-size: 10.5px; padding: 1px 6px; border-radius: 5px; background: #edf5f1; color: #567365; font-weight: 500; vertical-align: 1px; }
+.impact { margin: 12px 0 4px; border-radius: 12px; background: #fbfcfe; border: 1px solid #e9ecf1; padding: 12px 14px; }
+.impact h4 { margin: 0 0 6px; font-size: 12px; color: #535d6d; font-weight: 550; }
+.impact ul { margin: 0; padding-left: 0; list-style: none; font-size: 12px; line-height: 1.95; color: #5d6676; }
+.impact li { display: flex; justify-content: space-between; gap: 12px; }
+.impact li b { font-weight: 500; color: #3f4450; font-variant-numeric: tabular-nums; }
+.impact li.kept b { color: #567365; }
+.impact li.gone b { color: var(--danger-ink); }
+.busy-note { background: #faf8f4; border-radius: 9px; padding: 10px 12px; color: #806e52; font-size: 11.5px; line-height: 1.7; margin: 10px 0 0; }
+.confirm-type { margin-top: 14px; }
+.confirm-type .field-label { margin: 0 0 7px; }
+.confirm-type input { border: 1px solid #e3e5eb; color: #50586a; padding: 10px 12px; border-radius: 10px; width: 100%; font-size: 13px; }
+.confirm-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 16px 24px 20px; border-top: 1px solid var(--line); margin-top: 12px; }
+.confirm-foot > span { font-size: 11px; color: #707484; }
+.confirm-foot > div { display: flex; gap: 8px; }
+.scope-option input:disabled + div { opacity: .7; }
+.confirm-foot > span { overflow-wrap: anywhere; min-width: 0; flex: 1 1 auto; }
+.confirm-foot > div { flex-shrink: 0; }
+.confirm-foot button { white-space: nowrap; }
+.confirm-body .persona-check { margin-top: 12px; }
+.confirm-body .inline-error, .confirm-body .field-notice { margin: 10px 0 0; }
+@media (max-width: 600px) {
+  .confirm-dialog { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); border-radius: 18px; }
+  .confirm-head { padding: 18px 18px 2px; } .confirm-body { padding: 12px 18px 4px; } .confirm-foot { padding: 14px 18px 16px; flex-direction: column; align-items: stretch; }
+  .confirm-foot > div { justify-content: flex-end; }
+  .confirm-type input { font-size: 16px; }
+}

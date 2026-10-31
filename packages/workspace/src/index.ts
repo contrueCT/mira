@@ -166,5 +166,5 @@ export async function writeWakeInput(options: WakeInputFileOptions): Promise<Wak
   return { path: filePath, bytes: bytes.byteLength };
 }
 
-export { MemoryReadLimitError, setupMemoryWorkspace, loadMemoryBootstrap, snapshotMemory, boundPromptMemory, loadPromptMemory, MEMORY_PROMPT_BYTES } from './memory.ts';
-export type { MemoryWorkspaceOptions, MemoryWorkspace, MemoryBootstrapOptions, BootstrapFile, MemoryBootstrap, MemorySnapshotOptions, MemorySnapshot } from './memory.ts';
+export { MemoryReadLimitError, setupMemoryWorkspace, loadMemoryBootstrap, snapshotMemory, boundPromptMemory, loadPromptMemory, MEMORY_PROMPT_BYTES, resetMemoryWorkspace, memoryUsage } from './memory.ts';
+export type { MemoryWorkspaceOptions, MemoryWorkspace, MemoryBootstrapOptions, BootstrapFile, MemoryBootstrap, MemorySnapshotOptions, MemorySnapshot, MemoryResetOptions, MemoryResetResult, MemoryUsage } from './memory.ts';

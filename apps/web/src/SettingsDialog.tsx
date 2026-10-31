@@ -15,7 +15,7 @@ import { AccessPanel } from './AccessPanel.tsx';
 import { BrowserPanel } from './BrowserPanel.tsx';
 import type { BuiltinCatalog, CustomConnection, CustomConnectionWrite, CustomModel, CustomProtocol, Discovery, Settings, SettingsWrite, ThinkingLevel } from './types.ts';
 
-interface Props { synthetic: boolean; onClose: () => void; onSaved: () => void; returnFocus: RefObject<HTMLButtonElement | null>; memoryRequest: MemoryPanelProps['request']; memoryPending: MemoryPanelProps['pending']; sending: boolean; storageError: string | null; onMemorySubmit: MemoryPanelProps['onSubmit']; onMemoryRetry: MemoryPanelProps['onRetry'] }
+interface Props { name?: string; synthetic: boolean; onClose: () => void; onSaved: () => void; returnFocus: RefObject<HTMLButtonElement | null>; memoryRequest: MemoryPanelProps['request']; memoryPending: MemoryPanelProps['pending']; sending: boolean; storageError: string | null; onMemorySubmit: MemoryPanelProps['onSubmit']; onMemoryRetry: MemoryPanelProps['onRetry'] }
 type SettingsTab = 'model' | 'persona' | 'memory' | 'extensions' | 'runs' | 'access' | 'browser';
 const tabs: { id: SettingsTab; label: string }[] = [{ id: 'model', label: '模型' }, { id: 'persona', label: '人设' }, { id: 'memory', label: 'Memory' }, { id: 'extensions', label: '扩展' }, { id: 'runs', label: '运行记录' }, { id: 'access', label: '访问' }, { id: 'browser', label: '浏览器' }];
 interface ModelDraft { originalId: string | null; id: string; name: string; contextWindow: string; maxTokens: string; reasoning: '' | 'true' | 'false'; reasoningFormat: '' | 'openai' | 'openrouter' | 'litellm'; input: '' | 'text' | 'image' | 'text-image' }
@@ -46,7 +46,7 @@ function modelSummary(model: CustomModel): string {
   return `${model.contextWindow.toLocaleString()} 上下文 · ${model.maxTokens.toLocaleString()} 最大输出 · ${model.input.includes('image') ? '含图片输入' : '文本输入'}${model.reasoning ? ' · 推理' : ''}`;
 }
 
-export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memoryRequest, memoryPending, sending, storageError, onMemorySubmit, onMemoryRetry }: Props) {
+export function SettingsDialog({ name, synthetic, onClose, onSaved, returnFocus, memoryRequest, memoryPending, sending, storageError, onMemorySubmit, onMemoryRetry }: Props) {
   const [tab, setTab] = useState<SettingsTab>('model');
   const dialogRef = useRef<HTMLDialogElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -369,7 +369,7 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
     </form> : null}
     </section>
     <section id="settings-panel-persona" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-persona" hidden={tab !== 'persona'}><PersonaPanel active={tab === 'persona'} sending={sending} storageError={storageError} onSaved={onSaved} onMemorySubmit={onMemorySubmit} /></section>
-    <section id="settings-panel-memory" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-memory" hidden={tab !== 'memory'}><MemoryPanel active={tab === 'memory'} request={memoryRequest} pending={memoryPending} sending={sending} storageError={storageError} onSubmit={onMemorySubmit} onRetry={onMemoryRetry} /></section>
+    <section id="settings-panel-memory" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-memory" hidden={tab !== 'memory'}><MemoryPanel active={tab === 'memory'} {...(name ? { name } : {})} request={memoryRequest} pending={memoryPending} sending={sending} storageError={storageError} onSubmit={onMemorySubmit} onRetry={onMemoryRetry} /></section>
     <section id="settings-panel-extensions" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-extensions" hidden={tab !== 'extensions'}><ExtensionsPanel active={tab === 'extensions'} /></section>
     <section id="settings-panel-runs" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-runs" hidden={tab !== 'runs'}><RunsPanel active={tab === 'runs'} /></section>
     <section id="settings-panel-access" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-access" hidden={tab !== 'access'}><AccessPanel active={tab === 'access'} onClose={requestClose} /></section>
