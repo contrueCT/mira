@@ -25,11 +25,14 @@ test('migration up/down/up uses node-pg-migrate and preserves no stale tables', 
   const db = await createTestDatabase();
   try {
     const before = await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema = $1", [db.schema]);
-    assert.equal(before.rows[0].n, 18);
+    assert.equal(before.rows[0].n, 20);
     assert.deepEqual((await db.admin.query("SELECT table_name FROM information_schema.tables WHERE table_schema=$1 AND table_name IN ('subagents','subagent_turns') ORDER BY table_name", [db.schema])).rows.map(row => row.table_name), ['subagent_turns', 'subagents']);
     assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.columns WHERE table_schema=$1 AND table_name='subagent_turns' AND column_name IN ('activity','started_at','association_order')", [db.schema])).rows[0].n, 3);
     assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema=$1 AND table_name IN ('subagent_calls','subagent_live_inputs')", [db.schema])).rows[0].n, 2);
     assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.columns WHERE table_schema=$1 AND table_name='subagent_turns' AND column_name IN ('stream_id','input_record_id','final_record_id')", [db.schema])).rows[0].n, 3);
+    // The Mira lives registry (ADR 0047) is the latest independent slice.
+    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
+    assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema=$1 AND table_name IN ('mira_lives','mira_active_life')", [db.schema])).rows[0].n, 0, 'lives down removes only the registry');
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema=$1 AND table_name IN ('subagent_calls','subagent_live_inputs')", [db.schema])).rows[0].n, 0, 'first down removes task inbox and call receipts');
     assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.columns WHERE table_schema=$1 AND table_name='subagent_turns' AND column_name IN ('stream_id','input_record_id','final_record_id')", [db.schema])).rows[0].n, 0);
