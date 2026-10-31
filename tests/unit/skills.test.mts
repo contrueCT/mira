@@ -151,7 +151,7 @@ test('skill add/change/remove refresh at each natural tool continuation with one
   const runtime = new PiDurableRuntime({ writer, model, tools: [tool], miraPrompt: { ...prompt, loadMemory: async () => { memoryLoads++; return 'FROZEN_MEMORY'; } },
     loadSkills: async abort => { loads++; return loader(abort); }, streamFn: (_model, context) => {
       calls++; const text = getCurrentSystemPrompt(context.messages);
-      assert.equal((JSON.stringify(context).match(/# Mira System Prompt v0.4/g) ?? []).length, 1);
+      assert.equal((JSON.stringify(context).match(/# Mira System Prompt v0.5/g) ?? []).length, 1);
       assert.equal(getCurrentTools(context.messages).length, 1); assert.match(text, /FROZEN_MEMORY/);
       assert.doesNotMatch(text, /BODY_ONLY_SENTINEL/);
       if (calls === 1) { assert.match(text, /METADATA_FIRST/); assert.doesNotMatch(text, /METADATA_CHANGED|METADATA_ADDED/); return streamOf(toolCalls('add-change')); }

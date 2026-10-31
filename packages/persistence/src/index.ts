@@ -226,7 +226,7 @@ class PostgresWriter implements BackgroundJobReader, DreamingWriter, SchedulingW
   #ended: Promise<void> | undefined;
 
   constructor(client: Client, miraId: string, epoch: string, key: number) {
-    this.#subagents = new PostgresSubagents(client, miraId, work => this.#transaction(work), async (event, wake) => (await this.#receiveSupplemental(event, wake)).runId, runId => this.#notifyLiveInput(runId));
+    this.#subagents = new PostgresSubagents(client, miraId, work => this.#transaction(work), async (event, wake) => { if (wake) return (await this.#receiveSupplemental(event, wake)).runId; await this.#receive(event, null); return null; }, runId => this.#notifyLiveInput(runId));
     this.#client = client; this.miraId = miraId; this.epoch = epoch; this.#key = key; this.signal = this.#abort.signal;
     client.on('error', (error: Error) => this.#stop(error));
     client.on('end', () => this.#stop(new PersistenceError('ownership', 'PostgreSQL ownership connection ended')));
@@ -291,6 +291,7 @@ class PostgresWriter implements BackgroundJobReader, DreamingWriter, SchedulingW
   claimSubagentTurn: SubagentWriter['claimSubagentTurn'] = id => this.#subagents.claim(id);
   finishSubagentTurn: SubagentWriter['finishSubagentTurn'] = (...args) => this.#subagents.finish(...args);
   cancelSubagent: SubagentWriter['cancelSubagent'] = id => this.#subagents.cancel(id);
+  closeSubagent: SubagentWriter['closeSubagent'] = (callId, id) => this.#subagents.close(callId, id);
   interruptSubagents: SubagentWriter['interruptSubagents'] = () => this.#subagents.interrupt();
   #checkVersion(owner: OwnerRow, expected: number): void {
     version(expected);

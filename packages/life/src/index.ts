@@ -85,7 +85,7 @@ export type { DreamingRequest, DreamingRequestResult, DreamingWriter } from './d
 export type { ScheduledDeliveryInput, ScheduledDelivery, ScheduledMutation, SchedulingWriter } from './scheduling.ts';
 export type { LiveInputWriter, LiveWakeInput } from './live-input.ts';
 export { SubagentError, subagentCompletionPayload } from './subagents.ts';
-export { emptySubagentActivity } from './subagents.ts';
-export type { SubagentFollowupReceipt, SubagentFollowupView, SubagentActivity, SubagentActivityEvent, SubagentActivityInput, SubagentReader, SubagentPage, SubagentSummary, SubagentCallView, SubagentWriter, SubagentRecord, SubagentTurn, SubagentStatus, SubagentSpec, SubagentResult } from './subagents.ts';
+export { emptySubagentActivity, SUBAGENT_LIMITS, SUBAGENT_REPORT_LIMITS } from './subagents.ts';
+export type { SubagentFollowupReceipt, SubagentFollowupView, SubagentActivity, SubagentActivityEvent, SubagentActivityInput, SubagentReader, SubagentPage, SubagentSummary, SubagentCallView, SubagentWriter, SubagentRecord, SubagentTurn, SubagentStatus, SubagentSpec, SubagentResult, SubagentAttachment, SubagentReport, SubagentGroupMember, SubagentGroupRoster } from './subagents.ts';
 export type { TaskInputWriter, TaskTurnState, TaskLiveInput } from './task-input.ts';
 export type { UsageProjection, UsageRange, UsageRequest, UsageCounts, UsageSource, UsageReport, UsageReader } from './usage.ts';

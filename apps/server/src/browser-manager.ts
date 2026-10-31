@@ -171,5 +171,13 @@ export class BrowserManager {
     })));
     return { closed: closable.length, kept: owned.length - closable.length };
   }
+  /** Drop finished-close tombstones of exactly this task owner (ADR 0052); never main's. */
+  forgetOwner(owner: string): number {
+    if (!owner || owner === this.#mainOwner) return 0;
+    let dropped = 0;
+    for (const [id, s] of this.#sessions) if (s.owner === owner && s.finishedClose && !s.replacedBy) { this.#sessions.delete(id); dropped++; }
+    return dropped;
+  }
+  get retainedSessions(): number { return this.#sessions.size; }
   async close(): Promise<void> { this.#closed = true; await Promise.allSettled([...this.#sessions.values()].map(s => this.#close(s))); await this.#driver.dispose(); }
 }

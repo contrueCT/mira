@@ -22,3 +22,4 @@
 - ADR0035：credentials/privateDirectory/registerSettings 为通用私有设置能力；无框架类型、OAuth引擎或沙箱承诺，secret仅设置输入，普通字段继续config重载。
 - registerSettings返回本安装/activation专属动作handle，只含安全operation receipt，不把protected status/providerURL变成模型能力；由插件选择对话工具。
 - ADR0040: registerToolset exposes atomic candidate replacement and revision-bound stale execution; isError is a known outcome, not an exception/unknown. No MCP types or framework imports enter this contract.
+- ADR0052: `ExtensionTool.mainOnly` keeps a tool away from delegated task workers; schedule create/replace/cancel reject inside a delegated call (host AsyncLocalStorage). Tool names stay `[a-zA-Z0-9_-]`.

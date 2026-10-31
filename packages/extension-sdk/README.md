@@ -83,6 +83,15 @@ status `enqueued` cannot be retracted. Duplicate create requires identical compl
 data, including occurredAt. The host binds ownership to a persistent installation.
 Calendar/recurrence/missed-reminder policy belong to extensions. See
 [ADR 0022](../../docs/adr/0022-durable-single-shot-delivery.md).
+Inside a tool call made by a delegated task worker, `create`, `replace` and
+`cancel` reject; `get`/`list` still work ([ADR 0052](../../docs/adr/0052-subagent-reports-capabilities-close.md)).
+
+## Main-only tools
+
+Mira can hand an extension's tools to a delegated task worker. Set
+`mainOnly: true` on a tool (for example one that messages the user) to keep it
+with Mira only; workers never receive it. Tool names use only
+`[a-zA-Z0-9_-]`.
 
 ## Private settings
 

@@ -5,8 +5,8 @@ import type { SystemMessage } from '@earendil-works/pi-ai';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 
 export const MIRA_PROMPT_SECTION = 'mira.system.v0.2';
-export const MIRA_PROMPT_SHA256 = 'd79d7f73bec9f03612bcd2ece5475e1b885641601fefbd2fe1449c7cf1711b81';
-const bytes = readFileSync(new URL('../prompts/mira-system-v0.4.md', import.meta.url));
+export const MIRA_PROMPT_SHA256 = 'f33841d936440443ddf901b3110c3a3558aa2e223e414837e698ce5fa4050907';
+const bytes = readFileSync(new URL('../prompts/mira-system-v0.5.md', import.meta.url));
 if (createHash('sha256').update(bytes).digest('hex') !== MIRA_PROMPT_SHA256) throw new Error('Mira system template hash mismatch');
 export const MIRA_SYSTEM_TEMPLATE = bytes.toString('utf8');
 // The only pre-identity snapshot revision shipped before delegation guidance.
@@ -25,6 +25,10 @@ if (createHash('sha256').update(prePersonaBytes).digest('hex') !== PRE_PERSONA_S
 const PRE_SILENCE_SHA256 = '2a8d0637517e722c3d2e6e539d3c69aa71f09ab886f0b788ade97ce2ecf70208';
 const preSilenceBytes = readFileSync(new URL('../prompts/mira-system-v0.3.md', import.meta.url));
 if (createHash('sha256').update(preSilenceBytes).digest('hex') !== PRE_SILENCE_SHA256) throw new Error('Prior Mira system template hash mismatch');
+// v0.4: before the worker report, capability, group and close guidance (v0.5, ADR 0052).
+const PRE_REPORT_SHA256 = 'd79d7f73bec9f03612bcd2ece5475e1b885641601fefbd2fe1449c7cf1711b81';
+const preReportBytes = readFileSync(new URL('../prompts/mira-system-v0.4.md', import.meta.url));
+if (createHash('sha256').update(preReportBytes).digest('hex') !== PRE_REPORT_SHA256) throw new Error('Prior Mira system template hash mismatch');
 
 /** v0.2 revisions use exactly these keys; v0.3 adds PERSONA. */
 export const MIRA_LEGACY_PLACEHOLDERS = ['MEMORY_ROOT', 'MEMORY_STATE', 'CURRENT_TIME', 'EXTENSIONS_ROOT', 'OTHER_ENVIRONMENT_CONTEXT', 'DYNAMIC_TOOL_AND_EXTENSION_GUIDANCE', 'CURRENT_AUTHORIZATION_CONTEXT'] as const;
@@ -39,6 +43,7 @@ const templates = new Map<string, { text: string; keys: readonly string[] }>([
   [PRE_COMMUNICATION_SHA256, { text: preCommunicationBytes.toString('utf8'), keys: MIRA_LEGACY_PLACEHOLDERS }],
   [PRE_PERSONA_SHA256, { text: prePersonaBytes.toString('utf8'), keys: MIRA_LEGACY_PLACEHOLDERS }],
   [PRE_SILENCE_SHA256, { text: preSilenceBytes.toString('utf8'), keys: MIRA_PLACEHOLDERS }],
+  [PRE_REPORT_SHA256, { text: preReportBytes.toString('utf8'), keys: MIRA_PLACEHOLDERS }],
   [MIRA_PROMPT_SHA256, { text: MIRA_SYSTEM_TEMPLATE, keys: MIRA_PLACEHOLDERS }],
 ]);
 

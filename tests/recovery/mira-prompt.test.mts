@@ -11,13 +11,13 @@ import { estimateRequestTokens } from '../../packages/runtime-pi/src/budget.ts';
 // This fixture verifies full-persona continuity, not an 8K model's capacity.
 // Summary requests include the persona reference, source history and output reserve.
 const continuityModel = { ...model, contextWindow: 16_384 };
-const template = await readFile(new URL('../../packages/runtime-pi/prompts/mira-system-v0.4.md', import.meta.url), 'utf8');
+const template = await readFile(new URL('../../packages/runtime-pi/prompts/mira-system-v0.5.md', import.meta.url), 'utf8');
 function assertFullPrompt(context: TranscriptContext): string {
-  assert.equal(JSON.stringify(context.messages).split('# Mira System Prompt v0.4').length - 1, 1, 'raw provider transcript contains one full prompt, not additive obsolete copies');
+  assert.equal(JSON.stringify(context.messages).split('# Mira System Prompt v0.5').length - 1, 1, 'raw provider transcript contains one full prompt, not additive obsolete copies');
   const system = getCurrentSystemMessage(context.messages);
   assert.ok(system, 'provider receives an effective system message');
   const text = getSystemMessageText(system);
-  assert.equal(text.split('# Mira System Prompt v0.4').length - 1, 1, 'one effective Mira template');
+  assert.equal(text.split('# Mira System Prompt v0.5').length - 1, 1, 'one effective Mira template');
   let position = 0;
   for (const literal of template.split(/\{\{[A-Z_]+\}\}/)) {
     const next = text.indexOf(literal, position);

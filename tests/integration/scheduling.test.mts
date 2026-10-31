@@ -273,6 +273,9 @@ test('scheduling down/up removes only its own slice and preserves ordinary histo
   try {
     const writer = await db.acquire(); const value = input();
     await writer.createScheduledDelivery(owner, value); await writer.dispatchScheduledDeliveries([owner]); await writer.close();
+    // Subagent closures (ADR 0052) only add their own table.
+    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
+    assert.deepEqual(await counts(db), { events: 1, wakes: 1 });
     // The background-job index (ADR 0049), the usage indexes (ADR 0048), then the Mira lives registry (ADR 0047), are the latest independent slices.
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     assert.deepEqual(await counts(db), { events: 1, wakes: 1 });

@@ -23,6 +23,7 @@ import { PiDurableRuntime, PI_USAGE_PROJECTION, type AutoCompactionOptions, crea
 import { writeWakeInput, setupMemoryWorkspace, loadMemoryBootstrap, loadPromptMemory, MemoryReadLimitError } from '@mira/workspace';
 import { createWorkspaceTools, demoModel, memoryCheckpointHook } from './index.ts';
 import { extensionManagementTools, extensionReceiver, extensionTools } from './extensions.ts';
+import { capabilityProblem, delegatedExtensionTools } from './subagent-capabilities.ts';
 import { WebSettingsStore, hasSelectedWebApiKey, type WebSettings } from './web-settings.ts';
 import type { ModelRetryStatus } from './model-retry.ts';
 import { ModelRequestFailure } from './model-errors.ts';
@@ -87,7 +88,7 @@ export interface WebServiceOptions {
   /** Startup-only child concurrency, default 8, bounded 1..32. */
   subagentConcurrency?: number;
   /** Test injection for ADR 0051 child bounds; production uses the defaults. */
-  subagentLimits?: { stallMs?: number; stallCheckMs?: number; cancelSettleMs?: number; closeWaitMs?: number; fileToolTimeoutMs?: number };
+  subagentLimits?: { stallMs?: number; stallCheckMs?: number; cancelSettleMs?: number; closeWaitMs?: number; fileToolTimeoutMs?: number; idleReleaseMs?: number };
   /** Runtime context budgets; omitted uses automatic compaction defaults. */
   autoCompaction?: AutoCompactionOptions;
   /** Proactive memory housekeeping; enabled by default when Memory is configured. */
@@ -307,7 +308,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       writer.signal.throwIfAborted();
       const baseTools = [...createBrowserTools(browserManager, writer.miraId), ...createTerminalTools(terminalManager, writer.miraId), createAttachmentTool(attachments, cwd), createReplyTool(persistence.history(writer.miraId), visible, attachments), ...createWorkspaceTools(cwd).map(tool => withVideoRead(tool, attachments, cwd)), ...createHistoryTools(persistence.history(writer.miraId))];
       if (options.extensions) {
-        host = new ExtensionHost({ ...options.extensions, ownerSignal: writer.signal, privateStorageExcludedDirectories: [options.sourceDirectory, ...options.memoryRoot ? [options.memoryRoot] : []], schedules: extensionScheduling(writer), onSchedulesChanged: () => { if (service) service.#deliveries?.schedule(); }, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage', 'subagent_spawn', 'subagent_status', 'subagent_send', 'subagent_wait', 'subagent_cancel'], receive: async (extensionId, event, wake) => {
+        host = new ExtensionHost({ ...options.extensions, ownerSignal: writer.signal, privateStorageExcludedDirectories: [options.sourceDirectory, ...options.memoryRoot ? [options.memoryRoot] : []], schedules: extensionScheduling(writer), onSchedulesChanged: () => { if (service) service.#deliveries?.schedule(); }, reservedToolNames: [...baseTools.map(tool => tool.name), 'extension_inspect', 'extension_manage', 'extension_stage', 'subagent_spawn', 'subagent_status', 'subagent_send', 'subagent_wait', 'subagent_cancel', 'subagent_close', 'task_report', 'report_progress'], receive: async (extensionId, event, wake) => {
           const receipt = await extensionReceiver(writer)(extensionId, event, wake);
           if (wake && receipt === 'inserted' && service) service.#kick();
           return receipt;
@@ -320,13 +321,21 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       subagents = new SubagentManager({ writer, loadSkills, ...(options.subagentConcurrency === undefined ? {} : { maxConcurrent: options.subagentConcurrency }), acquire: streamId => persistence.acquire(streamId),
         tools: streamId => [...createBrowserTools(browserManager, streamId), ...withFileToolLimits(createWorkspaceTools(cwd), cwd, limits.fileToolTimeoutMs), ...createTerminalTools(terminalManager, streamId), ...createHistoryTools(persistence.history(streamId))],
         ...(limits.stallMs === undefined ? {} : { stallMs: limits.stallMs }), ...(limits.stallCheckMs === undefined ? {} : { stallCheckMs: limits.stallCheckMs }),
-        ...(limits.cancelSettleMs === undefined ? {} : { cancelSettleMs: limits.cancelSettleMs }), ...(limits.closeWaitMs === undefined ? {} : { closeWaitMs: limits.closeWaitMs }),
+        ...(limits.cancelSettleMs === undefined ? {} : { cancelSettleMs: limits.cancelSettleMs }), ...(limits.idleReleaseMs === undefined ? {} : { idleReleaseMs: limits.idleReleaseMs }), ...(limits.closeWaitMs === undefined ? {} : { closeWaitMs: limits.closeWaitMs }),
         // Strictly the cancelled child's own stream; never the main owner.
         closeOwner: async streamId => {
           if (streamId === writer.miraId) return { closed: 0, kept: 0 };
           const [closedTerminals, browsers] = await Promise.all([terminalManager.closeOwner(streamId), browserManager.closeOwner(streamId)]);
+          terminalManager.forgetOwner(streamId); browserManager.forgetOwner(streamId);
           return { closed: closedTerminals + browsers.closed, kept: browsers.kept };
         },
+        ...(extensionHost ? {
+          extensionTools: async (ids: string[]) => delegatedExtensionTools((await extensionHost.prepareCapabilities()).tools, ids),
+          checkCapabilities: async (ids: string[]) => capabilityProblem((await extensionHost.prepareCapabilities()).tools, ids),
+          finishExtensionTools: () => extensionHost.finish(),
+        } : {}),
+        resolveAttachments: ids => attachments.resolve(ids),
+        resolveAttachment: reference => attachments.hydrate(reference),
         onStalled: async stall => { if (service) await service.#stalled(stall); },
         balanceFailure: error => error instanceof Error && service ? service.#childFailures.get(error.message) ?? null : null,
         onBalance: failure => { if (service) service.#childBalance = failure; },
