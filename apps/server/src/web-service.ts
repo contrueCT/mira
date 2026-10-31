@@ -449,7 +449,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     const selection = this.#settingsValue.selection;
     const pause = this.#paused;
     return { state: this.#closed || this.#writer.signal.aborted ? 'stopped' : this.#error ? 'error' : this.#drain ? 'working' : pause ? 'paused' : 'idle',
-      pause: pause ? { reason: pause.reason, since: pause.since, status: pause.status, requestId: pause.requestId, provider: pause.provider, model: pause.model } : null,
+      ...(pause ? { pause: { reason: pause.reason, since: pause.since, status: pause.status, requestId: pause.requestId, provider: pause.provider, model: pause.model } } : {}),
       mode: this.#options.synthetic ? 'synthetic' : 'live', model: this.#options.synthetic ? '模拟模型' : selection?.model ?? null, error: this.#error, errorId: this.#errorId, modelRetry: this.#closed || this.#writer.signal.aborted ? null : this.#modelRetry, identity: this.#identity() };
   }
   #identity(): { name: string; ring: string; avatar: string | null } {

@@ -81,7 +81,7 @@ test('real PG/service: 402 pauses once without retries; restart, external Wakes 
     plan.push(() => retryResponse('Finished after top-up'), () => retryResponse('Handled the queued external event'));
     await service.submit({ id: 'balance-retry-2', text: '这次真的充好了', occurredAt });
     await until(async () => (await service!.status()).state === 'idle' && calls === 5, 'Resume did not finish');
-    const final = await service.status(); assert.equal(final.pause, null); assert.equal(final.error, null);
+    const final = await service.status(); assert.equal(final.pause, undefined); assert.equal(final.error, null);
     assert.equal(await readFile(effect, 'utf8'), 'once');
     assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM tool_executions')).rows[0].n, 1);
     assert.equal((await db.admin.query("SELECT count(*)::int AS n FROM life_events WHERE event->>'type' = 'model.balance-resumed'")).rows[0].n, 2);
