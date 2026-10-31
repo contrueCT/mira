@@ -43,7 +43,7 @@ Cordis `__jsExpr` expressions are rejected by the host.
   `required`, `additionalProperties`. Declare a narrow schema; ordinarily reject
   additional properties
 - `execute(arguments_: Json, { callId: string, signal: AbortSignal })`:
-  `Promise<{ text: string; details?: Json }>`
+  `Promise<{ text: string; details?: Json; isError?: boolean }>`
 
 Narrow Json before reading fields, honor the signal in long-running I/O, and return
 useful text plus optional structured details. Pass an idempotency key derived from
@@ -52,19 +52,24 @@ transactional. The runtime handles technical argument validation, provenance and
 persisted intent/outcome. It does not provide a separate authorization callback.
 An unknown remote result needs reconciliation, not an assumed-safe repeat.
 
-`text` and optional `details` are the entire SDK return contract; it has no
-`isError`, `outcome`, or success-status field. Choose business fields such as
-`details.ok` deliberately and describe them in text. Returned `details: { ok: false }`
-is still a known business result, with a durable outcome; it does not set Pi's
-`isError` or make the execution outcome unknown. Throwing is different:
-the runtime cannot infer whether effects already happened, so it preserves an
-unresolved intent for reconciliation. Do not throw merely to encode a known
-business rejection or invent a failure-status API.
+The return contract is `{ text, details?, isError? }`. A successful result returns
+`details.ok: true` and omits `isError` or sets it false. A known business failure
+returns `isError: true` together with `details.ok: false` and a machine-readable
+reason code such as `details.reason`. The text explains that same result. Known
+failures include numeric overflow, an argument outside an allowed range, and an
+external service that explicitly refuses the request. Pi records `isError: true`
+on the tool-result message, and the runtime saves that message as a durable known
+outcome (ADR 0040).
 
-Check each computed number before returning it. For example, after validating an
-array of finite inputs, a sum still needs `Number.isFinite(total)`. Return a useful
-known business result on overflow, or choose a representation the tool's contract
-explicitly supports; do not let serialization replace the result with `null`.
+Throw only when the outcome is genuinely unknown: you cannot tell whether the
+effect happened, for example when transport is lost after the request was sent.
+The runtime then records the outcome as unknown and preserves the intent for
+reconciliation. Do not throw to encode a known rejection.
+
+Check each computed number with `Number.isFinite` before returning it. Finite
+inputs can still overflow. `JSON.stringify` silently converts `Infinity`,
+`-Infinity`, and `NaN` to `null`, so check before serialization and return the
+known overflow failure above.
 The [finite-sum example](../examples/finite-sum.ts) and its
 [real Host/Pi offline contract test](../../../tests/unit/extension-result-contract.test.mts)
 exercise this boundary without a live model or alternative writer implementation.

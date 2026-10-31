@@ -18,7 +18,7 @@ export default defineExtension<null>({
     if (config !== null) throw new TypeError('finite-sum takes no configuration');
     api.registerTool({
       name: 'sum_finite',
-      description: 'Sum finite numbers locally. Read details.ok to see whether a finite total could be computed.',
+      description: 'Sum finite numbers locally. A finite total returns details.ok true. Overflow is a known failure: isError true, details.ok false, and reason numeric-overflow.',
       parameters: {
         type: 'object', properties: { values: { type: 'array', items: { type: 'number' } } },
         required: ['values'], additionalProperties: false,
@@ -30,8 +30,7 @@ export default defineExtension<null>({
         // would silently turn Infinity/NaN into null; check before serialization.
         if (!Number.isFinite(total)) {
           const details = { ok: false, reason: 'numeric-overflow' };
-          // This is a known business result. The SDK has no isError field.
-          return { text: JSON.stringify(details), details };
+          return { text: JSON.stringify(details), details, isError: true };
         }
         const details = { ok: true, total };
         return { text: JSON.stringify(details), details };

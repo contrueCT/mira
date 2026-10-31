@@ -70,7 +70,8 @@ node --test tests/*.test.mts
 Use the template's strict NodeNext configuration with full declaration checking.
 Extend its tests around actual behavior: valid/invalid arguments and config,
 finite computed outputs (including overflow from finite inputs), known business
-rejections, matching/nonmatching facts, exact full-body retries, abort, non-overlap, rejected
+rejections (`isError: true` with `details.ok: false` and a reason code),
+matching/nonmatching facts, exact full-body retries, abort, non-overlap, rejected
 promises, cleanup joins, and dependency generation changes where relevant. Inject
 synthetic source data and fake SDK contexts for local behavior; do not call a live
 account or model just to prove the contract. A stub returning `duplicate` cannot

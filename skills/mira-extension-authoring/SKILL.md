@@ -66,7 +66,7 @@ same-computer callback or explicitly configured existing HTTPS route requirement
   software filtering, stable IDs, cancellation, and observed failures. It needs a
   source service; it does not contact an account or install itself
 - Adapt [finite-sum.ts](examples/finite-sum.ts) for input narrowing, computed-output
-  validation, and known business results using only the SDK's `text` and `details`
+  validation, and known failures that return `isError: true` with `details.ok: false`
 
 The authoritative contract is [extension-sdk/src/index.ts](../../packages/extension-sdk/src/index.ts).
 Check it and the [host README](../../packages/extension-host/README.md) before
