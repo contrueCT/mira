@@ -142,6 +142,12 @@ export function balanceNoticeText(provider: string | null): string {
 const pauseScanLimit = 1_000;
 type Timeline = Awaited<ReturnType<WebBackend['timeline']>>;
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
+export const NO_REPLY = 'NO_REPLY';
+/** Exact trimmed match on a successful final (stop, no tool call) only. */
+export function isNoReply(message: { content: Array<{ type: string; text?: string }>; stopReason?: string }): boolean {
+  if (message.stopReason !== 'stop' || message.content.some(block => block.type === 'toolCall')) return false;
+  return message.content.filter(block => block.type === 'text').map(block => block.text ?? '').join('\n').trim() === NO_REPLY;
+}
 export function visible(entry: HistoryEntry): Timeline['items'][number] | null {
   const sourced = extensionMessage(entry); if (sourced) return sourced;
   if (entry.kind === 'event') {
@@ -177,6 +183,9 @@ export function visible(entry: HistoryEntry): Timeline['items'][number] | null {
   const [record] = decodeRecords([entry.record], entry.record.parentId);
   if (record?.type !== 'message' || record.message.role !== 'assistant') return null;
   const text = record.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
+  // A final that is exactly NO_REPLY is Mira choosing silence (ADR 0050); the
+  // record stays in context and History, but the chat shows nothing.
+  if (isNoReply(record.message)) return null;
   return text ? { id: entry.id, role: 'assistant', text, occurredAt: entry.occurredAt } : null;
 }
 export class LocalWebService implements WebBackend, ManagementBackend {
@@ -584,11 +593,27 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     // original batch, so pages cannot shift between queries of one response.
     return this.#timelineReads.run(() => this.#history.snapshot(async history => {
       const seen = new Set<string>();
-      const page = await this.#scanTimeline(history, before, { seen });
-      if (before !== undefined) return page;
+      const scanned = await this.#scanTimeline(history, before, { seen });
+      if (before !== undefined) return scanned;
+      const page = await this.#markRead(history, scanned);
       const updates = await this.#completedOutside(history, seen, new Set(page.items.map(item => item.id)));
       return updates.length ? { ...page, updates } : page;
     }));
+  }
+  /** 「已读」 (ADR 0050): only the newest user message, once a Wake actually
+   * received it (batch input or live input linked into context). Computed per
+   * read, never cached with the immutable projection. */
+  async #markRead(history: RunHistoryReader, page: Timeline): Promise<Timeline> {
+    const index = page.items.findLastIndex(item => item.role === 'user');
+    const item = page.items[index];
+    if (!item?.externalEventId) return page;
+    const receipt = await history.findEventReceipt(item.externalEventId);
+    if (!receipt?.read) return page;
+    // A run stopped by the provider's balance refusal did not reach Mira's
+    // model; its messages show 已读 only once it resumes (ADR 0048/0050).
+    if (this.#paused && receipt.runId === this.#paused.runId) return page;
+    const items = [...page.items]; items[index] = { ...item, read: true };
+    return { ...page, items };
   }
   /** Re-read pending tools the latest window did not cover; return recent
    * completions that are not part of this page. Bounded by PENDING_TOOL_LIMIT

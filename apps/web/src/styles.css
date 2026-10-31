@@ -71,6 +71,7 @@ button:disabled { opacity: .48; }
 .message-receipt { font-size: 11px; color: #717580; margin: 6px 13px 0; display: flex; gap: 9px; align-items: center; }
 .message-receipt.uncertain { color: #8c704b; }
 .message-receipt .text-button { font-size: 11px; padding: 2px 0; }
+.message-receipt.read { justify-content: flex-end; margin: 4px 13px 0; color: #8a8f9c; }
 .pending-help { color: #7a7468; font-size: 11px; max-width: 80%; line-height: 1.6; text-align: right; margin: 3px 13px 0; }
 /* Pending state is carried by the receipt line; fading the bubble would drop its text contrast. */
 .connection-notice { width: min(100% - 32px, 1000px); flex-shrink: 0; max-height: min(28dvh, 240px); overflow-y: auto; margin: 0 auto 12px; padding: 12px 16px; background: #faf8f4; border: 1px solid #f0ece4; border-radius: 14px; color: #836d53; font-size: 12px; line-height: 1.6; display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; overflow-wrap: anywhere; }

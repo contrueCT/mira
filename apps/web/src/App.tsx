@@ -389,6 +389,10 @@ export function App() {
   };
   const view = timelineView({ loading, filling: autoFilling || (!autoFillRef.current && !!nextCursor && !connectionError), items: items.length, pending: pending.length, connectionError: !!connectionError, hasOlder: !!nextCursor });
   const showEmpty = view === 'empty' || view === 'hidden-recent';
+  // 「已读」 (ADR 0050): only under the newest user message, once Mira actually
+  // received it, and never while a newer message is still being sent.
+  const latestUser = items.findLast(item => item.role === 'user');
+  const latestReadId = latestUser?.read && !latestUser.source && !pending.length ? latestUser.id : null;
   const beginReply = (item: TimelineItem) => {
     if (item.role !== 'assistant' || sendingRef.current) return;
     cancelQuoteNavigation();
@@ -508,6 +512,7 @@ export function App() {
                   </div>
                   </div>
                   </div>
+                  {item.id === latestReadId && <p className="message-receipt read">已读</p>}
                 </article>
               </div>;
             })}
