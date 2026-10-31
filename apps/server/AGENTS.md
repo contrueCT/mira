@@ -56,3 +56,4 @@
 - Web spool 写入显式使用 `miraHome` 为私有 managed data root，默认 `~/.mira/wake-input` 可存放输入及附件/回复索引；必须严格包含 spool，不能是 HOME/其祖先或与源码互相包含，保留链接、所有者和不可变发布保护。demo 仍要求显式源码/HOME 外 spool。
 - 记忆重置（ADR 0047）：`life-host.ts` 的 `MiraLifeHost` 持有当前 `LocalWebService`、预检令牌与 `MIRA_HOME/reset-journal.json`；HTTP 只经委托 backend 访问服务，重置期间返回 503。改动重置步骤时同步更新崩溃注入测试 `tests/recovery/memory-reset-service.test.mts`；旧生命只经 `pnpm life` 命令行恢复。
 - 用量与余额暂停（ADR 0048）：`usage-http.ts` 只投影 token/请求数，禁止费用字段；余额分类只认 402 与 `model-errors.ts` 的 `balanceErrorCodes`，不匹配文本。`web-service.ts` 的 `#kick(source)` 在暂停时拒绝一切非 `'user'` 来源；新增唤醒入口必须走默认 `'system'` 来源。改动见 `tests/recovery/balance-pause.test.mts`。
+- 前台时限与后台作业（ADR 0049）：`background-jobs.ts` 只写追加事件（started 不唤醒；settled/lost 共用 `["tool-background-result", jobId]`）；运行状态只经 `runtimeStatus` 进入模型输入，禁止投影到时间线或状态接口。NO_REPLY 与「已读」（ADR 0050）：`visible()` 用 `isNoReply`，`#markRead` 每次读取计算、不缓存。

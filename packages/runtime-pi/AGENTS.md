@@ -70,3 +70,4 @@ real database, and live model validation. See recovery README for exact setup.
 
 - Web reply metadata 恢复校验原 Wake/live；主压缩用可从持久记录重建的有界普通文件 reply index 链，不靠摘要保留引用；toolResult transcript UUID 不冒充公开 tool History UUID，不改写 assistant signed blocks。
 - `refreshMemory`（ADR 0047）：冻结 Memory 与磁盘不一致时，每个 runtime 最多在请求前压缩一次以发布新快照；这是对 ADR 0020“不强制刷新”的唯一例外，不要扩展成 watcher 或常驻刷新。
+- 前台租约（ADR 0049，`foreground.ts`）：只用于主 Wake；转入后台的工具改用脱离 attempt 的信号，回执必须保持“结果未知”。`miraRuntimeStatus` 是用户输入末尾的模型专用段，恢复时剥离后逐字比较，不得写入确定性输入本身。提示 v0.4 修改须保留 v0.3 字节与哈希。
