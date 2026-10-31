@@ -69,3 +69,4 @@ real database, and live model validation. See recovery README for exact setup.
 - ADR 0039: task-local parent instructions reuse generic per-tool/request boundaries through TaskInputWriter; keep explicit parent provenance, atomic child final admission, frozen summaries and no main Wake ownership.
 
 - Web reply metadata 恢复校验原 Wake/live；主压缩用可从持久记录重建的有界普通文件 reply index 链，不靠摘要保留引用；toolResult transcript UUID 不冒充公开 tool History UUID，不改写 assistant signed blocks。
+- `refreshMemory`（ADR 0047）：冻结 Memory 与磁盘不一致时，每个 runtime 最多在请求前压缩一次以发布新快照；这是对 ADR 0020“不强制刷新”的唯一例外，不要扩展成 watcher 或常驻刷新。

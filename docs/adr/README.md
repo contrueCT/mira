@@ -21,7 +21,7 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 - [0005 生成扩展生命周期](0005-generated-extension-lifecycle.md)：Accepted，宿主执行边界与普通文件版本，见 [验收](../acceptance/generated-extensions.md)
 
-- [0006 Memory-only 与完整 Mira Prompt](0006-memory-only-system-prompt.md)：Accepted，v0.5、Prompt v0.2、当前设计不保留旧兼容层及持久恢复边界
+- [0006 Memory-only 与完整 Mira Prompt](0006-memory-only-system-prompt.md)：Accepted，v0.5、Prompt v0.2、当前设计不保留旧兼容层及持久恢复边界；“不提供重置 API”由 0047 有意推翻
 
 - [0007 主模型决定动作，移除独立授权门禁](0007-model-owned-action-decisions.md)：Accepted，2026-10-06，移除 authorize 和合成证据，保留事实 Prompt 语境、执行来源与技术完整性
 
@@ -95,3 +95,5 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 - [0045 允许可写祖先目录](0045-writable-spool-ancestors.md)：Accepted，移除祖先目录写位拒绝，保留结果目录/文件的私有权限及不可变发布。
 
 - [0046 用户自定义人设](0046-user-persona.md)：Accepted，2026-10-30；全局人设文件、Prompt v0.3 `<persona>` 段、Wake 开始时冻结、不唤醒的 Timeline 通知、可选整理冲突记忆与受保护头像上传。
+
+- [0047 记忆重置与从头开始](0047-memory-reset-and-new-life.md)：Accepted，2026-10-30；只清空长期记忆（Git 提交，可回退）或开始新的连续生命（归档、进程内重启、崩溃安全日志），预检令牌 + 输入确认；有意推翻 0006 的“不提供重置 API”，修订 0020 的一次性 Memory 刷新。

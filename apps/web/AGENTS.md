@@ -45,3 +45,4 @@
 - ADR 0044：关闭运行错误仅按 errorId 隐藏本次提示，保留顶部状态，新错误重新显示；不清错或重试。
 
 - ADR 0046：人设页 `PersonaPanel.tsx` 与 `persona.ts`；头像只经 `clientFetch` 转 Blob，头部和连续 Mira 回复前显示，无图片时保留头像环。保存不自动重发；冲突显式重读；整理冲突记忆走既有 Memory 请求信封。后台轮询只刷新“已生效”标记，不覆盖草稿。
+- 记忆重置（ADR 0047）：`MemoryResetDialog` 是叠在设置之上的第二层 alertdialog，只轮询状态、不重发；`/api/status.lifeId` 变化时 `observeLife` 清理本标签页属于旧生命的 sessionStorage 并重新加载。新增按生命保存的浏览器状态时，加入 `clearLifeStorage`。

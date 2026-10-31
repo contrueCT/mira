@@ -104,6 +104,8 @@ jobs:
         run: pnpm test:external:e2e
       - name: Verify settings through PostgreSQL, runtime tools and Memory Git
         run: pnpm test:management:e2e
+      - name: Verify memory reset and new life through browser, PostgreSQL, Memory Git and in-process restart
+        run: pnpm test:memory-reset:e2e
       - name: Verify bidirectional attachments through browser, PostgreSQL and runtime
         run: pnpm test:attachments:e2e
       - name: Verify bidirectional message replies through browser, PostgreSQL and runtime

@@ -161,6 +161,7 @@ Linux 缺少系统库时，使用 Playwright 官方 `pnpm exec playwright instal
 
 - `MIRA_DATABASE_URL` 必需，明确本地数据库名；不接受查询选项或远程数据库地址。启动会执行当前向上迁移，不自动建库或重置数据
 - `MIRA_HOME` 默认 `~/.mira`，必须在源码仓库外；保存 `models.json`、`memory/` 独立 Git、`wake-input/`、`extensions.json` 和 `extension-artifacts/`
+- 记忆重置（[ADR 0047](../adr/0047-memory-reset-and-new-life.md)）：设置 → Memory → 重置记忆。重置期间使用 `MIRA_HOME/reset-journal.json`（启动时自动回滚或前滚）与 `MIRA_HOME/memory-refresh.json`；“从头开始”把旧 Memory 仓库移到 `MIRA_HOME/archive/<lifeId>-<UTC 时间>/`。服务停止时用 `pnpm life list` 查看、`pnpm life restore <lifeId>` 恢复旧生命（与 server 使用同一 `MIRA_HOME` 和数据库）。
 - `MIRA_SCHEMA` 默认 `mira`；固定 Mira ID 为 `mira`。两个进程不能同时持有同一实例的 writer
 - `MIRA_CWD` 默认启动目录，只是工具 cwd，不是沙箱；文件/Shell 使用宿主 OS 权限
 - 未设置 `MIRA_EXTENSIONS` 时，首次启动在 `MIRA_HOME/extensions.json` 创建空 `entries` 与绝对 `artifactsDirectory`（`MIRA_HOME/extension-artifacts`），启用持久扩展宿主及 `extension_inspect`、`extension_stage`、`extension_manage`。已有默认配置原样加载；首次初始化原子发布，不覆盖并发创建的文件。artifact 子目录按需创建。默认初始化不安装或激活新代码；重启沿用已保存的扩展及启用状态
