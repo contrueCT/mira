@@ -51,6 +51,7 @@ export class SubagentManager {
   #admission: Promise<void> = Promise.resolve();
   /** Occupied execution slots include cancellation and awaited cleanup. */
   get hasActiveWork(): boolean { return this.#active.size > 0; }
+  get activeCount(): number { return this.#active.size; }
   get maxConcurrent(): number { return this.#options.maxConcurrent ?? 8; }
   async #admit<T>(work: () => Promise<T>): Promise<T> {
     const prior = this.#admission;

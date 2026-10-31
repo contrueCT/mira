@@ -17,6 +17,7 @@
     "check:all": "pnpm check && pnpm test:integration",
     "demo": "node apps/server/src/cli.mts",
     "models": "node apps/server/src/models-cli.mts",
+    "life": "node apps/server/src/life-cli.mts",
     "start": "pnpm --filter @mira/web build && node apps/server/src/web-cli.mts",
     "test:e2e": "node scripts/run-web-tests.mts",
     "external-access": "node apps/server/src/external-access-cli.mts",
