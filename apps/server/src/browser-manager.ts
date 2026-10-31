@@ -158,5 +158,18 @@ export class BrowserManager {
     return this.#status(this.#sessions.get(opened.id)!);
   }
   async #close(s: Session): Promise<void> { if (s.state === 'closed') return; s.state = 'closed'; s.epoch++; s.observed = false; this.#notify(s); await this.#serial(s, async () => { try { await this.#driver.close(s.session); s.finishedClose = true; } catch (error) { if (!this.#closed) { s.state = 'unknown'; s.cleanupUnknown = true; this.#notify(s); } throw error; } }); }
+  /** Close the agent-controlled browsers whose owner is exactly `owner` (a
+   * cancelled child's stream). A browser the user is holding stays open.
+   * Other owners are never touched. Bounded wait per browser. */
+  async closeOwner(owner: string, waitMs = 5_000): Promise<{ closed: number; kept: number }> {
+    if (!owner || owner === this.#mainOwner) return { closed: 0, kept: 0 };
+    const owned = [...this.#sessions.values()].filter(s => s.owner === owner && s.state !== 'closed');
+    const closable = owned.filter(s => s.state === 'agent' || s.state === 'unknown');
+    await Promise.all(closable.map(s => new Promise<void>(resolve => {
+      const timer = setTimeout(resolve, waitMs); timer.unref?.();
+      void this.#close(s).catch(() => undefined).finally(() => { clearTimeout(timer); resolve(); });
+    })));
+    return { closed: closable.length, kept: owned.length - closable.length };
+  }
   async close(): Promise<void> { this.#closed = true; await Promise.allSettled([...this.#sessions.values()].map(s => this.#close(s))); await this.#driver.dispose(); }
 }
