@@ -1,3 +1,4 @@
+import { observeLife } from './memory-reset.ts';
 import { browserUuid } from './uuid.ts';
 import { flushSync } from 'react-dom';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
@@ -165,6 +166,10 @@ export function App() {
       if (!activeRef.current || signal?.aborted) return;
       const statusResult = results[0]; const timelineResult = results[1];
       if (statusResult.status === 'fulfilled') {
+        let life: 'same' | 'changed' = 'same';
+        try { life = observeLife(window.sessionStorage, statusResult.value.lifeId); } catch { /* Without storage this tab cannot hold old-life state across reloads. */ }
+        // A reset started a new life elsewhere: this tab's timeline, envelopes and dialogs belong to the old one.
+        if (life === 'changed') { window.location.replace(window.location.pathname); return; }
         statusRef.current = statusResult.value; setStatus(statusResult.value);
         pollingRef.current?.statusChanged();
       }
@@ -486,7 +491,7 @@ export function App() {
               const rowTab = item.id === rovingId ? undefined : -1;
               return <div key={item.id} className={`message-group ${spacing.compact ? 'compact' : ''}`}>
                 {spacing.divider && <p className="date-divider">{dateLabel(item.occurredAt, today)} {timeLabel(item.occurredAt)}</p>}
-                <article tabIndex={item.id === rovingId ? 0 : -1} onFocus={() => setActiveMessageId(item.id)} onKeyDown={moveMessageFocus} data-message-id={item.id} className={`message-row ${item.role}${item.notice === 'persona' ? ' persona-notice' : ''} ${highlightId === item.id ? 'quote-highlight' : ''}`} aria-label={item.source ? `${item.source.label} 扩展消息` : item.role === 'user' ? '你的消息' : item.role === 'assistant' ? `${identity.name} 的消息` : item.notice === 'persona' ? '人设变更' : '服务通知'}>
+                <article tabIndex={item.id === rovingId ? 0 : -1} onFocus={() => setActiveMessageId(item.id)} onKeyDown={moveMessageFocus} data-message-id={item.id} className={`message-row ${item.role}${item.notice === 'persona' ? ' persona-notice' : item.notice === 'memory-reset' ? ' persona-notice memory-reset-notice' : ''} ${highlightId === item.id ? 'quote-highlight' : ''}`} aria-label={item.source ? `${item.source.label} 扩展消息` : item.role === 'user' ? '你的消息' : item.role === 'assistant' ? `${identity.name} 的消息` : item.notice === 'persona' ? '人设变更' : item.notice === 'memory-reset' ? '记忆重置' : '服务通知'}>
                   {item.reply && <button type="button" className="reply-quote" tabIndex={rowTab} aria-label="查看引用的消息" title={replySnippet(item.reply)} disabled={quoteSearch} onClick={() => { void jumpToReply(item.reply!.messageId); }}><span aria-hidden="true">↪</span><span>{replySnippet(item.reply)}</span></button>}
                   <div className="message-content-line">
                   {item.role === 'assistant' && avatarUrl && (items[index - 1]?.role !== 'assistant' || spacing.divider ? <PersonaAvatar identity={identity} image={avatarImage} className="message-avatar" /> : <span className="message-avatar-spacer" aria-hidden="true" />)}
@@ -547,6 +552,6 @@ export function App() {
     </div>
     {preview && <AttachmentPreview key={preview.id} attachment={preview} onClose={closePreview} returnFocus={previewFocusRef.current} />}
     {browserOpen && !settingsOpen && <BrowserDialog onClose={closeBrowser} returnFocus={browserButtonRef} />}
-    {settingsOpen && <SettingsDialog synthetic={status?.mode === 'synthetic'} onClose={closeSettings} onSaved={() => { void refresh(); }} returnFocus={settingsButtonRef} memoryRequest={memoryRequest} memoryPending={pending.find(message => message.id === memoryRequest?.id) ?? null} sending={sending} storageError={storageError} onMemorySubmit={submitMemory} onMemoryRetry={message => { void sendEnvelope(message, true, true); }} />}
+    {settingsOpen && <SettingsDialog name={identity.name} synthetic={status?.mode === 'synthetic'} onClose={closeSettings} onSaved={() => { void refresh(); }} returnFocus={settingsButtonRef} memoryRequest={memoryRequest} memoryPending={pending.find(message => message.id === memoryRequest?.id) ?? null} sending={sending} storageError={storageError} onMemorySubmit={submitMemory} onMemoryRetry={message => { void sendEnvelope(message, true, true); }} />}
   </>;
 }

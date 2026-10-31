@@ -4,15 +4,19 @@ import type { MemoryRequestIdentity } from './management.ts';
 import { MemorySummary } from './MemorySummary.tsx';
 import type { MemoryReceipt, MemoryView, MessageEnvelope, MessageStatus, PendingMessage } from './types.ts';
 import { useVisiblePoll } from './useVisiblePoll.ts';
+import { MemoryResetDialog } from './MemoryResetDialog.tsx';
+import type { ResetStatus } from './memory-reset.ts';
 
 export interface MemoryPanelProps {
+  /** Display name of the current persona, for honest copy only. */
+  name?: string;
   request: MemoryRequestIdentity | null; pending: PendingMessage | null; sending: boolean; storageError: string | null;
   onSubmit: (text: string) => boolean; onRetry: (message: MessageEnvelope) => void;
 }
 export function memoryReceiptText(memory: MemoryReceipt): string {
   return ({ unavailable: '未记录 Memory checkpoint，无法确认记忆是否发生变化。', pending: 'Memory checkpoint 尚未完成，不能确认记忆变更。', unchanged: '此 Wake 的 Memory checkpoint 未记录文件变更。', changed: '此 Wake 的 Memory checkpoint 记录到文件变更；同一 Wake 可能包含其他请求，这不单独证明本请求已完成。' } as const)[memory.state];
 }
-export function MemoryPanel({ active, request, pending, sending, storageError, onSubmit, onRetry }: MemoryPanelProps & { active: boolean }) {
+export function MemoryPanel({ active, name = 'Mira', request, pending, sending, storageError, onSubmit, onRetry }: MemoryPanelProps & { active: boolean }) {
   const [memory, setMemory] = useState<MemoryView | null>(null);
   const [loading, setLoading] = useState(true);
   const [readError, setReadError] = useState<string | null>(null);
@@ -21,6 +25,9 @@ export function MemoryPanel({ active, request, pending, sending, storageError, o
   const [status, setStatus] = useState<MessageStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [cleared, setCleared] = useState<ResetStatus | null>(null);
+  const resetButtonRef = useRef<HTMLButtonElement>(null);
   const currentRequestRef = useRef(request?.id); currentRequestRef.current = request?.id;
 
   const readMemory = async (signal: AbortSignal) => {
@@ -76,5 +83,12 @@ export function MemoryPanel({ active, request, pending, sending, storageError, o
       {currentStatus?.memory.commit && <p className="field-hint">Memory commit：<span className="technical-id">{currentStatus.memory.commit}</span></p>}
       {currentStatus?.state === 'completed' && !currentStatus.assistant && <p className="field-notice">此 Wake 没有可展示的文字回复，不能据此判断修改要求已实现。请核对上方当前记忆。</p>}
     </section>}
+    <section className="danger-zone" aria-labelledby="memory-reset-title">
+      <h3 id="memory-reset-title">重置记忆</h3>
+      <p>清空{name}的长期记忆，或者让{name}从头开始认识你。旧数据先归档，不会立即删除。</p>
+      {cleared && <p className="field-notice" role="status">长期记忆已清空，旧内容在 Memory Git 提交 <span className="technical-id">{cleared.commit?.slice(0, 7)}</span> 中，可回退。下一次唤醒时，{name}上下文里的记忆会刷新。</p>}
+      <button ref={resetButtonRef} type="button" className="danger-button" onClick={() => setResetOpen(true)}>重置记忆…</button>
+    </section>
+    {resetOpen && <MemoryResetDialog onClose={() => { setResetOpen(false); resetButtonRef.current?.focus(); }} onMemoryCleared={status => { setCleared(status); setVersion(value => value + 1); }} />}
   </div>;
 }
