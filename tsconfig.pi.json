@@ -72,7 +72,8 @@
     "tests/unit/runtime-limits.test.mts",
     "tests/unit/model-balance.test.mts",
     "tests/unit/foreground.test.mts",
-    "tests/unit/unstuck.test.mts"
+    "tests/unit/unstuck.test.mts",
+    "tests/unit/subagent-control.test.mts"
   ],
   "exclude": [
     "node_modules",

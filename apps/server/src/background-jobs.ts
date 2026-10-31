@@ -6,6 +6,7 @@ import type { BackgroundJob, BackgroundOutcome, ForegroundOptions } from '@mira/
 export const FOREGROUND_HARD_LIMIT_MS = 5 * 60_000;
 export const FOREGROUND_STEER_GRACE_MS = 20_000;
 const RESULT_TEXT_BYTES = 16_384;
+const SUBAGENT_STATUS_BYTES = 1_024;
 /** Never moved: reply publication and quick History/Memory reads. */
 const NON_PROMOTABLE = new Set(['send_reply', 'history_search', 'history_read', 'history_page']);
 
@@ -22,7 +23,8 @@ export interface BackgroundJobsOptions {
   /** Wake Mira (non-user source; a balance pause keeps the event queued). */
   kick: () => void;
   signal: AbortSignal;
-  activeSubagents?: () => number;
+  /** Running child turns, model-only (ADR 0051). */
+  subagents?: () => Array<{ id: string; title: string | null; runningForMs: number; idleForMs: number }>;
   onFailure?: (error: unknown) => void;
   hardLimitMs?: number;
   steerGraceMs?: number;
@@ -96,7 +98,8 @@ export class BackgroundJobs {
   status(context: { phase: 'initial' | 'live'; wakeStartedAt: string }): string | null {
     const now = Date.now();
     const jobs = this.running;
-    const subagents = this.#options.activeSubagents?.() ?? 0;
+    const children = this.#options.subagents?.() ?? [];
+    const subagents = children.length;
     const lines: string[] = [];
     if (context.phase === 'live') lines.push(`This message arrived while the current Wake was running (started ${context.wakeStartedAt}, ${minutes(now - Date.parse(context.wakeStartedAt))} ago). It was delivered at a safe boundary; nothing was cancelled.`);
     if (jobs.length) {
@@ -104,7 +107,17 @@ export class BackgroundJobs {
       for (const job of jobs.slice(0, 10)) lines.push(`- ${job.toolName} (job ${job.jobId}, running ${minutes(now - Date.parse(job.startedAt))})`);
       if (jobs.length > 10) lines.push(`- …and ${jobs.length - 10} more`);
     }
-    if (subagents) lines.push(`Subagents running: ${subagents}.`);
+    if (subagents) {
+      // One compact line per child within a small budget; details come from subagent_status.
+      lines.push(`Subagents running: ${subagents}.`);
+      let used = 0;
+      for (const [index, child] of children.entries()) {
+        const label = (child.title ?? child.id.slice(0, 8)).slice(0, 60);
+        const line = `- ${label} (${child.id}) · running ${minutes(child.runningForMs)} · idle ${minutes(child.idleForMs)}`;
+        if (used + Buffer.byteLength(line) > SUBAGENT_STATUS_BYTES) { lines.push(`- …and ${children.length - index} more`); break; }
+        lines.push(line); used += Buffer.byteLength(line);
+      }
+    }
     if (context.phase === 'initial' && !jobs.length && !subagents) return null;
     return lines.join('\n');
   }

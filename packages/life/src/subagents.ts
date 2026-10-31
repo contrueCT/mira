@@ -78,7 +78,7 @@ export interface SubagentWriter extends DurableWriter, SubagentReader {
 }
 export class SubagentError extends Error {
   override name = 'SubagentError';
-  readonly code: 'capacity' | 'missing' | 'conflict' | 'invalid' | 'context_budget' | 'model_changed';
+  readonly code: 'capacity' | 'missing' | 'conflict' | 'invalid' | 'context_budget' | 'model_changed' | 'paused';
   constructor(code: SubagentError['code'], message: string) { super(message); this.code = code; }
 }
 /** Core contract helper, keeps result payload JSON explicit. */

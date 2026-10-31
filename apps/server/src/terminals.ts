@@ -34,7 +34,8 @@ export class TerminalManager {
   readonly #cwd: string;
   #closed = false;
   readonly #onExit: ((exit: TerminalExit) => void) | undefined;
-  constructor(options: { cwd: string; writeOverflowInput: WriteOverflowInput; onExit?: (exit: TerminalExit) => void }) { this.#cwd = options.cwd; this.#writeFile = options.writeOverflowInput; this.#onExit = options.onExit; }
+  readonly #onOutput: ((owner: string) => void) | undefined;
+  constructor(options: { cwd: string; writeOverflowInput: WriteOverflowInput; onExit?: (exit: TerminalExit) => void; onOutput?: (owner: string) => void }) { this.#cwd = options.cwd; this.#writeFile = options.writeOverflowInput; this.#onExit = options.onExit; this.#onOutput = options.onOutput; }
   #notify(session: Session): void { for (const notify of [...session.changes]) notify(); }
   #send(session: Session, message: unknown): void { if (session.host.connected) session.host.send(message as object, () => {}); }
   #request(session: Session, message: { type: string; text?: string }, signal?: AbortSignal): Promise<void> {
@@ -92,6 +93,7 @@ export class TerminalManager {
         else request?.reject(Error('Terminal input was not acknowledged; its effect is unknown'));
       } else if (message.type === 'data' && typeof message.text === 'string') {
         const text = message.text;
+        try { this.#onOutput?.(session.owner); } catch { /* Observers cannot affect the process. */ }
         session.received += Buffer.byteLength(text);
         if (session.received > terminalLimits.logBytes) {
           session.status = 'output_limit'; session.closing = true; this.#send(session, { type: 'close', discard_output: true }); this.#notify(session); return;
@@ -207,6 +209,20 @@ export class TerminalManager {
       await session.done;
       return this.#collect(session, offset, 0, terminalLimits.outputBytes);
     });
+  }
+
+  /** Close every running session whose owner is exactly `owner` (a cancelled
+   * child's stream). Other owners are never touched. Waits a bounded time per
+   * session; the result counts sessions asked to close. */
+  async closeOwner(owner: string, waitMs = 5_000): Promise<number> {
+    if (!owner) return 0;
+    const owned = [...this.#sessions.values()].filter(session => session.owner === owner && (session.status === 'running' || session.closing));
+    await Promise.all(owned.map(async session => {
+      if (session.status === 'running') session.status = 'closed';
+      session.closing = true; this.#send(session, { type: 'close' }); this.#notify(session);
+      await new Promise<void>(resolve => { const timer = setTimeout(resolve, waitMs); timer.unref?.(); void session.done.finally(() => { clearTimeout(timer); resolve(); }); });
+    }));
+    return owned.length;
   }
 
   async close(): Promise<void> {

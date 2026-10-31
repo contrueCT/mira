@@ -17,16 +17,70 @@ export interface SubagentManagerOptions {
   onCompletion: () => void;
   onFailure: (error: unknown) => void;
   maxConcurrent?: number;
+  /** Close every terminal/browser session owned by exactly this child stream. */
+  closeOwner?: (streamId: string) => Promise<{ closed: number; kept: number }>;
+  /** One waking event per stall episode (ADR 0051). */
+  onStalled?: (stall: SubagentStall) => Promise<void>;
+  /** A provider balance refusal behind a child error, or null. */
+  balanceFailure?: (error: unknown) => SubagentBalanceFailure | null;
+  onBalance?: (failure: SubagentBalanceFailure) => void;
+  /** Non-null while new child work must not start (balance pause). */
+  blocked?: () => string | null;
+  stallMs?: number;
+  stallCheckMs?: number;
+  cancelSettleMs?: number;
+  closeWaitMs?: number;
+}
+export interface SubagentBalanceFailure { status: number | null; requestId: string | null }
+export interface SubagentStall { childId: string; turnId: string; episode: number; title: string | null; startedAt: string; lastActivityAt: string; current: { kind: string; name: string; since: string } | null }
+/** ADR 0051: no new activity for this long emits one subagent.stalled Wake. */
+export const SUBAGENT_STALL_MS = 15 * 60_000;
+/** After cancel, how long the slot waits for the child's work to stop. */
+export const SUBAGENT_CANCEL_SETTLE_MS = 5_000;
+/** Per-child bound for close(); a child still running after it is abandoned. */
+export const SUBAGENT_CLOSE_WAIT_MS = 10_000;
+interface LiveTurn { turnId: string; title: string | null; startedAt: number; lastActivityAt: number; current: { kind: string; name: string; since: number } | null; episode: number; stalled: boolean }
+const settleWithin = (work: Promise<unknown>, ms: number) => new Promise<boolean>(resolve => {
+  const timer = setTimeout(() => resolve(false), ms); timer.unref?.();
+  void work.then(() => { clearTimeout(timer); resolve(true); }, () => { clearTimeout(timer); resolve(true); });
+});
+const iso = (ms: number) => new Date(ms).toISOString();
+/** Count every streamed model event as child activity without touching the stream. */
+function observedStream(streamFn: StreamFn, bump: () => void): StreamFn {
+  return async (model, context, options) => {
+    bump();
+    const stream = await streamFn(model, context, options);
+    const iterate = stream[Symbol.asyncIterator].bind(stream);
+    Object.defineProperty(stream, Symbol.asyncIterator, { configurable: true, value: () => {
+      const iterator = iterate();
+      return { next: async () => { const next = await iterator.next(); bump(); return next; },
+        return: async (value?: unknown) => iterator.return ? iterator.return(value as never) : { done: true as const, value: undefined },
+        [Symbol.asyncIterator]() { return this; } };
+    } });
+    return stream;
+  };
 }
 const childCancellation = Symbol('child-cancelled');
 const terminal = (turn: SubagentTurn) => !['queued', 'running'].includes(turn.status);
 const modelIdentity = (model: Model<Api>) => ({ provider: model.provider, id: model.id, api: model.api, configurationHash: createHash('sha256').update(JSON.stringify(model)).digest('hex') });
 function sameModel(child: SubagentRecord, transport: SubagentTransport): boolean { return JSON.stringify(child.spec.model) === JSON.stringify(modelIdentity(transport.model)); }
-function brief(child: SubagentRecord) {
+/** Recent activity only: events of the newest turn (last 8); older turns keep status and result. */
+const BRIEF_EVENTS = 8;
+function lastActivity(child: SubagentRecord): string | null {
+  let latest: string | null = null;
+  for (const turn of child.turns) for (const value of [turn.activity.updatedAt, turn.finishedAt, turn.startedAt]) if (value && (!latest || value > latest)) latest = value;
+  return latest;
+}
+function brief(child: SubagentRecord, live?: LiveTurn, now = Date.now()) {
+  const stored = lastActivity(child);
+  const lastActivityAt = live && (!stored || iso(live.lastActivityAt) > stored) ? iso(live.lastActivityAt) : stored;
+  const newest = child.turns.at(-1)?.id;
   return { id: child.id, ...(child.spec.title ? { title: child.spec.title } : {}), createdAt: child.createdAt, status: child.turns.some(turn => turn.status === 'running') ? 'running' : child.turns.at(-1)?.status, model: child.spec.model,
+    lastActivityAt, currentFor: live?.current ? { kind: live.current.kind, name: live.current.name, ms: Math.max(0, now - live.current.since) } : null,
     inheritance: { mode: child.spec.fork.mode, parentVersion: child.spec.fork.parentVersion, parentHead: child.spec.fork.parentHead,
       bytes: child.spec.fork.bytes, truncated: false, scope: child.spec.fork.mode === 'all' ? 'Frozen current textual projection; existing summary retained, hidden reasoning and provider metadata excluded; roles remain quoted evidence' : 'Fresh context; task only' },
-    turns: child.turns.slice(-8).map(({ id, sequence, status, createdAt, startedAt, finishedAt, result, activity }) => ({ id, sequence, status, createdAt, startedAt, finishedAt, result, activity: { ...activity, current: activity.current ? childActivity(activity.current) : null, events: activity.events.map(childActivity) } })),
+    turns: child.turns.slice(-8).map(({ id, sequence, status, createdAt, startedAt, finishedAt, result, activity }) => ({ id, sequence, status, createdAt, startedAt, finishedAt, result, activity: { ...activity, current: activity.current ? childActivity(activity.current) : null,
+      events: id === newest ? activity.events.slice(-BRIEF_EVENTS).map(childActivity) : [], ...(id === newest ? {} : { omittedEvents: activity.events.length }) } })),
     followups: child.followups ?? [],
     followupState: 'pending means durably accepted; consumed means appended to context, not proof of action or completion',
     olderTurns: Math.max(0, child.turnCount - 8) };
@@ -46,6 +100,11 @@ export class SubagentManager {
   readonly #restartRequested = new Set<string>();
   readonly #changes = new Set<() => void>();
   readonly #taskInputs = new Set<(turnId: string) => void>();
+  /** Cancelled children whose work did not stop in time; no slot, no waits. */
+  readonly #zombies = new Map<string, Promise<void>>();
+  readonly #live = new Map<string, LiveTurn>();
+  readonly #streams = new Map<string, string>();
+  #stallTimer: ReturnType<typeof setInterval> | undefined;
   #liveInputVersion = 0;
   #closed = false;
   #admission: Promise<void> = Promise.resolve();
@@ -53,6 +112,42 @@ export class SubagentManager {
   get hasActiveWork(): boolean { return this.#active.size > 0; }
   get activeCount(): number { return this.#active.size; }
   get maxConcurrent(): number { return this.#options.maxConcurrent ?? 8; }
+  /** Children whose cancelled work never stopped; they hold no slot. */
+  get abandonedCount(): number { return this.#zombies.size; }
+  /** Model-only snapshot of running child turns (ADR 0051). */
+  running(now = Date.now()): Array<{ id: string; title: string | null; runningForMs: number; idleForMs: number }> {
+    return [...this.#live.entries()].filter(([id]) => this.#active.has(id))
+      .map(([id, live]) => ({ id, title: live.title, runningForMs: Math.max(0, now - live.startedAt), idleForMs: Math.max(0, now - live.lastActivityAt) }));
+  }
+  /** Process output or other work of a child stream counts as activity. */
+  noteActivity(streamId: string): void { const id = this.#streams.get(streamId); if (id) this.#bump(id); }
+  #bump(id: string): void {
+    const live = this.#live.get(id); if (!live) return;
+    live.lastActivityAt = Date.now();
+    if (live.stalled) { live.stalled = false; live.episode++; }
+  }
+  #watchStalls(): void {
+    if (this.#stallTimer || !this.#options.onStalled) return;
+    this.#stallTimer = setInterval(() => this.#checkStalls(), this.#options.stallCheckMs ?? 60_000);
+    this.#stallTimer.unref?.();
+  }
+  /** Visible for tests; the interval calls it. */
+  checkStalls(now = Date.now()): void { this.#checkStalls(now); }
+  #checkStalls(now = Date.now()): void {
+    if (this.#closed) return;
+    const limit = this.#options.stallMs ?? SUBAGENT_STALL_MS;
+    for (const [childId, live] of this.#live) {
+      if (live.stalled || now - live.lastActivityAt < limit || !this.#active.has(childId)) continue;
+      live.stalled = true;
+      const stall: SubagentStall = { childId, turnId: live.turnId, episode: live.episode, title: live.title, startedAt: iso(live.startedAt), lastActivityAt: iso(live.lastActivityAt),
+        current: live.current ? { kind: live.current.kind, name: live.current.name, since: iso(live.current.since) } : null };
+      void this.#options.onStalled?.(stall).catch(error => { if (!this.#closed) this.#options.onFailure(error); });
+    }
+  }
+  #refuseBlocked(): void {
+    const reason = this.#options.blocked?.();
+    if (reason) throw new SubagentError('paused', reason);
+  }
   async #admit<T>(work: () => Promise<T>): Promise<T> {
     const prior = this.#admission;
     let release!: () => void;
@@ -86,6 +181,7 @@ export class SubagentManager {
       if (duplicate.spec.task !== task || duplicate.spec.fork.mode !== mode || duplicate.spec.title !== title) throw new SubagentError('conflict', 'Spawn call was already used with different arguments');
       return brief(duplicate);
     }
+    this.#refuseBlocked();
     if (this.#active.size >= (this.#options.maxConcurrent ?? 8)) throw new SubagentError('capacity', 'Child slots are still occupied, including cancelling work');
     const snapshot = await this.#options.writer.load();
     const frozen = mode === 'all' ? freezeSubagentContext(snapshot, Math.min(131_072, transport.model.contextWindow)) : { text: '', bytes: 0, parentVersion: snapshot.version, parentHead: snapshot.records.at(-1)?.id ?? null };
@@ -105,6 +201,7 @@ export class SubagentManager {
       if (previous.child.id !== id || (previous.followup?.instruction ?? previous.turn.instruction) !== instruction) throw new SubagentError('conflict', 'Followup call was already used with different content');
       return { ...brief(child), delivery: this.#delivery(previous) };
     }
+    this.#refuseBlocked();
     if (!sameModel(child, transport)) throw new SubagentError('model_changed', 'The parent model selection changed. Use a fresh child or restore the original selection before following up.');
     if (!this.#active.has(id) && this.#active.size >= (this.#options.maxConcurrent ?? 8)) throw new SubagentError('capacity', 'Child slots are still occupied, including cancelling work');
     // Register before the durable write: the running child may claim the queued
@@ -134,7 +231,7 @@ export class SubagentManager {
   async status(id?: string, before?: string) {
     if (id) {
       if (before) throw new SubagentError('invalid', 'before is only for listing children');
-      return brief(await this.#child(id));
+      return brief(await this.#child(id), this.#live.get(id));
     }
     return this.#options.writer.listSubagents(before);
   }
@@ -142,7 +239,10 @@ export class SubagentManager {
   #start(id: string): void {
     if (this.#closed) return;
     if (this.#active.has(id)) { this.#restartRequested.add(id); return; }
+    // Abandoned cancelled work still holds this child's stream; it restarts queued work when it stops.
+    if (this.#zombies.has(id)) return;
     const controller = new AbortController();
+    const entry: { controller: AbortController; done: Promise<void> } = { controller, done: Promise.resolve() };
     // Install the slot before entering async work (including fast synthetic streams).
     const done = Promise.resolve().then(() => this.#run(id, controller.signal)).catch(error => {
       if (!this.#closed && !this.#options.writer.signal.aborted) this.#options.onFailure(error);
@@ -151,13 +251,14 @@ export class SubagentManager {
       try {
         if (!this.#closed && !this.#cancelled.has(id) && !this.#options.writer.signal.aborted) pending = (await this.#child(id)).turns.some(turn => turn.status === 'queued');
       } catch (error) { if (!this.#closed) this.#options.onFailure(error); }
-      finally { this.#active.delete(id); this.#notify(); }
+      finally { if (this.#active.get(id) === entry) this.#active.delete(id); this.#notify(); }
       // Keep the slot until all awaited cleanup has settled, so close() also
       // waits for the final registry read before its owner writer is closed.
       pending = this.#restartRequested.delete(id) || pending;
-      if (pending && !this.#closed && !this.#cancelled.has(id) && !this.#options.writer.signal.aborted) this.#start(id);
+      if (pending && !this.#closed && !this.#cancelled.has(id) && !this.#options.writer.signal.aborted && !this.#zombies.has(id)) this.#start(id);
     });
-    this.#active.set(id, { controller, done });
+    entry.done = done;
+    this.#active.set(id, entry);
   }
   async #result(context: RecoveredContext, turn: SubagentTurn): Promise<SubagentResult> {
     const final = context.entries.findLast(entry => entry.type === 'message' && entry.message.role === 'assistant');
@@ -172,10 +273,12 @@ export class SubagentManager {
     const signal = AbortSignal.any([abort, this.#options.writer.signal]);
     let writer: DurableWriter | undefined;
     let running: SubagentTurn | null = null;
+    let child: SubagentRecord | undefined;
     try {
-      const child = await this.#child(id);
+      child = await this.#child(id);
       signal.throwIfAborted();
       writer = await this.#options.acquire(child.streamId);
+      this.#streams.set(child.streamId, id);
       const tools = this.#options.tools(child.streamId);
       while (!this.#closed && !this.#cancelled.has(id)) {
         signal.throwIfAborted();
@@ -186,9 +289,15 @@ export class SubagentManager {
         this.#transports.delete(running.callId);
         if (!transport) throw new Error('Child dispatch is unavailable; explicitly follow up without replaying the old turn');
         const turnId = running.id;
-        const observe = (event: SubagentActivityInput) => this.#options.writer.recordSubagentActivity(turnId, event);
-        const runtime = new PiDurableRuntime({ writer, ...transport, tools: [...tools, progressTool(observe)],
-          onActivity: event => observe({ ...event, name: boundedText(event.name, 512), callId: event.callId, source: 'runtime', text: null }), ...(this.#options.loadSkills ? { loadSkills: this.#options.loadSkills } : {}), compactionScope: 'task', writeOverflowInput: this.#options.writeOverflowInput });
+        const now = Date.now();
+        const live: LiveTurn = { turnId, title: child.spec.title ?? null, startedAt: now, lastActivityAt: now, current: null, episode: 1, stalled: false };
+        this.#live.set(id, live); this.#watchStalls();
+        const observe = (event: SubagentActivityInput) => { this.#bump(id); return this.#options.writer.recordSubagentActivity(turnId, event); };
+        const runtime = new PiDurableRuntime({ writer, ...transport, streamFn: observedStream(transport.streamFn, () => this.#bump(id)), tools: [...tools, progressTool(observe)],
+          onActivity: event => {
+            live.current = event.phase === 'started' ? { kind: event.kind, name: boundedText(event.name, 512), since: Date.now() } : null;
+            return observe({ ...event, name: boundedText(event.name, 512), callId: event.callId, source: 'runtime', text: null });
+          }, ...(this.#options.loadSkills ? { loadSkills: this.#options.loadSkills } : {}), compactionScope: 'task', writeOverflowInput: this.#options.writeOverflowInput });
         const state = await runtime.recover();
         if (!state.snapshot.records.length) await runtime.appendMessage({ role: 'system', content: childSystem(this.#options, child), timestamp: Date.now() });
         const firstAssignment = !state.entries.some(entry => entry.type === 'message' && entry.message.role === 'user');
@@ -201,14 +310,16 @@ export class SubagentManager {
         const result = await this.#result(context, running);
         signal.throwIfAborted();
         await this.#options.writer.finishSubagentTurn(running.id, 'completed', result);
-        running = null;
+        running = null; this.#live.delete(id);
         this.#notify(); this.#options.onCompletion();
       }
     } catch (error) {
       if (running && !this.#options.writer.signal.aborted && abort.reason !== childCancellation) {
+        const balance = signal.aborted || this.#closed ? null : this.#options.balanceFailure?.(error) ?? null;
         await this.#options.writer.finishSubagentTurn(running.id, signal.aborted || this.#closed ? 'interrupted' : 'failed', {
-          text: 'Child execution stopped. Its transcript and tool evidence are preserved; effects without confirmed outcomes remain unknown. Explicit followup can inspect and continue.',
+          text: balance ? balanceText(balance) : 'Child execution stopped. Its transcript and tool evidence are preserved; effects without confirmed outcomes remain unknown. Explicit followup can inspect and continue.',
           truncated: false, fullResultPath: null, finalRecordId: null });
+        if (balance) this.#options.onBalance?.(balance);
         this.#options.onCompletion(); this.#notify();
       }
       // Failed provider/tool work is a persisted child result, not a parent failure.
@@ -222,9 +333,38 @@ export class SubagentManager {
         }
         this.#options.onCompletion(); this.#notify();
       }
-    } finally { await writer?.close(); }
+    } finally {
+      this.#live.delete(id);
+      try { await writer?.close(); } finally { if (child && this.#streams.get(child.streamId) === id) this.#streams.delete(child.streamId); }
+    }
   }
-  cancel(id: string) { return this.#admit(() => this.#cancel(id)); }
+  async cancel(id: string) {
+    const active = await this.#admit(() => this.#cancel(id));
+    // Close what this child opened, strictly by its own stream owner; a stuck
+    // terminal wait or browser command then usually settles too.
+    const child = await this.#child(id);
+    let sessions: { closed: number; kept: number } | null = null;
+    try { sessions = await this.#options.closeOwner?.(child.streamId) ?? null; } catch (error) { if (!this.#closed) this.#options.onFailure(error); }
+    if (active) void this.#releaseLater(id, active);
+    return { ...brief(await this.#child(id)), cleanup: { ...(sessions ? { closedSessions: sessions.closed, ...(sessions.kept ? { keptUnderUserControl: sessions.kept } : {}) } : {}),
+      note: 'A tool call that does not stop within a few seconds gives up its slot; its outcome stays unknown.' } };
+  }
+  /** Cancelled work that ignores its abort frees its slot after a bounded
+   * wait. It can no longer write a result; a queued followup starts once it
+   * actually stops (its stream writer is still held until then). */
+  async #releaseLater(id: string, active: { controller: AbortController; done: Promise<void> }): Promise<void> {
+    if (await settleWithin(active.done, this.#options.cancelSettleMs ?? SUBAGENT_CANCEL_SETTLE_MS)) return;
+    if (this.#active.get(id) !== active) return;
+    this.#active.delete(id); this.#live.delete(id);
+    const zombie: Promise<void> = active.done.finally(async () => {
+      if (this.#zombies.get(id) !== zombie) return;
+      this.#zombies.delete(id); this.#notify();
+      try {
+        if (!this.#closed && !this.#active.has(id) && !this.#options.writer.signal.aborted && (await this.#child(id)).turns.some(turn => turn.status === 'queued')) this.#start(id);
+      } catch (error) { if (!this.#closed) this.#options.onFailure(error); }
+    });
+    this.#zombies.set(id, zombie); this.#notify();
+  }
   async #cancel(id: string) {
     const child = await this.#child(id);
     this.#cancelled.add(id);
@@ -234,7 +374,7 @@ export class SubagentManager {
     await this.#options.writer.cancelSubagent(id);
     for (const turn of child.turns) this.#transports.delete(turn.callId);
     this.#notify(); this.#options.onCompletion();
-    return this.status(id);
+    return active;
   }
   async wait(id: string, timeoutMs: number, signal?: AbortSignal, hasPendingLiveInput?: () => Promise<boolean>) {
     const version = this.#liveInputVersion;
@@ -246,7 +386,7 @@ export class SubagentManager {
       // Durable run-scoped input closes the intent-to-execute notification gap.
       // Capture version before awaiting reads; a receipt during the read also wins.
       if (await hasPendingLiveInput?.() || version !== this.#liveInputVersion) return { reason: 'live_input', child: brief(child) };
-      if (this.#closed || Date.now() >= until) return { reason: 'timeout', child: brief(child) };
+      if (this.#closed || Date.now() >= until) return { reason: 'timeout', child: brief(child, this.#live.get(id)) };
       await new Promise<void>(resolve => {
         const done = () => { clearTimeout(timer); this.#changes.delete(done); signal?.removeEventListener('abort', done); resolve(); };
         const timer = setTimeout(done, Math.min(250, Math.max(0, until - Date.now())));
@@ -257,9 +397,12 @@ export class SubagentManager {
   }
   async close(): Promise<void> {
     this.#closed = true; this.#notify();
+    if (this.#stallTimer) clearInterval(this.#stallTimer);
     for (const active of this.#active.values()) active.controller.abort(new Error('Child dispatcher closing'));
     await this.#admission;
-    await Promise.all([...this.#active.values()].map(active => active.done));
+    // Bounded per child: work that ignores its abort is abandoned, not awaited.
+    const wait = this.#options.closeWaitMs ?? SUBAGENT_CLOSE_WAIT_MS;
+    await Promise.all([...this.#active.values()].map(active => settleWithin(active.done, wait)));
     // Admission may have committed after close stopped dispatch, and queued
     // followups never acquire an actor during shutdown. Close their durable
     // state under the still-live owner rather than leaving phantom queued work.
@@ -282,6 +425,10 @@ export function createSubagentTools(manager: SubagentManager, transport: Subagen
   ];
 }
 
+function balanceText(failure: SubagentBalanceFailure): string {
+  const detail = [failure.status === null ? null : `HTTP ${failure.status}`, failure.requestId ? `request ${failure.requestId}` : null].filter(Boolean).join(', ');
+  return `The model provider refused this child's request for insufficient balance${detail ? ` (${detail})` : ''}. The child stopped; Mira's work is paused until the user tops up and sends a message. Effects without confirmed outcomes remain unknown.`;
+}
 function boundedText(text: string, bytes: number, codePoints = Infinity): string {
   let value = ''; let used = 0; let count = 0;
   for (const character of text.toWellFormed()) {
