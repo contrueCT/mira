@@ -11,6 +11,8 @@ import { lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { HistoryError } from '@mira/life';
 import { registerManagementHttp } from './management-http.ts';
+import { registerPersonaHttp, type PersonaBackend } from './persona-http.ts';
+import { PersonaError } from './persona.ts';
 import type { ManagementBackend } from './management.ts';
 import type { ModelRetryStatus } from './model-retry.ts';
 import { ModelRequestFailure } from './model-errors.ts';
@@ -23,14 +25,16 @@ import { parseWebConnectionWrite } from './web-model-config.ts';
 import type { ModelDiscoveryResult } from './model-discovery.ts';
 import { parseWebSettings, parseWebSettingsWrite, WebSettingsError, webSettingsMaxBytes, type WebSettings } from './web-settings.ts';
 
-export interface WebBackend extends Partial<ManagementBackend> {
+/** Display identity for the header and chat; persona settings stay in /api/persona. */
+export interface WebIdentity { name: string; ring: string; avatar: string | null }
+export interface WebBackend extends Partial<ManagementBackend>, Partial<PersonaBackend> {
   browser?: BrowserWebBackend;
-  status(): Promise<{ state: 'idle' | 'working' | 'error' | 'stopped'; mode: 'synthetic' | 'live'; model: string | null; error: string | ModelRequestFailure | PersistenceFailureNotice | null; errorId?: string | null; modelRetry?: ModelRetryStatus | null }>;
+  status(): Promise<{ state: 'idle' | 'working' | 'error' | 'stopped'; mode: 'synthetic' | 'live'; model: string | null; error: string | ModelRequestFailure | PersistenceFailureNotice | null; errorId?: string | null; modelRetry?: ModelRetryStatus | null; identity?: WebIdentity }>;
   timeline(before?: string): Promise<{
-    items: Array<{ id: string; externalEventId?: string; source?: ExtensionMessageSource; reply?: ReplyReference; role: 'user' | 'assistant' | 'notice'; text: string; occurredAt: string; attachments?: AttachmentDescriptor[] }>;
+    items: Array<{ id: string; externalEventId?: string; source?: ExtensionMessageSource; reply?: ReplyReference; role: 'user' | 'assistant' | 'notice'; notice?: 'persona'; text: string; occurredAt: string; attachments?: AttachmentDescriptor[] }>;
     nextCursor: string | null;
     /** Latest reads only: earlier items whose public outcome has just completed, outside `items`. */
-    updates?: Array<{ id: string; externalEventId?: string; source?: ExtensionMessageSource; reply?: ReplyReference; role: 'user' | 'assistant' | 'notice'; text: string; occurredAt: string; attachments?: AttachmentDescriptor[] }>;
+    updates?: Array<{ id: string; externalEventId?: string; source?: ExtensionMessageSource; reply?: ReplyReference; role: 'user' | 'assistant' | 'notice'; notice?: 'persona'; text: string; occurredAt: string; attachments?: AttachmentDescriptor[] }>;
   }>;
   /** A quoted message by ID: contiguous from `before` when reachable, else the window ending at it. */
   locateTimeline?(id: string, before?: string): Promise<(Awaited<ReturnType<WebBackend['timeline']>> & { mode: 'contiguous' | 'window' }) | null>;
@@ -44,7 +48,7 @@ export interface WebBackend extends Partial<ManagementBackend> {
 }
 type TimelineItem = Awaited<ReturnType<WebBackend['timeline']>>['items'][number];
 /** The public projection of one timeline item, shared by every timeline route. */
-const timelineItem = (item: TimelineItem) => ({ id: item.id, role: item.role, text: item.text, occurredAt: item.occurredAt, ...(item.reply ? { reply: replyDescriptor(item.reply) } : {}), ...(item.source ? { source: messageSource(item.source) } : {}), ...(item.attachments?.length ? { attachments: item.attachments.map(attachmentDescriptor) } : {}), ...(item.role === 'user' && item.externalEventId !== undefined ? { externalEventId: item.externalEventId } : {}) });
+const timelineItem = (item: TimelineItem) => ({ id: item.id, role: item.role, ...(item.role === 'notice' && item.notice === 'persona' ? { notice: 'persona' as const } : {}), text: item.text, occurredAt: item.occurredAt, ...(item.reply ? { reply: replyDescriptor(item.reply) } : {}), ...(item.source ? { source: messageSource(item.source) } : {}), ...(item.attachments?.length ? { attachments: item.attachments.map(attachmentDescriptor) } : {}), ...(item.role === 'user' && item.externalEventId !== undefined ? { externalEventId: item.externalEventId } : {}) });
 export class WebHttpError extends Error {
   readonly code: 'too_large' | 'busy' | 'conflict' | 'unavailable' | 'invalid_input';
   constructor(code: WebHttpError['code']) { super(code); this.name = 'WebHttpError'; this.code = code; }
@@ -102,6 +106,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     ['/api/auth/status', ['GET']], ['/api/auth/login', ['POST']], ['/api/auth/logout', ['POST']], ['/api/auth/settings', ['GET', 'PUT']],
     ['/api/attachments', ['POST']], ['/api/attachments/:id', ['GET']], ['/api/status', ['GET']], ['/api/timeline', ['GET', 'POST']], ['/api/timeline/locate', ['POST']], ['/api/messages', ['POST']], ['/api/settings', ['GET', 'PUT']],
     ['/api/memory', ['GET']], ['/api/messages/:id/status', ['GET']], ['/api/extensions', ['GET']], ['/api/extensions/:id', ['POST']], ['/api/extensions/:id/settings', ['GET', 'POST']], ['/api/extensions/:id/settings/actions', ['POST']], ['/api/extensions/:id/settings/cancel', ['POST']], ['/api/runs', ['GET']], ['/api/runs/:id', ['GET']], ['/api/runs/:id/requests', ['GET']],
+    ['/api/persona', ['GET', 'PUT']], ['/api/persona/presets', ['GET']], ['/api/persona/preview', ['POST']], ['/api/persona/history', ['GET']], ['/api/persona/restore', ['POST']], ['/api/persona/avatar', ['POST']], ['/api/persona/avatar/:id', ['GET']],
     ['/api/models/probe', ['POST']], ['/api/models/catalog', ['GET']], ['/api/models/discover', ['POST']],
     ['/api/external/events', ['POST']], ['/api/external/wake', ['POST']], ['/api/external/notifications', ['POST']],
   ]);
@@ -169,8 +174,9 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     if (allowed && !allowed.includes(request.method)) return reply.code(405).header('allow', allowed.join(', ')).send({ error: 'Method not allowed' });
     const write = request.method !== 'GET' && request.method !== 'HEAD';
     if (write && requestOrigin !== expectedOrigin) return reply.code(403).send({ error: 'A same-origin write is required' });
-    if (write && pathname === '/api/attachments' && request.headers['content-type'] !== 'application/octet-stream') return reply.code(415).send({ error: 'Binary content type is required' });
-    if (write && pathname !== '/api/attachments' && !/^application\/json(?:\s*;\s*charset\s*=\s*utf-8)?$/iu.test(request.headers['content-type'] ?? '')) return reply.code(415).send({ error: 'JSON content type is required' });
+    const binary = pathname === '/api/attachments' || pathname === '/api/persona/avatar';
+    if (write && binary && request.headers['content-type'] !== 'application/octet-stream') return reply.code(415).send({ error: 'Binary content type is required' });
+    if (write && !binary && !/^application\/json(?:\s*;\s*charset\s*=\s*utf-8)?$/iu.test(request.headers['content-type'] ?? '')) return reply.code(415).send({ error: 'JSON content type is required' });
     const publicAuthRoute = pathname === '/api/auth/status' || pathname === '/api/auth/login';
     if (!publicAuthRoute && options.auth && !options.auth.status(request.headers.cookie).authenticated) return reply.code(401).send({ error: 'Please sign in to Mira' });
     const now = performance.now();
@@ -191,6 +197,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     if (error instanceof PersistenceError && error.code === 'duplicate') return reply.code(409).send({ error: 'The request conflicts with previously saved data' });
     const persistence = PersistenceFailureNotice.from(error);
     if (persistence) return reply.code(503).send({ error: PersistenceFailureNotice.text(persistence) });
+    if (error instanceof PersonaError) return reply.code({ invalid: 400, conflict: 409, not_found: 404, unavailable: 503 }[error.code]).send({ error: new PersonaError(error.code).message });
     if (error instanceof WebHttpError) { const safe = safeErrors[error.code]; return reply.code(safe.status).send({ error: safe.text }); }
     if (error instanceof WebSettingsError) {
       const status = error.code === 'invalid_settings' ? 400 : error.code === 'settings_conflict' ? 409 : 500;
@@ -226,11 +233,12 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     return reply.header('set-cookie', cookie).send({ ...options.auth.settings(), authenticated: true });
   });
   registerManagementHttp(app, backend);
+  registerPersonaHttp(app, backend);
   registerBrowserHttp(app, backend.browser, origins, options.auth);
   app.setNotFoundHandler((_request, reply) => reply.code(404).send({ error: 'Not found' }));
   app.get('/api/status', { schema: { querystring: noQuery } }, async () => {
     const result = await backend.status();
-    return { state: result.state, mode: result.mode, model: result.model, ...(result.error !== null && result.errorId ? { errorId: result.errorId } : {}), ...(result.modelRetry ? { modelRetry: { phase: result.modelRetry.phase, attempt: result.modelRetry.attempt, maxAttempts: result.modelRetry.maxAttempts, delayMs: result.modelRetry.delayMs, reason: result.modelRetry.reason } } : {}), error: result.error === null ? null : result.error instanceof ModelRequestFailure ? result.error.message : PersistenceFailureNotice.text(result.error) ?? protectedError };
+    return { state: result.state, mode: result.mode, model: result.model, ...(result.error !== null && result.errorId ? { errorId: result.errorId } : {}), ...(result.modelRetry ? { modelRetry: { phase: result.modelRetry.phase, attempt: result.modelRetry.attempt, maxAttempts: result.modelRetry.maxAttempts, delayMs: result.modelRetry.delayMs, reason: result.modelRetry.reason } } : {}), ...(result.identity ? { identity: { name: result.identity.name, ring: result.identity.ring, avatar: result.identity.avatar } } : {}), error: result.error === null ? null : result.error instanceof ModelRequestFailure ? result.error.message : PersistenceFailureNotice.text(result.error) ?? protectedError };
   });
   app.get<{ Querystring: { before?: string } }>('/api/timeline', {
     schema: { querystring: objectSchema({ before: { type: 'string', minLength: 1, maxLength: 2_048, pattern: '^[A-Za-z0-9_=-]+$' } }) },

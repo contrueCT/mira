@@ -32,8 +32,8 @@ export function arrivals(previous: TimelineItem[], merged: TimelineItem[]): Time
   return merged.slice(merged.findIndex(item => item.id === last.id) + 1).filter(item => !known.has(item.id));
 }
 /** One short screen reader line for an arrived message. */
-export function announce(item: TimelineItem): string {
-  const who = item.source ? item.source.label : item.role === 'assistant' ? 'Mira' : '通知';
+export function announce(item: TimelineItem, name = 'Mira'): string {
+  const who = item.source ? item.source.label : item.role === 'assistant' ? name : '通知';
   const text = item.text.length > 300 ? `${item.text.slice(0, 300)}…` : item.text;
   const files = item.attachments?.length ? `（${item.attachments.length} 个附件）` : '';
   return `${who}：${text}${files}`;

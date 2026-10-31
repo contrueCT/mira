@@ -356,9 +356,12 @@ The optional runtime configuration has `memoryRoot?`, `extensionsRoot?`, require
 Extensions Workspace field and describes this limited meaning in the environment
 text; it does not invent a universal extension directory.
 
-`prompts/mira-system-v0.2.md` is the user-approved current template revision, checked
-by SHA-256 when loaded. `renderMiraPrompt` validates seven allowlisted keys used in
-eight locations, replaces them once and escapes `&`, `<` and `>` in runtime data.
+`prompts/mira-system-v0.3.md` is the user-approved current template revision, checked
+by SHA-256 when loaded. It adds a fixed `<persona>` section after `<identity>` whose
+`{{PERSONA}}` value is the user-configured profile frozen by the host for one Wake, or
+`MIRA_DEFAULT_PERSONA` (ADR 0046). `mira-system-v0.2.md` and the earlier revisions remain
+recoverable history; their snapshots carry exactly the seven legacy keys, v0.3 snapshots
+exactly eight. `renderMiraPrompt` validates the allowlisted keys used in nine locations, replaces them once and escapes `&`, `<` and `>` in runtime data.
 Template-looking text inside values stays literal. Required values and unknown or
 missing template placeholders fail explicitly. Unconfigured roots are represented
 as `Not configured`. See [source manifest](../../docs/design/sources.json).

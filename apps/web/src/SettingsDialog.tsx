@@ -7,6 +7,7 @@ import { ApiKeyField } from './ApiKeyField.tsx';
 import { hasUsableApiKey, sameCredentialTarget, validateApiKey, withApiKey } from './credentials.ts';
 import { CloseIcon } from './icons.tsx';
 import { MemoryPanel } from './MemoryPanel.tsx';
+import { PersonaPanel } from './PersonaPanel.tsx';
 import type { MemoryPanelProps } from './MemoryPanel.tsx';
 import { ExtensionsPanel } from './ExtensionsPanel.tsx';
 import { RunsPanel } from './RunsPanel.tsx';
@@ -15,8 +16,8 @@ import { BrowserPanel } from './BrowserPanel.tsx';
 import type { BuiltinCatalog, CustomConnection, CustomConnectionWrite, CustomModel, CustomProtocol, Discovery, Settings, SettingsWrite, ThinkingLevel } from './types.ts';
 
 interface Props { synthetic: boolean; onClose: () => void; onSaved: () => void; returnFocus: RefObject<HTMLButtonElement | null>; memoryRequest: MemoryPanelProps['request']; memoryPending: MemoryPanelProps['pending']; sending: boolean; storageError: string | null; onMemorySubmit: MemoryPanelProps['onSubmit']; onMemoryRetry: MemoryPanelProps['onRetry'] }
-type SettingsTab = 'model' | 'memory' | 'extensions' | 'runs' | 'access' | 'browser';
-const tabs: { id: SettingsTab; label: string }[] = [{ id: 'model', label: '模型' }, { id: 'memory', label: 'Memory' }, { id: 'extensions', label: '扩展' }, { id: 'runs', label: '运行记录' }, { id: 'access', label: '访问' }, { id: 'browser', label: '浏览器' }];
+type SettingsTab = 'model' | 'persona' | 'memory' | 'extensions' | 'runs' | 'access' | 'browser';
+const tabs: { id: SettingsTab; label: string }[] = [{ id: 'model', label: '模型' }, { id: 'persona', label: '人设' }, { id: 'memory', label: 'Memory' }, { id: 'extensions', label: '扩展' }, { id: 'runs', label: '运行记录' }, { id: 'access', label: '访问' }, { id: 'browser', label: '浏览器' }];
 interface ModelDraft { originalId: string | null; id: string; name: string; contextWindow: string; maxTokens: string; reasoning: '' | 'true' | 'false'; reasoningFormat: '' | 'openai' | 'openrouter' | 'litellm'; input: '' | 'text' | 'image' | 'text-image' }
 const blankModel = (id = '', name = ''): ModelDraft => ({ originalId: null, id, name, contextWindow: '', maxTokens: '', reasoning: 'false', reasoningFormat: '', input: 'text' });
 function modelDraftFrom(model: CustomModel): ModelDraft {
@@ -367,6 +368,7 @@ export function SettingsDialog({ synthetic, onClose, onSaved, returnFocus, memor
       <div className="settings-footer"><span>{dirty ? '尚有未保存的更改' : '密钥保留在本地服务端'}</span><div><button type="button" className="secondary-button" onClick={requestClose}>{dirty ? '取消' : '关闭'}</button><button type="submit" className="primary-button" disabled={saving || !dirty || conflict}>{saving ? (probing ? '正在测试推理参数…' : '正在保存…') : '保存设置'}</button></div></div>
     </form> : null}
     </section>
+    <section id="settings-panel-persona" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-persona" hidden={tab !== 'persona'}><PersonaPanel active={tab === 'persona'} sending={sending} storageError={storageError} onSaved={onSaved} onMemorySubmit={onMemorySubmit} /></section>
     <section id="settings-panel-memory" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-memory" hidden={tab !== 'memory'}><MemoryPanel active={tab === 'memory'} request={memoryRequest} pending={memoryPending} sending={sending} storageError={storageError} onSubmit={onMemorySubmit} onRetry={onMemoryRetry} /></section>
     <section id="settings-panel-extensions" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-extensions" hidden={tab !== 'extensions'}><ExtensionsPanel active={tab === 'extensions'} /></section>
     <section id="settings-panel-runs" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-runs" hidden={tab !== 'runs'}><RunsPanel active={tab === 'runs'} /></section>

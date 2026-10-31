@@ -158,6 +158,9 @@ export { listBuiltinCatalog, getBuiltinCatalogModel, protocolDescription } from 
 export { createModelTransport, type ModelTransport, type ModelTransportOptions, type ModelSelection } from './model-transport.ts';
 export { discoverModels, modelDiscoveryLimits, type DiscoveredModel, type ModelDiscoveryOptions, type ModelDiscoveryResult } from './model-discovery.ts';
 export { createLocalHttp, WebHttpError, type WebBackend } from './http.ts';
+export { PersonaStore, PersonaError, parsePersona, renderPersona, personaPromptValue, avatarMime, personaLimits, personaRings, personaLanguages, type Persona, type PersonaView, type PersonaHistoryItem } from './persona.ts';
+export { personaPresets } from './persona-presets.ts';
+export { registerPersonaHttp, type PersonaBackend, type PersonaApplied } from './persona-http.ts';
 export { WebSettingsStore, WebSettingsError, parseWebSettings, parseWebSettingsWrite, hasSelectedWebApiKey, webSettingsMaxBytes, type WebSettings, type WebSettingsWrite } from './web-settings.ts';
 export { LocalWebService, type WebServiceOptions } from './web-service.ts';
 export { browserLaunchEnvironment } from './browser-launch.ts';

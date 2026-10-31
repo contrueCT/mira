@@ -13,6 +13,8 @@ import { SettingsDialog } from './SettingsDialog.tsx';
 import { BrowserDialog } from './BrowserDialog.tsx';
 import { createMemoryRequest, readMemoryRequest, recoverMemoryRequest, writeMemoryRequest } from './management.ts';
 import type { MemoryRequestIdentity } from './management.ts';
+import { PersonaAvatar, useAvatarImage } from './PersonaAvatar.tsx';
+import { statusIdentity } from './persona.ts';
 import { composerBudget, envelopeBytes, MESSAGE_BODY_LIMIT } from './composer.ts';
 import { announce, applicableUpdates, arrivals, confirmsPending, dateLabel, replyReference, replySnippet, untilNextLocalDay, timelineSpacing, timelineView, quoteLookupNotice, QUOTE_LOOKUP_CANCELLED, latestPagination, loadOlderHistory, locatedPagination, mergeTimeline, nextHistoryRequest, olderPagination, readPending, reconcilePending, writePending } from './timeline.ts';
 import type { HistoryPagination, HistoryRequest } from './timeline.ts';
@@ -37,6 +39,9 @@ export function App() {
   const memoryRequestRef = useRef(memoryRequest);
   const [dismissedErrorId, setDismissedErrorId] = useState<string | null>(() => { try { return window.sessionStorage.getItem('mira.dismissedErrorId'); } catch { return null; } });
   const [status, setStatus] = useState<ServerStatus | null>(null);
+  const identity = statusIdentity(status);
+  const avatarImage = useAvatarImage(identity.avatar); const avatarUrl = avatarImage.url;
+  const identityNameRef = useRef(identity.name); identityNameRef.current = identity.name;
   const [loading, setLoading] = useState(true);
   const [connectionError, setConnectionError] = useState<ErrorInfo | null>(null);
   const [storageError, setStorageError] = useState<string | null>(recovered.error);
@@ -138,7 +143,7 @@ export function App() {
     const merged = mergeTimeline(itemsRef.current, [...(request || located ? [] : applicableUpdates(itemsRef.current, page.updates)), ...page.items]);
     if (!request && !located && initializedRef.current) {
       const spoken = arrivals(itemsRef.current, merged).filter(item => item.role !== 'user');
-      if (spoken.length) setAnnouncement(spoken.map(announce).join('\n'));
+      if (spoken.length) setAnnouncement(spoken.map(item => announce(item, identityNameRef.current)).join('\n'));
     }
     itemsRef.current = merged;
     setItems(merged);
@@ -447,9 +452,9 @@ export function App() {
       }}>
       <button type="button" className="skip-link" onClick={() => { textareaRef.current?.focus(); }}>跳到输入框</button>
       <header className="app-header">
-        <div className="identity" aria-label="Mira">
-          <div className="mira-ring" aria-hidden="true" />
-          <h1>Mira</h1>
+        <div className="identity" aria-label={identity.name}>
+          <PersonaAvatar identity={identity} image={avatarImage} />
+          <h1>{identity.name}</h1>
           <p className="identity-detail"><span className={`status-dot ${status?.state === 'working' ? 'working' : ''} ${connectionError || status?.state === 'error' ? 'warning' : ''}`} />{stateLabel}<span className="detail-divider">·</span>{status?.model ?? (status?.mode === 'synthetic' ? '模拟模式' : '本地连接')}{status?.mode === 'synthetic' && status.model ? <span className="mode-label">模拟</span> : null}</p>
         </div>
         <button ref={browserButtonRef} className="icon-button browser-button" type="button" onClick={openBrowser} aria-label="浏览器" title="浏览器：查看或接管 Mira 的浏览器"><BrowserIcon /></button>
@@ -467,12 +472,12 @@ export function App() {
         onFocusCapture={() => { if (!internalTimelineFocusRef.current) cancelQuoteNavigation(); }}
         onPointerDown={cancelQuoteNavigation} onWheel={cancelQuoteNavigation} onTouchMove={cancelQuoteNavigation}
         onKeyDown={event => { if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Tab'].includes(event.key)) cancelQuoteNavigation(); }}
-        aria-label="与 Mira 的消息记录" tabIndex={0}>
+        aria-label={`与 ${identity.name} 的消息记录`} tabIndex={0}>
         <div className={`timeline-content ${showEmpty ? 'is-empty' : ''}`}>
           {view === 'loading' && <div className="timeline-loading" role="status"><span className="loading-mark" />正在找回我们的消息…</div>}
           {nextCursor && <div className="history-controls"><button className="text-button" onClick={() => { void loadOlder(); }} disabled={loadingOlder}>{loadingOlder ? '正在读取…' : hasHistoryGap ? '补齐尚未读取的消息' : '查看更早的消息'}</button>{hasHistoryGap && <p className="history-gap-note">有一段消息尚未读取，点击后可继续补齐</p>}{olderError && <p className="inline-error" role="alert"><span>{olderError.summary}</span>{olderError.detail && <span className="error-detail">技术信息：{olderError.detail}</span>}</p>}</div>}
-          {view === 'empty' && <div className="empty-state"><span className="eyebrow">每一句，都会留在这里</span><h2>和 Mira 说点什么</h2><p>一个想法、一件小事，或今天的心情。</p><p className="empty-note">从这里开始，慢慢聊。</p></div>}
-          {view === 'hidden-recent' && <div className="empty-state hidden-recent" role="status"><span className="eyebrow">消息都还在</span><h2>最近是 Mira 的内部处理记录</h2><p>较早的聊天仍完整保存，可以点上方继续查看。</p></div>}
+          {view === 'empty' && <div className="empty-state"><span className="eyebrow">每一句，都会留在这里</span><h2>和 {identity.name} 说点什么</h2><p>一个想法、一件小事，或今天的心情。</p><p className="empty-note">从这里开始，慢慢聊。</p></div>}
+          {view === 'hidden-recent' && <div className="empty-state hidden-recent" role="status"><span className="eyebrow">消息都还在</span><h2>最近是 {identity.name} 的内部处理记录</h2><p>较早的聊天仍完整保存，可以点上方继续查看。</p></div>}
           <p className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="arrival-announcer">{announcement}</p>
           <div className="message-list" role="region" aria-label="消息" aria-busy={loadingOlder || quoteSearch || autoFilling} aria-describedby="message-keys">
             <p id="message-keys" className="sr-only">在消息上按上下方向键切换消息，Home 和 End 跳到第一条或最后一条。</p>
@@ -481,9 +486,10 @@ export function App() {
               const rowTab = item.id === rovingId ? undefined : -1;
               return <div key={item.id} className={`message-group ${spacing.compact ? 'compact' : ''}`}>
                 {spacing.divider && <p className="date-divider">{dateLabel(item.occurredAt, today)} {timeLabel(item.occurredAt)}</p>}
-                <article tabIndex={item.id === rovingId ? 0 : -1} onFocus={() => setActiveMessageId(item.id)} onKeyDown={moveMessageFocus} data-message-id={item.id} className={`message-row ${item.role} ${highlightId === item.id ? 'quote-highlight' : ''}`} aria-label={item.source ? `${item.source.label} 扩展消息` : item.role === 'user' ? '你的消息' : item.role === 'assistant' ? 'Mira 的消息' : '服务通知'}>
+                <article tabIndex={item.id === rovingId ? 0 : -1} onFocus={() => setActiveMessageId(item.id)} onKeyDown={moveMessageFocus} data-message-id={item.id} className={`message-row ${item.role}${item.notice === 'persona' ? ' persona-notice' : ''} ${highlightId === item.id ? 'quote-highlight' : ''}`} aria-label={item.source ? `${item.source.label} 扩展消息` : item.role === 'user' ? '你的消息' : item.role === 'assistant' ? `${identity.name} 的消息` : item.notice === 'persona' ? '人设变更' : '服务通知'}>
                   {item.reply && <button type="button" className="reply-quote" tabIndex={rowTab} aria-label="查看引用的消息" title={replySnippet(item.reply)} disabled={quoteSearch} onClick={() => { void jumpToReply(item.reply!.messageId); }}><span aria-hidden="true">↪</span><span>{replySnippet(item.reply)}</span></button>}
                   <div className="message-content-line">
+                  {item.role === 'assistant' && avatarUrl && (items[index - 1]?.role !== 'assistant' || spacing.divider ? <PersonaAvatar identity={identity} image={avatarImage} className="message-avatar" /> : <span className="message-avatar-spacer" aria-hidden="true" />)}
                   <div className="message-payload">
                   {item.text && <div className="message-bubble">{item.text}</div>}
                   {!!item.attachments?.length && <AttachmentList attachments={item.attachments} onPreview={openPreview} tabIndex={rowTab} />}
@@ -510,14 +516,14 @@ export function App() {
               {message.state === 'uncertain' && <p className="pending-help"><span>{message.error ?? '刷新前的发送尚未确认'}。不会自动重发，可以核对后重试。</span>{message.errorDetail && <span className="error-detail">技术信息：{message.errorDetail}</span>}</p>}
             </article>)}
           </div>
-          {status?.state === 'working' && !connectionError && <div className="working-indicator" role="status"><span className="working-dots" aria-hidden="true">•••</span>{status.modelRetry ? (status.modelRetry.phase === 'waiting' ? `模型请求暂时失败，等待重试（第 ${status.modelRetry.attempt}/${status.modelRetry.maxAttempts} 次）` : `正在重试模型请求（第 ${status.modelRetry.attempt}/${status.modelRetry.maxAttempts} 次）`) : 'Mira 正在处理'}</div>}
+          {status?.state === 'working' && !connectionError && <div className="working-indicator" role="status"><span className="working-dots" aria-hidden="true">•••</span>{status.modelRetry ? (status.modelRetry.phase === 'waiting' ? `模型请求暂时失败，等待重试（第 ${status.modelRetry.attempt}/${status.modelRetry.maxAttempts} 次）` : `正在重试模型请求（第 ${status.modelRetry.attempt}/${status.modelRetry.maxAttempts} 次）`) : `${identity.name} 正在处理`}</div>}
         </div>
       </main>
 
       <footer className="composer-section">
         {(quoteSearch || quoteNotice) && <p className="quote-search-status" role="status">{quoteSearch ? '正在查找引用消息…' : quoteNotice?.summary}{!quoteSearch && quoteNotice?.detail && <span className="error-detail">技术信息：{quoteNotice.detail}</span>}{quoteSearch && <button type="button" className="text-button" onClick={() => { cancelQuoteNavigation(); setQuoteNotice({ summary: QUOTE_LOOKUP_CANCELLED, detail: null }); }}>取消查找</button>}</p>}
         {!nearBottom && <button className="latest-button" type="button" onClick={scrollToLatest}><ChevronDown />回到最新消息</button>}
-        {replyTarget && <div className="composer-reply" aria-label="回复预览"><span aria-hidden="true">↪</span><span className="composer-reply-text"><strong>回复 {replyTarget.source?.label ?? 'Mira'}</strong><span>{replySnippet(replyTarget)}</span></span><button type="button" aria-label="取消回复" title="取消回复" onClick={() => { cancelQuoteNavigation(); setReplyTarget(null); textareaRef.current?.focus(); }}>×</button></div>}
+        {replyTarget && <div className="composer-reply" aria-label="回复预览"><span aria-hidden="true">↪</span><span className="composer-reply-text"><strong>回复 {replyTarget.source?.label ?? identity.name}</strong><span>{replySnippet(replyTarget)}</span></span><button type="button" aria-label="取消回复" title="取消回复" onClick={() => { cancelQuoteNavigation(); setReplyTarget(null); textareaRef.current?.focus(); }}>×</button></div>}
         <form className={`composer ${composer.includes('\n') || attachments.drafts.length ? 'expanded' : ''} ${dragging ? 'dragging' : ''}`} onSubmit={submit} onFocusCapture={cancelQuoteNavigation}
           onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDragging(true); } }}
           onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }}
@@ -530,8 +536,8 @@ export function App() {
             {draft.error ? <div className="inline-error" role="alert">{draft.error}<button type="button" className="text-button" onClick={() => attachments.retry(draft.key)}>重新上传</button></div> : !draft.attachment && <span role="status">正在上传…</span>}
           </div>)}</div>}
           <button className="add-attachment-button icon-button" type="button" disabled={sending || !!recovered.error} onClick={() => fileInputRef.current?.click()} aria-label="添加附件" title="添加图片、视频或文件">+</button>
-          <label className="sr-only" htmlFor="message-input">给 Mira 发消息</label>
-          <textarea ref={textareaRef} id="message-input" placeholder="给 Mira 发消息…" value={composer} onChange={event => { cancelQuoteNavigation(); setComposer(event.target.value); setComposerError(null); }} onKeyDown={onComposerKey} rows={1} disabled={sending || !!recovered.error} aria-describedby={budget.label ? 'composer-budget' : undefined} aria-invalid={budget.over || undefined} />
+          <label className="sr-only" htmlFor="message-input">给 {identity.name} 发消息</label>
+          <textarea ref={textareaRef} id="message-input" placeholder={`给 ${identity.name} 发消息…`} value={composer} onChange={event => { cancelQuoteNavigation(); setComposer(event.target.value); setComposerError(null); }} onKeyDown={onComposerKey} rows={1} disabled={sending || !!recovered.error} aria-describedby={budget.label ? 'composer-budget' : undefined} aria-invalid={budget.over || undefined} />
           <button className="send-button" type="submit" disabled={(!composer.trim() && !attachments.drafts.length) || !attachments.ready || sending || !!recovered.error || budget.over} aria-label={sending ? '正在发送' : '发送消息'} title="发送消息"><ArrowUp /></button>
         </form>
         {budget.label && <p id="composer-budget" className={`composer-budget ${budget.over ? 'over' : ''}`} aria-live="polite">{budget.label}</p>}

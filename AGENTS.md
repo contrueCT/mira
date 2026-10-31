@@ -8,7 +8,7 @@
 
 ## 当前状态与关系
 
-当前实现包含连续上下文、合并 Wake、普通 Memory 与完整 Mira v0.2 Prompt、通用 Pi 工具、Memory Git、只读历史查询与 Cordis 手工/生成扩展生命周期，见 [ADR 0005](docs/adr/0005-generated-extension-lifecycle.md) 和 [扩展宿主](packages/extension-host/README.md)。Server 有假 provider CLI、Pi 离线模型目录、自定义发现与显式 model/streamFn transport；新增 Fastify/React 本地 Web、持续 Timeline、普通文件 Skills 与直接 API Key 设置；密钥仅在源码外的私有文件保存，公开接口不回填。真实模型联通尚未验收，详见 [ADR 0009](docs/adr/0009-local-web-client.md)。
+当前实现包含连续上下文、合并 Wake、普通 Memory 与完整 Mira v0.3 Prompt、通用 Pi 工具、Memory Git、只读历史查询与 Cordis 手工/生成扩展生命周期，见 [ADR 0005](docs/adr/0005-generated-extension-lifecycle.md) 和 [扩展宿主](packages/extension-host/README.md)。Server 有假 provider CLI、Pi 离线模型目录、自定义发现与显式 model/streamFn transport；新增 Fastify/React 本地 Web、持续 Timeline、普通文件 Skills 与直接 API Key 设置；密钥仅在源码外的私有文件保存，公开接口不回填。真实模型联通尚未验收，详见 [ADR 0009](docs/adr/0009-local-web-client.md)。
 
 - `apps/server` 组装核心与适配器；`apps/web` 提供单条 Timeline
 - `life` / `context` 保持独立，不导入 Pi、Cordis、数据库或 Web 框架
@@ -25,6 +25,7 @@
 - [ADR 0017](docs/adr/0017-external-sdk-local-ingress.md)：External SDK 通过本机默认关闭的入口发 Event/Wake/Timeline notice；普通 Shell CLI 管理私有身份/凭据，配置逐次认证生效。认证绑定来源，不构成模型动作审批；通知不 Wake，不接外部推送渠道
 - [ADR 0019](docs/adr/0019-extension-context-providers.md)：扩展 ContextProvider 与工具捕获同一代，在自然模型请求采样有来源/预算的观察，复用现有 system 持久快照；失败/取消/旧代不复用旧数据，不额外 Wake 或改变 Memory 加载。
 - [ADR 0020](docs/adr/0020-settings-management.md)：既有设置窗口内增加 Memory 总览/自然语言请求、扩展管理及按 Wake 的只读历史；主聊天不加入口，接收与完成分开，不回填配置或原始诊断，不新增日志。
+- [ADR 0046](docs/adr/0046-user-persona.md)：设置“人设”页（模型之后）；`MIRA_HOME/persona.json` 带 revision/20 版历史/4000 字上限；Prompt v0.3 在 identity 后加 `<persona>`，v0.2 快照仍可恢复；Wake 开始时冻结，保存不唤醒、写一条 Timeline 通知，可选经 Memory 请求整理冲突记忆；头像仅 PNG/JPEG/WebP、2 MiB、受保护读取；子任务不继承。
 - [ADR 0021](docs/adr/0021-chat-attachments.md)：聊天共用不可变附件存储与引用，正文/有序附件原子绑定既有 Event/Wake；send_attachment 仅显式已知发布投影。图片原生输入，视频统一普通文件，只有模型显式 read 后内置 Google Gemini 的 MP4/WebM 才通过公开 payload hook 原生理解；PDF/Word只给工具引用，历史不存媒体 base64。
 - [ADR 0024](docs/adr/0024-live-user-input.md)：普通 Web 插话先持久保存为冻结原始 Wake 之外的有序补充输入；生成请求让出，当前单工具完成后先读新输入，旧 siblings 保持 not-started；final 与输入原子仲裁，无暂停按钮/关键词判定。
 - [ADR 0023](docs/adr/0023-on-demand-public-skills.md)：公开 OpenAI pdf/doc/transcribe、agent-browser 与 Tavily CLI 指导；只随源码分发技能/必要脚本及许可，依赖由模型普通工具按需准备，应用不自动解析附件、不捆绑浏览器或模型。
