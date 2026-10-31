@@ -8,7 +8,7 @@ import { withOpenCodeSessionHeader } from '@earendil-works/pi-ai/providers/openc
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { boundedRetryAfter, retryableHttpStatus, retryableTransportError, retryModelRequest, type ModelRetryPolicy, type ModelRetryStatus } from './model-retry.ts';
 import { prepareNativeVideoRequest } from './model-video-transport.ts';
-import { ModelRequestFailure, containsPercentEncodedSecret, providerFailureReason, secretVariants, transportFailureReason, type ModelFailureContext } from './model-errors.ts';
+import { ModelRequestFailure, containsPercentEncodedSecret, insufficientBalance, providerFailureReason, secretVariants, transportFailureReason, type ModelFailureContext } from './model-errors.ts';
 import { builtinApiKeySupport, createBuiltinCatalog, protocolDescription } from './model-catalog.ts';
 import { parseModelConfiguration, validateBaseUrl, type CustomProtocol, type ModelConfiguration } from './model-config.ts';
 
@@ -82,7 +82,10 @@ function scopedModelFetch(baseUrl: string, fetch: typeof globalThis.fetch, heade
       }
       if (response.status >= 300 && response.status < 400) { void response.body?.cancel().catch(() => undefined); throw Error('Redirect rejected'); }
       if (!response.ok) {
-        failure.providerReason = await providerFailureReason(response, secret(), message => { failure.providerMessage = message; });
+        let code: { code?: string; type?: string } = {};
+        failure.providerReason = await providerFailureReason(response, secret(), message => { failure.providerMessage = message; }, value => { code = value; });
+        // Insufficient balance is terminal even when sent as 429 (ADR 0048).
+        if (insufficientBalance(response.status, code.code, code.type)) { failure.balance = true; delete failure.retryReason; delete failure.retryAfterMs; }
         // The SDK receives only selected, sanitized error text, never a huge raw
         // body whose truncation could erase the useful provider message/code.
         return new Response(JSON.stringify({ error: { message: failure.providerReason } }), { status: response.status, headers: { 'content-type': 'application/json' } });
