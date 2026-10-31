@@ -5,7 +5,8 @@ import { BrowserManager } from './browser-manager.ts';
 import { createBrowserTools } from './browser-tools.ts';
 import { extensionMessage } from './extension-messages.ts';
 import { TerminalManager, createTerminalTools } from './terminals.ts';
-import { SubagentManager, createSubagentTools } from './subagents.ts';
+import { SubagentManager, createSubagentTools, type SubagentBalanceFailure, type SubagentStall } from './subagents.ts';
+import { withFileToolLimits } from './file-tool-limits.ts';
 import type { SubagentWriter, SubagentReader } from '@mira/life';
 import { withVideoRead } from './video-read-tool.ts';
 import path from 'node:path';
@@ -85,6 +86,8 @@ const COMPLETED_UPDATE_TTL_MS = 10 * 60_000;
 export interface WebServiceOptions {
   /** Startup-only child concurrency, default 8, bounded 1..32. */
   subagentConcurrency?: number;
+  /** Test injection for ADR 0051 child bounds; production uses the defaults. */
+  subagentLimits?: { stallMs?: number; stallCheckMs?: number; cancelSettleMs?: number; closeWaitMs?: number; fileToolTimeoutMs?: number };
   /** Runtime context budgets; omitted uses automatic compaction defaults. */
   autoCompaction?: AutoCompactionOptions;
   /** Proactive memory housekeeping; enabled by default when Memory is configured. */
@@ -212,6 +215,10 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   #modelRetry: ModelRetryStatus | null = null;
   /** Insufficient balance pause (ADR 0048): only a new user message resumes. */
   #paused: (BalancePause & { runId: string; sequence: number }) | null = null;
+  /** A child's request was refused for balance: no new child work until the
+   * user sends a message (the main Wake then pauses on its own refusal). */
+  #childBalance: SubagentBalanceFailure | null = null;
+  readonly #childFailures = new Map<string, SubagentBalanceFailure>();
   /** The run the current runtime was created for, and its last pause sequence. */
   #currentRun: string | null = null;
   #pauseSequences = new Map<string, number>();
@@ -285,7 +292,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     try {
       const roots = options.memoryRoot ? await setupMemoryWorkspace({ memoryRoot: options.memoryRoot, sourceDirectory: options.sourceDirectory }) : undefined;
       const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, ...(options.miraHome === undefined ? {} : { managedDataRoot: options.miraHome }), runId, content });
-      terminals = new TerminalManager({ cwd, writeOverflowInput, onExit: exit => {
+      terminals = new TerminalManager({ cwd, writeOverflowInput, onOutput: owner => { if (owner !== writer.miraId) subagents?.noteActivity(owner); }, onExit: exit => {
         // Main-stream processes only; a child's processes belong to its task.
         if (exit.owner !== writer.miraId || writer.signal.aborted) return;
         const id = JSON.stringify(['terminal-exit', exit.sessionId]);
@@ -309,8 +316,21 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       }
       const extensionHost = host;
       const management = extensionHost ? extensionManagementTools(extensionHost, () => writer.listScheduledDeliveries()) : [];
+      const limits = options.subagentLimits ?? {};
       subagents = new SubagentManager({ writer, loadSkills, ...(options.subagentConcurrency === undefined ? {} : { maxConcurrent: options.subagentConcurrency }), acquire: streamId => persistence.acquire(streamId),
-        tools: streamId => [...createBrowserTools(browserManager, streamId), ...createWorkspaceTools(cwd), ...createTerminalTools(terminalManager, streamId), ...createHistoryTools(persistence.history(streamId))],
+        tools: streamId => [...createBrowserTools(browserManager, streamId), ...withFileToolLimits(createWorkspaceTools(cwd), cwd, limits.fileToolTimeoutMs), ...createTerminalTools(terminalManager, streamId), ...createHistoryTools(persistence.history(streamId))],
+        ...(limits.stallMs === undefined ? {} : { stallMs: limits.stallMs }), ...(limits.stallCheckMs === undefined ? {} : { stallCheckMs: limits.stallCheckMs }),
+        ...(limits.cancelSettleMs === undefined ? {} : { cancelSettleMs: limits.cancelSettleMs }), ...(limits.closeWaitMs === undefined ? {} : { closeWaitMs: limits.closeWaitMs }),
+        // Strictly the cancelled child's own stream; never the main owner.
+        closeOwner: async streamId => {
+          if (streamId === writer.miraId) return { closed: 0, kept: 0 };
+          const [closedTerminals, browsers] = await Promise.all([terminalManager.closeOwner(streamId), browserManager.closeOwner(streamId)]);
+          return { closed: closedTerminals + browsers.closed, kept: browsers.kept };
+        },
+        onStalled: async stall => { if (service) await service.#stalled(stall); },
+        balanceFailure: error => error instanceof Error && service ? service.#childFailures.get(error.message) ?? null : null,
+        onBalance: failure => { if (service) service.#childBalance = failure; },
+        blocked: () => service && (service.#paused || service.#childBalance) ? 'The model provider refused a request for insufficient balance. New child work waits until the user tops up and sends a message.' : null,
         writeOverflowInput, ...(roots ? { memoryRoot: roots.memoryRoot } : {}),
         onCompletion: () => { if (service && !service.#error) service.#kick(); },
         onFailure: error => { if (service) service.#recordFailure(error); },
@@ -318,7 +338,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       await subagents.initialize();
       writer.signal.throwIfAborted();
       const children = subagents;
-      const background = new BackgroundJobs({ writer, signal: writer.signal, activeSubagents: () => children.activeCount,
+      const background = new BackgroundJobs({ writer, signal: writer.signal, subagents: () => children.running(),
         kick: () => { if (service && !service.#error) service.#kick(); },
         onFailure: error => { if (service) service.#recordFailure(error); },
         ...(options.foreground ? options.foreground : {}) });
@@ -344,7 +364,14 @@ export class LocalWebService implements WebBackend, ManagementBackend {
             if ((await readMemoryRefresh(options.memoryRefreshFile!, writer.miraId)) === pendingRefresh) await rm(options.memoryRefreshFile!, { force: true });
             service!.#memoryRefresh = null;
           };
-          const childTransport = options.synthetic ? transport : settings.transport(current, { ...(options.modelFetch ? { fetch: options.modelFetch } : {}), ...(options.modelRetryPolicy ? { retryPolicy: options.modelRetryPolicy } : {}) });
+          // A child's balance refusal is recognised by its terminal message (ADR 0051).
+          const childFailure = (failure: ModelRequestFailure | null) => {
+            if (!failure?.balance) return;
+            const failures = service!.#childFailures; failures.delete(failure.terminalMessage);
+            failures.set(failure.terminalMessage, { status: failure.httpStatus ?? null, requestId: failure.requestId ?? null });
+            while (failures.size > 16) failures.delete(failures.keys().next().value!);
+          };
+          const childTransport = options.synthetic ? transport : settings.transport(current, { ...(options.modelFetch ? { fetch: options.modelFetch } : {}), ...(options.modelRetryPolicy ? { retryPolicy: options.modelRetryPolicy } : {}), onFailure: childFailure });
           const childTools = createSubagentTools(children, childTransport, { hasPendingLiveInput: async () => (await writer.loadLiveInputs(run.id)).some(input => input.inputRecordId === null) });
           let contextProviders: RegisteredContextProvider[] = [];
           return new PiDurableRuntime({ ...(options.autoCompaction ? { autoCompaction: options.autoCompaction } : {}), writer, ...transport,
@@ -410,6 +437,17 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     const text = (key: string) => typeof payload[key] === 'string' ? payload[key] as string : null;
     this.#paused = { reason: 'balance', runId: latest.id, sequence: paused, since: entry?.occurredAt ?? new Date().toISOString(),
       status: Number.isSafeInteger(payload['status']) ? payload['status'] as number : null, requestId: text('requestId'), provider: text('provider'), model: text('model') };
+  }
+  /** One waking event per child stall episode (ADR 0051); model-only. */
+  async #stalled(stall: SubagentStall): Promise<void> {
+    if (this.#closed || this.#writer.signal.aborted) return;
+    const id = JSON.stringify(['subagent-stalled', stall.turnId, stall.episode]);
+    const idleForMs = Date.now() - Date.parse(stall.lastActivityAt);
+    const receipt = await this.#writer.receive({ id, type: 'subagent.stalled', source: 'system', occurredAt: new Date().toISOString(),
+      payload: { operation: 'subagent-stalled', childId: stall.childId, turnId: stall.turnId, title: stall.title, startedAt: stall.startedAt, lastActivityAt: stall.lastActivityAt,
+        idleForMinutes: Math.floor(idleForMs / 60_000), current: stall.current,
+        note: 'No new activity from this child. It is still running. Check subagent_status, then send, cancel or keep waiting.' } }, { id, reason: 'Delegated work has no new activity' });
+    if (receipt === 'inserted' && !this.#error) this.#kick();
   }
   /** Durable, non-waking pause evidence; the run stays running and unclaimed. */
   async #pause(failure: ModelRequestFailure): Promise<boolean> {
@@ -579,7 +617,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     }
     // A duplicate is only a receipt check. Never retry cognition merely because
     // an uncertain HTTP response was retried with the same envelope.
-    if (receipt === 'inserted') { await this.#resume(); this.#kick('user'); }
+    if (receipt === 'inserted') { this.#childBalance = null; await this.#resume(); this.#kick('user'); }
     return { id: input.id, receipt };
   }
   /** Read-only provider usage of this life and its subagents (ADR 0048). */
