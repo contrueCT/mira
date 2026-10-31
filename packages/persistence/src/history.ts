@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { Client } from 'pg';
 import { assertJson, assertRecord } from '@mira/context';
 import { HistoryError } from '@mira/life';
-import type { HistoryEntry, HistoryKind, HistoryPageHit, HistoryPageRequest, HistoryPageResult, RunHistoryReader, HistoryEventRun, HistoryRunPage, HistoryRunPageRequest, HistoryRunHeader, HistoryRunRequestsPage, HistoryReadRequest, HistoryTextRequest, HistoryTextPage, HistorySearchRequest, HistorySearchResult } from '@mira/life';
+import type { HistoryEntry, HistoryKind, HistoryPageHit, HistoryPageRequest, HistoryPageResult, RunHistoryReader, HistoryEventRun, HistoryEventReceipt, HistoryRunPage, HistoryRunPageRequest, HistoryRunHeader, HistoryRunRequestsPage, HistoryReadRequest, HistoryTextRequest, HistoryTextPage, HistorySearchRequest, HistorySearchResult } from '@mira/life';
 import type { PostgresOptions } from './index.ts';
 
 const FULL_TEXT_PREFIX_CHARS = 65_536;
@@ -269,6 +269,18 @@ export class PostgresHistoryReader implements RunHistoryReader {
       json_build_object('eventId', e.history_id, 'runId', r.run_id) AS body, true AS valid
       FROM life_events e LEFT JOIN wake_requests w ON w.mira_id = e.mira_id AND w.event_id = e.event_id
       LEFT JOIN wake_run_requests r ON r.mira_id = w.mira_id AND r.wake_id = w.wake_id
+      WHERE e.mira_id = $1 AND e.event_id = $2`, '$3'), [this.miraId, externalEventId, MAX_PAGE_BYTES]));
+  }
+  async findEventReceipt(externalEventId: string): Promise<HistoryEventReceipt | null> {
+    string(externalEventId, 'external event ID', 65_536);
+    return response<HistoryEventReceipt>(await this.#query(bound(`SELECT
+      json_build_object('eventId', e.history_id, 'runId', r.run_id, 'read', CASE
+        WHEN li.wake_id IS NOT NULL THEN li.input_record_id IS NOT NULL
+        WHEN run.run_id IS NOT NULL THEN run.input_record_id IS NOT NULL ELSE false END) AS body, true AS valid
+      FROM life_events e LEFT JOIN wake_requests w ON w.mira_id = e.mira_id AND w.event_id = e.event_id
+      LEFT JOIN wake_run_requests r ON r.mira_id = w.mira_id AND r.wake_id = w.wake_id
+      LEFT JOIN wake_live_inputs li ON li.mira_id = w.mira_id AND li.wake_id = w.wake_id
+      LEFT JOIN wake_runs run ON run.mira_id = r.mira_id AND run.run_id = r.run_id
       WHERE e.mira_id = $1 AND e.event_id = $2`, '$3'), [this.miraId, externalEventId, MAX_PAGE_BYTES]));
   }
   async pageRuns(request: Pick<HistoryPageRequest, 'before' | 'limit'> = {}): Promise<{ items: HistoryRunHeader[]; nextCursor: string | null }> {

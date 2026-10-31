@@ -9,7 +9,7 @@ import type { LiveInputWriter, LiveWakeInput, RunHistoryReader, TaskInputWriter,
 import { DurableOperationError, type DurableFailureCategory } from '@mira/life';
 import { assertJson, assertRecord } from '@mira/context';
 import type { RuntimeRecord } from '@mira/context';
-import type { DreamingRequest, DreamingRequestResult, DreamingWriter, LifeEvent, MemoryCheckpoint, MemoryCheckpointState, MemorySnapshotReceipt, RecoverySnapshot, ScheduledDelivery, ScheduledDeliveryInput, ScheduledMutation, SchedulingWriter, ToolIntent, ToolOutcome, WakeReceipt, WakeRun } from '@mira/life';
+import type { BackgroundJobReader, DreamingRequest, DreamingRequestResult, DreamingWriter, LifeEvent, MemoryCheckpoint, MemoryCheckpointState, MemorySnapshotReceipt, RecoverySnapshot, ScheduledDelivery, ScheduledDeliveryInput, ScheduledMutation, SchedulingWriter, ToolIntent, ToolOutcome, WakeReceipt, WakeRun } from '@mira/life';
 export { migrate } from './migrate.ts';
 export { PostgresLives, LifeRegistryError } from './lives.ts';
 export type { MiraLife, LifeImpact, LifeSwitch } from './lives.ts';
@@ -155,7 +155,7 @@ export class PostgresPersistence {
   /** Read-only model usage aggregation for one life and its children (ADR 0048). */
   usage(miraId: string): UsageReader { text(miraId, 'Mira ID'); return new PostgresUsageReader(this.#options, miraId); }
 
-  async acquire(miraId: string): Promise<DreamingWriter & SchedulingWriter & LiveInputWriter & SubagentWriter & TaskInputWriter> {
+  async acquire(miraId: string): Promise<DreamingWriter & SchedulingWriter & LiveInputWriter & SubagentWriter & TaskInputWriter & BackgroundJobReader> {
     text(miraId, 'Mira ID');
     const client = new Client({
       connectionString: this.#options.connectionString,
@@ -214,7 +214,7 @@ const heldExpression = `EXISTS (
 )`;
 const lockQuery = `SELECT ${heldExpression} AS held`;
 
-class PostgresWriter implements DreamingWriter, SchedulingWriter, LiveInputWriter, SubagentWriter, TaskInputWriter {
+class PostgresWriter implements BackgroundJobReader, DreamingWriter, SchedulingWriter, LiveInputWriter, SubagentWriter, TaskInputWriter {
   readonly miraId: string;
   readonly epoch: string;
   readonly signal: AbortSignal;
@@ -796,6 +796,17 @@ class PostgresWriter implements DreamingWriter, SchedulingWriter, LiveInputWrite
     return this.#transaction(async () => {
       const row = await this.#scheduled(owner, key);
       return row ? scheduledDelivery(row) : null;
+    });
+  }
+  /** Started background jobs that have no settled/lost result event yet (ADR 0049). */
+  pendingBackgroundJobs(): Promise<LifeEvent[]> {
+    return this.#transaction(async () => {
+      const result = await this.#client.query<{ event: LifeEvent }>(
+        `SELECT s.event FROM life_events s WHERE s.mira_id = $1 AND (s.event->>'type') = 'tool.background.started'
+         AND NOT EXISTS (SELECT 1 FROM life_events r WHERE r.mira_id = s.mira_id
+           AND r.event_id = '["tool-background-result",' || to_json(s.event->'payload'->>'jobId')::text || ']')
+         ORDER BY s.event->>'occurredAt', s.event_id`, [this.miraId]);
+      return result.rows.map(row => row.event);
     });
   }
   listScheduledDeliveries(owner?: string): Promise<ScheduledDelivery[]> {
