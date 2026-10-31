@@ -110,6 +110,8 @@
     "tests/unit/mcp-catalog.test.mts",
     "tests/unit/model-probe.test.mts",
     "tests/unit/runtime-limits.test.mts",
-    "tests/unit/model-balance.test.mts"
+    "tests/unit/model-balance.test.mts",
+    "tests/unit/foreground.test.mts",
+    "tests/unit/unstuck.test.mts"
   ]
 }

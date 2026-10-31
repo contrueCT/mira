@@ -75,6 +75,8 @@ test('real PG/service: 402 pauses once without retries; restart, external Wakes 
     await service.submit({ id: 'balance-retry-1', text: '充好了，继续', occurredAt });
     await until(async () => (await service!.status()).pause?.requestId === 'balance-request-2', 'Second pause did not appear');
     assert.equal(calls, 3); assert.equal((await notices(service)).length, 2); assert.equal((await service.status()).state, 'paused');
+    // 已读 (ADR 0050): a message stuck behind the balance refusal is not shown as read.
+    assert.equal((await service.timeline()).items.filter(item => item.role === 'user').at(-1)?.read, undefined);
     // Restart once more, then the second user message succeeds and the queued external Wake runs after it.
     await service.close(); service = undefined; service = await LocalWebService.open(configuration); await quiet();
     assert.equal(calls, 3); assert.equal((await service.status()).pause?.requestId, 'balance-request-2');
@@ -88,6 +90,7 @@ test('real PG/service: 402 pauses once without retries; restart, external Wakes 
     assert.equal((await db.admin.query("SELECT count(*)::int AS n FROM wake_requests w JOIN life_events e USING (mira_id, event_id) WHERE e.event->>'type' LIKE 'model.balance-%'")).rows[0].n, 0, 'pause events never wake');
     const texts = (await service.timeline()).items.map(item => item.text);
     assert.ok(texts.includes('Finished after top-up')); assert.ok(texts.includes('Handled the queued external event'));
+    assert.equal((await service.timeline()).items.filter(item => item.role === 'user').at(-1)?.text, '这次真的充好了'); assert.equal((await service.timeline()).items.filter(item => item.role === 'user').at(-1)?.read, true);
     // Restart after completion stays idle.
     await service.close(); service = undefined; service = await LocalWebService.open(configuration); await quiet();
     assert.equal((await service.status()).state, 'idle'); assert.equal(calls, 5);

@@ -8,7 +8,7 @@ import { testDatabaseUrl } from '../tests/integration/database.mts';
 
 // Fail, rather than skip, when the isolated real-database gate is unconfigured.
 const suite = process.argv[2];
-if (suite !== 'pagination' && suite !== 'replies' && suite !== 'browser' && suite !== 'auth' && suite !== 'external' && suite !== 'management' && suite !== 'attachments' && suite !== 'live-input' && suite !== 'agent-capabilities' && suite !== 'feishu' && suite !== 'mcp' && suite !== 'persona' && suite !== 'memory-reset' && suite !== 'usage') throw Error('Choose pagination, replies, browser, auth, external, management, attachments, live-input agent-capabilities, feishu, mcp, persona, memory-reset or usage real-browser suite');
+if (suite !== 'pagination' && suite !== 'replies' && suite !== 'browser' && suite !== 'auth' && suite !== 'external' && suite !== 'management' && suite !== 'attachments' && suite !== 'live-input' && suite !== 'agent-capabilities' && suite !== 'feishu' && suite !== 'mcp' && suite !== 'persona' && suite !== 'memory-reset' && suite !== 'usage' && suite !== 'unstuck') throw Error('Choose pagination, replies, browser, auth, external, management, attachments, live-input agent-capabilities, feishu, mcp, persona, memory-reset, usage or unstuck real-browser suite');
 const connectionString = testDatabaseUrl();
 // Resolve the installed browser before replacing HOME. CI always uses the
 // official Playwright installation for existing UI gates. The replies gate

@@ -94,7 +94,8 @@ test('从头开始 starts a new life: archive, cancel deliveries, keep persona, 
 
     // Rolling the schema down is refused once later generations exist.
     await host.close(); host = undefined;
-    // The later usage-index slice (ADR 0048) rolls back first; the lives slice then refuses.
+    // The later background-job (ADR 0049) and usage-index (ADR 0048) slices roll back first; the lives slice then refuses.
+    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     await assert.rejects(migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' }), /Refusing to drop Mira lives/);
     // CLI restore of the original life brings its files and Timeline back.

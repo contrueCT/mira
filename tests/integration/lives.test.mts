@@ -8,7 +8,8 @@ const reset = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '
 test('the lives migration registers the existing local Mira as generation 0 and rolls back only without later generations', async () => {
   const db = await createTestDatabase();
   try {
-    // Roll back the usage indexes (ADR 0048) first, then the lives registry.
+    // Roll back the background-job index (ADR 0049) and usage indexes (ADR 0048) first, then the lives registry.
+    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     assert.equal((await db.admin.query(`SELECT to_regclass('mira_lives') AS t`)).rows[0].t, null);
@@ -18,6 +19,7 @@ test('the lives migration registers the existing local Mira as generation 0 and 
     assert.deepEqual(await lives.active('mira'), { miraId: 'mira', generation: 0 });
     assert.deepEqual((await lives.list('mira')).map(life => [life.miraId, life.generation, life.active, life.resetId]), [['mira', 0, true, null]]);
     assert.deepEqual(await lives.active('other'), { miraId: 'other', generation: 0 }, 'unregistered slots are their own generation 0');
+    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'up' });
