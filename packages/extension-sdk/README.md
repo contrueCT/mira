@@ -132,3 +132,20 @@ the pinned runtime TypeBox compiler as well. Invalid keywords/regular expression
 unresolved references and unsupported dialects reject the whole candidate without
 replacing the current set. No remote schema is fetched; unknown formats remain
 annotations. Validation does not coerce arguments or log schema contents.
+
+## Testing doubles
+
+Unit tests import `createFakeHost` from `@mira/extension-sdk/testing`. Use it for
+Event and Wake receipts. The same full body and Wake choice returns `duplicate`;
+a changed field, or adding, removing, or retargeting the Wake, rejects with the
+messages the host surfaces. A stub that always returns `duplicate` does not
+exercise that contract.
+
+The fake mirrors the host's observable receipt rules and is checked against the
+same case table as the real Host/PostgreSQL path
+(`tests/shared/extension-event-contract-cases.mts`). Those real Host/PostgreSQL
+tests remain the authority for persistence, restart, and History identity. The
+fake does not reproduce the private `event-content-conflict` brand, a shared
+writer across extensions, or host lifecycle, timers, schedules, credentials,
+settings, or JSON Schema compilation. `isEventContentConflict` checks the
+observable name, code, and message.

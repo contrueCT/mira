@@ -43,7 +43,9 @@ Keep relative source imports
 explicit (`./helper.ts`). The supplied `tsconfig.json` uses strict NodeNext with
 full declaration checking. `tests/index.test.mts` uses Node's test runner, the
 public SDK types, and synthetic arguments; no database, credentials, live model,
-or external service is needed.
+or external service is needed. The checked-in test builds its `apply` context
+with `createFakeHost()` from `@mira/extension-sdk/testing`. Use that double for
+Event and Wake receipts instead of a stub that always returns `duplicate`.
 
 A successful typecheck, test run, or import is evidence about these files, not an
 OS sandbox or proof of safety. Tests and extension imports can execute arbitrary
