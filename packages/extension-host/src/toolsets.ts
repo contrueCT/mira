@@ -35,7 +35,8 @@ export function createToolset<T extends { tool: ExtensionTool }>(options: {
 }
 
 export function snapshotTool(tool: ExtensionTool): ExtensionTool {
-  const { name, description, parameters, execute } = tool;
+  const { name, description, parameters, execute, mainOnly } = tool;
+  if (mainOnly !== undefined && typeof mainOnly !== 'boolean') throw new Error('Invalid extension tool: mainOnly must be a boolean');
   if (typeof name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(name)) throw new Error('Invalid extension tool name: use 1-64 ASCII letters, digits, underscores or hyphens, starting with a letter or underscore');
   if (typeof description !== 'string' || !description.trim() || typeof execute !== 'function') throw new Error('Invalid extension tool');
   if (!parameters || parameters.type !== 'object' || (parameters.required !== undefined && (!Array.isArray(parameters.required) || !parameters.required.every(item => typeof item === 'string'))) || (parameters.properties !== undefined && (typeof parameters.properties !== 'object' || parameters.properties === null || Array.isArray(parameters.properties)))) throw new Error('Invalid extension tool schema');
@@ -50,5 +51,5 @@ export function snapshotTool(tool: ExtensionTool): ExtensionTool {
   visit(parameters, new Set());
   const snapshot = structuredClone(parameters);
   validateToolSchema(snapshot);
-  return { name, description, parameters: snapshot, execute: execute.bind(tool) };
+  return { name, description, parameters: snapshot, execute: execute.bind(tool), ...(mainOnly ? { mainOnly: true } : {}) };
 }

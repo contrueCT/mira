@@ -9,6 +9,9 @@ export interface ExtensionTool {
   description: string;
   parameters: { type: 'object'; properties?: { [key: string]: Json }; required?: string[]; additionalProperties?: boolean | { [key: string]: Json }; [key: string]: Json | undefined };
   execute(arguments_: Json, context: { callId: string; signal: AbortSignal }): Promise<{ text: string; details?: Json; isError?: boolean }>;
+  /** Only Mira herself receives this tool; delegated task workers never do.
+   * Use it for user-facing delivery (messaging the user) and similar actions. */
+  mainOnly?: boolean;
 }
 /** One installation-owned dynamic collection. Replacing validates the entire
  * candidate before publishing; begun calls retain their original implementation.
@@ -67,7 +70,8 @@ export interface ExtensionContext {
   /** Private installation directory for extension-owned durable state; no sandbox guarantee. */
   readonly privateDirectory: string | null;
   registerSettings(definition: ExtensionSettingsDefinition): ExtensionSettingsActions;
-  /** Host-scoped stable installation identity; retired activations cannot write. */
+  /** Host-scoped stable installation identity; retired activations cannot write.
+   * create/replace/cancel reject calls made from a delegated task worker's tool call. */
   readonly schedules: ExtensionSchedules;
   registerTool(tool: ExtensionTool): void;
   registerToolset(tools: readonly ExtensionTool[]): ExtensionToolset;
