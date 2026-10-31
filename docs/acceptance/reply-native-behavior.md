@@ -215,3 +215,14 @@ other selected effect rather than executing it or synthesizing success. The
 setup's one-second local sleep is explicit. This safety limit belongs to the
 test harness and is not a product authorization engine. No external account,
 secret, network effect, real Memory content, or new tool implementation is used.
+
+## Post-capture declaration and prompt changes (re-recording pending)
+
+ADR 0049 added the optional `exec_command.notify_on_exit` parameter, and ADR
+0050 moved the system prompt to v0.4 (NO_REPLY and background-tool guidance).
+The real-PostgreSQL replay removes exactly that one additive parameter before
+the tool-declaration parity digest (`capturedDeclarations` in
+`tests/recovery/reply-native-fixture.mts`); every other declaration must still
+match the capture byte for byte. The recorded native decisions therefore
+predate both changes and need a new paid capture before they can count as
+evidence for them. No paid probe was run for these changes.

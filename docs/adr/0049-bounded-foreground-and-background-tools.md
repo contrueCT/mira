@@ -34,7 +34,7 @@
 ### 有界等待
 
 - 扩展上下文提供方：每个 5 s（`contextProviderTimeoutMs` 可注入），超时记 `status: "timeout"`，迟到的结果丢弃；健康诊断同 failed。
-- `extension_manage`：等待 60 s 后返回 `{"status":"pending"}`，变更继续应用，结果用 `extension_inspect` 查看。
+- `extension_manage`：等待 60 s 后返回 `{"status":"pending"}`，变更继续应用，结果用 `extension_inspect` 查看。工具声明不变，说明放在返回的 `note` 里。
 - Memory Git 快照（beforeComplete）：60 s 后中止本次完成尝试，Wake 保持 running，下次恢复重试。
 - `exec_command` 新增 `notify_on_exit`：调用返回时进程仍在运行，则进程结束后写唤醒事件 `terminal.exited`（ID `["terminal-exit", sessionId]`，只含退出码与输出字节数）。显式 `terminal_close` 或服务关闭不通知；只对主流程生效。
 - 上下文压缩不可被插话打断，也没有界面提示。合法等待（定时、子任务、长进程）照旧结束本次唤醒、靠事件恢复，看门狗不触碰它们。
@@ -48,4 +48,4 @@
 - 转入后台的工具与之后的工具可能并发（例如同一终端或浏览器），由工具自身的串行化保证。
 - 服务关闭会取消后台工具，重启后记为 lost。
 - 扩展宿主关闭仍会等待挂起的提供方回调结束（信任代码的资源租约不变）。
-- 改变了 `exec_command`、`extension_manage` 的工具声明与系统提示：原生行为证据（`docs/acceptance/reply-native-behavior.md`）需要重新录制，本次未运行付费探针。
+- `exec_command` 声明新增一个可选参数，系统提示升到 v0.4：原生行为证据（`docs/acceptance/reply-native-behavior.md`）需要重新录制，本次未运行付费探针。真实 PG 回放在计算声明摘要前只去掉 `notify_on_exit` 这一项，其余声明仍须逐字一致。
