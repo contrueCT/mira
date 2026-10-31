@@ -507,7 +507,7 @@ test('missing live model is a setup state and cannot enqueue or call a model', {
   let service: LocalWebService | undefined;
   try {
     service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'unconfigured', sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json') });
-    assert.deepEqual(await service.status(), { state: 'idle', mode: 'live', model: null, error: null, errorId: null, modelRetry: null });
+    assert.deepEqual(await service.status(), { state: 'idle', mode: 'live', model: null, error: null, errorId: null, modelRetry: null, identity: { name: 'Mira', ring: 'lavender', avatar: null } });
     await assert.rejects(service.submit({ id: 'setup-message', text: 'Do not send yet', occurredAt: '2026-10-06T08:00:00.000Z' }), WebHttpError);
     assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM life_events')).rows[0].n, 0);
   } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
@@ -790,7 +790,7 @@ test('a PostgreSQL failure saving a provider error shows only a fixed temporary 
     const status = await app.inject({ url: '/api/status', headers: readHeaders }); assert.equal(status.statusCode, 200); assert.equal(status.json().state, 'stopped');
     assert.equal(status.json().error, 'Persistence write failed and the runtime stopped. This is a temporary server notice; no durable tool diagnostic is confirmed. Check PostgreSQL and recover saved state before retrying. External tool effects may already have happened.');
     // errorId is the ephemeral per-occurrence UUID for dismissing the banner (ADR 0044), not a record ID.
-    assert.deepEqual(Object.keys(status.json()).sort(), ['error', 'errorId', 'mode', 'model', 'state'], 'status exposes no internal IDs, cause or stack');
+    assert.deepEqual(Object.keys(status.json()).sort(), ['error', 'errorId', 'identity', 'mode', 'model', 'state'], 'status exposes no internal IDs, cause or stack');
     assert.match(status.json().errorId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     assert.doesNotMatch(status.body, /synthetic-provider-before-database-failure|synthetic-database-private-error|synthetic-database-diagnostic-key|HTTP 400|invalid_request_error|P0001|synthetic_reject_model_error|"cause"|"stack"|"headers"|"requestId"|"request_id"/);
     const runs = (await db.admin.query('SELECT input_record_id, final_record_id, completed FROM wake_runs')).rows;

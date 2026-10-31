@@ -19,9 +19,9 @@ pnpm demo first-message 'Hello Mira'
 
 `runDemo({memory:{memoryRoot}, ...})` 可启用普通记忆功能。Memory 根目录必须在源码外且互不重叠。初始化及每次压缩摘要成功后通过 `miraPrompt.loadMemory` 读取当前 MEMORY.md。压缩将新 Memory/system、摘要和近期尾部原子 checkpoint；后续普通请求、Wake、恢复、重启沿用最新持久快照。自动压缩默认开启，预算与失败行为见 [ADR 0016](../../docs/adr/0016-automatic-compaction-memory-refresh.md)。每轮最终回复后执行可恢复 Memory 快照。`memoryCheckpointHook` 可被其它可信组装复用；传入同一 fenced writer。历史工具由同一 Mira 身份绑定。
 
-CLI 设置 `MIRA_DEMO_MEMORY` 即可启用 Memory；只支持当前 Memory 配置，不保留旧 State 配置解析、弃用提示或迁移流程。未配置 Memory 时仍注入完整 Mira v0.2 Prompt，根目录/Memory 以明确未配置值表示，不伪造路径。
+CLI 设置 `MIRA_DEMO_MEMORY` 即可启用 Memory；只支持当前 Memory 配置，不保留旧 State 配置解析、弃用提示或迁移流程。未配置 Memory 时仍注入完整 Mira v0.3 Prompt，根目录/Memory 以明确未配置值表示，不伪造路径。
 
-完整 [v0.2 模板](../../packages/runtime-pi/prompts/mira-system-v0.2.md)用于初始与已有认知流；身份、示例和自然语言授权原则均原样保留。动态时间、环境、能力与授权语境在请求边界渲染；能力描述与实际工具注册表一致，工具批次结束后可在同一 Wake 下一自然请求更新。不会为 Prompt 更新单独调用模型。见 [ADR 0006](../../docs/adr/0006-memory-only-system-prompt.md)。
+完整 [v0.3 模板](../../packages/runtime-pi/prompts/mira-system-v0.3.md)用于初始与已有认知流（v0.2 及更早版本只作为可恢复的历史快照）；`<persona>` 段的内容来自 `MIRA_HOME/persona.json`，在每次 Wake 开始时冻结（ADR 0046）；身份、示例和自然语言授权原则均原样保留。动态时间、环境、能力与授权语境在请求边界渲染；能力描述与实际工具注册表一致，工具批次结束后可在同一 Wake 下一自然请求更新。不会为 Prompt 更新单独调用模型。见 [ADR 0006](../../docs/adr/0006-memory-only-system-prompt.md)。
 
 `workingDirectory`（CLI 为 `MIRA_DEMO_CWD`）选择已存在的普通默认目录，缺省为进程 cwd，与可能尚未建立的 overflow spool 分开；它不限制工具访问范围。Pi edit 仍使用原生执行与规范 `edits[]` schema，仅移除在持久 intent 之前运行的可选旧参数格式转换器；自定义 preparer 仍由 runtime 拒绝，实际执行前保留完整原始/验证参数证据。
 

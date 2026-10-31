@@ -93,3 +93,5 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 - [0044 关闭单次运行错误提示](0044-dismissible-runtime-errors.md)：Accepted，按错误 ID 隐藏横幅，保留异常状态，新错误重新显示。
 
 - [0045 允许可写祖先目录](0045-writable-spool-ancestors.md)：Accepted，移除祖先目录写位拒绝，保留结果目录/文件的私有权限及不可变发布。
+
+- [0046 用户自定义人设](0046-user-persona.md)：Accepted，2026-10-30；全局人设文件、Prompt v0.3 `<persona>` 段、Wake 开始时冻结、不唤醒的 Timeline 通知、可选整理冲突记忆与受保护头像上传。

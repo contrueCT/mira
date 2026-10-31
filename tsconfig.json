@@ -58,6 +58,7 @@
     "tests/unit/model-discovery.test.mts",
     "apps/web",
     "tests/unit/web-http.test.mts",
+    "tests/unit/persona.test.mts",
     "tests/unit/web-settings.test.mts",
     "tests/unit/web-service.test.mts",
     "tests/unit/web-extension-startup.test.mts",

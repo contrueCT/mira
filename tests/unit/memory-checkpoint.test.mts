@@ -12,7 +12,7 @@ function fixture(memory = '') {
   const prompt: MiraPromptSnapshot = { templateSha256: MIRA_PROMPT_SHA256, values: {
     MEMORY_ROOT: '/memory', MEMORY_STATE: memory, CURRENT_TIME: '2026-10-08T09:00:00.000Z',
     EXTENSIONS_ROOT: '/extensions', OTHER_ENVIRONMENT_CONTEXT: '<frozen environment>',
-    DYNAMIC_TOOL_AND_EXTENSION_GUIDANCE: 'read: Read files', CURRENT_AUTHORIZATION_CONTEXT: 'frozen instructions',
+    DYNAMIC_TOOL_AND_EXTENSION_GUIDANCE: 'read: Read files', CURRENT_AUTHORIZATION_CONTEXT: 'frozen instructions', PERSONA: 'Name: <frozen persona>',
   }, skills: '\n<available_skills>already &amp; escaped</available_skills>' };
   const bootstrap = messageEntry({ role: 'system', content: '', timestamp: 0, miraMemory: memory, miraMemoryConfigured: true } as never, null);
   const system: SystemMessage = { role: 'system', content: 'unrelated content', timestamp: 1,

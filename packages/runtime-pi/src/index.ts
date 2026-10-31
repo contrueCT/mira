@@ -12,8 +12,8 @@ import { validateAttachmentReferences, validateWakeInputArtifact, validateReplyR
 import { hydrateAttachments, messageAttachments, type ResolveAttachment } from './attachments.ts';
 import { observationEntry, sanitizeEntries, validateObservation, withRecoveryAdvisory, type RecoveryOperation, type ToolDiagnostic } from './observations.ts';
 import { compactSnapshot, type CompactionOptions } from './compactor.ts';
-import { MIRA_PROMPT_SECTION, MIRA_PROMPT_SHA256, renderMiraPrompt, renderMiraPromptSnapshot, currentMemory, currentPrompt, memoryConfigured, refreshMiraMemory, projectMiraPrompt, type MiraPromptOptions, type MiraPromptSnapshot } from './system-prompt.ts';
-export { MIRA_PROMPT_SECTION, MIRA_PROMPT_SHA256, MIRA_SYSTEM_TEMPLATE, MIRA_PLACEHOLDERS, renderMiraPrompt } from './system-prompt.ts';
+import { MIRA_PROMPT_SECTION, MIRA_PROMPT_SHA256, MIRA_DEFAULT_PERSONA, renderMiraPrompt, renderMiraPromptSnapshot, currentMemory, currentPrompt, memoryConfigured, refreshMiraMemory, projectMiraPrompt, type MiraPromptOptions, type MiraPromptSnapshot } from './system-prompt.ts';
+export { MIRA_PROMPT_SECTION, MIRA_PROMPT_SHA256, MIRA_SYSTEM_TEMPLATE, MIRA_PLACEHOLDERS, MIRA_LEGACY_PLACEHOLDERS, MIRA_DEFAULT_PERSONA, renderMiraPrompt, renderMiraPromptSnapshot } from './system-prompt.ts';
 export { currentMemory, currentPrompt, memoryConfigured, refreshMiraMemory, projectMiraPrompt } from './system-prompt.ts';
 export type { MiraPromptSnapshot, MiraPromptOptions, MiraPromptValues } from './system-prompt.ts';
 import { decodeRecords, encodeEntry, jsonValue, messageEntry, messageOverflowInput, checkpointAttachmentIndex, normalizeToolResult, validateMessage, RuntimeJsonError } from './records.ts';
@@ -724,6 +724,7 @@ export class PiDurableRuntime implements CognitionRuntime {
                 OTHER_ENVIRONMENT_CONTEXT: config.environmentContext + observations,
                 DYNAMIC_TOOL_AND_EXTENSION_GUIDANCE: (context.tools ?? []).map(tool => `${tool.name}: ${tool.description}`).join('\n\n') || 'No tools are available',
                 CURRENT_AUTHORIZATION_CONTEXT: config.authorizationContext,
+                PERSONA: config.persona ?? MIRA_DEFAULT_PERSONA,
               }, skills };
               const text = renderMiraPrompt(prompt.values) + skills;
               if (getCurrentSystemMessage(state.messages)?.sections?.[MIRA_PROMPT_SECTION] !== text) {
@@ -953,6 +954,7 @@ export class PiDurableRuntime implements CognitionRuntime {
         sections: { ...priorSystem?.sections, [MIRA_PROMPT_SECTION]: renderMiraPrompt({ MEMORY_ROOT: config.memoryRoot ?? 'Not configured', MEMORY_STATE: '（Memory 由 memory_snapshot 单独提供）',
         CURRENT_TIME: (config.now?.() ?? new Date()).toISOString(), EXTENSIONS_ROOT: config.extensionsRoot ?? 'Not configured',
         OTHER_ENVIRONMENT_CONTEXT: config.environmentContext, CURRENT_AUTHORIZATION_CONTEXT: config.authorizationContext,
+        PERSONA: config.persona ?? MIRA_DEFAULT_PERSONA,
         DYNAMIC_TOOL_AND_EXTENSION_GUIDANCE: tools.map(tool => `${tool.name}: ${tool.description}`).join('\n\n') || 'No tools are available' }) } }) :
       priorSystem ? getSystemMessageText(priorSystem) : null;
     const attachmentSources = new Map(buildSessionProjection(before.projectionEntries).entries

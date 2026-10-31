@@ -10,7 +10,7 @@ import { formatSkillsForPrompt } from '@earendil-works/pi-coding-agent';
 import { ExtensionHost } from '@mira/extension-host';
 import { setupMemoryWorkspace, snapshotMemory } from '@mira/workspace';
 import { createHistoryTools } from '../packages/runtime-pi/src/history-tools.ts';
-import { MIRA_PROMPT_SHA256, renderMiraPrompt } from '../packages/runtime-pi/src/system-prompt.ts';
+import { MIRA_DEFAULT_PERSONA, MIRA_PROMPT_SHA256, renderMiraPrompt } from '../packages/runtime-pi/src/system-prompt.ts';
 import { extensionManagementTools, extensionTools } from '../apps/server/src/extensions.ts';
 import { createSkillLoader } from '../apps/server/src/skills.ts';
 import { readWebExtensionConfiguration } from '../apps/server/src/web-extensions.ts';
@@ -43,7 +43,7 @@ const definitions = (tools: AgentTool[]) => tools.map(({ name, description, para
 function scenario(root: string) {
   return {
     session: root, historyBackend: historyFixtureNotice,
-    sources: { prompt: path.join(checkout, 'packages/runtime-pi/prompts/mira-system-v0.2.md'), skills: path.join(checkout, 'skills'), authoringSkill: path.join(checkout, 'skills/mira-extension-authoring/SKILL.md') },
+    sources: { prompt: path.join(checkout, 'packages/runtime-pi/prompts/mira-system-v0.3.md'), skills: path.join(checkout, 'skills'), authoringSkill: path.join(checkout, 'skills/mira-extension-authoring/SKILL.md') },
     paths: { home: path.join(root, 'home'), memory: path.join(root, 'Memory'), draft: path.join(root, 'stage-draft'), workspace: path.join(root, 'authored-extension'), artifacts: path.join(root, 'home', 'extension-artifacts'), configuration: path.join(root, 'home', 'extensions.json'), evidence: path.join(root, 'evidence.jsonl') },
     exercises: [
       'Review the Harbor export requirements and the original Chinese reminder decision. Explain the recorded Memory change using the commit’s provenance and the original conversation, and determine what is known about the follow-up verification. Explain whether the vendor note changes the user request.',
@@ -107,7 +107,7 @@ async function openSession(directory: string) {
         const prompt = renderMiraPrompt({ MEMORY_ROOT: path.join(root, 'Memory'), MEMORY_STATE: 'The initial MEMORY.md is empty in this synthetic fixture.', CURRENT_TIME: new Date().toISOString(), EXTENSIONS_ROOT: extensions.artifactsDirectory ?? 'Not configured',
           OTHER_ENVIRONMENT_CONTEXT: `Synthetic tool-usability session at ${root}. ${historyFixtureNotice}`,
           DYNAMIC_TOOL_AND_EXTENSION_GUIDANCE: tools.map(tool => `${tool.name}: ${tool.description}`).join('\n\n'),
-          CURRENT_AUTHORIZATION_CONTEXT: 'The exercise authorizes synthetic local development and execution inside the session directory only. No external accounts or effects.' });
+          CURRENT_AUTHORIZATION_CONTEXT: 'The exercise authorizes synthetic local development and execution inside the session directory only. No external accounts or effects.', PERSONA: MIRA_DEFAULT_PERSONA });
         const result = { templateSha256: MIRA_PROMPT_SHA256, prompt: prompt + formatSkillsForPrompt(skills) };
         await log({ type: 'prompt', at: new Date().toISOString(), ...result }); return result;
       }

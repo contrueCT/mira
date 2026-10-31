@@ -5,7 +5,7 @@
 ## 入口与状态
 
 - `README.md` 描述真实命令和行为；`package.json` 是依赖事实来源
-- `src/main.tsx` 与 `src/App.tsx` 提供单条 Timeline；`src/SettingsDialog.tsx` 在既有设置入口内提供模型、Memory、扩展、运行记录与访问；对应 panel 独立保持浏览器 DTO
+- `src/main.tsx` 与 `src/App.tsx` 提供单条 Timeline；`src/SettingsDialog.tsx` 在既有设置入口内提供模型、人设、Memory、扩展、运行记录与访问；对应 panel 独立保持浏览器 DTO
 - React + Vite + 原生 CSS 已获批准；不增加路由、状态管理、UI 组件库或 Markdown 依赖
 - 生产静态文件由本地 server 同源服务，默认端口 3210；开发代理见 `vite.config.ts`
 
@@ -43,3 +43,5 @@
 - 更早消息每次点击目标新增50条，最多8个服务端页/15秒；成功页立即保留游标与滚动锚点，实时消息不计入新增历史。服务端按可见消息补页并保留原始游标；最新窗口轮询只扫描300条原始记录，更早请求最多2000条，每次响应一个只读快照连接。无可见消息的最新窗口替换最新缺口而不逐次新增。真实门禁 `test:pagination:e2e` 与合成HTTP交互测试分开报告。
 
 - ADR 0044：关闭运行错误仅按 errorId 隐藏本次提示，保留顶部状态，新错误重新显示；不清错或重试。
+
+- ADR 0046：人设页 `PersonaPanel.tsx` 与 `persona.ts`；头像只经 `clientFetch` 转 Blob，头部和连续 Mira 回复前显示，无图片时保留头像环。保存不自动重发；冲突显式重读；整理冲突记忆走既有 Memory 请求信封。后台轮询只刷新“已生效”标记，不覆盖草稿。
