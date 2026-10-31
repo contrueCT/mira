@@ -376,7 +376,7 @@ export function App() {
     setDismissedErrorId(null);
     try { window.sessionStorage.removeItem('mira.dismissedErrorId'); } catch { /* In-memory viewing still works. */ }
   };
-  const stateLabel = connectionError ? '连接中断' : !status ? '正在连接' : ({ idle: '在这里', working: '正在处理', error: '需要留意', stopped: '已停止' } as const)[status.state];
+  const stateLabel = connectionError ? '连接中断' : !status ? '正在连接' : ({ idle: '在这里', working: '正在处理', paused: '余额不足，已暂停', error: '需要留意', stopped: '已停止' } as const)[status.state];
   const rovingId = activeMessageId && items.some(item => item.id === activeMessageId) ? activeMessageId : items.at(-1)?.id ?? null;
   const moveMessageFocus = (event: ReactKeyboardEvent<HTMLElement>) => {
     if (event.target !== event.currentTarget || event.altKey || event.ctrlKey || event.metaKey) return;
@@ -460,7 +460,7 @@ export function App() {
         <div className="identity" aria-label={identity.name}>
           <PersonaAvatar identity={identity} image={avatarImage} />
           <h1>{identity.name}</h1>
-          <p className="identity-detail"><span className={`status-dot ${status?.state === 'working' ? 'working' : ''} ${connectionError || status?.state === 'error' ? 'warning' : ''}`} />{stateLabel}<span className="detail-divider">·</span>{status?.model ?? (status?.mode === 'synthetic' ? '模拟模式' : '本地连接')}{status?.mode === 'synthetic' && status.model ? <span className="mode-label">模拟</span> : null}</p>
+          <p className="identity-detail"><span className={`status-dot ${status?.state === 'working' ? 'working' : ''} ${connectionError || status?.state === 'error' || status?.state === 'paused' ? 'warning' : ''}`} />{stateLabel}<span className="detail-divider">·</span>{status?.model ?? (status?.mode === 'synthetic' ? '模拟模式' : '本地连接')}{status?.mode === 'synthetic' && status.model ? <span className="mode-label">模拟</span> : null}</p>
         </div>
         <button ref={browserButtonRef} className="icon-button browser-button" type="button" onClick={openBrowser} aria-label="浏览器" title="浏览器：查看或接管 Mira 的浏览器"><BrowserIcon /></button>
         <button ref={settingsButtonRef} className="icon-button settings-button" type="button" onClick={openSettings} aria-label="模型设置" title="模型设置"><SettingsIcon /></button>
@@ -491,12 +491,13 @@ export function App() {
               const rowTab = item.id === rovingId ? undefined : -1;
               return <div key={item.id} className={`message-group ${spacing.compact ? 'compact' : ''}`}>
                 {spacing.divider && <p className="date-divider">{dateLabel(item.occurredAt, today)} {timeLabel(item.occurredAt)}</p>}
-                <article tabIndex={item.id === rovingId ? 0 : -1} onFocus={() => setActiveMessageId(item.id)} onKeyDown={moveMessageFocus} data-message-id={item.id} className={`message-row ${item.role}${item.notice === 'persona' ? ' persona-notice' : item.notice === 'memory-reset' ? ' persona-notice memory-reset-notice' : ''} ${highlightId === item.id ? 'quote-highlight' : ''}`} aria-label={item.source ? `${item.source.label} 扩展消息` : item.role === 'user' ? '你的消息' : item.role === 'assistant' ? `${identity.name} 的消息` : item.notice === 'persona' ? '人设变更' : item.notice === 'memory-reset' ? '记忆重置' : '服务通知'}>
+                <article tabIndex={item.id === rovingId ? 0 : -1} onFocus={() => setActiveMessageId(item.id)} onKeyDown={moveMessageFocus} data-message-id={item.id} className={`message-row ${item.role}${item.notice === 'persona' ? ' persona-notice' : item.notice === 'memory-reset' ? ' persona-notice memory-reset-notice' : item.notice === 'balance' ? ' balance-notice' : ''} ${highlightId === item.id ? 'quote-highlight' : ''}`} aria-label={item.source ? `${item.source.label} 扩展消息` : item.role === 'user' ? '你的消息' : item.role === 'assistant' ? `${identity.name} 的消息` : item.notice === 'persona' ? '人设变更' : item.notice === 'memory-reset' ? '记忆重置' : item.notice === 'balance' ? '余额不足提示' : '服务通知'}>
                   {item.reply && <button type="button" className="reply-quote" tabIndex={rowTab} aria-label="查看引用的消息" title={replySnippet(item.reply)} disabled={quoteSearch} onClick={() => { void jumpToReply(item.reply!.messageId); }}><span aria-hidden="true">↪</span><span>{replySnippet(item.reply)}</span></button>}
                   <div className="message-content-line">
                   {item.role === 'assistant' && avatarUrl && (items[index - 1]?.role !== 'assistant' || spacing.divider ? <PersonaAvatar identity={identity} image={avatarImage} className="message-avatar" /> : <span className="message-avatar-spacer" aria-hidden="true" />)}
                   <div className="message-payload">
-                  {item.text && <div className="message-bubble">{item.text}</div>}
+                  {item.notice === 'balance' ? <div className="message-bubble"><span className="balance-title"><span className="status-dot warning" aria-hidden="true" /><strong>模型余额不足，Mira 已暂停</strong><time dateTime={item.occurredAt}>{timeLabel(item.occurredAt)}</time></span>{item.text}{item.balance && (item.balance.status !== null || item.balance.requestId) && <span className="balance-meta">{[item.balance.status !== null ? `HTTP ${item.balance.status}` : null, item.balance.requestId ? `request ID ${item.balance.requestId}` : null].filter(Boolean).join(' · ')}</span>}</div>
+                  : item.text && <div className="message-bubble">{item.text}</div>}
                   {!!item.attachments?.length && <AttachmentList attachments={item.attachments} onPreview={openPreview} tabIndex={rowTab} />}
                   </div>
                   <div className="message-side">

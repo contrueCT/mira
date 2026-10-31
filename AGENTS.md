@@ -26,6 +26,7 @@
 - [ADR 0019](docs/adr/0019-extension-context-providers.md)：扩展 ContextProvider 与工具捕获同一代，在自然模型请求采样有来源/预算的观察，复用现有 system 持久快照；失败/取消/旧代不复用旧数据，不额外 Wake 或改变 Memory 加载。
 - [ADR 0020](docs/adr/0020-settings-management.md)：既有设置窗口内增加 Memory 总览/自然语言请求、扩展管理及按 Wake 的只读历史；主聊天不加入口，接收与完成分开，不回填配置或原始诊断，不新增日志。
 - [ADR 0046](docs/adr/0046-user-persona.md)：设置“人设”页（模型之后）；`MIRA_HOME/persona.json` 带 revision/20 版历史/4000 字上限；Prompt v0.3 在 identity 后加 `<persona>`，v0.2 快照仍可恢复；Wake 开始时冻结，保存不唤醒、写一条 Timeline 通知，可选经 Memory 请求整理冲突记忆；头像仅 PNG/JPEG/WebP、2 MiB、受保护读取；子任务不继承。
+- [ADR 0048](docs/adr/0048-usage-and-balance-pause.md)：设置“用量”页（运行记录之后）只读统计 token/请求数，不显示费用；`/api/usage` 由 runtime 提供 JSON 路径、persistence 通用聚合。HTTP 402 或结构化 `insufficient_quota` 等代码不重试并进入 `paused`：写不唤醒的 `model.balance-paused`，重启/定时/扩展/子任务/Dreaming 都不恢复，只有新插入的用户消息恢复
 - [ADR 0021](docs/adr/0021-chat-attachments.md)：聊天共用不可变附件存储与引用，正文/有序附件原子绑定既有 Event/Wake；send_attachment 仅显式已知发布投影。图片原生输入，视频统一普通文件，只有模型显式 read 后内置 Google Gemini 的 MP4/WebM 才通过公开 payload hook 原生理解；PDF/Word只给工具引用，历史不存媒体 base64。
 - [ADR 0024](docs/adr/0024-live-user-input.md)：普通 Web 插话先持久保存为冻结原始 Wake 之外的有序补充输入；生成请求让出，当前单工具完成后先读新输入，旧 siblings 保持 not-started；final 与输入原子仲裁，无暂停按钮/关键词判定。
 - [ADR 0023](docs/adr/0023-on-demand-public-skills.md)：公开 OpenAI pdf/doc/transcribe、agent-browser 与 Tavily CLI 指导；只随源码分发技能/必要脚本及许可，依赖由模型普通工具按需准备，应用不自动解析附件、不捆绑浏览器或模型。

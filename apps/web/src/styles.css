@@ -20,6 +20,8 @@
   --accent-line: #b8d3ff;     /* decorative: composer focus border */
   --accent-drag: #6aaeff;     /* decorative: drop outline */
   --accent-highlight: #8cbcff; /* decorative: quote highlight */
+  --usage-input: #9cc3ff;     /* decorative: 用量 chart, uncached input */
+  --usage-cache: #d7e6ff;     /* decorative: 用量 chart, cache hits (output uses --accent) */
   --ink: #303238;
   --muted: #646873;
   --line: #ededf0;
@@ -573,4 +575,67 @@ button:disabled { opacity: .48; }
   .confirm-head { padding: 18px 18px 2px; } .confirm-body { padding: 12px 18px 4px; } .confirm-foot { padding: 14px 18px 16px; flex-direction: column; align-items: stretch; }
   .confirm-foot > div { justify-content: flex-end; }
   .confirm-type input { font-size: 16px; }
+}
+
+/* ADR 0048 用量 tab and the insufficient-balance pause. Tokens and request
+ * counts only; warm notice palette (#faf8f4 / #806e52) as other notices. */
+.usage-range { display: inline-flex; gap: 2px; padding: 3px; background: #f3f5f9; border-radius: 9px; }
+.usage-range button { border: 0; background: transparent; color: #6f7481; font-size: 12px; padding: 6px 12px; border-radius: 7px; cursor: pointer; }
+.usage-range button[aria-pressed="true"] { background: #fff; color: #3f5f8f; box-shadow: 0 1px 2px #1d2b4a14; }
+.usage-range button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.usage-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin: 0 0 12px; flex-wrap: wrap; }
+.usage-toolbar .as-of { font-size: 11px; color: #707684; }
+.usage-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.usage-stat { border: 1px solid #e9ecf1; background: #fbfcfe; border-radius: 12px; padding: 12px 13px; min-width: 0; }
+.usage-stat span { display: block; font-size: 11px; color: #6c7383; }
+.usage-stat strong { display: block; font-size: 19px; font-weight: 550; color: #3e4a5e; margin-top: 4px; letter-spacing: -.3px; font-variant-numeric: tabular-nums; }
+.usage-stat small { display: block; font-size: 11px; color: #707684; margin-top: 2px; }
+.usage-section-title { font-size: 13px; color: #5d6676; font-weight: 550; margin: 24px 0 10px; display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.usage-section-title small { font-weight: 400; font-size: 11px; color: #707684; }
+.usage-chart { border: 1px solid #e9ecf1; border-radius: 13px; padding: 14px 14px 10px; }
+.usage-bars { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; align-items: end; height: 118px; }
+.usage-bar { display: flex; flex-direction: column-reverse; border-radius: 6px 6px 2px 2px; overflow: hidden; min-height: 2px; background: #f3f5f9; }
+.usage-bar i { display: block; flex-shrink: 0; }
+.usage-bar .in, .usage-legend .in { --c: var(--usage-input); } .usage-bar .cache, .usage-legend .cache { --c: var(--usage-cache); } .usage-bar .out, .usage-legend .out { --c: var(--accent); }
+.usage-bar i { background: var(--c); }
+.usage-bar.today { outline: 2px solid var(--accent-line); outline-offset: 2px; }
+.usage-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; margin-top: 7px; font-size: 11px; color: #707684; text-align: center; font-variant-numeric: tabular-nums; }
+.usage-days b { display: block; font-weight: 500; color: #5d6676; }
+.usage-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; font-size: 11px; color: #6c7383; }
+.usage-legend span::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; background: var(--c); vertical-align: 0; }
+.usage-table { width: 100%; border-collapse: collapse; font-size: 12px; color: #5d6676; font-variant-numeric: tabular-nums; }
+.usage-table th { text-align: right; font-weight: 500; color: #707684; font-size: 11px; padding: 0 0 7px 10px; border-bottom: 1px solid var(--line); }
+.usage-table th:first-child, .usage-table td:first-child { text-align: left; padding-left: 0; }
+.usage-table td { text-align: right; padding: 9px 0 9px 10px; border-bottom: 1px solid #f3f3f6; white-space: nowrap; }
+.usage-table td:first-child { white-space: normal; overflow-wrap: anywhere; }
+.usage-table td small { display: block; color: #707684; font-size: 11px; }
+.usage-table tr:last-child td { border-bottom: 0; }
+.usage-table .share { display: inline-block; width: 46px; height: 4px; border-radius: 2px; background: #eef2f8; vertical-align: middle; margin-left: 6px; position: relative; overflow: hidden; }
+.usage-table .share i { position: absolute; inset: 0 auto 0 0; background: var(--usage-input); }
+.usage-footnote { font-size: 11px; color: #707684; line-height: 1.8; margin: 16px 0 0; }
+.balance-card { display: flex; gap: 12px; align-items: flex-start; background: #faf8f4; border: 1px solid #f0e6d6; border-radius: 13px; padding: 13px 15px; margin: 0 0 18px; color: #806e52; font-size: 12px; line-height: 1.7; }
+.balance-card .status-dot { margin-top: 7px; width: 7px; height: 7px; flex-shrink: 0; }
+.balance-card strong { display: block; color: #6f5a3c; font-weight: 550; font-size: 13px; }
+/* The pause notice spans the conversation column edge to edge, like the
+ * messages around it; its time sits inside the card instead of beside it. */
+.message-row.notice.balance-notice { align-items: stretch; margin: 18px 0; }
+.message-row.notice.balance-notice .message-content-line { max-width: 100%; width: 100%; }
+.message-row.notice.balance-notice .message-payload { flex: 1 1 auto; align-items: stretch; }
+.message-row.notice.balance-notice .message-side { display: none; }
+.message-row.notice.balance-notice .message-bubble { display: block; text-align: left; background: #faf8f4; border: 1px solid #f0e6d6; color: #806e52; font-size: 13px; line-height: 1.75; padding: 13px 17px; border-radius: 16px; max-width: 100%; }
+.balance-notice .balance-title { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+.balance-notice .balance-title strong { color: #6f5a3c; font-size: 13px; font-weight: 550; flex: 1; min-width: 0; }
+.balance-notice .balance-title time { font-size: 11px; color: #8d7a5e; white-space: nowrap; }
+.balance-notice .status-dot { width: 7px; height: 7px; flex-shrink: 0; margin: 0; }
+.balance-notice .balance-meta { display: block; margin-top: 5px; font-size: 11px; color: #8d7a5e; overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .usage-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .usage-bars, .usage-days { gap: 6px; }
+  .usage-table .share { display: none; }
+  .usage-table th, .usage-table td { padding-left: 6px; }
+  .usage-toolbar { flex-direction: column; align-items: flex-start; }
+  /* Eight tabs do not fit a 390px phone: scroll the row instead of squeezing labels. */
+  .settings-tabs { overflow-x: auto; scrollbar-width: none; gap: 2px; scroll-padding: 0 12px; }
+  .settings-tabs::-webkit-scrollbar { display: none; }
+  .settings-tabs button { flex: 0 0 auto; padding: 10px 11px; font-size: 12px; }
 }

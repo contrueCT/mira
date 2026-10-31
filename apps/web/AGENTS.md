@@ -46,3 +46,4 @@
 
 - ADR 0046：人设页 `PersonaPanel.tsx` 与 `persona.ts`；头像只经 `clientFetch` 转 Blob，头部和连续 Mira 回复前显示，无图片时保留头像环。保存不自动重发；冲突显式重读；整理冲突记忆走既有 Memory 请求信封。后台轮询只刷新“已生效”标记，不覆盖草稿。
 - 记忆重置（ADR 0047）：`MemoryResetDialog` 是叠在设置之上的第二层 alertdialog，只轮询状态、不重发；`/api/status.lifeId` 变化时 `observeLife` 清理本标签页属于旧生命的 sessionStorage 并重新加载。新增按生命保存的浏览器状态时，加入 `clearLifeStorage`。
+- 用量与余额暂停（ADR 0048）：`UsagePanel` 只读，时区用浏览器 `Intl`；图表颜色变量 `--usage-input`/`--usage-cache` 在 `:root`。余额提示卡片与对话列左右对齐，时间放在卡片内；头部只显示“余额不足，已暂停”。聊天界面不显示后台任务、子任务、耗时或工具超时等内部状态。

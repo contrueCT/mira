@@ -57,7 +57,14 @@ function reason(value: unknown, secret?: string): string {
   if (containsHtml(json)) return 'Provider returned an HTML error page';
   return value;
 }
-export interface ModelFailureContext { status?: number; requestId?: string; transportReason?: string; providerReason?: string; providerMessage?: string; retryReason?: ModelRetryReason; retryAfterMs?: number }
+export interface ModelFailureContext { status?: number; requestId?: string; transportReason?: string; providerReason?: string; providerMessage?: string; retryReason?: ModelRetryReason; retryAfterMs?: number; balance?: boolean }
+/** Structured provider error codes/types that mean the account cannot pay for
+ * requests (ADR 0048). Deliberately short: free-text messages never qualify. */
+export const balanceErrorCodes: readonly string[] = Object.freeze(['insufficient_quota', 'insufficient_balance', 'billing_hard_limit_reached']);
+/** HTTP 402, or a whitelisted structured code/type at any status (OpenAI sends 429 insufficient_quota). */
+export function insufficientBalance(status: number | undefined, code?: string, type?: string): boolean {
+  return status === 402 || (code !== undefined && balanceErrorCodes.includes(code)) || (type !== undefined && balanceErrorCodes.includes(type));
+}
 /** Minted at the credential-owning transport; never a raw Error or response. */
 export class ModelRequestFailure {
   readonly message: string;
@@ -65,15 +72,20 @@ export class ModelRequestFailure {
   readonly terminalMessage: string;
   readonly httpStatus: number | undefined;
   readonly providerMessage: string | undefined;
-  private constructor(message: string, terminalMessage = message, httpStatus?: number, providerMessage?: string) { this.providerMessage = providerMessage; this.httpStatus = httpStatus; this.message = message; this.terminalMessage = terminalMessage; Object.freeze(this); }
+  /** The provider refused the request for insufficient balance or quota. */
+  readonly balance: boolean;
+  /** Sanitized, bounded provider request ID, when one was returned. */
+  readonly requestId: string | undefined;
+  private constructor(message: string, terminalMessage = message, httpStatus?: number, providerMessage?: string, balance = false, requestId?: string) { this.providerMessage = providerMessage; this.httpStatus = httpStatus; this.message = message; this.terminalMessage = terminalMessage; this.balance = balance; this.requestId = requestId; Object.freeze(this); }
   static afterAttempts(first: ModelRequestFailure, last: ModelRequestFailure, attempts: number): ModelRequestFailure {
     if (attempts === 1) return last;
-    return new ModelRequestFailure(bounded(`Model request failed after ${attempts} attempts · First: ${clip(first.message, 850)} · Last: ${clip(last.message, 850)}`), last.terminalMessage, last.httpStatus, last.providerMessage);
+    return new ModelRequestFailure(bounded(`Model request failed after ${attempts} attempts · First: ${clip(first.message, 850)} · Last: ${clip(last.message, 850)}`), last.terminalMessage, last.httpStatus, last.providerMessage, last.balance, last.requestId);
   }
   static from(value: unknown, context: ModelFailureContext, secret?: string): ModelRequestFailure {
     const details = [context.status === undefined ? '' : `HTTP ${context.status}`,
       context.requestId ? `request ID: ${clip(redact(context.requestId, secret), 128)}` : '', context.transportReason ?? context.providerReason ?? reason(value, secret)].filter(Boolean);
-    return new ModelRequestFailure(bounded(`Model request failed${details.length ? ` · ${details.join(' · ')}` : '; the provider supplied no diagnostic details'}`, secret), undefined, context.status, context.providerMessage === undefined ? undefined : bounded(context.providerMessage, secret));
+    return new ModelRequestFailure(bounded(`Model request failed${details.length ? ` · ${details.join(' · ')}` : '; the provider supplied no diagnostic details'}`, secret), undefined, context.status, context.providerMessage === undefined ? undefined : bounded(context.providerMessage, secret),
+      context.balance === true, context.requestId ? clip(redact(context.requestId, secret), 128) : undefined);
   }
 }
 /** Select cause messages/codes only, never stack, request, response or headers. */
@@ -90,7 +102,7 @@ export function transportFailureReason(error: unknown, secret?: string): string 
 }
 
 /** Consume an HTTP error once, with a hard byte bound before SDK truncation. */
-export async function providerFailureReason(response: Response, secret?: string, onMessage?: (message: string) => void): Promise<string> {
+export async function providerFailureReason(response: Response, secret?: string, onMessage?: (message: string) => void, onCode?: (code: { code?: string; type?: string }) => void): Promise<string> {
   const reader = response.body?.getReader();
   if (!reader) return 'Provider returned an empty error response';
   const chunks: Uint8Array[] = []; let bytes = 0;
@@ -113,6 +125,10 @@ export async function providerFailureReason(response: Response, secret?: string,
     if (record(parsed)) {
       const error = record(parsed['error']) ? parsed['error'] : parsed;
       if (typeof error['message'] === 'string' && !containsHtml(error['message'])) onMessage?.(bounded(error['message'], secret));
+      // Only short identifier-shaped codes are classified; never message text.
+      const identifier = (value: unknown) => typeof value === 'string' && /^[a-z0-9_.-]{1,64}$/u.test(value) ? value : undefined;
+      const code = identifier(error['code']); const type = identifier(error['type']);
+      if (code !== undefined || type !== undefined) onCode?.({ ...(code === undefined ? {} : { code }), ...(type === undefined ? {} : { type }) });
     }
   } catch { if (!body.trimStart().startsWith('{') && !body.trimStart().startsWith('[') && !containsHtml(body)) onMessage?.(bounded(body, secret)); }
   return bounded(reason(body, secret) || 'Provider returned an empty error response', secret);

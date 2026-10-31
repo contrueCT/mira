@@ -18,6 +18,7 @@ export { currentMemory, currentPrompt, memoryConfigured, refreshMiraMemory, proj
 export type { MiraPromptSnapshot, MiraPromptOptions, MiraPromptValues } from './system-prompt.ts';
 import { decodeRecords, encodeEntry, jsonValue, messageEntry, messageOverflowInput, checkpointAttachmentIndex, normalizeToolResult, validateMessage, RuntimeJsonError } from './records.ts';
 export { decodeRecords, encodeEntry, jsonValue, messageEntry, PI_RUNTIME_VERSION } from './records.ts';
+export { PI_USAGE_PROJECTION } from './usage.ts';
 export { MIRA_COMPACTION_PROMPT, MIRA_COMPACTION_PROMPT_SHA256, MIRA_COMPACTION_MODES, TASK_COMPACTION_PROMPT, TASK_COMPACTION_PROMPT_SHA256 } from './compaction-prompt.ts';
 export type { CompactionOptions } from './compactor.ts';
 export type { RecoveryOperation, ToolDiagnostic } from './observations.ts';

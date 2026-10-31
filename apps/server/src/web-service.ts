@@ -15,9 +15,9 @@ import { readFile, realpath, rm, stat } from 'node:fs/promises';
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Api } from '@earendil-works/pi-ai';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { ExtensionHost, ExtensionRevisionConflictError, ExtensionSettingsError, type ExtensionSettingsWrite, type LocalExtensionEntry, type RegisteredContextProvider, type ExtensionChange } from '@mira/extension-host';
-import { HistoryError, SubagentError, WakeLoop, type HistoryEntry, type RunHistoryReader, type DreamingWriter, type SchedulingWriter, type LiveInputWriter } from '@mira/life';
+import { HistoryError, SubagentError, WakeLoop, type UsageRange, type UsageReader, type UsageReport, type HistoryEntry, type RunHistoryReader, type DreamingWriter, type SchedulingWriter, type LiveInputWriter } from '@mira/life';
 import { migrate, PostgresPersistence, PersistenceError } from '@mira/persistence';
-import { PiDurableRuntime, type AutoCompactionOptions, createHistoryTools, decodeRecords } from '@mira/runtime-pi';
+import { PiDurableRuntime, PI_USAGE_PROJECTION, type AutoCompactionOptions, createHistoryTools, decodeRecords } from '@mira/runtime-pi';
 import { writeWakeInput, setupMemoryWorkspace, loadMemoryBootstrap, loadPromptMemory, MemoryReadLimitError } from '@mira/workspace';
 import { createWorkspaceTools, demoModel, memoryCheckpointHook } from './index.ts';
 import { extensionManagementTools, extensionReceiver, extensionTools } from './extensions.ts';
@@ -25,7 +25,8 @@ import { WebSettingsStore, hasSelectedWebApiKey, type WebSettings } from './web-
 import type { ModelRetryStatus } from './model-retry.ts';
 import { ModelRequestFailure } from './model-errors.ts';
 import { PersistenceFailureNotice } from './persistence-errors.ts';
-import { WebHttpError, type WebBackend } from './http.ts';
+import { WebHttpError, type BalancePause, type WebBackend } from './http.ts';
+import { validTimeZone } from './usage-http.ts';
 import type { ManagementBackend, MessageStatusView, RunDetailView, ExtensionMutation, ExtensionMutationView, ExtensionsView } from './management.ts';
 import { assistantReply, extensionView, memoryReceipt, runExecution, childDetail, publicChildText } from './management-projections.ts';
 import { createSkillLoader } from './skills.ts';
@@ -128,6 +129,14 @@ export async function readMemoryRefresh(file: string, lifeId: string): Promise<s
   return null;
 }
 const publicFailure = '运行中断，请检查终端与配置。已保存的消息仍在；未确认的工具结果不会自动重放。';
+const providerNames: Record<string, string> = { deepseek: 'DeepSeek', openai: 'OpenAI', anthropic: 'Anthropic', google: 'Google', openrouter: 'OpenRouter', xai: 'xAI', moonshot: 'Moonshot', zai: 'Z.ai', mistral: 'Mistral', groq: 'Groq' };
+/** Fixed wording (ADR 0048); the provider name is the only variable part. */
+export function balanceNoticeText(provider: string | null): string {
+  const name = provider ? providerNames[provider] ?? provider : '模型服务商';
+  // A space separates a Latin provider name from the Chinese sentence.
+  return `${name}${/[A-Za-z0-9]$/u.test(name) ? ' ' : ''}因账户余额不足拒绝了请求，Mira 的所有动作都已停下。充值后发一条消息，Mira 就会接着做。`;
+}
+const pauseScanLimit = 1_000;
 type Timeline = Awaited<ReturnType<WebBackend['timeline']>>;
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
 export function visible(entry: HistoryEntry): Timeline['items'][number] | null {
@@ -145,6 +154,12 @@ export function visible(entry: HistoryEntry): Timeline['items'][number] | null {
       && entry.event.id === JSON.stringify(['persona-update', payload['revision']])) {
       const target = payload['name'] === null ? '默认 Mira' : `「${payload['name']}」`;
       return { id: entry.id, role: 'notice', notice: 'persona', text: `人设已更新为${target}（第 ${payload['version']} 版）· 从下一次唤醒开始生效`, occurredAt: entry.occurredAt };
+    }
+    if (entry.event.source === 'system' && entry.event.type === 'model.balance-paused' && object(payload) && payload['operation'] === 'balance-paused'
+      && typeof payload['runId'] === 'string' && Number.isSafeInteger(payload['sequence']) && entry.event.id === JSON.stringify(['balance-paused', payload['runId'], payload['sequence']])) {
+      const provider = typeof payload['provider'] === 'string' ? payload['provider'] : null;
+      return { id: entry.id, role: 'notice', notice: 'balance', text: balanceNoticeText(provider), occurredAt: entry.occurredAt,
+        balance: { status: Number.isSafeInteger(payload['status']) ? payload['status'] as number : null, requestId: typeof payload['requestId'] === 'string' ? payload['requestId'] : null, provider } };
     }
     if (entry.event.source === 'system' && entry.event.type === 'memory.reset' && object(payload) && payload['operation'] === 'memory-reset'
       && typeof payload['resetId'] === 'string' && typeof payload['commit'] === 'string' && entry.event.id === JSON.stringify(['memory-reset', payload['resetId']])) {
@@ -183,6 +198,12 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   #errorId: string | null = null;
   #modelFailure: ModelRequestFailure | null = null;
   #modelRetry: ModelRetryStatus | null = null;
+  /** Insufficient balance pause (ADR 0048): only a new user message resumes. */
+  #paused: (BalancePause & { runId: string; sequence: number }) | null = null;
+  /** The run the current runtime was created for, and its last pause sequence. */
+  #currentRun: string | null = null;
+  #pauseSequences = new Map<string, number>();
+  #usage: UsageReader | undefined;
   #closed = false;
   #closeTask: Promise<void> | undefined;
   readonly #ownershipLost = (): void => {
@@ -220,7 +241,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     const policy = dreamingPolicy(options.dreaming);
     if (options.memoryRoot && policy.enabled !== false) {
       this.#dreaming = new DreamingScheduler(async () => {
-        if (this.#closed || writer.signal.aborted || this.#drain || this.#error || this.#configurationWrite
+        if (this.#closed || writer.signal.aborted || this.#drain || this.#error || this.#paused || this.#configurationWrite
           || (!options.synthetic && !hasSelectedWebApiKey(this.#settingsValue))) return null;
         const result = await writer.requestDreaming({ idleMs: policy.idleMs, intervalMs: policy.intervalMs,
           minCompactions: policy.minCompactions, instruction: dreamingInstruction });
@@ -281,7 +302,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
         writeOverflowInput,
         ...(roots ? { beforeComplete: memoryCheckpointHook(writer, roots.memoryRoot, roots.repositoryId) } : {}),
         createRuntime: run => {
-          service!.#modelFailure = null;
+          service!.#modelFailure = null; service!.#currentRun = run.id;
           const current = service!.#settingsValue;
           if (!options.synthetic && !hasSelectedWebApiKey(current)) throw Error('Choose a model with a saved API key first');
           const transport = options.synthetic ? { ...(current.configuration.defaultThinkingLevel === undefined ? {} : { thinkingLevel: current.configuration.defaultThinkingLevel }), model: options.syntheticModel ?? demoModel, streamFn: options.syntheticStream ?? syntheticStream } : settings.transport(current, { ...(options.modelFetch ? { fetch: options.modelFetch } : {}), ...(options.modelRetryPolicy ? { retryPolicy: options.modelRetryPolicy } : {}), onFailure: failure => { service!.#modelFailure = failure; }, onRetry: status => { service!.#modelRetry = status; } });
@@ -320,6 +341,9 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       writer.signal.throwIfAborted();
       service = new LocalWebService(options, writer, persistence.history(writer.miraId), settings, settingsValue, loop, attachments, children, persistence.subagents(writer.miraId), terminalManager, browserManager, host, personaStore, personaValue);
       if (roots && options.memoryRefreshFile) service.#memoryRefresh = await readMemoryRefresh(options.memoryRefreshFile, writer.miraId);
+      service.#usage = persistence.usage(writer.miraId);
+      // A durable balance pause survives restart: the paused run is not resumed.
+      await service.#restorePause();
       // Existing durable pending runs resume through the same recovery contracts.
       service.#deliveries?.schedule();
       service.#kick();
@@ -339,22 +363,73 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     const notice = PersistenceFailureNotice.from(error);
     if (notice || !this.#closed) { this.#error = notice ?? fallback; this.#errorId = randomUUID(); }
   }
-  #kick(): void {
+  /** Rebuild the pause from History: the newest run is still running and has
+   * more balance-paused than balance-resumed events. */
+  async #restorePause(): Promise<void> {
+    const [latest] = (await this.#history.pageRuns({ limit: 1 })).items;
+    if (!latest || latest.status !== 'running') return;
+    const count = async (kind: string): Promise<number> => {
+      let n = 0;
+      while (n < pauseScanLimit && await this.#history.findEventRun(JSON.stringify([kind, latest.id, n + 1]))) n++;
+      return n;
+    };
+    const paused = await count('balance-paused');
+    if (!paused) return;
+    this.#pauseSequences.set(latest.id, paused);
+    if (paused <= await count('balance-resumed')) return;
+    const link = await this.#history.findEventRun(JSON.stringify(['balance-paused', latest.id, paused]));
+    const entry = link ? await this.#history.read({ id: link.eventId, maxBytes: 65_536 }) : null;
+    const payload = entry?.kind === 'event' && object(entry.event.payload) ? entry.event.payload : {};
+    const text = (key: string) => typeof payload[key] === 'string' ? payload[key] as string : null;
+    this.#paused = { reason: 'balance', runId: latest.id, sequence: paused, since: entry?.occurredAt ?? new Date().toISOString(),
+      status: Number.isSafeInteger(payload['status']) ? payload['status'] as number : null, requestId: text('requestId'), provider: text('provider'), model: text('model') };
+  }
+  /** Durable, non-waking pause evidence; the run stays running and unclaimed. */
+  async #pause(failure: ModelRequestFailure): Promise<boolean> {
+    const runId = this.#currentRun;
+    if (!runId || this.#closed || this.#writer.signal.aborted) return false;
+    const sequence = (this.#pauseSequences.get(runId) ?? 0) + 1;
+    const selection = this.#settingsValue.selection;
+    const provider = selection ? selection.kind === 'builtin' ? selection.provider : selection.connection : null;
+    const since = new Date().toISOString();
+    const status = failure.httpStatus ?? null; const requestId = failure.requestId ?? null; const model = selection?.model ?? null;
+    await this.#writer.receive({ id: JSON.stringify(['balance-paused', runId, sequence]), type: 'model.balance-paused', source: 'system', occurredAt: since,
+      payload: { operation: 'balance-paused', runId, sequence, status, requestId, provider, model } });
+    this.#pauseSequences.set(runId, sequence);
+    this.#paused = { reason: 'balance', runId, sequence, since, status, requestId, provider, model };
+    return true;
+  }
+  /** Only a newly inserted user message calls this. */
+  async #resume(): Promise<void> {
+    const pause = this.#paused;
+    if (!pause) return;
+    await this.#writer.receive({ id: JSON.stringify(['balance-resumed', pause.runId, pause.sequence]), type: 'model.balance-resumed', source: 'system', occurredAt: new Date().toISOString(),
+      payload: { operation: 'balance-resumed', runId: pause.runId, sequence: pause.sequence } });
+    if (this.#paused === pause) this.#paused = null;
+  }
+  /** Every non-user caller is ignored while paused; their events stay queued
+   * durably and run after the user resumes. */
+  #kick(source: 'user' | 'system' = 'system'): void {
     if (this.#closed || this.#writer.signal.aborted) return;
+    if (this.#paused && source !== 'user') return;
     if (this.#configurationWrite || (!this.#options.synthetic && !hasSelectedWebApiKey(this.#settingsValue))) { this.#kickRequested = true; return; }
     if (this.#drain) { this.#kickRequested = true; return; }
     this.#kickRequested = false;
     this.#error = null; this.#errorId = null; this.#modelFailure = null;
-    this.#drain = this.#loop.drain(this.#abort.signal).then(() => {}).catch((error: unknown) => {
-      this.#recordFailure(error, error instanceof Error && error.message === this.#modelFailure?.terminalMessage ? this.#modelFailure : publicFailure);
+    this.#drain = this.#loop.drain(this.#abort.signal).then(() => {}).catch(async (error: unknown) => {
+      const model = error instanceof Error && error.message === this.#modelFailure?.terminalMessage ? this.#modelFailure : null;
+      if (model?.balance) {
+        try { if (await this.#pause(model)) return; } catch (failure) { this.#recordFailure(failure, model); return; }
+      }
+      this.#recordFailure(error, model ?? publicFailure);
     }).finally(() => {
       this.#modelRetry = null;
       this.#drain = undefined;
       const again = this.#kickRequested; this.#kickRequested = false;
       // A concurrent arrival after the last empty claim needs one more drain.
       // A failed/unknown run is not automatically retried.
-      if (again && !this.#error && !this.#closed) this.#kick();
-      else this.#dreaming?.schedule();
+      if (again && !this.#error && !this.#paused && !this.#closed) this.#kick();
+      else if (!this.#paused) this.#dreaming?.schedule();
     });
   }
   /** The durable life this service owns. */
@@ -372,7 +447,9 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   }
   async status(): Promise<Awaited<ReturnType<WebBackend['status']>>> {
     const selection = this.#settingsValue.selection;
-    return { state: this.#closed || this.#writer.signal.aborted ? 'stopped' : this.#error ? 'error' : this.#drain ? 'working' : 'idle',
+    const pause = this.#paused;
+    return { state: this.#closed || this.#writer.signal.aborted ? 'stopped' : this.#error ? 'error' : this.#drain ? 'working' : pause ? 'paused' : 'idle',
+      ...(pause ? { pause: { reason: pause.reason, since: pause.since, status: pause.status, requestId: pause.requestId, provider: pause.provider, model: pause.model } } : {}),
       mode: this.#options.synthetic ? 'synthetic' : 'live', model: this.#options.synthetic ? '模拟模型' : selection?.model ?? null, error: this.#error, errorId: this.#errorId, modelRetry: this.#closed || this.#writer.signal.aborted ? null : this.#modelRetry, identity: this.#identity() };
   }
   #identity(): { name: string; ring: string; avatar: string | null } {
@@ -475,8 +552,14 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     }
     // A duplicate is only a receipt check. Never retry cognition merely because
     // an uncertain HTTP response was retried with the same envelope.
-    if (receipt === 'inserted') this.#kick();
+    if (receipt === 'inserted') { await this.#resume(); this.#kick('user'); }
     return { id: input.id, receipt };
+  }
+  /** Read-only provider usage of this life and its subagents (ADR 0048). */
+  async usage(range: UsageRange, timeZone: string): Promise<UsageReport> {
+    if (this.#closed || this.#writer.signal.aborted || !this.#usage) throw new WebHttpError('unavailable');
+    if (!['today', '7d', '30d'].includes(range) || !validTimeZone(timeZone)) throw new WebHttpError('invalid_input');
+    return this.#usage.usage({ range, timeZone }, PI_USAGE_PROJECTION);
   }
   async timeline(before?: string): Promise<Timeline> {
     // One read-only snapshot and connection for every metadata page and
