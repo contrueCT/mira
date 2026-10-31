@@ -53,7 +53,7 @@ test('balance notice wording: all actions stopped, one message resumes, no inter
     assert.match(text, /所有动作都已停下/); assert.match(text, /发一条消息/);
     assert.doesNotMatch(text, /工具|结果未知|子任务|后台|超时/);
   }
-  assert.match(balanceNoticeText('deepseek'), /^DeepSeek/);
+  assert.match(balanceNoticeText('deepseek'), /^DeepSeek 因/u); assert.match(balanceNoticeText(null), /^模型服务商因/u);
 });
 
 test('Pi usage projection paths match encoded Pi records', () => {
