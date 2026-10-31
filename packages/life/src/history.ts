@@ -134,6 +134,9 @@ export class HistoryError extends Error {
 /** Read-only joins over the existing Wake/History/checkpoint facts. No second
  * run log and no runtime interpretation belong in this storage contract. */
 export interface HistoryEventRun { eventId: string; runId: string | null }
+/** Whether a Wake actually received this event: its batch input or its
+ * supplemental live input is durably linked into context (ADR 0050 「已读」). */
+export interface HistoryEventReceipt extends HistoryEventRun { read: boolean }
 export interface HistoryRunPageRequest { id: string; before?: string; limit?: number }
 export interface HistoryRunHeader extends HistoryBase {
   kind: 'wake'; claimedVersion: number; inputRecordId: string | null; finalRecordId: string | null;
@@ -166,6 +169,7 @@ export interface RunHistoryReader extends HistoryReader {
    * when this Mira has no such record among those kinds. Metadata only. */
   pageCursorThrough(request: { id: string; kinds?: HistoryKind[] }): Promise<{ before: string | null } | null>;
   findEventRun(externalEventId: string): Promise<HistoryEventRun | null>;
+  findEventReceipt(externalEventId: string): Promise<HistoryEventReceipt | null>;
   pageRuns(request?: Pick<HistoryPageRequest, 'before' | 'limit'>): Promise<{ items: HistoryRunHeader[]; nextCursor: string | null }>;
   readRunRequests(request: HistoryRunPageRequest): Promise<HistoryRunRequestsPage | null>;
   readRun(request: HistoryRunPageRequest): Promise<HistoryRunPage | null>;

@@ -99,3 +99,5 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 - [0047 记忆重置与从头开始](0047-memory-reset-and-new-life.md)：Accepted，2026-10-30；只清空长期记忆（Git 提交，可回退）或开始新的连续生命（归档、进程内重启、崩溃安全日志），预检令牌 + 输入确认；有意推翻 0006 的“不提供重置 API”，修订 0020 的一次性 Memory 刷新。
 
 - [0048 用量统计与余额不足暂停](0048-usage-and-balance-pause.md)：Accepted，2026-10-31；只读用量页（today/7d/30d、按来源/唤醒/模型、无费用）；402 与结构化余额代码不重试，持久暂停直到用户发新消息
+- [0049 前台工具时限、转入后台与有界等待](0049-bounded-foreground-and-background-tools.md)：Accepted，2026-10-31；5 分钟硬时限与 20 s 插话宽限，转入后台不终止，settled/lost 事件，模型专用运行状态，提供方/扩展管理/Memory 快照时限，exec_command 退出通知。
+- [0050 NO_REPLY 静默与「已读」](0050-no-reply-and-read-receipt.md)：Accepted，2026-10-31；恰好 NO_REPLY 的最终回复不显示；最新用户消息被接收即「已读」；提示 v0.4。

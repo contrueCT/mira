@@ -36,3 +36,4 @@
 从根目录运行 `pnpm check`。真实集成运行 `MIRA_TEST_DATABASE_URL=postgres://mira_test:synthetic-ci-only@127.0.0.1:5432/mira_test pnpm test:integration`。测试仅接受显式 localhost `mira_test`，按唯一 schema 隔离与清理，禁止默认连接用户数据或生产库。CI PostgreSQL 18.6；未连通、跳过和实际通过必须区分。依赖或 exports 改动同步根边界规则和反例。
 - `mira_lives` / `mira_active_life`（ADR 0047）：生命切换只走 `PostgresLives.startNewLife` / `restoreLife`（可串行化事务、CAS、写入锁栅栏、按 reset_id 幂等）；不得删除或改写旧生命的行。
 - `usage.ts`（ADR 0048）：只读聚合，路径由调用方的 `UsageProjection` 提供，本包不解释 Runtime 载荷；新增来源或字段先改 `@mira/life` 契约。
+- 后台作业（ADR 0049）：`pendingBackgroundJobs()` 依赖迁移 012 的部分索引，结果事件 ID 由 jobId 推导；`findEventReceipt`（ADR 0050）只读。

@@ -36,10 +36,10 @@ export interface WebBackend extends Partial<ManagementBackend>, Partial<PersonaB
   browser?: BrowserWebBackend;
   status(): Promise<{ state: 'idle' | 'working' | 'paused' | 'error' | 'stopped'; pause?: BalancePause | null; mode: 'synthetic' | 'live'; model: string | null; error: string | ModelRequestFailure | PersistenceFailureNotice | null; errorId?: string | null; modelRetry?: ModelRetryStatus | null; identity?: WebIdentity; lifeId?: string; reset?: { id: string; state: string } }>;
   timeline(before?: string): Promise<{
-    items: Array<{ id: string; externalEventId?: string; source?: ExtensionMessageSource; reply?: ReplyReference; role: 'user' | 'assistant' | 'notice'; notice?: 'persona' | 'memory-reset' | 'balance'; balance?: BalanceNotice; text: string; occurredAt: string; attachments?: AttachmentDescriptor[] }>;
+    items: Array<{ id: string; externalEventId?: string; source?: ExtensionMessageSource; reply?: ReplyReference; role: 'user' | 'assistant' | 'notice'; notice?: 'persona' | 'memory-reset' | 'balance'; balance?: BalanceNotice; text: string; occurredAt: string; attachments?: AttachmentDescriptor[]; /** 「已读」, only on the newest user message (ADR 0050). */ read?: true }>;
     nextCursor: string | null;
     /** Latest reads only: earlier items whose public outcome has just completed, outside `items`. */
-    updates?: Array<{ id: string; externalEventId?: string; source?: ExtensionMessageSource; reply?: ReplyReference; role: 'user' | 'assistant' | 'notice'; notice?: 'persona' | 'memory-reset' | 'balance'; balance?: BalanceNotice; text: string; occurredAt: string; attachments?: AttachmentDescriptor[] }>;
+    updates?: Array<{ id: string; externalEventId?: string; source?: ExtensionMessageSource; reply?: ReplyReference; role: 'user' | 'assistant' | 'notice'; notice?: 'persona' | 'memory-reset' | 'balance'; balance?: BalanceNotice; text: string; occurredAt: string; attachments?: AttachmentDescriptor[]; /** 「已读」, only on the newest user message (ADR 0050). */ read?: true }>;
   }>;
   /** A quoted message by ID: contiguous from `before` when reachable, else the window ending at it. */
   locateTimeline?(id: string, before?: string): Promise<(Awaited<ReturnType<WebBackend['timeline']>> & { mode: 'contiguous' | 'window' }) | null>;
@@ -53,7 +53,7 @@ export interface WebBackend extends Partial<ManagementBackend>, Partial<PersonaB
 }
 type TimelineItem = Awaited<ReturnType<WebBackend['timeline']>>['items'][number];
 /** The public projection of one timeline item, shared by every timeline route. */
-const timelineItem = (item: TimelineItem) => ({ id: item.id, role: item.role, ...(item.role === 'notice' && item.notice ? { notice: item.notice } : {}), ...(item.role === 'notice' && item.notice === 'balance' && item.balance ? { balance: { status: item.balance.status, requestId: item.balance.requestId, provider: item.balance.provider } } : {}), text: item.text, occurredAt: item.occurredAt, ...(item.reply ? { reply: replyDescriptor(item.reply) } : {}), ...(item.source ? { source: messageSource(item.source) } : {}), ...(item.attachments?.length ? { attachments: item.attachments.map(attachmentDescriptor) } : {}), ...(item.role === 'user' && item.externalEventId !== undefined ? { externalEventId: item.externalEventId } : {}) });
+const timelineItem = (item: TimelineItem) => ({ id: item.id, role: item.role, ...(item.role === 'notice' && item.notice ? { notice: item.notice } : {}), ...(item.role === 'notice' && item.notice === 'balance' && item.balance ? { balance: { status: item.balance.status, requestId: item.balance.requestId, provider: item.balance.provider } } : {}), text: item.text, occurredAt: item.occurredAt, ...(item.reply ? { reply: replyDescriptor(item.reply) } : {}), ...(item.source ? { source: messageSource(item.source) } : {}), ...(item.attachments?.length ? { attachments: item.attachments.map(attachmentDescriptor) } : {}), ...(item.role === 'user' && item.externalEventId !== undefined ? { externalEventId: item.externalEventId } : {}), ...(item.role === 'user' && item.read === true ? { read: true as const } : {}) });
 export class WebHttpError extends Error {
   readonly code: 'too_large' | 'busy' | 'conflict' | 'unavailable' | 'invalid_input';
   constructor(code: WebHttpError['code']) { super(code); this.name = 'WebHttpError'; this.code = code; }

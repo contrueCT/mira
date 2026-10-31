@@ -26,6 +26,7 @@
     "test:persona:e2e": "node scripts/run-real-web-tests.mts persona",
     "test:memory-reset:e2e": "node scripts/run-real-web-tests.mts memory-reset",
     "test:usage:e2e": "node scripts/run-real-web-tests.mts usage",
+    "test:unstuck:e2e": "node scripts/run-real-web-tests.mts unstuck",
     "test:attachments:e2e": "node scripts/run-real-web-tests.mts attachments",
     "test:live-input:e2e": "node scripts/run-real-web-tests.mts live-input",
     "test:capabilities:e2e": "node scripts/run-real-web-tests.mts agent-capabilities",

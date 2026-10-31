@@ -31,7 +31,9 @@ export function extensionTools(registry: RegisteredTool[]): AgentTool[] {
   }));
 }
 /** Ordinary model-selected tools use the same durable Pi intent/outcome path. */
-export function extensionManagementTools(host: ExtensionHost, inspectSchedules?: () => Promise<unknown>): AgentTool[] {
+/** ADR 0049: bound for waiting on one extension lifecycle change. */
+export const EXTENSION_MANAGE_TIMEOUT_MS = 60_000;
+export function extensionManagementTools(host: ExtensionHost, inspectSchedules?: () => Promise<unknown>, options: { manageTimeoutMs?: number } = {}): AgentTool[] {
   const safeState = (entry: ReturnType<ExtensionHost['inspect']>[number]) => ({ ...entry, diagnostic: entry.diagnostic === null ? null : 'Extension reported a problem. Raw diagnostics are hidden.' });
   const safeReceipt = (entry: Awaited<ReturnType<ExtensionHost['requestChange']>>) => ({ ...entry, ...(entry.error ? { error: 'Extension change failed. Raw diagnostics are hidden.' } : {}), runtime: entry.runtime ? safeState(entry.runtime) : null });
   const safeOperation = (view: ExtensionSettingsView | null) => ({ operation: view?.operation ? { id: view.operation.id, action: view.operation.action, state: view.operation.state } : null });
@@ -112,7 +114,19 @@ export function extensionManagementTools(host: ExtensionHost, inspectSchedules?:
             if (!args.revision) throw new Error('rollback requires a saved revision');
             change = { action: args.action, revision: args.revision };
           } else change = { action: args.action };
-          return result(safeReceipt(await host.requestChange(args.id, change)));
+          // ADR 0049: never hold the conversation indefinitely. The change keeps
+          // applying; `pending` says only that its result is not yet known.
+          const applying = host.requestChange(args.id, change);
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const timedOut = new Promise<'pending'>(resolve => { timer = setTimeout(() => resolve('pending'), options.manageTimeoutMs ?? EXTENSION_MANAGE_TIMEOUT_MS); });
+          const settled = await Promise.race([applying, timedOut]).finally(() => clearTimeout(timer));
+          if (settled === 'pending') {
+            applying.catch(() => { /* the late result stays observable through extension_inspect */ });
+            // The declaration stays byte-identical (recorded native evidence is
+            // bound to it); the receipt itself explains pending.
+            return result({ status: 'pending', note: 'The change is still being applied after 60 seconds; its result is not confirmed yet. Check extension_inspect later instead of repeating it. Do not assume success or failure.' });
+          }
+          return result(safeReceipt(settled));
         } catch (error) { return result({ status: 'rejected', error: error instanceof Error ? error.message : String(error) }); }
       } },
   ];

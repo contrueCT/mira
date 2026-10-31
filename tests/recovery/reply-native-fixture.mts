@@ -21,6 +21,19 @@ import { createTestDatabase } from '../integration/database.mts';
 import { assistant, model, streamOf } from './fixtures.mts';
 import { bindContextId, requireContextId, uniqueUserContextSource, verifyUserContextRecord, type UserContextSource } from '../behavior/reply-context-binding.mts';
 
+/** Additive declaration changes made after the native capture, removed before
+ * the parity digest. Each one means the native evidence needs re-recording
+ * (docs/acceptance/reply-native-behavior.md); none is paid for in tests.
+ * - ADR 0049: optional exec_command.notify_on_exit. */
+function capturedDeclarations<T extends { name: string; parameters: unknown }>(tools: T[]): T[] {
+  return tools.map(tool => {
+    if (tool.name !== 'exec_command') return tool;
+    const parameters = structuredClone(tool.parameters) as { properties?: Record<string, unknown> };
+    if (parameters.properties) delete parameters.properties['notify_on_exit'];
+    return { ...tool, parameters };
+  });
+}
+
 export const nativeScenarioNames = ['older-quote', 'select-target', 'live-input', 'compact-index', 'history-recovery', 'malicious-quote'] as const;
 export type NativeScenarioName = typeof nativeScenarioNames[number];
 type Decision = { content: AssistantMessage['content']; stopReason: 'stop' | 'toolUse' };
@@ -190,7 +203,7 @@ export async function openNativeReplay(name: NativeScenarioName) {
   const stream: StreamFn = async (_model, context) => {
     try {
       const step = trace.steps[mode === 'native' ? nativeCount : 0]; assert.ok(step, 'Unexpected extra provider call');
-      const tools = getCurrentTools(context.messages);
+      const tools = capturedDeclarations(getCurrentTools(context.messages));
       assert.deepEqual(tools.map(tool => tool.name), step.declarationNames, 'Native capture and production Web expose the same complete tool list');
       assert.equal(createHash('sha256').update(JSON.stringify(tools)).digest('hex'), step.toolSchemasSha256, 'Complete descriptions/schema parity, not merely the selected tool subset');
       if (mode === 'setup') {

@@ -13,13 +13,13 @@ import { PostgresPersistence } from '@mira/persistence';
 import { PiDurableRuntime } from '@mira/runtime-pi';
 import { setupMemoryWorkspace } from '@mira/workspace';
 
-const suppliedTemplate = readFileSync(new URL('../../packages/runtime-pi/prompts/mira-system-v0.3.md', import.meta.url), 'utf8');
+const suppliedTemplate = readFileSync(new URL('../../packages/runtime-pi/prompts/mira-system-v0.4.md', import.meta.url), 'utf8');
 function assertMira(context: TranscriptContext): string {
-  assert.equal(JSON.stringify(context.messages).split('# Mira System Prompt v0.3').length - 1, 1, 'provider transcript must not contain obsolete full prompt copies');
+  assert.equal(JSON.stringify(context.messages).split('# Mira System Prompt v0.4').length - 1, 1, 'provider transcript must not contain obsolete full prompt copies');
   const system = getCurrentSystemMessage(context.messages);
   assert.ok(system);
   const text = getSystemMessageText(system);
-  assert.equal(text.split('# Mira System Prompt v0.3').length - 1, 1);
+  assert.equal(text.split('# Mira System Prompt v0.4').length - 1, 1);
   let position = 0;
   for (const literal of suppliedTemplate.split(/\{\{[A-Z_]+\}\}/)) {
     const next = text.indexOf(literal, position);

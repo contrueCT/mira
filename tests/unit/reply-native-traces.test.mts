@@ -21,6 +21,8 @@ const historicalReplaySource = (file: string) => ({
   'tests/behavior/reply-probe.mts': 'tests/behavior/archive/pre-macos-canonical/reply-probe.mts.txt',
   'tests/behavior/replay-reply-probe.mts': 'tests/behavior/archive/pre-macos-canonical/replay-reply-probe.mts.txt',
   'packages/runtime-pi/prompts/mira-system-v0.2.md': 'packages/runtime-pi/prompts/mira-system-v0.2-pre-communication.md',
+  // Exact captured bytes, before the ADR 0049 extension_manage bound.
+  'apps/server/src/extensions.ts': 'tests/behavior/archive/pre-background/extensions.ts.txt',
 } as Record<string, string>)[file] ?? file;
 
 test('native reply evidence preserves all six first attempts and every actually executed chosen call', () => {

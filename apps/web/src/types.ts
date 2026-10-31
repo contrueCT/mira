@@ -15,6 +15,8 @@ export interface TimelineItem {
   balance?: { status: number | null; requestId: string | null; provider: string | null };
   text: string;
   occurredAt: string;
+  /** 「已读」: set only on the newest user message once Mira received it. */
+  read?: true;
 }
 export interface TimelinePage { items: TimelineItem[]; nextCursor: string | null; updates?: TimelineItem[] | undefined }
 /** A quoted message's page: contiguous from the requested frontier, or the window ending at it. */

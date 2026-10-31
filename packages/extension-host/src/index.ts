@@ -33,8 +33,12 @@ export interface LocalExtensionEntry {
 }
 export interface GeneratedRevision { id: string; digest: string; config: Json }
 export interface GeneratedVersion { digest: string; revision: string; history: GeneratedRevision[] }
+/** ADR 0049: bound for one provider sample before a model request. */
+export const CONTEXT_PROVIDER_TIMEOUT_MS = 5_000;
 export interface ExtensionHostOptions {
   entries: LocalExtensionEntry[];
+  /** Test injection; production uses CONTEXT_PROVIDER_TIMEOUT_MS. */
+  contextProviderTimeoutMs?: number;
   /** Composition ownership: abort permanently retires this host, without reconnecting. */
   ownerSignal?: AbortSignal;
   reservedToolNames?: string[];
@@ -55,7 +59,7 @@ export interface ExtensionHostOptions {
 export interface RegisteredTool { extensionId: string; activation: string; toolRevision?: string; digest?: string; tool: ExtensionTool }
 export interface ContextProviderSample {
   extensionId: string; activation: string; providerId: string; digest?: string;
-  status: 'ok' | 'empty' | 'failed' | 'stale' | 'too-large' | 'budget-exceeded';
+  status: 'ok' | 'empty' | 'failed' | 'stale' | 'too-large' | 'budget-exceeded' | 'timeout';
   text?: string;
 }
 export interface RegisteredContextProvider {
@@ -400,6 +404,14 @@ export class ExtensionHost {
           signal.throwIfAborted();
           if (retired || this.closed || this.closing || this.options.ownerSignal?.aborted || ctx.fiber.state !== 2 || this.contextProviders.get(key) !== registered) return { ...source, status: 'stale' };
           if (this.options.ownerSignal) signal = AbortSignal.any([signal, this.options.ownerSignal]);
+          // ADR 0049: one slow provider must not hold the model request. After
+          // the bound the provider is asked to stop and this request records
+          // `timeout`; its late result is discarded, never fabricated.
+          const timeoutMs = this.options.contextProviderTimeoutMs ?? CONTEXT_PROVIDER_TIMEOUT_MS;
+          const expiry = new AbortController();
+          const timer = setTimeout(() => expiry.abort(new Error('Context provider timed out')), timeoutMs);
+          const requestSignal = signal;
+          signal = AbortSignal.any([signal, expiry.signal]);
           const lease = Promise.withResolvers<void>();
           executions.add(lease.promise);
           // Cancellation stops request preparation promptly, but cannot preempt
@@ -418,7 +430,11 @@ export class ExtensionHost {
             } catch { return { ...source, status: 'failed' }; }
             finally { executions.delete(lease.promise); lease.resolve(); }
           })();
-          return await cancellable(task, signal);
+          try { return await cancellable(task, signal); }
+          catch (error) {
+            if (expiry.signal.aborted && !requestSignal.aborted) return { ...source, status: 'timeout' };
+            throw error;
+          } finally { clearTimeout(timer); }
         } };
         resourceDrains.push(releaseResource(() => { if (this.contextProviders.get(key) === registered) { this.contextProviders.delete(key); this.contextProviderDiagnostics.delete(key); } }));
         this.contextProviders.set(key, registered);
@@ -782,7 +798,7 @@ export class ExtensionHost {
       // Process-local health only. A late result from a retired request cannot
       // overwrite a replacement activation's diagnostic or expose raw errors.
       if (this.contextProviders.get(key)?.activation === sample.activation && sample.status !== 'stale') {
-        if (['failed', 'too-large', 'budget-exceeded'].includes(selected.status)) this.contextProviderDiagnostics.set(key, { activation: sample.activation, status: selected.status });
+        if (['failed', 'too-large', 'budget-exceeded', 'timeout'].includes(selected.status)) this.contextProviderDiagnostics.set(key, { activation: sample.activation, status: selected.status });
         else this.contextProviderDiagnostics.delete(key);
       }
     }

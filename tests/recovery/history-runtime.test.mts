@@ -37,7 +37,7 @@ function value<T>(context: TranscriptContext, callId: string): T {
 async function assertProviderEvidence(db: Database, miraId: string, context: TranscriptContext): Promise<void> {
   const system = getCurrentSystemMessage(context.messages); assert.ok(system);
   const text = getSystemMessageText(system);
-  assert.equal(JSON.stringify(context.messages).split('# Mira System Prompt v0.3').length - 1, 1);
+  assert.equal(JSON.stringify(context.messages).split('# Mira System Prompt v0.4').length - 1, 1);
   let position = 0;
   for (const literal of MIRA_SYSTEM_TEMPLATE.split(/\{\{[A-Z_]+\}\}/)) {
     const next = text.indexOf(literal, position);

@@ -457,7 +457,7 @@ test('compacting a durable Memory context requires its configured Memory loader 
 for (const initial of ['', 'COMMITTED_MEMORY']) test(`a missing loader cannot erase a configured ${initial ? 'nonempty' : 'initially empty'} Memory snapshot`, async () => {
   const writer = new MemoryWriter();
   const miraPrompt = { ...prompt, loadMemory: async () => initial };
-  await runtime(writer, () => streamOf(assistant('Earlier response '.repeat(150))), { autoCompaction: disabled, miraPrompt }).run(input('Earlier question '.repeat(150)));
+  await runtime(writer, () => streamOf(assistant('Earlier response '.repeat(120))), { autoCompaction: disabled, miraPrompt }).run(input('Earlier question '.repeat(120)));
   await runtime(writer, () => streamOf(assistant('Recent response')), { autoCompaction: disabled, miraPrompt }).run(input('Recent question'));
   const before = await writer.load(); let calls = 0;
   await assert.rejects(runtime(writer, () => { calls++; return streamOf(assistant('Must not summarize')); }, { autoCompaction: disabled, miraPrompt: prompt }).compact({ keepRecentTokens: 1 }), /configured Memory loader/i);

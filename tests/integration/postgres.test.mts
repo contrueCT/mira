@@ -30,7 +30,10 @@ test('migration up/down/up uses node-pg-migrate and preserves no stale tables', 
     assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.columns WHERE table_schema=$1 AND table_name='subagent_turns' AND column_name IN ('activity','started_at','association_order')", [db.schema])).rows[0].n, 3);
     assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema=$1 AND table_name IN ('subagent_calls','subagent_live_inputs')", [db.schema])).rows[0].n, 2);
     assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.columns WHERE table_schema=$1 AND table_name='subagent_turns' AND column_name IN ('stream_id','input_record_id','final_record_id')", [db.schema])).rows[0].n, 3);
-    // The usage indexes (ADR 0048) are the latest slice: indexes only, no data.
+    // The background-job index (ADR 0049) is the latest slice: one partial index, no data.
+    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
+    assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM pg_indexes WHERE schemaname = $1 AND indexname = 'life_events_background_started'", [db.schema])).rows[0].n, 0);
+    // The usage indexes (ADR 0048) are the next slice: indexes only, no data.
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM pg_indexes WHERE schemaname = $1 AND indexname IN ('context_records_by_time', 'wake_runs_by_claimed_version')", [db.schema])).rows[0].n, 0, 'usage down removes only its indexes');
     // The Mira lives registry (ADR 0047) is the next independent slice.

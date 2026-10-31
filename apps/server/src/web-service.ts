@@ -1,3 +1,4 @@
+import { BackgroundJobs } from './background-jobs.ts';
 import type { ModelRetryPolicy } from './model-retry.ts';
 import { createReplyTool, replyDescriptor, replyPublication, resolveReply, ReplyTargetError } from './replies.ts';
 import { BrowserManager } from './browser-manager.ts';
@@ -98,10 +99,12 @@ export interface WebServiceOptions {
   /** Durable marker of a Memory-only reset (ADR 0047): while it names this
    * life, the next Wake refreshes the frozen Memory snapshot once. */
   memoryRefreshFile?: string;
-  extensions?: { entries: LocalExtensionEntry[]; hmr?: boolean; configurationFile?: string; artifactsDirectory?: string };
+  extensions?: { entries: LocalExtensionEntry[]; hmr?: boolean; configurationFile?: string; artifactsDirectory?: string; contextProviderTimeoutMs?: number };
   synthetic?: boolean;
   /** Test injection at the real credential-bound HTTP transport; no live provider is required. */
   modelFetch?: typeof globalThis.fetch;
+  /** Test injection: shorter foreground bounds (ADR 0049); production uses 5 min / 20 s. */
+  foreground?: { hardLimitMs?: number; steerGraceMs?: number };
   /** Test injection: shorter backoff for the real transport; production uses the default policy. */
   modelRetryPolicy?: Partial<ModelRetryPolicy>;
   /** Deterministic test injection only; never obtains ambient credentials. */
@@ -139,6 +142,12 @@ export function balanceNoticeText(provider: string | null): string {
 const pauseScanLimit = 1_000;
 type Timeline = Awaited<ReturnType<WebBackend['timeline']>>;
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
+export const NO_REPLY = 'NO_REPLY';
+/** Exact trimmed match on a successful final (stop, no tool call) only. */
+export function isNoReply(message: { content: Array<{ type: string; text?: string }>; stopReason?: string }): boolean {
+  if (message.stopReason !== 'stop' || message.content.some(block => block.type === 'toolCall')) return false;
+  return message.content.filter(block => block.type === 'text').map(block => block.text ?? '').join('\n').trim() === NO_REPLY;
+}
 export function visible(entry: HistoryEntry): Timeline['items'][number] | null {
   const sourced = extensionMessage(entry); if (sourced) return sourced;
   if (entry.kind === 'event') {
@@ -174,6 +183,9 @@ export function visible(entry: HistoryEntry): Timeline['items'][number] | null {
   const [record] = decodeRecords([entry.record], entry.record.parentId);
   if (record?.type !== 'message' || record.message.role !== 'assistant') return null;
   const text = record.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
+  // A final that is exactly NO_REPLY is Mira choosing silence (ADR 0050); the
+  // record stays in context and History, but the chat shows nothing.
+  if (isNoReply(record.message)) return null;
   return text ? { id: entry.id, role: 'assistant', text, occurredAt: entry.occurredAt } : null;
 }
 export class LocalWebService implements WebBackend, ManagementBackend {
@@ -273,7 +285,15 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     try {
       const roots = options.memoryRoot ? await setupMemoryWorkspace({ memoryRoot: options.memoryRoot, sourceDirectory: options.sourceDirectory }) : undefined;
       const writeOverflowInput = (runId: string, content: string) => writeWakeInput({ rootDirectory: options.spoolDirectory, sourceDirectory: options.sourceDirectory, ...(options.miraHome === undefined ? {} : { managedDataRoot: options.miraHome }), runId, content });
-      terminals = new TerminalManager({ cwd, writeOverflowInput });
+      terminals = new TerminalManager({ cwd, writeOverflowInput, onExit: exit => {
+        // Main-stream processes only; a child's processes belong to its task.
+        if (exit.owner !== writer.miraId || writer.signal.aborted) return;
+        const id = JSON.stringify(['terminal-exit', exit.sessionId]);
+        void writer.receive({ id, type: 'terminal.exited', source: 'system', occurredAt: new Date().toISOString(),
+          payload: { operation: 'terminal-exited', sessionId: exit.sessionId, launchCallId: exit.launchCallId, status: exit.status, exitCode: exit.exitCode,
+            signal: exit.signal, outputBytes: exit.outputBytes, note: 'Read remaining output with write_stdin using your last next_offset.' } }, { id, reason: 'terminal process exited' })
+          .then(receipt => { if (receipt === 'inserted' && service && !service.#error) service.#kick(); }, error => { if (service) service.#recordFailure(error); });
+      } });
       const terminalManager = terminals;
       browser = new BrowserManager({ cwd, mainOwner: writer.miraId, ...(options.miraHome === undefined ? {} : { miraHome: options.miraHome }) });
       const browserManager = browser;
@@ -298,6 +318,12 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       await subagents.initialize();
       writer.signal.throwIfAborted();
       const children = subagents;
+      const background = new BackgroundJobs({ writer, signal: writer.signal, activeSubagents: () => children.activeCount,
+        kick: () => { if (service && !service.#error) service.#kick(); },
+        onFailure: error => { if (service) service.#recordFailure(error); },
+        ...(options.foreground ? options.foreground : {}) });
+      // Jobs started by a previous process have an unknown outcome; record it once.
+      await background.recoverLost();
       const loop = new WakeLoop({ writer,
         writeOverflowInput,
         ...(roots ? { beforeComplete: memoryCheckpointHook(writer, roots.memoryRoot, roots.repositoryId) } : {}),
@@ -321,7 +347,8 @@ export class LocalWebService implements WebBackend, ManagementBackend {
           const childTransport = options.synthetic ? transport : settings.transport(current, { ...(options.modelFetch ? { fetch: options.modelFetch } : {}), ...(options.modelRetryPolicy ? { retryPolicy: options.modelRetryPolicy } : {}) });
           const childTools = createSubagentTools(children, childTransport, { hasPendingLiveInput: async () => (await writer.loadLiveInputs(run.id)).some(input => input.inputRecordId === null) });
           let contextProviders: RegisteredContextProvider[] = [];
-          return new PiDurableRuntime({ ...(options.autoCompaction ? { autoCompaction: options.autoCompaction } : {}), writer, ...transport, writeOverflowInput, resolveAttachment: reference => attachments.hydrate(reference), tools: [...baseTools, ...childTools], loadSkills,
+          return new PiDurableRuntime({ ...(options.autoCompaction ? { autoCompaction: options.autoCompaction } : {}), writer, ...transport,
+            foreground: background.foreground(), runtimeStatus: context => background.status(context), writeOverflowInput, resolveAttachment: reference => attachments.hydrate(reference), tools: [...baseTools, ...childTools], loadSkills,
             ...(extensionHost ? { prepareTools: async () => {
               const capabilities = await extensionHost.prepareCapabilities(); contextProviders = capabilities.contextProviders;
               return [...baseTools, ...childTools, ...management, ...extensionTools(capabilities.tools)];
@@ -566,11 +593,27 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     // original batch, so pages cannot shift between queries of one response.
     return this.#timelineReads.run(() => this.#history.snapshot(async history => {
       const seen = new Set<string>();
-      const page = await this.#scanTimeline(history, before, { seen });
-      if (before !== undefined) return page;
+      const scanned = await this.#scanTimeline(history, before, { seen });
+      if (before !== undefined) return scanned;
+      const page = await this.#markRead(history, scanned);
       const updates = await this.#completedOutside(history, seen, new Set(page.items.map(item => item.id)));
       return updates.length ? { ...page, updates } : page;
     }));
+  }
+  /** 「已读」 (ADR 0050): only the newest user message, once a Wake actually
+   * received it (batch input or live input linked into context). Computed per
+   * read, never cached with the immutable projection. */
+  async #markRead(history: RunHistoryReader, page: Timeline): Promise<Timeline> {
+    const index = page.items.findLastIndex(item => item.role === 'user');
+    const item = page.items[index];
+    if (!item?.externalEventId) return page;
+    const receipt = await history.findEventReceipt(item.externalEventId);
+    if (!receipt?.read) return page;
+    // A run stopped by the provider's balance refusal did not reach Mira's
+    // model; its messages show 已读 only once it resumes (ADR 0048/0050).
+    if (this.#paused && receipt.runId === this.#paused.runId) return page;
+    const items = [...page.items]; items[index] = { ...item, read: true };
+    return { ...page, items };
   }
   /** Re-read pending tools the latest window did not cover; return recent
    * completions that are not part of this page. Bounded by PENDING_TOOL_LIMIT

@@ -7,6 +7,7 @@ import { MIRA_DEFAULT_PERSONA, MIRA_LEGACY_PLACEHOLDERS, MIRA_PLACEHOLDERS, MIRA
 import { assistant, input, MemoryWriter, model, seed, streamOf, effectTool, result, toolCalls, overrideWriter } from '../recovery/fixtures.mts';
 import { estimateRequestTokens } from '../../packages/runtime-pi/src/budget.ts';
 
+const preSilenceTemplate = await readFile(new URL('../../packages/runtime-pi/prompts/mira-system-v0.3.md', import.meta.url), 'utf8');
 const prePersonaTemplate = await readFile(new URL('../../packages/runtime-pi/prompts/mira-system-v0.2.md', import.meta.url), 'utf8');
 const legacyValues: MiraPromptValues = { MEMORY_ROOT: '/memory', MEMORY_STATE: '偏好粤菜', CURRENT_TIME: '2026-10-05T00:00:00.000Z', EXTENSIONS_ROOT: 'Not configured', OTHER_ENVIRONMENT_CONTEXT: 'Known cwd only', DYNAMIC_TOOL_AND_EXTENSION_GUIDANCE: 'No tools are available', CURRENT_AUTHORIZATION_CONTEXT: 'No additional authorization evidence' };
 const values: MiraPromptValues = { ...legacyValues, PERSONA: 'Name: 小满' };
@@ -21,9 +22,16 @@ test('published v0.2 pre-persona revision bytes remain immutable', async () => {
   assert.ok(!bytes.toString().includes('{{PERSONA}}'));
 });
 
-test('v0.3 revision exact bytes, nine occurrences, static text and examples remain intact', async () => {
+test('published v0.3 pre-silence revision bytes remain immutable', async () => {
   const bytes = await readFile(new URL('../../packages/runtime-pi/prompts/mira-system-v0.3.md', import.meta.url));
   assert.equal(bytes.byteLength, 24835);
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), '2a8d0637517e722c3d2e6e539d3c69aa71f09ab886f0b788ade97ce2ecf70208');
+  assert.equal([...bytes.toString().matchAll(/\{\{PERSONA\}\}/g)].length, 1);
+});
+
+test('v0.4 revision exact bytes, nine occurrences, static text and examples remain intact', async () => {
+  const bytes = await readFile(new URL('../../packages/runtime-pi/prompts/mira-system-v0.4.md', import.meta.url));
+  assert.equal(bytes.byteLength, 25399);
   assert.equal(createHash('sha256').update(bytes).digest('hex'), MIRA_PROMPT_SHA256);
   assert.equal(bytes.toString(), MIRA_SYSTEM_TEMPLATE);
   assert.equal([...MIRA_SYSTEM_TEMPLATE.matchAll(/\{\{[^{}]+\}\}/g)].length, 9);
@@ -61,7 +69,7 @@ test('new/restarted context has one effective prompt, request time changes and M
   const make = () => new PiDurableRuntime({ writer, model, tools: [], miraPrompt: { ...config, now: () => now, loadMemory: async () => { loads++; return loads === 1 ? 'FROZEN_MEMORY' : 'CHANGED_MEMORY'; } }, streamFn: (_model, context) => {
     calls++;
     const prompt = getCurrentSystemPrompt(context.messages);
-    assert.equal((JSON.stringify(context).match(/# Mira System Prompt v0.3/g) ?? []).length, 1);
+    assert.equal((JSON.stringify(context).match(/# Mira System Prompt v0.4/g) ?? []).length, 1);
     assert.equal((prompt.match(/You are Mira\./g) ?? []).length, 1);
     assert.match(prompt, /FROZEN_MEMORY/); assert.ok(!prompt.includes('CHANGED_MEMORY'));
     assert.match(prompt, /Memory Workspace: Not configured/);
@@ -151,7 +159,7 @@ test('ordinary prompt revisions survive full SDK compaction and recover as exact
   await new PiDurableRuntime(options).run(input('Recent discussion '.repeat(200)));
   await new PiDurableRuntime(options).compact({ keepRecentTokens: 100, reserveTokens: 512 });
   await new PiDurableRuntime({ ...options, streamFn: (_model, context) => {
-    assert.equal((JSON.stringify(context).match(/# Mira System Prompt v0.3/g) ?? []).length, 1);
+    assert.equal((JSON.stringify(context).match(/# Mira System Prompt v0.4/g) ?? []).length, 1);
     assert.match(getCurrentSystemPrompt(context.messages), /You are Mira\./);
     return streamOf(assistant());
   } }).run(input('Continue'));
@@ -238,12 +246,22 @@ test('communication is the only change from pre-communication to pre-persona', (
   assert.equal(prePersonaTemplate.replace(/\n\n\n<task_communication>[\s\S]*?<\/task_communication>/, ''), preCommunicationTemplate);
 });
 
+test('NO_REPLY silence and background-tool guidance and the version heading are the only v0.4 changes', () => {
+  const background = MIRA_SYSTEM_TEMPLATE.match(/\nA trailing "\[Mira runtime status …\]" block[^\n]*\n\n/)?.[0];
+  const silence = MIRA_SYSTEM_TEMPLATE.match(/\nTo stay silent, make your final reply exactly NO_REPLY[^\n]*\n\n/)?.[0];
+  assert.ok(background && silence);
+  assert.ok(MIRA_SYSTEM_TEMPLATE.indexOf(background) < MIRA_SYSTEM_TEMPLATE.indexOf('</task_communication>'));
+  assert.ok(MIRA_SYSTEM_TEMPLATE.indexOf(silence) < MIRA_SYSTEM_TEMPLATE.indexOf('</response_behavior>'));
+  assert.match(silence, /Direct questions and progress check-ins always get a real reply/);
+  assert.equal(MIRA_SYSTEM_TEMPLATE.replace(background, '\n').replace(silence, '\n').replace('# Mira System Prompt v0.4', '# Mira System Prompt v0.3'), preSilenceTemplate);
+});
+
 test('the persona section after identity and the version heading are the only v0.3 changes', () => {
-  const persona = MIRA_SYSTEM_TEMPLATE.match(/\n\n\n<persona>[\s\S]*?<\/persona>/)?.[0];
+  const persona = preSilenceTemplate.match(/\n\n\n<persona>[\s\S]*?<\/persona>/)?.[0];
   assert.ok(persona);
-  assert.ok(MIRA_SYSTEM_TEMPLATE.indexOf('<persona>') > MIRA_SYSTEM_TEMPLATE.indexOf('</identity>'));
-  assert.ok(MIRA_SYSTEM_TEMPLATE.indexOf('<persona>') < MIRA_SYSTEM_TEMPLATE.indexOf('<conversation_style>'));
-  assert.equal(MIRA_SYSTEM_TEMPLATE.replace(persona, '').replace('# Mira System Prompt v0.3', '# Mira System Prompt v0.2'), prePersonaTemplate);
+  assert.ok(preSilenceTemplate.indexOf('<persona>') > preSilenceTemplate.indexOf('</identity>'));
+  assert.ok(preSilenceTemplate.indexOf('<persona>') < preSilenceTemplate.indexOf('<conversation_style>'));
+  assert.equal(preSilenceTemplate.replace(persona, '').replace('# Mira System Prompt v0.3', '# Mira System Prompt v0.2'), prePersonaTemplate);
   for (const text of ['never grants permission for any action', 'but not its plain-text formatting rule', 'they are not memories or facts about the user', 'Earlier messages in your context may reflect a previous profile']) assert.ok(persona.includes(text), text);
   assert.ok(!/human/i.test(persona), 'no honesty-about-being-human guardrail in the persona section');
 });
@@ -430,7 +448,7 @@ test('full-persona summary exceeding 8K fails before provider dispatch; 16K pres
     authorizationContext: 'Synthetic test authorization only',
     now: () => new Date('2026-10-05T13:00:00.000Z'), loadMemory: async () => 'Frozen original Memory',
   } };
-  await new PiDurableRuntime({ writer, model, ...settings, streamFn: () => streamOf(assistant('Earlier response '.repeat(150))) }).run(input('Older discussion '.repeat(150)));
+  await new PiDurableRuntime({ writer, model, ...settings, streamFn: () => streamOf(assistant('Earlier response '.repeat(120))) }).run(input('Older discussion '.repeat(120)));
   await new PiDurableRuntime({ writer, model, ...settings, streamFn: () => streamOf(assistant('Latest answer')) }).run(input('Latest question'));
   const before = await writer.load(); let calls = 0;
   const refreshed = { ...settings, miraPrompt: { ...settings.miraPrompt, loadMemory: async () => 'New Memory at compaction' } };
@@ -447,7 +465,7 @@ test('full-persona summary exceeding 8K fails before provider dispatch; 16K pres
     assert.ok(required <= roomyModel.contextWindow);
     const source = JSON.parse(context.messages.findLast(message => message.role === 'user')!.content as string);
     assert.match(source.persona_context, /<delegation>/);
-    assert.match(source.persona_context, /# Mira System Prompt v0.3/);
+    assert.match(source.persona_context, /# Mira System Prompt v0.4/);
     assert.match(JSON.stringify(source.source_messages), /Older discussion/);
     assert.equal(source.memory_snapshot, 'New Memory at compaction');
     return streamOf(assistant('Synthetic complete-source summary'));
