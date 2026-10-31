@@ -11,6 +11,7 @@
 - `unit/` 为核心/离线运行时测试；`integration/` 与 `recovery/` 为真实数据库/进程测试；`e2e/` 为 Playwright 合成 HTTP UI fixture；真实 Web service 恢复在 recovery/web-service.test.mts
 - `unit/tool-diagnostics.test.mts` 覆盖安全类别、秘密/伪造字段、未知结果与写入失败；`recovery/tool-diagnostics.test.mts` 验证真实 PG 和 observation 落库前后进程死亡。无 PostgreSQL 不能算该门禁通过
 - `scripts/run-tests.mts` 显式发现对应目录的 `*.test.mts`，剥离凭据并设置临时 HOME；新增目录要同步测试发现
+- 事件契约：`shared/extension-event-contract-cases.mts` 是纯案例表，不由测试发现直接执行。`unit/extension-fake-host.test.mts` 与 `recovery/extension-event-contract.test.mts` 都运行它；后者才是 PostgreSQL 持久化与重启的权威
 
 ## 运行与隔离
 
