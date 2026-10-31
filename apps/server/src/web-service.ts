@@ -134,7 +134,7 @@ const providerNames: Record<string, string> = { deepseek: 'DeepSeek', openai: 'O
 export function balanceNoticeText(provider: string | null): string {
   const name = provider ? providerNames[provider] ?? provider : '模型服务商';
   // A space separates a Latin provider name from the Chinese sentence.
-  return `${name}${/[A-Za-z0-9]$/u.test(name) ? ' ' : ''}因账户余额不足拒绝了请求，Mira 的所有动作都已停下，不会自行重试或继续。充值后发一条消息，Mira 就会接着做。`;
+  return `${name}${/[A-Za-z0-9]$/u.test(name) ? ' ' : ''}因账户余额不足拒绝了请求，Mira 的所有动作都已停下。充值后发一条消息，Mira 就会接着做。`;
 }
 const pauseScanLimit = 1_000;
 type Timeline = Awaited<ReturnType<WebBackend['timeline']>>;

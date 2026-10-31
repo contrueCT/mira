@@ -53,7 +53,7 @@ export function UsagePanel({ active }: { active: boolean }) {
   const share = totals ? cacheShare(totals) : null;
   const maxSource = Math.max(1, ...(shown?.bySource.map(item => item.total) ?? [1]));
   return <div className="settings-body management-body usage-panel">
-    <div className="management-heading"><div><h3>用量</h3><p>按模型供应商每次返回的 usage 统计，包括主对话、子任务、上下文压缩和 Dreaming。这里只做记录，不限制用量，聊天里也不逐条显示。</p></div>
+    <div className="management-heading"><div><h3>用量</h3><p>按模型供应商每次返回的 usage 统计，包括主对话、子任务、上下文压缩和 Dreaming。</p></div>
       <button type="button" className="text-button" disabled={loading} onClick={() => setVersion(value => value + 1)}>刷新</button></div>
     {pause && <div className="balance-card" role="status"><span className="status-dot warning" aria-hidden="true" /><div><strong>模型余额不足，Mira 已暂停</strong>
       Mira 的所有动作都已停下。充值后在聊天里发一条消息，Mira 就会接着做。</div></div>}
@@ -89,6 +89,6 @@ export function UsagePanel({ active }: { active: boolean }) {
         </tbody></table>
       </>}
     </>}
-    <p className="usage-footnote">token 数来自供应商返回值；请求失败、被取消或没有返回 usage 的请求只计次数，不计 token。费用请以供应商账单为准。</p>
+    <p className="usage-footnote">token 数来自供应商返回值；请求失败、被取消或没有返回 usage 的请求只计次数，不计 token。</p>
   </div>;
 }

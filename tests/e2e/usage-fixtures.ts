@@ -32,5 +32,5 @@ export const balanceTimeline = { nextCursor: null, items: [
   { id: 'b0000000-0000-4000-8000-000000000001', role: 'user', text: '帮我看看为什么 CI 这么慢', occurredAt: '2026-10-31T01:10:00.000Z' },
   { id: 'b0000000-0000-4000-8000-000000000002', role: 'assistant', text: '找到了，e2e 和 integration 两个 job 占了总时长的 80%。我再看下 integration 里是哪几个测试拖慢的。', occurredAt: '2026-10-31T01:11:00.000Z' },
   { id: 'b0000000-0000-4000-8000-000000000003', role: 'notice', notice: 'balance', balance: { status: 402, requestId: '0f3a9c1e-77b2-4d1a', provider: 'deepseek' },
-    text: 'DeepSeek 因账户余额不足拒绝了请求，Mira 的所有动作都已停下，不会自行重试或继续。充值后发一条消息，Mira 就会接着做。', occurredAt: '2026-10-31T01:12:00.000Z' },
+    text: 'DeepSeek 因账户余额不足拒绝了请求，Mira 的所有动作都已停下。充值后发一条消息，Mira 就会接着做。', occurredAt: '2026-10-31T01:12:00.000Z' },
 ] };

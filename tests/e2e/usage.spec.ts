@@ -24,7 +24,7 @@ test('用量 tab follows 运行记录, switches ranges with the local time zone 
   await expect(panel.getByRole('cell', { name: /子任务\s*23 个任务/u })).toBeVisible();
   await expect(panel.getByText('“把浏览器面板的锁定状态重新设计一下”')).toBeVisible();
   await expect(panel.getByText(/\$|¥|费用：|cost/iu)).toHaveCount(0);
-  await expect(panel.getByText('费用请以供应商账单为准', { exact: false })).toBeVisible();
+  await expect(panel.getByText('只计次数，不计 token', { exact: false })).toBeVisible();
   expect(seen[0]).toMatch(/^\?range=today&tz=[A-Za-z_%0-9]+/u);
   await panel.getByRole('button', { name: '最近 30 天', exact: true }).click();
   await expect(panel.getByRole('button', { name: '最近 30 天', exact: true })).toHaveAttribute('aria-pressed', 'true');
