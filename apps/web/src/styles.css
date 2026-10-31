@@ -563,7 +563,9 @@ button:disabled { opacity: .48; }
 .confirm-foot > span { font-size: 11px; color: #707484; }
 .confirm-foot > div { display: flex; gap: 8px; }
 .scope-option input:disabled + div { opacity: .7; }
-.confirm-foot > span { overflow-wrap: anywhere; }
+.confirm-foot > span { overflow-wrap: anywhere; min-width: 0; flex: 1 1 auto; }
+.confirm-foot > div { flex-shrink: 0; }
+.confirm-foot button { white-space: nowrap; }
 .confirm-body .persona-check { margin-top: 12px; }
 .confirm-body .inline-error, .confirm-body .field-notice { margin: 10px 0 0; }
 @media (max-width: 600px) {
