@@ -109,6 +109,7 @@
     "tests/unit/mcp-generated-install.test.mts",
     "tests/unit/mcp-catalog.test.mts",
     "tests/unit/model-probe.test.mts",
-    "tests/unit/runtime-limits.test.mts"
+    "tests/unit/runtime-limits.test.mts",
+    "tests/unit/model-balance.test.mts"
   ]
 }

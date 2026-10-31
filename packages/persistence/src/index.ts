@@ -1,9 +1,10 @@
 import { PostgresSubagents, PostgresSubagentReader } from './subagents.ts';
-import { SubagentError, type SubagentWriter, type SubagentReader } from '@mira/life';
+import { SubagentError, type SubagentWriter, type SubagentReader, type UsageReader } from '@mira/life';
 import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 import { PostgresHistoryReader } from './history.ts';
+import { PostgresUsageReader } from './usage.ts';
 import type { LiveInputWriter, LiveWakeInput, RunHistoryReader, TaskInputWriter, TaskLiveInput, TaskTurnState } from '@mira/life';
 import { DurableOperationError, type DurableFailureCategory } from '@mira/life';
 import { assertJson, assertRecord } from '@mira/context';
@@ -150,6 +151,9 @@ export class PostgresPersistence {
   history(miraId: string): RunHistoryReader { return new PostgresHistoryReader(this.#options, miraId); }
 
   subagents(miraId: string): SubagentReader { text(miraId, 'Mira ID'); return new PostgresSubagentReader(this.#options, miraId); }
+
+  /** Read-only model usage aggregation for one life and its children (ADR 0048). */
+  usage(miraId: string): UsageReader { text(miraId, 'Mira ID'); return new PostgresUsageReader(this.#options, miraId); }
 
   async acquire(miraId: string): Promise<DreamingWriter & SchedulingWriter & LiveInputWriter & SubagentWriter & TaskInputWriter> {
     text(miraId, 'Mira ID');
