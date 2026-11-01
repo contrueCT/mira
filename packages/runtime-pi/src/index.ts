@@ -8,7 +8,7 @@ import { getCurrentSystemMessage, getSystemMessageText, isContextOverflow, type 
 import { buildSessionProjection, convertToLlm, formatSkillsForPrompt, type SessionEntry, type Skill } from '@earendil-works/pi-coding-agent';
 import type { DurableWriter, RecoverySnapshot, ToolExecution, WakeWriter, LiveInputWriter, TaskInputWriter, TaskLiveInput, LiveWakeInput, ToolIntent } from '@mira/life';
 import { DurableOperationError, prepareWakeTurn } from '@mira/life';
-import { validateAttachmentReferences, validateWakeInputArtifact, validateReplyReferences, validateMessageReplies, type WriteOverflowInput, type AttachmentReference, type CognitionRuntime, type CognitionTurn } from '@mira/cognition';
+import { validateAttachmentReferences, validateWakeInputArtifact, validateReplyReferences, validateMessageReplies, type WriteOverflowInput, type CognitionRuntime, type CognitionTurn } from '@mira/cognition';
 import { hydrateAttachments, messageAttachments, type ResolveAttachment } from './attachments.ts';
 import { observationEntry, sanitizeEntries, validateObservation, withRecoveryAdvisory, type RecoveryOperation, type ToolDiagnostic } from './observations.ts';
 import { compactSnapshot, type CompactionOptions } from './compactor.ts';
@@ -126,8 +126,6 @@ function recoveredPressure(state: RecoveredContext, messages: AgentMessage[], to
 export interface TaskTurnOptions {
   id: string;
   input: string;
-  /** Immutable attachment references; images reach the model natively (ADR 0052). The input text already names them. */
-  attachments?: AttachmentReference[];
   onInput: (listener: (turnId: string) => void) => () => void;
 }
 type RuntimeTurn = CognitionTurn & { task?: { writer: TaskInputWriter; onInput: TaskTurnOptions['onInput'] } };
@@ -520,10 +518,8 @@ export class PiDurableRuntime implements CognitionRuntime {
         inputRecordId: state.inputRecordId, finalRecordId: state.finalRecordId,
         task: { writer, onInput: options.onInput } };
       let current = await this.recoverInternal();
-      if (options.attachments?.length) validateAttachmentReferences(options.attachments);
       const input = Object.assign({ role: 'user' as const, content: options.input, timestamp: Date.parse(state.createdAt) },
-        { miraParentInstruction: { turnId: state.id, callId: state.callId } },
-        options.attachments?.length ? { miraAttachments: structuredClone(options.attachments), miraAttachmentsInInput: true as const } : {});
+        { miraParentInstruction: { turnId: state.id, callId: state.callId } });
       const saved = state.inputRecordId ? current.entries.find(entry => entry.id === state.inputRecordId) : undefined;
       if (state.inputRecordId && (saved?.type !== 'message' || !isDeepStrictEqual(saved.message, input)))
         throw new RecoveryBlockedError('Task assignment differs from its durable input');
@@ -1178,4 +1174,3 @@ function validateProjection(messages: AgentMessage[]): void {
 
 export { createHistoryTools } from './history-tools.ts';
 export { freezeSubagentContext } from './subagent-context.ts';
-export { attachmentReferenceText } from './attachments.ts';

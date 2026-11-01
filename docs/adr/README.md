@@ -102,4 +102,4 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 - [0049 前台工具时限、转入后台与有界等待](0049-bounded-foreground-and-background-tools.md)：Accepted，2026-10-31；5 分钟硬时限与 20 s 插话宽限，转入后台不终止，settled/lost 事件，模型专用运行状态，提供方/扩展管理/Memory 快照时限，exec_command 退出通知。
 - [0050 NO_REPLY 静默与「已读」](0050-no-reply-and-read-receipt.md)：Accepted，2026-10-31；恰好 NO_REPLY 的最终回复不显示；最新用户消息被接收即「已读」；提示 v0.4。
 - [0051 子任务控制：有界文件工具、真正的取消、停滞唤醒与余额](0051-subagent-control.md)：Accepted，2026-10-31；文件工具 5 分钟，取消按 owner 严格收尾并释放槽位，15 分钟停滞唤醒，余额拒绝触发暂停，观测只给模型。
-- [0052 子任务的结构化回报、能力与附件、批量唤醒和关闭](0052-subagent-reports-capabilities-close.md)：Accepted，2026-10-31；`task_report {summary, question?}`，扩展能力（mainOnly 不下发、delegated 不能改日程）与附件按引用，同组一次唤醒，独立的 `subagent_close` 完全收尾，4 小时空闲释放兜底；提示 v0.5。
+- [0052 子任务的结构化回报、能力与附件、批量唤醒和关闭](0052-subagent-reports-capabilities-close.md)：Accepted，2026-10-31；`task_report {summary, question?}`，扩展能力（mainOnly 不下发、delegated 不能改日程），附件路径由子任务 read（含视频），同组一次唤醒，独立的 `subagent_close` 完全收尾，4 小时空闲释放兜底；提示 v0.5。

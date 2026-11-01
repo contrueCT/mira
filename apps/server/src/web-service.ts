@@ -319,7 +319,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       const management = extensionHost ? extensionManagementTools(extensionHost, () => writer.listScheduledDeliveries()) : [];
       const limits = options.subagentLimits ?? {};
       subagents = new SubagentManager({ writer, loadSkills, ...(options.subagentConcurrency === undefined ? {} : { maxConcurrent: options.subagentConcurrency }), acquire: streamId => persistence.acquire(streamId),
-        tools: streamId => [...createBrowserTools(browserManager, streamId), ...withFileToolLimits(createWorkspaceTools(cwd), cwd, limits.fileToolTimeoutMs), ...createTerminalTools(terminalManager, streamId), ...createHistoryTools(persistence.history(streamId))],
+        tools: streamId => [...createBrowserTools(browserManager, streamId), ...withFileToolLimits(createWorkspaceTools(cwd).map(tool => withVideoRead(tool, attachments, cwd)), cwd, limits.fileToolTimeoutMs), ...createTerminalTools(terminalManager, streamId), ...createHistoryTools(persistence.history(streamId))],
         ...(limits.stallMs === undefined ? {} : { stallMs: limits.stallMs }), ...(limits.stallCheckMs === undefined ? {} : { stallCheckMs: limits.stallCheckMs }),
         ...(limits.cancelSettleMs === undefined ? {} : { cancelSettleMs: limits.cancelSettleMs }), ...(limits.idleReleaseMs === undefined ? {} : { idleReleaseMs: limits.idleReleaseMs }), ...(limits.closeWaitMs === undefined ? {} : { closeWaitMs: limits.closeWaitMs }),
         // Strictly the cancelled child's own stream; never the main owner.
@@ -334,7 +334,6 @@ export class LocalWebService implements WebBackend, ManagementBackend {
           checkCapabilities: async (ids: string[]) => capabilityProblem((await extensionHost.prepareCapabilities()).tools, ids),
           finishExtensionTools: () => extensionHost.finish(),
         } : {}),
-        resolveAttachments: ids => attachments.resolve(ids),
         resolveAttachment: reference => attachments.hydrate(reference),
         onStalled: async stall => { if (service) await service.#stalled(stall); },
         balanceFailure: error => error instanceof Error && service ? service.#childFailures.get(error.message) ?? null : null,

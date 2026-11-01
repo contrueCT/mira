@@ -27,7 +27,7 @@ import { bindContextId, requireContextId, uniqueUserContextSource, verifyUserCon
  * (docs/acceptance/reply-native-behavior.md); none is paid for in tests.
  * - ADR 0049: optional exec_command.notify_on_exit.
  * - ADR 0052: the subagent_close tool, the optional subagent_spawn
- *   capabilities/attachments/group parameters, and one appended sentence block
+ *   capabilities/group parameters, and one appended sentence block
  *   on the subagent_spawn and subagent_status descriptions. */
 function capturedDeclarations<T extends { name: string; description?: string; parameters: unknown }>(tools: T[]): T[] {
   const appended: Record<string, string> = { subagent_spawn: ` ${SUBAGENT_SPAWN_ADDENDUM}`, subagent_status: ` ${SUBAGENT_STATUS_ADDENDUM}` };

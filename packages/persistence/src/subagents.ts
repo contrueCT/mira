@@ -440,15 +440,10 @@ const singleLine = (value: unknown, max: number) => typeof value === 'string' &&
 const boundedBody = (value: unknown, max: number) => typeof value === 'string' && value.trim().length > 0 && value.isWellFormed() && !value.includes('\0') && [...value].length <= max;
 /** ADR 0052 additions to the frozen specification. */
 function validExtras(spec: SubagentSpec): boolean {
-  const keys = ['task','title','fork','model','capabilities','attachments','group'];
+  const keys = ['task','title','fork','model','capabilities','group'];
   if (Object.keys(spec).some(key => !keys.includes(key))) return false;
   if (spec.capabilities !== undefined && (!Array.isArray(spec.capabilities) || !spec.capabilities.length || spec.capabilities.length > SUBAGENT_LIMITS.capabilities
     || new Set(spec.capabilities).size !== spec.capabilities.length || spec.capabilities.some(id => !singleLine(id, 128)))) return false;
-  if (spec.attachments !== undefined && (!Array.isArray(spec.attachments) || !spec.attachments.length || spec.attachments.length > SUBAGENT_LIMITS.attachments
-    || new Set(spec.attachments.map(item => item?.id)).size !== spec.attachments.length
-    || spec.attachments.some(item => !item || typeof item !== 'object' || Object.keys(item).sort().join(',') !== 'id,mimeType,name,path,sha256,size'
-      || !uuid(item.id) || !singleLine(item.name, 255) || typeof item.mimeType !== 'string' || !/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(item.mimeType)
-      || !Number.isSafeInteger(item.size) || item.size < 0 || !/^[a-f0-9]{64}$/.test(item.sha256) || typeof item.path !== 'string' || !item.path.startsWith('/') || item.path.length > 4096))) return false;
   if (spec.group !== undefined && !singleLine(spec.group, SUBAGENT_LIMITS.groupLength)) return false;
   return true;
 }

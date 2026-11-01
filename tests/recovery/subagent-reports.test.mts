@@ -14,7 +14,7 @@ import { createTestDatabase } from '../integration/database.mts';
 import { assistant, streamOf, model, input } from './fixtures.mts';
 
 // ADR 0052: real PostgreSQL + service. task_report summary/question, delegated
-// extension capabilities, attachments by reference, one Wake per group,
+// extension capabilities, attachment paths read natively by workers, one Wake per group,
 // subagent_close, and in-memory/connection retention returning to baseline.
 async function until(check: () => Promise<boolean> | boolean, message: string, ms = 20_000): Promise<void> {
   const deadline = Date.now() + ms;
@@ -47,7 +47,7 @@ async function setup(prefix: string) {
 }
 const idle = (service: LocalWebService) => until(async () => (await service.status()).state !== 'working' && service.activity().subagents === 0, 'work did not settle');
 
-test('real PG/service: a worker with an extension capability and an image reports a question; Mira answers it on the same transcript; every tool name is dot-free', { timeout: 90_000 }, async () => {
+test('real PG/service: a worker with an extension capability reads an attachment path as a native image, reports a question; Mira answers it on the same transcript; every tool name is dot-free', { timeout: 90_000 }, async () => {
   const { root, base, db, cleanup } = await setup('mira-subagent-report'); let service: LocalWebService | undefined;
   const extension = path.join(root, 'helper.mjs');
   await writeFile(extension, `import { defineExtension } from ${JSON.stringify(import.meta.resolve('@mira/extension-sdk'))};
@@ -59,7 +59,8 @@ test('real PG/service: a worker with an extension capability and an image report
         catch (error) { return { text: String(error.message), isError: true }; } } });
     } });`);
   const mainTools = new Set<string>(); const childTools = new Set<string>(); const mainContexts: TranscriptContext[] = []; const childContexts: TranscriptContext[] = [];
-  let childId = ''; let attachmentId = '';
+  let childId = '';
+  const attachmentPath = (value: string) => /Immutable local file: \\"([^"\\]+)\\"/.exec(value)?.[1];
   const options = { ...base, miraId: 'subagent-report', syntheticModel: { ...model, input: ['text', 'image'] as Array<'text' | 'image'>, contextWindow: 65_536 },
     extensions: { entries: [{ id: 'helper', path: extension }] },
     syntheticStream: (_model: unknown, context: TranscriptContext) => {
@@ -72,6 +73,7 @@ test('real PG/service: a worker with an extension capability and an image report
           return streamOf(assistant('Finished with the answer.'));
         }
         if (resultOf(context, 'c-lookup') === null) return call('c-lookup', 'helper_lookup', {});
+        if (resultOf(context, 'c-read') === null) return call('c-read', 'read', { path: /ATTACHMENT_PATH=([^\s"\\]+)/.exec(text)![1]! });
         if (resultOf(context, 'c-remind') === null) return call('c-remind', 'helper_remind', {});
         if (resultOf(context, 'c-report') === null) return call('c-report', 'task_report', { summary: 'Lookup works; reminder refused.', question: 'Which number should I use?' });
         return streamOf(assistant('FULL_CHILD_REPLY waiting for an answer.'));
@@ -79,7 +81,7 @@ test('real PG/service: a worker with an extension capability and an image report
       mainContexts.push(context);
       for (const tool of getCurrentTools(context.messages)) mainTools.add(tool.name);
       const spawned = resultOf(context, 'm-spawn');
-      if (spawned === null) return call('m-spawn', 'subagent_spawn', { title: 'Lookup', task: 'CHILD_A use the helper', capabilities: ['helper'], attachments: [attachmentId] });
+      if (spawned === null) return call('m-spawn', 'subagent_spawn', { title: 'Lookup', task: `CHILD_A use the helper; the user's image is ATTACHMENT_PATH=${attachmentPath(text)}`, capabilities: ['helper'] });
       childId = /\\"id\\":\\"([0-9a-f-]{36})\\"/.exec(spawned)?.[1] ?? childId;
       if (text.includes('Which number should I use?') && resultOf(context, 'm-list') === null) return call('m-list', 'subagent_status', {});
       if (resultOf(context, 'm-list') !== null && resultOf(context, 'm-send') === null) return call('m-send', 'subagent_send', { id: childId, message: 'ANSWER_42' });
@@ -87,7 +89,7 @@ test('real PG/service: a worker with an extension capability and an image report
     } };
   try {
     service = await LocalWebService.open(options);
-    attachmentId = (await service.uploadAttachment('dot.png', png)).id;
+    const attachmentId = (await service.uploadAttachment('dot.png', png)).id;
     await service.submit({ id: 'go', text: '查一下', occurredAt: new Date().toISOString(), attachmentIds: [attachmentId] });
     await until(() => mainContexts.some(context => conversation(context).includes('Done with 42')), 'second report did not reach Mira', 40_000);
     await idle(service);
@@ -100,10 +102,13 @@ test('real PG/service: a worker with an extension capability and an image report
     const firstChild = childContexts.find(context => resultOf(context, 'c-remind') !== null)!;
     assert.equal(toolResultText(firstChild, 'c-lookup'), 'LOOKUP_OK');
     assert.match(toolResultText(firstChild, 'c-remind')!, /Schedules are main-only/);
-    // Attachment by reference: the worker sees the image natively.
-    const assignment = childContexts[0]!.messages.find(message => message.role === 'user')!;
-    assert.ok(Array.isArray(assignment.content) && assignment.content.some(block => block.type === 'image'), 'image block in the child request');
-    assert.match(JSON.stringify(assignment.content), /dot\.png/);
+    // Attachment path in the task: the worker's ordinary read returns the original as a native image,
+    // and it is still in the transcript on the followup turn.
+    assert.ok(!JSON.stringify(childContexts[0]!.messages).includes('"type":"image"'), 'nothing is injected into the assignment');
+    const imageAfterRead = (context: TranscriptContext) => { const found = context.messages.find(message => message.role === 'toolResult' && message.toolCallId === 'c-read');
+      return found?.role === 'toolResult' && found.content.some(block => block.type === 'image' && Buffer.from(block.data, 'base64').equals(png)); };
+    assert.ok(childContexts.some(imageAfterRead), 'native image after the read');
+    assert.ok(imageAfterRead(childContexts.find(context => conversation(context).includes('ANSWER_42'))!), 'still visible on the followup turn');
     // The question Wake leads with summary/question; full reply by path only.
     const events = (await db.admin.query("SELECT event, requested_wake FROM life_events WHERE event->>'type'='subagent.result' ORDER BY history_id")).rows;
     assert.equal(events.length, 2); assert.ok(events.every(row => row.requested_wake !== null));
@@ -122,6 +127,35 @@ test('real PG/service: a worker with an extension capability and an image report
     assert.match(turns[0].result.text, /FULL_CHILD_REPLY/);
     // Nothing of this reaches the chat.
     assert.doesNotMatch(JSON.stringify(await service.timeline()), /Lookup|task_report|subagent|Which number/);
+  } finally { await service?.close(); await cleanup(); }
+});
+
+test('real PG/service: a worker reads a video path the same way Mira does (explicit read, immutable snapshot, native bytes where the model supports video)', { timeout: 60_000 }, async () => {
+  const { root, base, cleanup } = await setup('mira-subagent-video'); let service: LocalWebService | undefined;
+  const video = Buffer.from('000000186674797069736f6d0000000069736f6d', 'hex'); const file = path.join(root, 'clip.mp4'); await writeFile(file, video);
+  const childContexts: TranscriptContext[] = []; let mainDone = false;
+  const options = { ...base, miraId: 'subagent-video', syntheticModel: { ...model, api: 'google-generative-ai' as const, provider: 'google', id: 'gemini-synthetic', contextWindow: 65_536 },
+    syntheticStream: (_model: unknown, context: TranscriptContext) => {
+      if (isChild(context)) {
+        childContexts.push(context);
+        if (resultOf(context, 'v-read') === null) return call('v-read', 'read', { path: file });
+        if (resultOf(context, 'v-report') === null) return call('v-report', 'task_report', { summary: 'Watched the clip.' });
+        return streamOf(assistant('done'));
+      }
+      if (resultOf(context, 'v-spawn') === null) return call('v-spawn', 'subagent_spawn', { title: 'Clip', task: `Watch ${file}` });
+      if (conversation(context).includes('Watched the clip.')) mainDone = true;
+      return streamOf(assistant('NO_REPLY'));
+    } };
+  try {
+    service = await LocalWebService.open(options);
+    await service.submit({ id: 'go', text: '看看这个视频', occurredAt: new Date().toISOString() });
+    await until(() => mainDone, 'video report did not reach Mira', 30_000);
+    await idle(service);
+    const after = childContexts.find(context => resultOf(context, 'v-read') !== null)!;
+    const read = after.messages.find(message => message.role === 'toolResult' && message.toolCallId === 'v-read') as { details?: { type?: string; attachments?: Array<{ mimeType: string; path: string }> }; isError?: boolean; miraNativeVideos?: Array<{ data: string; mimeType: string }> };
+    assert.equal(read.isError, false); assert.equal(read.details?.type, 'attachment-read', 'the child read is wrapped by withVideoRead');
+    assert.equal(read.details?.attachments?.[0]?.mimeType, 'video/mp4'); assert.notEqual(read.details?.attachments?.[0]?.path, file, 'an immutable snapshot, not the live file');
+    assert.ok(Buffer.from(read.miraNativeVideos![0]!.data, 'base64').equals(video), 'native video bytes reach the request');
   } finally { await service?.close(); await cleanup(); }
 });
 

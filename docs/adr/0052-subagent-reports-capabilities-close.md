@@ -4,7 +4,7 @@
 
 ## 背景
 
-子任务结束时只有一段自由文本，Mira 要从中猜结论和下一步；子任务需要决定时也只能写在文本里。子任务拿不到扩展工具和用户发来的附件。多个并行子任务各自唤醒一次 Mira。`subagent_cancel` 之后子任务的终端、浏览器和内存状态一直留到服务关闭，没有办法真正结束一个子任务。
+子任务结束时只有一段自由文本，Mira 要从中猜结论和下一步；子任务需要决定时也只能写在文本里。子任务拿不到扩展工具；它的 read 也不像 Mira 那样能读视频。多个并行子任务各自唤醒一次 Mira。`subagent_cancel` 之后子任务的终端、浏览器和内存状态一直留到服务关闭，没有办法真正结束一个子任务。
 
 ## 决定
 
@@ -16,12 +16,13 @@
 - 有回报时 `subagent.result` payload 依次是 `summary`、`question`、`awaiting`（提示用 subagent_send），`result` 只有 `{fullResultPath, finalRecordId}`，完整回复写入溢出文件。没有调用 `task_report` 时保留原来的原始文本，只在内部记 `reported:false`，不做任何推断。
 - `subagent_status` 列表每个子任务一行：`id · "标题" · 状态 · group "x" · has pending question · closed`。
 
-### 能力与附件（P1）
+### 能力与附件路径（P1）
 
 - `subagent_spawn.capabilities`：扩展 ID（`extension_inspect` 的 `extensions[].id`，最多 16 个）。子任务每次模型请求都拿到这些扩展当前的工具声明；过期 activation 照旧由 host 拒绝（ADR 0014）。
 - `ExtensionTool.mainOnly` 的工具不会给子任务；飞书的 `feishu_connect`、`feishu_send_message` 标为 mainOnly。扩展管理工具从不给子任务。只包含 mainOnly 工具的扩展、不存在的扩展会让 spawn 返回 invalid。
 - 子任务调用的扩展工具在 `runDelegated`（AsyncLocalStorage）里执行，期间 `schedules.create/replace/cancel` 一律拒绝，提示改为回报 Mira。
-- `subagent_spawn.attachments`：聊天附件 ID（最多 10 个），按引用交给子任务，冻结在 spec 里；第一轮输入列出引用，图片在模型支持时原生可见（与主 Wake 同一套 hydrate）。只在 spawn 时传，send 不带附件。
+- 附件不设专门参数：Mira 把聊天附件的文件路径（附件引用里的 `Immutable local file`，即 `<attachments>/<id>/data`）写进 task 或 `subagent_send` 的消息，子任务用普通 `read` 打开。Pi 的 `read` 按文件头识别图片并返回原生图片块；子任务的 `read` 也包上 `withVideoRead`（与 Mira 相同），MP4/WebM 显式读取时生成不可变快照，模型支持时原生提供视频字节。这对 spawn 和 send 都一样，转录里的路径在后续轮次和重启后仍有效。
+- 代价：子任务读到的图片字节会和普通 read 结果一样保存在它自己的转录里（Mira 的用户附件只保存引用、每次请求再注入）；没有附件 ID/SHA 校验，路径由 Mira 给出。`fork=all` 继承父上下文的方式不变。
 
 ### 批量唤醒
 
@@ -46,7 +47,7 @@
 主提示 v0.5（v0.4 的 SHA 继续可验证）只改标题并在 `</delegation>` 前加一段：
 
 ```
-Workers end with task_report: a short summary, or a question you answer with subagent_send (ask the user when it needs their decision). Pass the capabilities and attachments a worker needs; give a batch one group to be woken once. When you no longer need a worker, close it with subagent_close; subagent_cancel only stops its current turn.
+Workers end with task_report: a short summary, or a question you answer with subagent_send (ask the user when it needs their decision). Pass the capabilities a worker needs; give attachment file paths in the task; give a batch one group to be woken once. When you no longer need a worker, close it with subagent_close; subagent_cancel only stops its current turn.
 ```
 
 子任务系统提示只在 “Child ID:” 前加一句：
@@ -65,11 +66,11 @@ When done, call task_report with a short summary (outcome, paths, checks); if yo
 
 - 同组成员如果在其余成员 spawn 之前就结束，会单独唤醒；工具描述要求一次性 spawn 整组。
 - 组名可以复用，roster 只列最新 32 个成员。
-- 附件只在 spawn 时传入。
+- 子任务读到的图片保存在它自己的转录里，不是只存引用。
 - 4 小时空闲释放不是持久关闭。
 - 日程拒绝只在 host 的 delegated 调用作用域内生效；扩展把工作推迟到调用结束之后再改日程不受限制。
 - 原生行为录制（`docs/acceptance/reply-native-behavior.md`）早于本 ADR 的声明和提示变化，需要重新付费录制；回放只去掉 `subagent_close`、新增参数和追加的描述后比对。本次没有运行付费评测。
 
 ## 验证
 
-`tests/unit/subagent-capabilities.test.mts`（工具名正则、mainOnly 过滤、delegated 日程拒绝、payload 形状）；`tests/recovery/subagent-reports.test.mts`（真实 PG/服务：能力、图片附件、问题与回答、分组单次唤醒、未回报原文、关闭后拒绝 send、多次 spawn/close 后 Map、监听器、PG 连接回到基线，空闲释放可恢复）。
+`tests/unit/subagent-capabilities.test.mts`（工具名正则、mainOnly 过滤、delegated 日程拒绝、payload 形状）；`tests/recovery/subagent-reports.test.mts`（真实 PG/服务：能力、读附件路径得到原生图片（后续轮次仍可见）、子任务读视频路径、问题与回答、分组单次唤醒、未回报原文、关闭后拒绝 send、多次 spawn/close 后 Map、监听器、PG 连接回到基线，空闲释放可恢复）。

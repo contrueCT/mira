@@ -11,13 +11,10 @@ export interface SubagentSpec {
   model: { provider: string; id: string; api: string; configurationHash: string };
   /** Extension IDs whose delegable tools this child receives (ADR 0052). */
   capabilities?: string[];
-  /** Immutable chat attachment references handed to the first assignment. */
-  attachments?: SubagentAttachment[];
   /** Results of one group wake Mira once, when its last member finishes. */
   group?: string;
 }
-export interface SubagentAttachment { id: string; name: string; mimeType: string; size: number; sha256: string; path: string }
-export const SUBAGENT_LIMITS = { capabilities: 16, attachments: 10, groupLength: 64, groupRoster: 32 } as const;
+export const SUBAGENT_LIMITS = { capabilities: 16, groupLength: 64, groupRoster: 32 } as const;
 /** Worker-authored structured report (ADR 0052): artifacts and paths live in
  * the summary. A question means the worker waits for Mira's answer. */
 export interface SubagentReport { summary: string; question?: string }

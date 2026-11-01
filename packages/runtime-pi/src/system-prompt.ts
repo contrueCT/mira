@@ -5,7 +5,7 @@ import type { SystemMessage } from '@earendil-works/pi-ai';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 
 export const MIRA_PROMPT_SECTION = 'mira.system.v0.2';
-export const MIRA_PROMPT_SHA256 = 'f33841d936440443ddf901b3110c3a3558aa2e223e414837e698ce5fa4050907';
+export const MIRA_PROMPT_SHA256 = '43f6d4fc829a04f8c3b50eceff77a2f58c5d7e6fd6fee559e3ea529305b1ba3d';
 const bytes = readFileSync(new URL('../prompts/mira-system-v0.5.md', import.meta.url));
 if (createHash('sha256').update(bytes).digest('hex') !== MIRA_PROMPT_SHA256) throw new Error('Mira system template hash mismatch');
 export const MIRA_SYSTEM_TEMPLATE = bytes.toString('utf8');

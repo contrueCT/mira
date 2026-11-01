@@ -38,7 +38,7 @@ test('published v0.4 pre-report revision bytes remain immutable', async () => {
 
 test('v0.5 revision exact bytes, nine occurrences, static text and examples remain intact', async () => {
   const bytes = await readFile(new URL('../../packages/runtime-pi/prompts/mira-system-v0.5.md', import.meta.url));
-  assert.equal(bytes.byteLength, 25740);
+  assert.equal(bytes.byteLength, 25764);
   assert.equal(createHash('sha256').update(bytes).digest('hex'), MIRA_PROMPT_SHA256);
   assert.equal(bytes.toString(), MIRA_SYSTEM_TEMPLATE);
   assert.equal([...MIRA_SYSTEM_TEMPLATE.matchAll(/\{\{[^{}]+\}\}/g)].length, 9);
