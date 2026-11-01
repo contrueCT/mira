@@ -112,8 +112,9 @@ test('从头开始 starts a new life: archive, cancel deliveries, keep persona, 
 test('a busy reset needs 停止工作并重置; stopping interrupts the Wake and expired tokens are refused', { timeout: 60_000 }, async () => {
   const db = await createTestDatabase(); let entered!: () => void; const started = new Promise<void>(resolve => { entered = resolve; });
   const { root, options } = await setup('busy', db, { tokenTtlMs: 200 });
+  let streams = 0;
   options.service.syntheticStream = (_model, _context, streamOptions) => {
-    entered();
+    streams += 1; entered();
     return new Promise((_resolve, reject) => { streamOptions?.signal?.addEventListener('abort', () => reject(streamOptions.signal!.reason), { once: true }); });
   };
   let host: MiraLifeHost | undefined;
@@ -130,7 +131,12 @@ test('a busy reset needs 停止工作并重置; stopping interrupts the Wake and
     const view = await finished(host, (await host.backend.reset({ scope: 'life', token: preview.token, stopRunning: true, resetPersona: false })).resetId);
     assert.equal(view.state, 'completed', view.error ?? '');
     assert.equal((await db.admin.query(`SELECT completed FROM wake_runs WHERE mira_id = 'busy'`)).rows[0].completed, false, 'the stopped Wake stays interrupted in the archived life');
+    // The new life's service opens with a recovery drain that briefly reports
+    // working even with nothing pending; wait for it, then prove nothing ran.
+    await settled(host);
     assert.equal((await host.status()).state, 'idle');
+    assert.equal(Number((await db.admin.query(`SELECT count(*) FROM wake_runs WHERE mira_id = $1`, [host.lifeId])).rows[0].count), 0, 'the stopped Wake does not resume in the new life');
+    assert.equal(streams, 1, 'the stopped task is never replayed');
   } finally { await host?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
 
