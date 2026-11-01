@@ -7,6 +7,7 @@ import { MIRA_DEFAULT_PERSONA, MIRA_LEGACY_PLACEHOLDERS, MIRA_PLACEHOLDERS, MIRA
 import { assistant, input, MemoryWriter, model, seed, streamOf, effectTool, result, toolCalls, overrideWriter } from '../recovery/fixtures.mts';
 import { estimateRequestTokens } from '../../packages/runtime-pi/src/budget.ts';
 
+const preMemoryTemplate = await readFile(new URL('../../packages/runtime-pi/prompts/mira-system-v0.5.md', import.meta.url), 'utf8');
 const preReportTemplate = await readFile(new URL('../../packages/runtime-pi/prompts/mira-system-v0.4.md', import.meta.url), 'utf8');
 const preSilenceTemplate = await readFile(new URL('../../packages/runtime-pi/prompts/mira-system-v0.3.md', import.meta.url), 'utf8');
 const prePersonaTemplate = await readFile(new URL('../../packages/runtime-pi/prompts/mira-system-v0.2.md', import.meta.url), 'utf8');
@@ -36,9 +37,15 @@ test('published v0.4 pre-report revision bytes remain immutable', async () => {
   assert.equal(createHash('sha256').update(bytes).digest('hex'), 'd79d7f73bec9f03612bcd2ece5475e1b885641601fefbd2fe1449c7cf1711b81');
 });
 
-test('v0.5 revision exact bytes, nine occurrences, static text and examples remain intact', async () => {
+test('published v0.5 pre-memory revision bytes remain immutable', async () => {
   const bytes = await readFile(new URL('../../packages/runtime-pi/prompts/mira-system-v0.5.md', import.meta.url));
   assert.equal(bytes.byteLength, 25764);
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), '43f6d4fc829a04f8c3b50eceff77a2f58c5d7e6fd6fee559e3ea529305b1ba3d');
+});
+
+test('v0.6 revision exact bytes, nine occurrences, static text and examples remain intact', async () => {
+  const bytes = await readFile(new URL('../../packages/runtime-pi/prompts/mira-system-v0.6.md', import.meta.url));
+  assert.equal(bytes.byteLength, 25963);
   assert.equal(createHash('sha256').update(bytes).digest('hex'), MIRA_PROMPT_SHA256);
   assert.equal(bytes.toString(), MIRA_SYSTEM_TEMPLATE);
   assert.equal([...MIRA_SYSTEM_TEMPLATE.matchAll(/\{\{[^{}]+\}\}/g)].length, 9);
@@ -76,7 +83,7 @@ test('new/restarted context has one effective prompt, request time changes and M
   const make = () => new PiDurableRuntime({ writer, model, tools: [], miraPrompt: { ...config, now: () => now, loadMemory: async () => { loads++; return loads === 1 ? 'FROZEN_MEMORY' : 'CHANGED_MEMORY'; } }, streamFn: (_model, context) => {
     calls++;
     const prompt = getCurrentSystemPrompt(context.messages);
-    assert.equal((JSON.stringify(context).match(/# Mira System Prompt v0.5/g) ?? []).length, 1);
+    assert.equal((JSON.stringify(context).match(/# Mira System Prompt v0.6/g) ?? []).length, 1);
     assert.equal((prompt.match(/You are Mira\./g) ?? []).length, 1);
     assert.match(prompt, /FROZEN_MEMORY/); assert.ok(!prompt.includes('CHANGED_MEMORY'));
     assert.match(prompt, /Memory Workspace: Not configured/);
@@ -166,7 +173,7 @@ test('ordinary prompt revisions survive full SDK compaction and recover as exact
   await new PiDurableRuntime(options).run(input('Recent discussion '.repeat(200)));
   await new PiDurableRuntime(options).compact({ keepRecentTokens: 100, reserveTokens: 512 });
   await new PiDurableRuntime({ ...options, streamFn: (_model, context) => {
-    assert.equal((JSON.stringify(context).match(/# Mira System Prompt v0.5/g) ?? []).length, 1);
+    assert.equal((JSON.stringify(context).match(/# Mira System Prompt v0.6/g) ?? []).length, 1);
     assert.match(getCurrentSystemPrompt(context.messages), /You are Mira\./);
     return streamOf(assistant());
   } }).run(input('Continue'));
@@ -253,13 +260,30 @@ test('communication is the only change from pre-communication to pre-persona', (
   assert.equal(prePersonaTemplate.replace(/\n\n\n<task_communication>[\s\S]*?<\/task_communication>/, ''), preCommunicationTemplate);
 });
 
+test('the memory section and the version heading are the only v0.6 changes', () => {
+  const memory = MIRA_SYSTEM_TEMPLATE.match(/<memory>\n[\s\S]*?\n<\/memory>/)?.[0];
+  const previous = preMemoryTemplate.match(/<memory>\n[\s\S]*?\n<\/memory>/)?.[0];
+  assert.ok(memory && previous);
+  assert.equal([...memory.matchAll(/\{\{MEMORY_ROOT\}\}/g)].length, 1);
+  assert.match(memory, /Whenever something feels worth keeping, keep it\./);
+  assert.match(memory, /When you are playing a persona or character, remember as that character would/);
+  assert.equal((memory.match(/^- "/gm) ?? []).length, 6);
+  assert.doesNotMatch(memory, /When useful|Only when an experience/);
+  assert.equal(MIRA_SYSTEM_TEMPLATE.replace(memory, previous).replace('# Mira System Prompt v0.6', '# Mira System Prompt v0.5'), preMemoryTemplate);
+});
+
+test('v0.5 snapshots still validate against their own published bytes', () => {
+  assert.equal(renderMiraPromptSnapshot({ values, skills: '', templateSha256: '43f6d4fc829a04f8c3b50eceff77a2f58c5d7e6fd6fee559e3ea529305b1ba3d' }), renderMiraPrompt(values, preMemoryTemplate));
+  assert.notEqual(renderMiraPrompt(values, preMemoryTemplate), renderMiraPrompt(values));
+});
+
 test('one worker-report/capability/group/close paragraph in delegation and the version heading are the only v0.5 changes', () => {
-  const added = MIRA_SYSTEM_TEMPLATE.match(/\nWorkers end with task_report[^\n]*\n\n/)?.[0];
+  const added = preMemoryTemplate.match(/\nWorkers end with task_report[^\n]*\n\n/)?.[0];
   assert.ok(added);
-  assert.ok(MIRA_SYSTEM_TEMPLATE.indexOf(added) > MIRA_SYSTEM_TEMPLATE.indexOf('<delegation>'));
-  assert.ok(MIRA_SYSTEM_TEMPLATE.indexOf(added) < MIRA_SYSTEM_TEMPLATE.indexOf('</delegation>'));
+  assert.ok(preMemoryTemplate.indexOf(added) > preMemoryTemplate.indexOf('<delegation>'));
+  assert.ok(preMemoryTemplate.indexOf(added) < preMemoryTemplate.indexOf('</delegation>'));
   for (const name of ['task_report', 'subagent_send', 'subagent_close', 'subagent_cancel']) assert.ok(added.includes(name));
-  assert.equal(MIRA_SYSTEM_TEMPLATE.replace(added, '\n').replace('# Mira System Prompt v0.5', '# Mira System Prompt v0.4'), preReportTemplate);
+  assert.equal(preMemoryTemplate.replace(added, '\n').replace('# Mira System Prompt v0.5', '# Mira System Prompt v0.4'), preReportTemplate);
 });
 
 test('v0.4 and v0.3 snapshots still validate against their own published bytes', () => {
@@ -487,7 +511,7 @@ test('full-persona summary exceeding 8K fails before provider dispatch; 16K pres
     assert.ok(required <= roomyModel.contextWindow);
     const source = JSON.parse(context.messages.findLast(message => message.role === 'user')!.content as string);
     assert.match(source.persona_context, /<delegation>/);
-    assert.match(source.persona_context, /# Mira System Prompt v0.5/);
+    assert.match(source.persona_context, /# Mira System Prompt v0.6/);
     assert.match(JSON.stringify(source.source_messages), /Older discussion/);
     assert.equal(source.memory_snapshot, 'New Memory at compaction');
     return streamOf(assistant('Synthetic complete-source summary'));

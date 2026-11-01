@@ -5,8 +5,8 @@ import type { SystemMessage } from '@earendil-works/pi-ai';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 
 export const MIRA_PROMPT_SECTION = 'mira.system.v0.2';
-export const MIRA_PROMPT_SHA256 = '43f6d4fc829a04f8c3b50eceff77a2f58c5d7e6fd6fee559e3ea529305b1ba3d';
-const bytes = readFileSync(new URL('../prompts/mira-system-v0.5.md', import.meta.url));
+export const MIRA_PROMPT_SHA256 = '75634a69fd0b8df8cf8e6e081fce2206dc3e1809e985cbc09f4ff23e27981647';
+const bytes = readFileSync(new URL('../prompts/mira-system-v0.6.md', import.meta.url));
 if (createHash('sha256').update(bytes).digest('hex') !== MIRA_PROMPT_SHA256) throw new Error('Mira system template hash mismatch');
 export const MIRA_SYSTEM_TEMPLATE = bytes.toString('utf8');
 // The only pre-identity snapshot revision shipped before delegation guidance.
@@ -29,6 +29,10 @@ if (createHash('sha256').update(preSilenceBytes).digest('hex') !== PRE_SILENCE_S
 const PRE_REPORT_SHA256 = 'd79d7f73bec9f03612bcd2ece5475e1b885641601fefbd2fe1449c7cf1711b81';
 const preReportBytes = readFileSync(new URL('../prompts/mira-system-v0.4.md', import.meta.url));
 if (createHash('sha256').update(preReportBytes).digest('hex') !== PRE_REPORT_SHA256) throw new Error('Prior Mira system template hash mismatch');
+// v0.5: before the memory-writing guidance rewrite (v0.6, ADR 0053).
+const PRE_MEMORY_SHA256 = '43f6d4fc829a04f8c3b50eceff77a2f58c5d7e6fd6fee559e3ea529305b1ba3d';
+const preMemoryBytes = readFileSync(new URL('../prompts/mira-system-v0.5.md', import.meta.url));
+if (createHash('sha256').update(preMemoryBytes).digest('hex') !== PRE_MEMORY_SHA256) throw new Error('Prior Mira system template hash mismatch');
 
 /** v0.2 revisions use exactly these keys; v0.3 adds PERSONA. */
 export const MIRA_LEGACY_PLACEHOLDERS = ['MEMORY_ROOT', 'MEMORY_STATE', 'CURRENT_TIME', 'EXTENSIONS_ROOT', 'OTHER_ENVIRONMENT_CONTEXT', 'DYNAMIC_TOOL_AND_EXTENSION_GUIDANCE', 'CURRENT_AUTHORIZATION_CONTEXT'] as const;
@@ -44,6 +48,7 @@ const templates = new Map<string, { text: string; keys: readonly string[] }>([
   [PRE_PERSONA_SHA256, { text: prePersonaBytes.toString('utf8'), keys: MIRA_LEGACY_PLACEHOLDERS }],
   [PRE_SILENCE_SHA256, { text: preSilenceBytes.toString('utf8'), keys: MIRA_PLACEHOLDERS }],
   [PRE_REPORT_SHA256, { text: preReportBytes.toString('utf8'), keys: MIRA_PLACEHOLDERS }],
+  [PRE_MEMORY_SHA256, { text: preMemoryBytes.toString('utf8'), keys: MIRA_PLACEHOLDERS }],
   [MIRA_PROMPT_SHA256, { text: MIRA_SYSTEM_TEMPLATE, keys: MIRA_PLACEHOLDERS }],
 ]);
 

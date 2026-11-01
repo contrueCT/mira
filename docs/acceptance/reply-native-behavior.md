@@ -233,3 +233,9 @@ the `subagent_spawn` and `subagent_status` descriptions, and system prompt v0.5.
 The replay removes exactly those additions before the parity digest; the
 recorded decisions predate them and need a new paid capture. No paid probe was
 run for these changes.
+
+ADR 0053 moved the system prompt to v0.6 by rewriting only the `<memory>`
+section. No tool declaration changed, so the parity digest needs no new
+strip; the recorded decisions predate the new memory guidance and need a new
+paid capture before they can count as evidence for it. No paid probe was run
+for this change.
