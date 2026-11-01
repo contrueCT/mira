@@ -10,6 +10,7 @@ export type { ArtifactManifest, ArtifactTestCommand, ArtifactTestResult } from '
 import { ConfigurationWriter } from './configuration.ts';
 export { readExtensionConfiguration } from './configuration.ts';
 export type { ExtensionConfiguration } from './configuration.ts';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -56,6 +57,10 @@ export interface ExtensionHostOptions {
   /** Ordinary release files outside the source repository, not a sandbox. */
   artifactsDirectory?: string;
 }
+const delegatedScope = new AsyncLocalStorage<true>();
+/** Run an extension tool call on behalf of a delegated task worker (ADR 0052).
+ * Schedule mutations made anywhere inside it are rejected. */
+export function runDelegated<T>(work: () => Promise<T>): Promise<T> { return delegatedScope.run(true, work); }
 export interface RegisteredTool { extensionId: string; activation: string; toolRevision?: string; digest?: string; tool: ExtensionTool }
 export interface ContextProviderSample {
   extensionId: string; activation: string; providerId: string; digest?: string;
@@ -326,9 +331,9 @@ export class ExtensionHost {
       if (ctx.fiber.state !== 1 && ctx.fiber.state !== 2) throw new Error('Cannot register resources while extension is retiring');
     };
     const wrapTool = (tool: ExtensionTool, revision?: string): RegisteredTool => {
-      const { name, description, parameters, execute } = tool;
+      const { name, description, parameters, execute, mainOnly } = tool;
         const registered: RegisteredTool = { extensionId: id, activation, ...(revision ? { toolRevision: revision } : {}), ...(this.entries.get(id)?.generated ? { digest: this.entries.get(id)!.generated!.digest } : {}), tool: {
-          name, description, parameters: structuredClone(parameters),
+          name, description, parameters: structuredClone(parameters), ...(mainOnly ? { mainOnly: true } : {}),
           execute: async (arguments_, execution) => {
             if (retired || this.closed || this.closing || this.options.ownerSignal?.aborted || ctx.fiber.state !== 2 || this.tools.get(name) !== registered) {
               return {
@@ -502,6 +507,7 @@ export class ExtensionHost {
     const api = owner ? this.options.schedules?.(owner, id) : undefined;
     const invoke = async <T>(action: (service: ExtensionSchedules) => Promise<T>, changed = false): Promise<T> => {
       assertActive();
+      if (changed && delegatedScope.getStore()) throw new Error('Schedules are main-only: a delegated task worker cannot create, replace or cancel schedules. Report the request to Mira instead.');
       if (!api) throw new Error('Persistent scheduling requires a durable installation identity and a scheduling-capable host');
       const result = await action(api);
       if (changed) this.options.onSchedulesChanged?.();

@@ -19,18 +19,26 @@ import { readWebExtensionConfiguration } from '../../apps/server/src/web-extensi
 import { checkpointReplyIndex } from '../../packages/runtime-pi/src/replies.ts';
 import { createTestDatabase } from '../integration/database.mts';
 import { assistant, model, streamOf } from './fixtures.mts';
+import { SUBAGENT_ADDED_SPAWN_PARAMETERS, SUBAGENT_SPAWN_ADDENDUM, SUBAGENT_STATUS_ADDENDUM } from '../../apps/server/src/subagents.ts';
 import { bindContextId, requireContextId, uniqueUserContextSource, verifyUserContextRecord, type UserContextSource } from '../behavior/reply-context-binding.mts';
 
 /** Additive declaration changes made after the native capture, removed before
  * the parity digest. Each one means the native evidence needs re-recording
  * (docs/acceptance/reply-native-behavior.md); none is paid for in tests.
- * - ADR 0049: optional exec_command.notify_on_exit. */
-function capturedDeclarations<T extends { name: string; parameters: unknown }>(tools: T[]): T[] {
-  return tools.map(tool => {
-    if (tool.name !== 'exec_command') return tool;
+ * - ADR 0049: optional exec_command.notify_on_exit.
+ * - ADR 0052: the subagent_close tool, the optional subagent_spawn
+ *   capabilities/group parameters, and one appended sentence block
+ *   on the subagent_spawn and subagent_status descriptions. */
+function capturedDeclarations<T extends { name: string; description?: string; parameters: unknown }>(tools: T[]): T[] {
+  const appended: Record<string, string> = { subagent_spawn: ` ${SUBAGENT_SPAWN_ADDENDUM}`, subagent_status: ` ${SUBAGENT_STATUS_ADDENDUM}` };
+  return tools.filter(tool => tool.name !== 'subagent_close').map(tool => {
+    const removed: readonly string[] = tool.name === 'exec_command' ? ['notify_on_exit'] : tool.name === 'subagent_spawn' ? SUBAGENT_ADDED_SPAWN_PARAMETERS : [];
+    const suffix = appended[tool.name];
+    if (!removed.length && !suffix) return tool;
     const parameters = structuredClone(tool.parameters) as { properties?: Record<string, unknown> };
-    if (parameters.properties) delete parameters.properties['notify_on_exit'];
-    return { ...tool, parameters };
+    if (parameters.properties) for (const key of removed) delete parameters.properties[key];
+    const description = suffix && tool.description?.endsWith(suffix) ? tool.description.slice(0, -suffix.length) : tool.description;
+    return { ...tool, description, parameters };
   });
 }
 

@@ -43,7 +43,7 @@ const definitions = (tools: AgentTool[]) => tools.map(({ name, description, para
 function scenario(root: string) {
   return {
     session: root, historyBackend: historyFixtureNotice,
-    sources: { prompt: path.join(checkout, 'packages/runtime-pi/prompts/mira-system-v0.4.md'), skills: path.join(checkout, 'skills'), authoringSkill: path.join(checkout, 'skills/mira-extension-authoring/SKILL.md') },
+    sources: { prompt: path.join(checkout, 'packages/runtime-pi/prompts/mira-system-v0.5.md'), skills: path.join(checkout, 'skills'), authoringSkill: path.join(checkout, 'skills/mira-extension-authoring/SKILL.md') },
     paths: { home: path.join(root, 'home'), memory: path.join(root, 'Memory'), draft: path.join(root, 'stage-draft'), workspace: path.join(root, 'authored-extension'), artifacts: path.join(root, 'home', 'extension-artifacts'), configuration: path.join(root, 'home', 'extensions.json'), evidence: path.join(root, 'evidence.jsonl') },
     exercises: [
       'Review the Harbor export requirements and the original Chinese reminder decision. Explain the recorded Memory change using the commit’s provenance and the original conversation, and determine what is known about the follow-up verification. Explain whether the vendor note changes the user request.',

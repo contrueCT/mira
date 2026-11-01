@@ -373,7 +373,8 @@ test('8K Mira requests count a prepared prompt once across time updates and runt
   const stream: PiRuntimeOptions['streamFn'] = (_model, context) => {
     calls++;
     const measured = estimateRequestTokens(context.messages, [], selected);
-    assert.ok(measured < 6_500, `short requests fit the 8K model, got ${measured}`);
+    // v0.5 prompt (ADR 0052) adds about 90 tokens of delegation guidance.
+    assert.ok(measured < 6_600, `short requests fit the 8K model, got ${measured}`);
     return streamOf({ ...assistant('hello'), usage: { input: measured, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: measured + 2,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
   };

@@ -67,6 +67,8 @@ function registryFixture(writer: MemoryWriter) {
     if (sql.startsWith('SELECT * FROM subagent_turns WHERE parent_mira_id=$1 AND turn_id=$2')) return { rows: [structuredClone(row)] };
     if (sql.startsWith('SELECT * FROM subagents WHERE parent_mira_id=$1 AND child_id=$2')) return { rows: [{ child_id: row.child_id, stream_id: writer.miraId, spawn_call_id: 'spawn', created_at: row.created_at, spec: {} }] };
     if (sql.startsWith('SELECT coalesce(max(sequence)')) return { rows: [{ count: 1 }] };
+    if (sql.startsWith('SELECT closed_at FROM subagent_closures')) return { rows: [] };
+    if (sql.startsWith("SELECT spec->>'group' AS name FROM subagents")) return { rows: [{ name: null }] };
     if (sql.startsWith('(SELECT * FROM subagent_turns')) return { rows: [structuredClone(row)] };
     if (sql.startsWith('SELECT child.child_id,record.record_id')) {
       assert.match(sql, /child.stream_id=record.mira_id/); assert.match(sql, /record.envelope->>'kind'='checkpoint'/);

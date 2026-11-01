@@ -79,6 +79,7 @@ class Parent extends MemoryWriter implements SubagentWriter {
     this.events.push({ id: `subagent-result:${id}`, type: 'subagent.result', source: 'system', occurredAt: t.finishedAt, payload: { childId: t.childId, status } });
   }
   async cancelSubagent(id: string) { for (const t of this.children.find(c => c.id === id)!.turns) if (['queued','running'].includes(t.status)) await this.finishSubagentTurn(t.id, 'cancelled', { text: 'Cancelled; effects may be unknown', truncated: false, fullResultPath: null, finalRecordId: null }); }
+  async closeSubagent(_callId: string, id: string) { const child = this.children.find(c => c.id === id)!; if (child.closedAt) return { closedAt: child.closedAt, already: true }; await this.cancelSubagent(id); child.closedAt = new Date().toISOString(); return { closedAt: child.closedAt, already: false }; }
   async interruptSubagents() { for (const c of this.children) for (const t of c.turns) if (['queued','running'].includes(t.status)) await this.finishSubagentTurn(t.id, 'interrupted', { text: 'Interrupted without replay', truncated: false, fullResultPath: null, finalRecordId: null }); }
   override async receive(event: LifeEvent, _wake?: WakeReceipt): Promise<'inserted'> { this.events.push(event); return 'inserted'; }
 }

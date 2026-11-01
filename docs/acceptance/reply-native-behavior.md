@@ -226,3 +226,10 @@ the tool-declaration parity digest (`capturedDeclarations` in
 match the capture byte for byte. The recorded native decisions therefore
 predate both changes and need a new paid capture before they can count as
 evidence for them. No paid probe was run for these changes.
+
+ADR 0052 added the `subagent_close` tool, optional `subagent_spawn`
+`capabilities`/`group` parameters, one appended sentence block on
+the `subagent_spawn` and `subagent_status` descriptions, and system prompt v0.5.
+The replay removes exactly those additions before the parity digest; the
+recorded decisions predate them and need a new paid capture. No paid probe was
+run for these changes.

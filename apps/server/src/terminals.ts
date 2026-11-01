@@ -225,6 +225,13 @@ export class TerminalManager {
     return owned.length;
   }
 
+  /** Drop ended handles of exactly this owner (ADR 0052); live or draining sessions stay. */
+  forgetOwner(owner: string): number {
+    let dropped = 0;
+    for (const [id, session] of this.#sessions) if (session.owner === owner && session.status !== 'running' && !session.closing && session.pendingLogs === 0) { this.#sessions.delete(id); dropped++; }
+    return dropped;
+  }
+  get retainedSessions(): number { return this.#sessions.size; }
   async close(): Promise<void> {
     this.#closed = true;
     await Promise.all([...this.#sessions.values()].map(async session => {

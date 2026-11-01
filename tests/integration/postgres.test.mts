@@ -25,12 +25,15 @@ test('migration up/down/up uses node-pg-migrate and preserves no stale tables', 
   const db = await createTestDatabase();
   try {
     const before = await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema = $1", [db.schema]);
-    assert.equal(before.rows[0].n, 20);
+    assert.equal(before.rows[0].n, 21);
     assert.deepEqual((await db.admin.query("SELECT table_name FROM information_schema.tables WHERE table_schema=$1 AND table_name IN ('subagents','subagent_turns') ORDER BY table_name", [db.schema])).rows.map(row => row.table_name), ['subagent_turns', 'subagents']);
     assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.columns WHERE table_schema=$1 AND table_name='subagent_turns' AND column_name IN ('activity','started_at','association_order')", [db.schema])).rows[0].n, 3);
     assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema=$1 AND table_name IN ('subagent_calls','subagent_live_inputs')", [db.schema])).rows[0].n, 2);
     assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.columns WHERE table_schema=$1 AND table_name='subagent_turns' AND column_name IN ('stream_id','input_record_id','final_record_id')", [db.schema])).rows[0].n, 3);
-    // The background-job index (ADR 0049) is the latest slice: one partial index, no data.
+    // Subagent closures (ADR 0052) are the latest slice: one append-only table.
+    await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
+    assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM information_schema.tables WHERE table_schema=$1 AND table_name='subagent_closures'", [db.schema])).rows[0].n, 0);
+    // The background-job index (ADR 0049) is the next slice: one partial index, no data.
     await migrate({ connectionString: db.connectionString, schema: db.schema, direction: 'down' });
     assert.equal((await db.admin.query("SELECT count(*)::integer AS n FROM pg_indexes WHERE schemaname = $1 AND indexname = 'life_events_background_started'", [db.schema])).rows[0].n, 0);
     // The usage indexes (ADR 0048) are the next slice: indexes only, no data.
