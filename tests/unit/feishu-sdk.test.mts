@@ -89,6 +89,44 @@ test('real SDK outbound is one text create or reply, preserving uuid and no auto
   await assert.rejects(createFeishuSdk({ httpInstance: uncertain.http }).send(credentials, { chatId: 'oc_chat', text: 'x', uuid: 'unknown', replyToMessageId: 'om_quote' }), error => error instanceof Error && error.message === 'Feishu send_unknown' && !('cause' in error));
   assert.equal(uncertain.calls.filter(call => call.url?.includes('/im/v1/messages')).length, 1);
 });
+test('SDK sends explicit app-scoped IDs and reads names with a cancellable app-identity request', async () => {
+  const { http, calls } = transport(request => request.url?.includes('/contact/v3/users/')
+    ? { code: 0, data: { user: { name: '张三', open_id: 'ou_person', user_id: 'employee' } } } : good(request));
+  const sdk = createFeishuSdk({ httpInstance: http });
+  await sdk.send(credentials, { recipientId: 'ou_person', recipientIdType: 'open_id', text: 'hi', uuid: 'one' });
+  await sdk.send(credentials, { recipientId: 'employee', recipientIdType: 'user_id', text: 'hi', uuid: 'two' });
+  assert.deepEqual(calls.filter(c => c.url?.includes('/im/v1/messages')).map(c => c.params), [{ receive_id_type: 'open_id' }, { receive_id_type: 'user_id' }]);
+  assert.deepEqual(await sdk.getUser(credentials, 'employee', 'user_id', new AbortController().signal), { name: '张三', openId: 'ou_person', userId: 'employee' });
+});
+test('real SDK normalizes HTTP permission rejection before the separately checked root fallback', async () => {
+  const { http } = transport(request => {
+    if (request.url?.endsWith('/contact/v3/scopes')) throw { response: { data: { code: 99991672, msg: 'synthetic-private-diagnostic' } } };
+    if (request.url?.endsWith('/children')) return { code: 0, data: { items: [], has_more: false } };
+    if (request.url?.endsWith('/find_by_department')) return { code: 0, data: { items: [{ name: '张三', open_id: 'ou_person' }], has_more: false } };
+    return good(request);
+  });
+  assert.deepEqual(await createFeishuSdk({ httpInstance: http }).searchUsers(credentials, '张三', new AbortController().signal), { users: [{ name: '张三', openId: 'ou_person' }], complete: true });
+});
+test('HTTP permission refusal is known rejected while network and server ambiguity remain unknown', async () => {
+  for (const [status, expected] of [[400, 'send_rejected'], [403, 'send_rejected'], [500, 'send_unknown']] as const) {
+    const { http, calls } = transport(request => {
+      if (request.url?.includes('/im/v1/messages')) throw { response: { status, data: { code: 99991672, msg: 'synthetic-secret-diagnostic' } } };
+      return good(request);
+    });
+    await assert.rejects(createFeishuSdk({ httpInstance: http }).send(credentials, { recipientId: 'ou_person', text: 'hi', uuid: 'one' }), error => error instanceof Error && error.message === `Feishu ${expected}`);
+    assert.equal(calls.filter(c => c.url?.includes('/im/v1/messages')).length, 1);
+  }
+});
+test('name deadline also bounds token acquisition, cancels its HTTP and ignores late token completion', async () => {
+  const token = Promise.withResolvers<unknown>();
+  const { http, calls } = transport(request => request.url?.includes('tenant_access_token') ? token.promise : good(request));
+  const sdk = createFeishuSdk({ httpInstance: http }); const signal = AbortSignal.timeout(10);
+  try {
+    await assert.rejects(sdk.getUser(credentials, 'ou_person', 'open_id', signal), /timeout/i);
+    assert.equal((calls.find(call => call.url?.includes('tenant_access_token')) as Request & { signal: AbortSignal }).signal, signal);
+    assert.equal(calls.some(call => call.url?.includes('/contact/v3/users/')), false);
+  } finally { token.resolve({ code: 0, tenant_access_token: 'synthetic-late-token', expire: 7200 }); }
+});
 
 test('raw message projection preserves actual IDs, quote, old timestamp and unsupported marker', () => {
   assert.deepEqual(parseFeishuMessage(raw()), { messageId: 'om_in', chatId: 'oc_chat', chatType: 'p2p', senderOpenId: 'ou_owner', senderType: 'user', tenantKey: 'tenant_owner', createdAt: '1970-01-01T00:00:01.000Z', text: 'hello', messageType: 'text', replyToMessageId: 'om_quote', rootMessageId: 'om_root' });

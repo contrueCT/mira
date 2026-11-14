@@ -30,6 +30,36 @@ test('Feishu private store creates private files, persists and fences stale writ
   await assert.rejects(store.save({ value: 'stale' }), FeishuStoreError);
   assert.deepEqual(await new FeishuPrivateStore(file, source).load(), { value: 'second' });
 });
+test('incoming identity is independent of call identity and pending updates retain durable FIFO order', async t => {
+  const { store, file, source } = await fixture(t); await store.load(); await store.save({ value: 'active' });
+  await store.saveIncoming('z-first', { text: 'first' }, true, 'binding');
+  await store.saveIncoming('a-second', { text: 'second' }, true, 'binding');
+  await store.saveReceipt('z-first', { sent: true }, false, 'binding');
+  await store.saveIncoming('z-first', { text: 'first-frozen' }, true, 'binding');
+  const restarted = new FeishuPrivateStore<{ value: string }>(file, source); await restarted.load();
+  assert.equal((await restarted.nextIncoming('binding'))?.callId, 'z-first');
+  assert.deepEqual(await restarted.loadReceipt('z-first'), { sent: true });
+  await restarted.saveIncoming('z-first', { delivered: true }, false, 'binding');
+  assert.equal((await restarted.nextIncoming('binding'))?.callId, 'a-second');
+  assert.equal(await restarted.nextIncoming('different-binding'), null);
+  await assert.rejects(store.saveIncoming('stale', {}, true, 'binding'), /changed/);
+});
+test('schema 2 upgrades incoming rows without changing pending send evidence or weakening the shared CAS', async t => {
+  const { store, file, source } = await fixture(t); await store.load(); await store.save({ value: 'active' });
+  const send = { digest: 'preserved', parts: [{ status: 'unknown', uuid: 'original' }] };
+  await store.saveReceipt('old-call', send, true, 'binding');
+  const db = new DatabaseSync(`${file}.sqlite`);
+  try { db.exec('DROP INDEX pending_incoming; DROP TABLE incoming; PRAGMA user_version=2'); } finally { db.close(); }
+  const upgrade = new FeishuPrivateStore<{ value: string }>(file, source); await upgrade.load();
+  const stale = new FeishuPrivateStore<{ value: string }>(file, source); await stale.load();
+  assert.equal(await upgrade.nextIncoming('binding'), null);
+  await upgrade.saveIncoming('new-incoming', { text: 'durable' }, true, 'binding');
+  assert.deepEqual(await upgrade.loadReceipt('old-call'), send);
+  assert.equal((await upgrade.nextPendingReceipt('binding'))?.callId, 'old-call');
+  await assert.rejects(stale.saveIncoming('stale', {}, true, 'binding'), /changed/);
+  const current = new DatabaseSync(`${file}.sqlite`, { readOnly: true });
+  try { assert.equal(current.prepare('PRAGMA user_version').get()!.user_version, 3); } finally { current.close(); }
+});
 test('Feishu private store rejects source, excluded and relative paths', async t => {
   const { root, source } = await fixture(t);
   assert.throws(() => new FeishuPrivateStore(path.join(source, 'state'), source), FeishuStoreError);
@@ -190,5 +220,5 @@ test('the current single-row schema upgrades atomically with archived receipts a
   await store.save({ value: 'split current row' }, { saved: { value: { status: 'unknown', uuid: 'permanent-identity' }, pending: false, bindingId: 'binding' } });
   assert.deepEqual(await store.loadReceipt('saved'), { status: 'unknown', uuid: 'permanent-identity' }); assert.equal(await readFile(file, 'utf8'), legacy);
   const current = new FeishuPrivateStore(file, source); assert.deepEqual(await current.load(), { value: 'split current row' });
-  db = new DatabaseSync(`${file}.sqlite`); try { assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, 2); } finally { db.close(); }
+  db = new DatabaseSync(`${file}.sqlite`); try { assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, 3); } finally { db.close(); }
 });

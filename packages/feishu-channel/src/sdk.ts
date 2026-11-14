@@ -1,6 +1,8 @@
 import { registerApp } from '@larksuite/channel';
 import { Client, DefaultCache, Domain, EventDispatcher, LoggerLevel, WSClient, defaultHttpInstance } from '@larksuiteoapi/node-sdk';
 import type { HttpInstance, Logger } from '@larksuiteoapi/node-sdk';
+import { directoryUser, searchDirectory, type FeishuUser, type FeishuUserSearch } from './directory.ts';
+export type { FeishuUser, FeishuUserSearch } from './directory.ts';
 
 export type FeishuDomain = 'feishu' | 'lark';
 export interface FeishuCredentials { appId: string; appSecret: string; domain: FeishuDomain; ownerOpenId?: string }
@@ -23,11 +25,13 @@ export interface FeishuSdk {
     onMessage(message: FeishuIncomingText): Promise<void>;
     onState(state: FeishuConnectionState): void;
   }): Promise<FeishuConnection>;
-  send(credentials: FeishuCredentials, message: { chatId: string; text: string; uuid: string; replyToMessageId?: string }): Promise<{ messageId: string }>;
+  getUser(credentials: FeishuCredentials, userId: string, idType: 'open_id' | 'user_id', signal: AbortSignal): Promise<FeishuUser | null>;
+  searchUsers(credentials: FeishuCredentials, query: string, signal: AbortSignal): Promise<FeishuUserSearch>;
+  send(credentials: FeishuCredentials, message: { chatId?: string; recipientId?: string; recipientIdType?: 'open_id' | 'user_id'; text: string; uuid: string; replyToMessageId?: string }): Promise<{ messageId: string; chatId?: string }>;
 }
 export const FEISHU_REQUIRED_SCOPES = ['im:message.p2p_msg:readonly', 'im:message:send_as_bot'] as const;
 export class FeishuSdkError extends Error {
-  readonly code: 'registration_failed' | 'registration_expired' | 'registration_denied' | 'verification_failed' | 'connection_failed' | 'receive_failed' | 'send_unknown';
+  readonly code: 'registration_failed' | 'registration_expired' | 'registration_denied' | 'verification_failed' | 'connection_failed' | 'receive_failed' | 'send_unknown' | 'send_rejected';
   constructor(code: FeishuSdkError['code']) { super(`Feishu ${code}`); this.name = 'FeishuSdkError'; this.code = code; }
 }
 const quietLogger: Logger = { error() {}, warn() {}, info() {}, debug() {}, trace() {} };
@@ -81,6 +85,18 @@ function abortableRegistration<T>(signal: AbortSignal, run: () => Promise<T>): P
     );
   });
 }
+/** The official SDK's token preparation can precede its request-level signal. */
+function boundedRead<T>(signal: AbortSignal, run: () => Promise<T>): Promise<T> {
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => { signal.removeEventListener('abort', abort); reject(signal.reason); };
+    signal.addEventListener('abort', abort, { once: true });
+    Promise.resolve().then(() => { signal.throwIfAborted(); return run(); }).then(
+      value => { signal.removeEventListener('abort', abort); resolve(value); },
+      error => { signal.removeEventListener('abort', abort); reject(error); },
+    );
+  });
+}
 
 export function createFeishuSdk(dependencies: FeishuSdkDependencies = {}): FeishuSdk {
   // A per-adapter wrapper bounds every REST request without mutating the SDK's global Axios defaults.
@@ -96,11 +112,25 @@ export function createFeishuSdk(dependencies: FeishuSdkDependencies = {}): Feish
     head: (url, options) => underlying.head(url, { ...options, timeout: 15_000 }),
     options: (url, options) => underlying.options(url, { ...options, timeout: 15_000 }),
   };
-  const client = (credentials: FeishuCredentials) => new Client({
-    appId: credentials.appId, appSecret: credentials.appSecret,
-    domain: credentials.domain === 'feishu' ? Domain.Feishu : Domain.Lark,
-    httpInstance: http, cache: new DefaultCache(), logger: quietLogger, loggerLevel: LoggerLevel.fatal, source: 'mira',
-  });
+  const caches = new WeakMap<FeishuCredentials, DefaultCache>();
+  const client = (credentials: FeishuCredentials, signal?: AbortSignal) => {
+    let cache = caches.get(credentials); if (!cache) { cache = new DefaultCache(); caches.set(credentials, cache); }
+    // SDK's narrow HTTP option type omits Axios AbortSignal; retain its original fields.
+    const withSignal = <T extends object>(options: T | undefined) => ({ ...options, signal, timeout: 15_000 });
+    const cancellable: HttpInstance = signal ? {
+      request: options => http.request(withSignal(options)),
+      get: (url, options) => http.get(url, withSignal(options)),
+      post: (url, data, options) => http.post(url, data, withSignal(options)),
+      put: (url, data, options) => http.put(url, data, withSignal(options)),
+      patch: (url, data, options) => http.patch(url, data, withSignal(options)),
+      delete: (url, options) => http.delete(url, withSignal(options)),
+      head: (url, options) => http.head(url, withSignal(options)),
+      options: (url, options) => http.options(url, withSignal(options)),
+    } : http;
+    return new Client({ appId: credentials.appId, appSecret: credentials.appSecret,
+      domain: credentials.domain === 'feishu' ? Domain.Feishu : Domain.Lark,
+      httpInstance: cancellable, cache, logger: quietLogger, loggerLevel: LoggerLevel.fatal, source: 'mira' });
+  };
   const verify: FeishuSdk['verify'] = async credentials => {
     try {
       const api = client(credentials);
@@ -187,6 +217,28 @@ export function createFeishuSdk(dependencies: FeishuSdkDependencies = {}): Feish
         state() { if (stopped) return state; const actual = socket?.getConnectionStatus().state; return actual === 'connected' ? state : actual === 'reconnecting' ? 'reconnecting' : actual === 'connecting' ? 'connecting' : 'failed'; },
       };
     },
+    async getUser(credentials, userId, idType, signal) {
+      signal.throwIfAborted();
+      try {
+        const response: unknown = await boundedRead(signal, () => client(credentials, signal).request({ url: `/open-apis/contact/v3/users/${encodeURIComponent(userId)}`, method: 'GET', params: { user_id_type: idType }, signal }));
+        signal.throwIfAborted();
+        const result = record(response); const user = result.code === 0 ? directoryUser(record(result.data).user) : null;
+        return user && (idType === 'open_id' ? user.openId === userId : user.userId === userId) ? user : null;
+      } catch { signal.throwIfAborted(); return null; }
+    },
+    async searchUsers(credentials, query, signal) {
+      return searchDirectory(async (url, params, requestSignal) => {
+        try { return await boundedRead(requestSignal, () => client(credentials, requestSignal).request({ url, method: 'GET', params, signal: requestSignal })); }
+        catch (error) {
+          requestSignal.throwIfAborted();
+          // Axios rejects HTTP 400 permission responses before returning their API code.
+          // Only the fixed code crosses this adapter; headers and provider diagnostics stay private.
+          const code = record(record(record(error).response).data).code;
+          if (typeof code === 'number' && code !== 0) return { code };
+          throw new Error('Feishu directory request failed');
+        }
+      }, query, signal);
+    },
     async send(credentials, message) {
       try {
         const api = client(credentials);
@@ -195,10 +247,17 @@ export function createFeishuSdk(dependencies: FeishuSdkDependencies = {}): Feish
         // These generated node-sdk endpoints make exactly one effectful HTTP call.
         const response = message.replyToMessageId
           ? await api.im.v1.message.reply({ path: { message_id: message.replyToMessageId }, data })
-          : await api.im.v1.message.create({ params: { receive_id_type: 'chat_id' }, data: { ...data, receive_id: message.chatId } });
-        if (response.code !== 0 || !response.data?.message_id) throw new Error();
-        return { messageId: response.data.message_id };
-      } catch { throw new FeishuSdkError('send_unknown'); }
+          : await api.im.v1.message.create({ params: { receive_id_type: message.recipientId ? message.recipientIdType ?? 'open_id' : 'chat_id' }, data: { ...data, receive_id: message.recipientId ?? message.chatId! } });
+        if (response.code === 99991672) throw new FeishuSdkError('send_rejected');
+        if (response.code !== 0) throw new FeishuSdkError('send_unknown');
+        if (!response.data?.message_id) throw new Error();
+        return { messageId: response.data.message_id, ...(response.data.chat_id ? { chatId: response.data.chat_id } : {}) };
+      } catch (error) {
+        if (error instanceof FeishuSdkError) throw error;
+        const response = record(record(error).response);
+        if ([400, 403].includes(Number(response.status)) && record(response.data).code === 99991672) throw new FeishuSdkError('send_rejected');
+        throw new FeishuSdkError('send_unknown');
+      }
     },
   };
 }

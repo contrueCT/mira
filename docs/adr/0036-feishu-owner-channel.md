@@ -4,6 +4,8 @@
 Mira 双向交流和主动发送，并进一步要求凭据与设置能力为所有普通 Cordis 扩展可用。
 本实现依赖 ADR 0035 的通用能力，不引入飞书专用核心接口。
 
+> 2026-11-14 后续：[ADR 0054](0054-feishu-multi-recipient-plan.md) 取代本文的本人配对/单接收人范围，默认多人私聊，增加姓名与 ID 发送、精简入站及独立持久收件消费者。本文保留历史决定与验证记录。
+
 ## 边界
 
 `packages/feishu-channel` 只依赖 extension-sdk 和固定的官方 SDK。通过既有 stage、

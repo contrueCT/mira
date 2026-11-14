@@ -3,6 +3,7 @@ import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { RuntimeRecord } from '@mira/context';
@@ -26,6 +27,8 @@ test('Feishu NUL and lone-surrogate text preserves original content through real
   await writeFile(entry, `import { createFeishuExtension } from ${JSON.stringify(pluginUrl)};
     export const state = {receive:null};
     export default createFeishuExtension({
+      async getUser(credentials,id){return {name:'合成用户',openId:id};},
+      async searchUsers(){return {users:[],complete:true};},
       async verify(){return {botOpenId:'synthetic-bot',scopes:[]};},
       async register(){throw Error('unexpected registration');},
       async send(){throw Error('no network sends in this fixture');},
@@ -55,24 +58,36 @@ test('Feishu NUL and lone-surrogate text preserves original content through real
     for (const text of ['a\u0000b', 'a\ud800b', 'a\udc00b']) await assert.rejects(db.admin.query("SELECT ($1::json)->>'source'", [JSON.stringify({ source: 'extension', payload: { text } })]), (error: unknown) => !!error && typeof error === 'object' && 'code' in error && ['22P05', '22P02'].includes(String(error.code)));
     await writer.initializeDreaming(); await open();
     let view = (await host!.extensionSettings(extensionId))!; await host!.saveExtensionSettings(extensionId, { expectedRevision: view.revision, values: {}, secrets: { appSecret: 'synthetic-secret' } });
-    await action('connect'); await action('pair'); view = (await host!.extensionSettings(extensionId))!;
-    await state.receive('pair', view.status.details!.find(item => item.value.startsWith('/mira pair '))!.value);
+    await action('connect');
+    const settle = async () => { await until(async () => {
+      if ((await host!.extensionSettings(extensionId))?.status.state === 'error') return true;
+      const directories = await readdir(privateDirectory); const file = path.join(privateDirectory, directories[0]!, 'data', 'feishu-state.json');
+      const db = new DatabaseSync(`${file}.sqlite`); try { return Number(db.prepare('SELECT count(*) AS n FROM incoming WHERE pending=1').get()!.n) === 0; } finally { db.close(); }
+    }); };
+    const receive = async (id: string, text: string) => { await state.receive(id,text); await settle(); };
+
     const originals = ['a\u0000b', 'a\ud800b', 'a\udc00b', 'a\u0008b\u000bc\u000cd', '正常 🦊 text', 'x'.repeat(100_001)];
-    for (const [index, text] of originals.entries()) { await state.receive(`incoming-${index}`, text); await finishAndRead(text); }
+    for (const [index, text] of originals.entries()) { await receive(`incoming-${index}`, text); await finishAndRead(text); }
     await host!.close(); host = undefined; await writer.close(); writer = await db.acquire('synthetic-feishu-mira'); await open();
-    for (const [index, text] of originals.entries()) await state.receive(`incoming-${index}`, text);
+    for (const [index, text] of originals.entries()) await receive(`incoming-${index}`, text);
     assert.equal(await writer.claimWakeBatch(), null, 'restart duplicates do not create another Wake');
-    failWake = true; const pendingOriginal = 'old\u0000pending\ud800'; await assert.rejects(state.receive('pending-before-restart', pendingOriginal));
+    failWake = true; const pendingOriginal = 'old\u0000pending\ud800'; await receive('pending-before-restart', pendingOriginal);
     await host!.close(); host = undefined;
     const directories = await readdir(privateDirectory); const file = path.join(privateDirectory, directories[0]!, 'data', 'feishu-state.json');
-    const store = new FeishuPrivateStore<{ inbox: Array<{ id: string; event: { payload: { text: string; textEncoding?: string }; message: { text: string } } }> }>(file, path.resolve('packages/feishu-channel'));
-    const pending = (await store.load())!; const wake = pending.inbox[0]!;
+    const store = new FeishuPrivateStore<{ inbox: Array<{ id: string; event: { type: string; payload: { text: string; textEncoding?: string }; message: { text: string } } }> }>(file, path.resolve('packages/feishu-channel'));
+    const pending = (await store.load())!;
+    const incomingDb = new DatabaseSync(`${file}.sqlite`); let wake: (typeof pending.inbox)[number];
+    try { const row = incomingDb.prepare('SELECT value FROM incoming WHERE pending=1').get()!; wake = JSON.parse(row.value as string).wake; } finally { incomingDb.close(); }
+    // This section specifically exercises the prior persisted inbox format; remove the new receipt from the fixture only.
+    const fixtureDb = new DatabaseSync(`${file}.sqlite`); fixtureDb.prepare('DELETE FROM incoming WHERE pending=1').run(); fixtureDb.close();
+    pending.inbox = [wake!]; wake!.event.type = 'feishu.owner_message';
+
     wake.event.payload.text = pendingOriginal; delete wake.event.payload.textEncoding;
     // A preceding preview fix may already have made the projection legal while raw payload remained poisonous.
     wake.event.message.text = '[Previous legal preview]'; const stableId = wake.id; await store.save(pending);
-    failWake = false; await open(); assert.equal(await finishAndRead(pendingOriginal), namespace(stableId));
+    failWake = false; await open(); await settle(); assert.equal(await finishAndRead(pendingOriginal), namespace(stableId));
     assert.deepEqual((await store.load())!.inbox, []);
-    await state.receive('ordinary-after-repair', 'healthy ordinary message'); await finishAndRead('healthy ordinary message');
+    await receive('ordinary-after-repair', 'healthy ordinary message'); await finishAndRead('healthy ordinary message');
     await writer.requestDreaming({ idleMs: 30 * 60_000, intervalMs: 24 * 60 * 60_000, minCompactions: 3, instruction: 'Synthetic health check; no model call' });
     await writer.verifyActive(); assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM life_events')).rows[0]!.n, originals.length + 2);
     const history = db.store.history(writer.miraId); assert.ok((await history.search({ query: 'healthy', mode: 'substring' })).hits.length); assert.ok((await history.page({ limit: 100 })).hits.length);

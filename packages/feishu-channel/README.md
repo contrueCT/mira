@@ -1,12 +1,11 @@
 # Feishu / Lark channel extension
 
-An ordinary trusted Cordis extension using the public `@mira/extension-sdk` settings,
-credentials, private directory, tools, ContextProvider, Event/Wake and cleanup contracts.
-There is no Feishu server route, privileged built-in ID, second Host or second Mira.
-It ships as source; installation and activation are explicit. Disable/remove uses the
-same extension lifecycle as other authored or generated extensions.
+An ordinary trusted Cordis extension using `@mira/extension-sdk` settings,
+credentials, private storage, tools, ContextProvider, Event/Wake and cleanup.
+It uses the pinned official Node SDK directly; no CLI, MCP, vendor server route,
+reserved core ID or second Mira loop. See [ADR 0054](../../docs/adr/0054-feishu-multi-recipient-plan.md).
 
-## Install through the existing extension workflow
+## Install and connect
 
 After the repository's pinned dependency installation, prepare an external workspace:
 
@@ -15,239 +14,153 @@ node scripts/prepare-extension-package.mts \
   /absolute/mira/packages/feishu-channel /absolute/new/feishu-workspace
 ```
 
-This helper links only already-installed declared runtime dependencies, never installs
-packages or executes their scripts. Authored source-tree symlinks are rejected before
-writing the destination because flattening them can change Node import resolution.
-Ordinary source files are required; declared dependency/pnpm links retain their existing
-controlled topology. The resulting workspace has `entry.mjs`.
-Use the existing `extension_stage` tool with that workspace and entry. Run the normal
-artifact-test command against the returned digest, including a module-import smoke
-check, then `extension_manage` install with the actual digest and activate. See the
-extension-authoring skill for the content-bound test workflow. Installing is initially
-disabled; activation with no stored app only registers settings/tools, without network
-or credential reads. The generated artifact contains the selected dependency closure;
-it does not depend on a mutable checkout at activation time.
+The helper only prepares already-installed runtime dependencies. Stage `entry.mjs`
+through `extension_stage`, run content-bound artifact tests including an import smoke
+check, then install the actual digest with `extension_manage` and activate explicitly.
+A manual entry pointing to the package's absolute `src/index.ts` is also supported.
+Activation without a saved app only registers settings/tools; it does not connect.
 
-A manual entry pointing to `packages/feishu-channel/src/index.ts` in an explicitly
-configured extensions file is also supported. It is not the only installation route.
+In Settings → Extensions, choose 飞书 or Lark (separate identity domains). Use
+扫码连接, or enter an existing App ID and protected App Secret and choose 连接已有应用.
+`feishu_connect` starts the same settings runner and returns a safe operation receipt;
+authorization URLs and credentials remain in protected settings. Tenant approval,
+publication, bot capability and long-connection subscription to `im.message.receive_v1`
+may still be needed. No pairing step or automatic test message is performed.
 
-## Start from dialogue or generic extension settings
+The base grants remain `im:message.p2p_msg:readonly` and `im:message:send_as_bot`.
+Additional Contacts grants/data scope are explicit administrator configuration;
+registration does not silently request more permissions. App Secret uses the generic
+installation-scoped private credential API, never config, Memory or tool arguments.
 
-When the user asks to connect, the plugin's `feishu_connect` tool starts its declared
-settings action through the same host runner. It returns an operation receipt and
-instructions to open settings immediately; authorization URLs and credentials remain
-only in protected settings. Repeated calls reuse the pending operation; its optional
-`cancelOperationId` and the UI cancel button target that same operation. A saved app
-reconnects without registration. A ready connection is reused. Unknown registration
-outcomes block tool retries just as they block the settings button.
+Registration uses `@larksuite/channel@0.7.1` (`registerApp`, `preset:false`);
+HTTP, EventDispatcher and WSClient use `@larksuiteoapi/node-sdk@1.75.0`.
+The Channel pipeline's batching/stale filtering/in-memory dedup is not used.
+An unknown/cancelled registration can have created a remote app: reconcile the
+console and recover existing credentials before registering again. Local cancellation
+or uninstall does not revoke remote apps or tenant grants.
 
-The framework supplies no Feishu-specific tool, route or automatic popup. The user
-opens the existing settings panel to finish authorization and explicit pairing.
+## Model tools
 
-## Connect in the generic extension settings
+- `feishu_search_users({query, offset?})`: read-only search of the app-visible
+  directory; at most 20 matching `{name, openId, userId?}` rows per page and optional
+  `nextOffset`. Each page is a new query; use its `complete` flag and explicit IDs.
+- `feishu_send_message({text, recipientName?, recipientId?, recipientIdType?, replyToMessageId?})`:
+  explicitly send as this application. Name and ID are mutually exclusive;
+  `recipientIdType` defaults to `open_id` and also supports `user_id`.
+  A recipient need not have messaged or paired with the bot first.
+- `feishu_status` and `feishu_connect`: ordinary connection observation/action.
 
-1. Choose 飞书 or Lark. These are separate application/tenant identity domains.
-2. Choose 扫码连接 and open/scan the official authorization link. The action
-   remains pending while polling; cancel stops accepting late results. App credentials are saved privately once registration returns, even if approval or
-   connection verification still fails; reconnect can retry verification without creating
-   another app. Cancelling does not delete an app already created. No secret is
-   returned through the model or an ordinary tool result.
-3. Confirm the application and requested scopes on the official service. Tenant
-   policy can require approval/publication. The SDK cannot configure every backend
-   setting: enable the bot, subscribe to `im.message.receive_v1` using **long connection**,
-   and ensure the app is available to the intended owner.
-4. Only `im:message.p2p_msg:readonly` and `im:message:send_as_bot` are requested. No Docs,
-   Contacts, group-read or user-impersonation permissions are requested.
-5. Generate a short-lived, high-entropy pairing code and send the displayed
-   `/mira pair …` in the bot's private chat. Only the matching unexpired code binds
-   that human sender's tenant/open-user/chat identity, saved with the consumed message
-   ID. Ordinary first senders cannot claim ownership. The code is consumed once;
-   pairing commands never reach the conversation or model, including redelivery after
-   restart. A verified live connection and bound owner report connected. There is no
-   separate identity-confirmation action, test-send action or automatic test message.
+Examples:
 
-The plugin declares only the next applicable action for its current state. Recovery
-and maintenance controls live under the generic 更多操作 menu. The host and Web UI
-only interpret generic action groups and visibility; they contain no Feishu flow.
-During automatic WebSocket reconnection, connect and unbind remain available for
-explicit recovery even when the provider keeps retrying indefinitely.
+```json
+{"text":"明天下午三点开会。","recipientName":"张三"}
+```
 
-Manual fallback: create/publish a self-built app, enable its bot and the same minimum
-scopes/event subscription, then save App ID and App Secret in the generic protected
-settings and choose 连接已有应用. App Secret is write-only and stored through the
-host's installation-scoped credential API. It never belongs in extension JSON config,
-Memory, Timeline, tool arguments or URLs.
+```json
+{"text":"收到。","recipientId":"ou_example","recipientIdType":"open_id"}
+```
 
-Registration uses published `@larksuite/channel` **0.7.1** (`registerApp`) and
-`@larksuiteoapi/node-sdk` **1.75.0**. Published versions were checked against npm, not
-inferred from repository heads. Registration is explicit and uses `preset:false` with
-only the listed scopes/event. It may still need tenant approval and platform setup.
-No real account registration or live Feishu connectivity has been validated here.
-Scope introspection is verified through the actual SDK API, but its permission
-prerequisites still require an authorized real-tenant check; denial fails closed.
+```json
+{"text":"我来处理。","replyToMessageId":"om_example"}
+```
 
-## Conversation and delivery
+An exact name is sent only after a complete directory query has exactly one matching
+user. Ambiguous/fuzzy names return candidates without sending; incomplete results
+return `incomplete_search`. Clarification remains the model's natural decision.
+No target and no reply ID returns `not_sent`; there is no implicit last-chat target.
+A reply ID must be a retained inbound reference from the current app connection.
+If an explicit recipient is also supplied, it must match that reference's sender;
+`user_id` is resolved before comparison. Missing/mismatched references never fall back
+to sending a new message. Old verified references remain readable without rewriting History.
+Ordinary Web final replies are not automatically echoed. After a confirmed send the
+model should avoid repeating the same body in its ordinary final reply.
 
-- Inbound: only the paired tenant + user open ID + private chat, from a human sender.
-  Full source IDs, original timestamp, text and quote IDs are preserved in the Event payload.
-  Empty, oversized or forbidden-control display text uses an explicit bounded preview;
-  truncation ends at a Unicode code-point boundary. The full original text remains in
-  `payload.text`. NUL and lone UTF-16 surrogates cannot be materialized by PostgreSQL
-  JSON field extraction. Only these texts use `textEncoding: "json-string"` and
-  `payload.text = JSON.stringify(originalText)`; `JSON.parse(payload.text)` recovers
-  the exact original JavaScript string. Ordinary text remains unchanged. The display
-  preview is well-formed Unicode, escaping forbidden controls and visibly replacing
-  unpaired surrogates; full fidelity remains in the explicitly encoded payload.
-  This repairs pending input that Host has not accepted. Already committed invalid
-  Unicode in authoritative History is preserved and requires explicit reconciliation;
-  the extension never replaces an existing Event or changes its ID to bypass a conflict.
-  Existing current-format pending inbox entries apply both encoding and projection
-  before retrying Host acceptance, retaining their original stable Event/Wake IDs. Other senders,
-  bots and groups do not wake Mira. Unsupported media is an explicit text notice;
-  this version does not fetch media or implement voice.
-- Startup replay and newly arriving messages share the same state-write queue.
-  A private inbox is saved before the normal durable Event/Wake receive. Stable identity
-  includes the binding/app/domain and platform message ID. Restart flushes only that
-  inbox into the existing deduplicating writer. It never replays model work itself.
-- Outbound: `feishu_send_message` explicitly sends to the paired owner. Ordinary Web
-  replies are not mirrored. Replies can reference one of the last 512 verified owner
-  message IDs; older/unrecognized targets are refused rather than sent to another chat.
-- Text is bounded to 100,000 UTF-8 bytes and split at code-point boundaries into ordered
-  pieces of at most 6,000 bytes. Partial, not-started and unknown pieces are reported.
-  Each piece's unknown intent is saved before HTTP; the same call never resumes or
-  retries after an ambiguous effect, even after restart. No exactly-once network claim.
-- The SDK refreshes tenant tokens normally. Effectful message create/reply calls have no
-  automatic retry, reply fallback or Channel message splitting. Binding/reconnect never sends a message. Actual ordinary send outcomes are
-  reported by the send tool and durable receipts.
-- The active owner/inbox JSON row and each per-call receipt have separate 2 MB bounds.
-  A permanent receipt row retains call identity, digest, piece UUID/status and message IDs.
-  Published piece bodies are removed only after durable Host acceptance; pending
-  publication bodies and unknown outcomes remain. Ordinary completed sends therefore
-  cannot fill the owner/inbox row. Capacity/storage failure remains visible and preserves
-  queued evidence; the database grows with retained call identities and pending evidence. Source
-  code, Memory and artifact folders do not hold channel state.
+## App identity directory lookup
 
-## SDK reliability boundary
+The user-keyword search endpoint requires a user token. This plugin stays on app
+identity: read Contacts scope, direct authorized users, department descendants and
+paged direct members; deduplicate by open ID. If scope introspection is denied,
+try root department `0` through the independently authorized member/department APIs.
+Root access is not assumed. Failed/unsupported scope branches (including user groups
+whose expansion is not implemented), missing names, repeated page tokens and budget
+exhaustion produce incomplete results, never a unique-name automatic send.
 
-Channel 0.7.1's normal receiver applies in-memory dedup, stale rejection and batching;
-its raw callback catches handler failures. Those behaviors can ACK before durable
-Mira acceptance. This extension therefore uses the official node-sdk EventDispatcher
-and WSClient for raw ingress, while retaining official Channel app registration.
-The dispatcher awaits ingestion, and the official WS client responds with code 500
-when ingestion rejects. The extension stops intake and reports the failure; platform
-redelivery is still not guaranteed. Repair storage and reconcile missing messages.
-Official reconnect lifecycle callback order is covered explicitly by synthetic tests.
+Each search is bounded to 100 requests, 5000 unique users, 500 departments and 20 s.
+No persistent full-directory cache is created. Names/IDs only are projected to the
+model. Permission errors affect Contacts features, not explicit-ID sending.
+Reading a user's name requires the relevant user-information/field permission;
+listing departments/members and Contacts scopes can require different grants.
+Set the application's Contacts data range explicitly; do not assume whole-company
+access. A visible person can still be unreachable under app availability/tenant policy.
+`user_id` also depends on the relevant employee-ID field permission.
 
-Credentials use the host's private store. The extension owns an ordinary private
-SQLite file containing the owner/inbox row and separate per-call delivery receipts. Trusted extension
-code runs as the host OS user; these facilities are not a sandbox. Unbind clears local
-credentials/binding and retains historical call receipts. Pending publications belong to
-their original binding and are not automatically published after unbind/re-pairing; it does **not** delete the remote app or revoke tenant grants.
-Disable retains local state for explicit re-enable. Remove follows generic uninstall
-credential cleanup; retained historical private files are not silently deleted.
+## Multiple private senders and concise input
+
+All human private messages received by the app can wake the same continuous Mira.
+Groups and bot senders are ignored. A verified platform sender is not automatically
+an owner or authority to act; external quoted/forwarded content remains external.
+
+New payloads contain `senderName`, `senderOpenId`, `messageId`, `text` and a quote ID
+only when present. The plugin keeps chat/tenant/application routing internally.
+The generic Host envelope still supplies provenance, timestamp and History ID;
+there is no Feishu-specific core renderer. Web shows ordinary text with the generic
+small source label. Unsupported media is an explicit text notice, without downloading.
+NUL/lone UTF-16 surrogates use reversible `textEncoding: "json-string"`; bounded,
+well-formed previews do not replace the original payload.
+
+WS callbacks ACK after private inbox persistence. A single recoverable consumer
+looks up the sender name with a 1.5-second cancellation signal, freezes the exact
+Wake, then submits to Host. Missing names use `姓名暂不可用` plus the actual open ID;
+settings report degraded Contacts capability. Network lookup never holds the intake
+state queue. Host failures retain pending rows and report error until explicit reconnect;
+startup reconnect resumes durable delivery. Model runs never block the WS callback.
+Duplicate message IDs compare the original digest; published duplicates do not query
+names or publish another Wake. Frozen pending names/content survive restart unchanged.
+Storage failure rejects the SDK handler (500 ACK) and stops intake; platform redelivery
+is not guaranteed. Repair storage and reconcile missing messages.
+
+## Delivery, storage and lifecycle
+
+Text is bounded to 100000 UTF-8 bytes, split at code-point boundaries into ordered
+pieces of at most 6000 bytes. Each call freezes its recipient and each piece's UUID
+before HTTP. The same call ID returns its persisted result before any new name lookup;
+changed content/target conflicts. Unknown sends and unstarted tails never auto-resume.
+No exactly-once network guarantee is made. Confirmed outbound display Events record
+the real recipient; repairing display delivery never resends HTTP.
+
+Node 24's `node:sqlite` owns `feishu-state.json.sqlite`. Schema 3 adds per-message
+`incoming` rows alongside the active ledger and per-call send receipts, sharing the
+same short transactional revision CAS. Each value retains the existing 2 MB bound;
+the database grows with permanent message/call identities and unresolved evidence.
+Published inbound/outbound bodies are compacted only after Host durably accepts them.
+Source digests and reply routes remain. No network I/O occurs in SQLite transactions.
+Disk-full/busy/CAS failures remain visible and never authorize replay.
+
+Stop **all old processes using the installation before upgrading**. Schema 1/2 upgrades
+are transactional and retain current evidence; older binaries reject schema 3. Existing
+JSON evidence remains byte-for-byte and old pending inboxes use their frozen format.
+Previously consumed pairing messages remain consumed, but pairing actions/filtering
+are removed. Existing authoritative History is not rewritten or cleared.
+
+Reconnect/unbind cancel new work and drain current sends/inbox publication before
+changing the app connection. Cancellation before the change preserves the connection;
+old queued operations keep their cancelled signal. Disable retains state; remove uses
+generic credential cleanup and retains private historical evidence. These facilities
+run as the same trusted OS user and provide no sandbox or encryption boundary.
 
 ## Verification
 
-- `tests/unit/feishu-sdk.test.mts`: actual SDK HTTP and EventDispatcher with synthetic
-  responses, callback ordering, minimal registration options, no effectful replay.
-- `tests/unit/feishu-channel.test.mts`: real private files + synthetic SDK, explicit
-  pairing, identity rejection, durable replay, unknown outcomes and activation cleanup.
-- `tests/unit/feishu-store.test.mts`: private modes, symlink/hardlink and path checks,
-  cross-process CAS, crash recovery, atomic schema upgrade/rollback and per-call bounds.
-- `tests/unit/feishu-dialogue.test.mts`: actual Cordis Host + SQLite, repeated 100 KB
-  sends, pending display/unknown preservation, restart and binding isolation, plus
-  oversized/control/Unicode inbound previews and current pending inbox repair.
-- `tests/recovery/feishu-inbound.test.mts`: actual Cordis Host → SQLite → PostgreSQL
-  Event/Wake/History, source-field extraction, restart deduplication and pending repair.
-  NUL, lone high/low surrogates, ordinary emoji and oversized text are retained; later
-  ordinary messages, History reads/search/page and Dreaming selection remain healthy.
-  This requires the explicit isolated localhost `mira_test` database like other
-  recovery tests, and still performs no live tenant or model calls.
-- `tests/unit/extension-package-preparation.test.mts`: ordinary dependency preparation.
-- `tests/unit/feishu-generated-install.test.mts`: real prepare/stage/hash/test/install/
-  activate/disable/re-enable/remove on the actual shipped package and dependency closure.
+- `tests/unit/feishu-directory.test.mts`: app scope/root fallback, paging/dedup,
+  ambiguity/incomplete data, budgets and cancellation.
+- `feishu-sdk`, `feishu-channel`, `feishu-dialogue`, `feishu-store` unit tests:
+  actual SDK with synthetic HTTP/WS, multi-person routing, name/ID sends, immutable
+  replay, private files/SQLite CAS, Unicode, lifecycle and durable ACK behavior.
+- `feishu-generated-install`: actual prepare/stage/test/install/activate lifecycle.
+- `tests/recovery/feishu-inbound.test.mts`: isolated PostgreSQL Host/Wake/History
+  and restart recovery; `test:feishu:e2e`: real browser/HTTP/PG/runtime with synthetic
+  model and Feishu transports. Neither proves live tenant WebSocket connectivity.
 
-These are synthetic protocol and lifecycle tests, not a successful real-tenant login.
-
-### 网页来源显示
-
-本人入站消息与已确认发送的分段通过通用 `ExtensionEvent.message` 投影显示在同一网页时间线，时间旁显示小号“飞书 · 安装 ID · 收到/已发送”。真实发送者和“由扩展验证”保留在来源详情；显示方向不授予网页本人权限。每条显示复用稳定事件 ID，网页同步失败保留待投递证据，恢复时只补事件，不重发飞书。未知发送不会显示为已发送。普通模型 final 保留原样，不按相同文本猜测去重，因此不承诺完全镜像或绝无模型重复措辞。
-
-Inbound disk/database work uses only the short state-write queue. Outbound HTTP runs
-outside that queue, so a pending send does not delay durable reception. Unbind/reconnect
-stop not-started tail pieces and drain the current request before changing the binding.
-Cleanup retains unknown evidence for a request whose result arrives after retirement;
-SDK HTTP requests have a 15-second timeout each, rather than holding cleanup indefinitely.
-
-
-Authorization expiry comes from the official registration response (seconds). The
-plugin hides an expired URL even before the SDK polling promise settles. After an
-provider-expired/denied operation ends, the plugin-declared “重新申请授权” action
-requests a new provider authorization; it never merely redraws the previous URL.
-While an operation is pending, use the existing settings cancellation first. Cancellation
-or network failure (including the SDK’s local polling deadline) may leave a remotely created app: a durable unknown-attempt marker
-blocks another registration, including after restart. Check the official app console and
-recover existing App ID/Secret with manual configuration. Only after confirming that no
-app was created should the user explicitly unbind/reset and register again. A saved app
-always uses reconnect, never registration. Local cancellation does not revoke remote apps.
-
-SDK begin does not support request cancellation. The adapter retires its local wait
-on abort or a 15-second begin deadline and suppresses late callbacks/results; this does not cancel or undo remote effects.
-
-
-Reconnect/unbind cancellation is checked again after draining the current send and
-before changing the binding or deleting credentials. Cancellation there restores a
-fresh send controller for future calls and preserves the existing connection, owner
-and receipts. Old queued calls retain their cancelled generation; neither unknown
-requests nor unstarted message tails are replayed. Once the actual disconnect/reset
-has begun, cancellation does not roll back completed effects; the connection status
-reports the resulting state separately from the operation's cancellation receipt.
-
-If private state cannot be safely loaded, both registration and manual connection
-fail before credential reads or network verification. They cannot silently replace
-owner/inbox/unknown delivery evidence. Explicit unbind/reset deliberately discards a
-readable but unsupported state record and enables recovery; malformed or unsafe
-storage must first be repaired rather than overwritten.
-
-
-## Atomic private ledger and preview upgrade
-
-Node 24's built-in `node:sqlite` stores the owner/inbox ledger and one receipt row per
-call ID in `feishu-state.json.sqlite`. Schema version 2 fixes the earlier single-row
-capacity defect; it adds no npm/native dependency, ORM or core storage framework.
-Short `BEGIN IMMEDIATE` transactions compare one installation-wide revision for
-both ledger and receipt changes. Each value has its own digest; SQLite rollback
-journaling recovers interrupted writes. There is no PID/timeout lock stealing or
-manual orphan-lock cleanup. Unknown schema is rejected without replacing evidence.
-
-The active JSON row and each individual receipt remain bounded to 2 MB. Normal
-send lookup and publication recovery read individual indexed receipts, without
-loading all delivery history into memory or rewriting it. A binding-scoped pending
-index excludes retired bindings. Retained identities and unresolved/pending evidence
-can grow the database beyond the earlier 8 MB whole-file cap; disk exhaustion still
-fails visibly and never authorizes replay. Published bodies are already in durable
-Host Event history before they are compacted out of receipts. Unknown and
-not-started pieces are retained and never resumed automatically.
-
-Transactions use synchronous SQLite calls with a 100 ms busy timeout; no network or
-awaited work runs inside them. Disk I/O can still block the event loop. Busy/conflict
-errors are explicit failures, never a reason to repeat an unknown send. Inbound
-writes and receipt updates share the same CAS, including across processes.
-
-Stop **all old Mira processes using this installation before upgrading**. A current
-version-1 SQLite ledger is read and validated first. Its existing `sends` entries are
-split into per-call rows in the same transaction that clears `sends` from the active
-row and advances schema/revision. Failure rolls the complete migration back; an old
-binary rejects schema 2 rather than overwriting newer evidence. Unknown receipts,
-piece identities and unpublished Events survive the split; already-published bodies
-are compacted. This is a storage repair for the current private ledger, not a generic
-legacy-data compatibility framework.
-
-With no SQLite state, `load()` reads the existing `feishu-state.json`; normal channel
-validation runs before writing. The first successful `save()` initializes the SQLite
-state in one transaction. The original JSON is retained byte-for-byte as evidence,
-not deleted or overwritten. Every later access checks its original revision and
-fails closed if it changes. This detects old-version writes; it does not isolate a
-still-running old binary that writes JSON after that check. Running old and new
-versions together or reverting to the old binary is unsupported: stop them and
-reconcile preserved evidence rather than deleting it or replaying uncertain sends.
+A separately authorized raw HTTP probe found a unique named user through root/child
+member lists, sent by open ID as the app, and the user confirmed receipt. This did not
+validate the modified plugin's live WebSocket/name lookup or every tenant's permissions.
+No live credentials or personal directory records are included in the repository.

@@ -106,7 +106,7 @@ pnpm check
 
 - [ADR 0034](docs/adr/0034-managed-browser-handoff.md)：受管 agent-browser 0.39.1、owner 队列与人工 epoch；设置内 stream 视口；交还取消未发送输入、等待官方 daemon 在途响应再新 snapshot，不重放，不承诺 OS shell 隔离。
 - [ADR 0035](docs/adr/0035-extension-private-settings.md)：通用扩展私有凭据/安装数据目录与声明式设置，现有扩展管理内使用；运行时凭据不入config/模型，动作按代取消/排空，同OS可信边界不变。
-- ADR 0036：`packages/feishu-channel` 是普通 Cordis 消费者，使用通用设置/凭据/私有目录与既有 Event/Wake/工具/cleanup；无供应商 server 路由、保留内置 ID 或默认连接。只支持本人单聊文字，真实租户扫码/权限/收发需单独授权验收。
+- ADR 0036：`packages/feishu-channel` 是普通 Cordis 消费者，使用通用设置/凭据/私有目录与既有 Event/Wake/工具/cleanup；无供应商 server 路由、保留内置 ID 或默认连接。[ADR 0054](docs/adr/0054-feishu-multi-recipient-plan.md) 扩展为默认多人私聊、取消配对、姓名查找与用户 ID 发送；入站提供姓名/ID/消息 ID；来源不授予主人权限，真实插件收发需单独验收。
 
 
 - ADR 0035 的动作 group/visibleActions 仅为通用展示与可用性契约，业务状态映射归插件；HTTP/handle 同 runner 校验，系统层不含 provider 分支。
