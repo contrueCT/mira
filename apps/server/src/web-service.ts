@@ -1,3 +1,4 @@
+import { GeneralSettingsStore } from './general-settings.ts';
 import { BackgroundJobs } from './background-jobs.ts';
 import type { ModelRetryPolicy } from './model-retry.ts';
 import { createReplyTool, replyDescriptor, replyPublication, resolveReply, ReplyTargetError } from './replies.ts';
@@ -634,12 +635,24 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     if (!['today', '7d', '30d'].includes(range) || !validTimeZone(timeZone)) throw new WebHttpError('invalid_input');
     return this.#usage.usage({ range, timeZone }, PI_USAGE_PROJECTION);
   }
+  #generalStore() { return new GeneralSettingsStore(path.join(this.#options.miraHome ?? path.dirname(this.#options.settingsFile), 'general.json')); }
+  async generalSettings() { return this.#timelineReads.run(() => this.#generalStore().read()); }
+  #generalWrites: Promise<unknown> = Promise.resolve();
+  async saveGeneralSettings(value: unknown) {
+    const write = this.#generalWrites.then(() => {
+      if (this.#closed || this.#writer.signal.aborted) throw new WebHttpError('unavailable');
+      return this.#generalStore().save(value);
+    });
+    this.#generalWrites = write.catch(() => undefined);
+    return write;
+  }
   async timeline(before?: string): Promise<Timeline> {
     // One read-only snapshot and connection for every metadata page and
     // original batch, so pages cannot shift between queries of one response.
     return this.#timelineReads.run(() => this.#history.snapshot(async history => {
+      const display = await this.#generalStore().read();
       const seen = new Set<string>();
-      const scanned = await this.#scanTimeline(history, before, { seen });
+      const scanned = await this.#scanTimeline(history, before, { seen, display });
       if (before !== undefined) return scanned;
       const page = await this.#markRead(history, scanned);
       const updates = await this.#completedOutside(history, seen, new Set(page.items.map(item => item.id)));
@@ -701,20 +714,21 @@ export class LocalWebService implements WebBackend, ManagementBackend {
    * a visible chat message of this Mira. */
   async locateTimeline(id: string, before?: string): Promise<(Timeline & { mode: 'contiguous' | 'window' }) | null> {
     return this.#timelineReads.run(() => this.#history.snapshot(async history => {
+      const display = await this.#generalStore().read();
       const [original] = await history.readBatch({ ids: [id], maxBytes: 1_048_576 });
-      if (!original?.entry || original.tooLarge || !visible(original.entry)) return null;
+      if (!original?.entry || original.tooLarge || !visible(original.entry) || (!display.showExternalMessages && visible(original.entry)?.source !== undefined)) return null;
       const found = (items: Timeline['items']) => items.some(item => item.id === id);
       if (before !== undefined) {
-        const contiguous = await this.#scanTimeline(history, before, { limit: TIMELINE_SCAN_LIMIT, until: found });
+        const contiguous = await this.#scanTimeline(history, before, { limit: TIMELINE_SCAN_LIMIT, until: found, display });
         if (found(contiguous.items)) return { ...contiguous, mode: 'contiguous' as const };
       }
       const through = await history.pageCursorThrough({ id, kinds: ['event', 'context', 'tool'] });
       if (!through) return null;
-      const window = await this.#scanTimeline(history, through.before ?? undefined, { limit: TIMELINE_SCAN_LIMIT });
+      const window = await this.#scanTimeline(history, through.before ?? undefined, { limit: TIMELINE_SCAN_LIMIT, display });
       return found(window.items) ? { ...window, mode: 'window' as const } : null;
     }));
   }
-  async #scanTimeline(history: RunHistoryReader, before: string | undefined, options: { limit?: number; until?: (items: Timeline['items']) => boolean; seen?: Set<string> } = {}): Promise<Timeline> {
+  async #scanTimeline(history: RunHistoryReader, before: string | undefined, options: { display?: { revision: number; showExternalMessages: boolean }; limit?: number; until?: (items: Timeline['items']) => boolean; seen?: Set<string> } = {}): Promise<Timeline> {
     const items: Timeline['items'] = [];
     let cursor = before; let bytes = 0;
     // Target visible messages rather than raw events, within a raw scan budget.
@@ -751,7 +765,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
               else this.#remember(key, cached);
             }
           }
-          if (cached.item) { chunk.push(cached.item); bytes += Buffer.byteLength(cached.item.text); }
+          if (cached.item && (options.display?.showExternalMessages || cached.item.source === undefined)) { chunk.push(cached.item); bytes += Buffer.byteLength(cached.item.text); }
         }
       }
       items.unshift(...chunk);
@@ -759,7 +773,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       const enough = options.until ? options.until(items) : items.length >= TIMELINE_TARGET;
       if (enough || bytes >= TIMELINE_RESPONSE_BYTES || !cursor) break;
     }
-    return { items, nextCursor: cursor ?? null };
+    return { items, nextCursor: cursor ?? null, displayRevision: options.display?.revision ?? 0 };
   }
   /** A hit becomes most recently used. */
   #cached(id: string): { item: Timeline['items'][number] | null } | undefined {
@@ -894,7 +908,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     this.#writer.signal.removeEventListener('abort', this.#ownershipLost);
     // Fence/cancel all independent resources now, before awaiting any lease.
     // In particular a settings action must not wait behind the runtime drain.
-    const resources = [this.#host?.close(), this.#deliveries?.close(), this.#dreaming?.close(),
+    const resources = [this.#generalWrites, this.#host?.close(), this.#deliveries?.close(), this.#dreaming?.close(),
       this.browser.close(), this.#terminals.close(), this.#subagents.close(), this.#drain];
     this.#closeTask = (async () => {
       const results = await Promise.allSettled(resources);

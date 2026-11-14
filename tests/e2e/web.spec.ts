@@ -13,7 +13,7 @@ test('desktop and narrow layouts render the single Mira timeline without console
   await expect(page.getByLabel('给 Mira 发消息', { exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('mira-narrow.png'), fullPage: true });
-  await page.getByRole('button', { name: '模型设置', exact: true }).click();
+  await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '模型', exact: true }).click();
   await expect(page.getByRole('dialog', { name: '设置', exact: true })).toBeVisible();
   await expect(page.getByLabel('服务商', { exact: true })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('mira-settings-narrow.png'), fullPage: true });
@@ -56,11 +56,11 @@ test('double Enter submits once and refresh restores the fixture server receipt'
 });
 
 test('settings close, Escape and Back/Forward leave the timeline usable', async ({ page }) => {
-  await page.goto('/'); await page.getByRole('button', { name: '模型设置', exact: true }).click();
+  await page.goto('/'); await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '模型', exact: true }).click();
   await expect(page).toHaveURL(/#settings$/);
   await expect(page.getByRole('dialog')).toBeVisible(); await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.goBack();
+  await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '模型', exact: true }).click(); await page.goBack();
   await expect(page.getByRole('dialog')).toHaveCount(0); await page.goForward(); await expect(page.getByRole('dialog')).toBeVisible();
   await page.getByRole('button', { name: '关闭设置', exact: true }).click(); await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.getByLabel('给 Mira 发消息', { exact: true })).toBeEditable();
@@ -103,11 +103,12 @@ test('opening settings twice or waiting for slow reads never dismisses the modal
   const box = await gear.boundingBox(); if (!box) throw Error('Settings button must be visible');
   // Native second click lands at the opener's coordinates, now behind the modal.
   await page.mouse.dblclick(box.x + box.width / 2, box.y + box.height / 2, { delay: 100 });
+  await page.getByRole('tab', { name: '模型', exact: true }).click();
   await expect(page.getByRole('dialog', { name: '设置', exact: true })).toBeVisible();
   await expect(page.getByLabel('服务商', { exact: true })).toBeVisible();
   await expect(page).toHaveURL(/#settings$/);
   await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
-  await gear.click();
+  await gear.click(); await page.getByRole('tab', { name: '模型', exact: true }).click();
   await expect(page.getByText('正在读取配置…', { exact: true })).toBeVisible();
   await expect(page.getByLabel('服务商', { exact: true })).toBeVisible();
   await expect(page.getByRole('dialog', { name: '设置', exact: true })).toBeVisible();
@@ -191,7 +192,7 @@ async function mockSettings(page: Page, initial = settingsFixture()) {
 }
 async function openSettings(page: Page) {
   await page.goto('/');
-  await page.getByRole('button', { name: '模型设置', exact: true }).click();
+  await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '模型', exact: true }).click();
   await expect(page.getByLabel('服务商', { exact: true })).toBeVisible();
 }
 
@@ -254,7 +255,7 @@ test('late discovery is discarded after draft edits and settings close', async (
   await page.getByRole('button', { name: '关闭设置', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   release(); await expect.poll(() => settled).toBe(true);
-  await page.getByRole('button', { name: '模型设置', exact: true }).click();
+  await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '模型', exact: true }).click();
   await page.getByRole('button', { name: '自定义连接', exact: true }).click();
   await expect(page.getByLabel('服务地址', { exact: true })).toHaveValue('http://127.0.0.1:9999/v1');
   await expect(page.getByLabel('发现的候选模型', { exact: true })).toHaveCount(0);
@@ -365,7 +366,7 @@ for (const exit of ['cancel', 'escape', 'back', 'reload'] as const) {
     else {
       await expect(page.getByRole('dialog')).toHaveCount(0);
       await expect(page.getByRole('button', { name: '模型设置', exact: true })).toBeFocused();
-      await page.getByRole('button', { name: '模型设置', exact: true }).click();
+      await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '模型', exact: true }).click();
     }
     await expect(page.getByLabel('API Key', { exact: true })).toHaveValue('');
     await expectNoStoredKey(page, dummy);
@@ -474,7 +475,7 @@ test('repeated save submits once and an interrupted save is not replayed on reop
   await expect.poll(() => writes).toBe(1);
   await page.getByRole('button', { name: '关闭设置', exact: true }).click();
   release();
-  await page.getByRole('button', { name: '模型设置', exact: true }).click();
+  await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '模型', exact: true }).click();
   await expect(page.getByLabel('API Key', { exact: true })).toHaveValue('');
   await expectNoStoredKey(page, 'dummy-interrupted-save-key');
   expect(writes).toBe(1);
@@ -495,7 +496,7 @@ test('model diagnostics stay visible as text on narrow screens, through settings
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(await page.evaluate(() => Reflect.get(window, 'injected'))).toBeUndefined();
   await page.screenshot({ path: testInfo.outputPath('mira-model-error-narrow.png'), fullPage: true });
-  await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '模型', exact: true }).click(); await page.keyboard.press('Escape');
   await expect(notice).toContainText(detail); await expect(notice).toBeInViewport({ ratio: 1 });
   await page.reload(); await expect(notice).toContainText(detail); await expect(notice).toBeInViewport({ ratio: 1 });
   await page.locator('.timeline-scroll').evaluate(element => { element.scrollTop = 0; });
@@ -858,7 +859,7 @@ test('visible text meets WCAG AA contrast and an 11px minimum size in chat, erro
     await page.getByRole('button', { name: '查看更早的消息' }).click(); await expect(page.getByText('技术信息：HTTP 500 · Internal Server Error')).toBeVisible();
     await page.locator('[data-message-id="c-mira"]').hover();
     await check(`chat ${size.width}`);
-    await page.getByRole('button', { name: '模型设置', exact: true }).click(); await expect(page.getByRole('dialog')).toBeVisible();
+    await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '模型', exact: true }).click(); await expect(page.getByRole('dialog')).toBeVisible();
     await check(`settings ${size.width}`);
     await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
     browserList = [];
@@ -941,7 +942,7 @@ test('child activity stays in settings, observes each identity and recovers refr
   for (const name of ['模型设置', '添加附件', '发送消息', '回复这条消息']) await expect(page.locator('.mira-app').getByRole('button', { name, exact: true })).toHaveCount(1);
   await expect(page.locator('.mira-app').getByRole('button', { name: /子任务|运行记录/u })).toHaveCount(0);
   expect(childReads).toEqual([]);
-  await page.getByRole('button', { name: '模型设置', exact: true }).click();
+  await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '模型', exact: true }).click();
   await page.getByRole('tab', { name: '运行记录', exact: true }).click();
   await page.locator('.run-list-button').click();
   const first = page.getByRole('button', { name: '查看子任务 核对资料', exact: true });
@@ -999,7 +1000,7 @@ test('run child pagination discovers a newly followed-up older child after all p
     const selected = ordered.slice(start, start + 50);
     return route.fulfill({ json: { items: selected, nextCursor: start + 50 < ordered.length ? selected.at(-1)!.id : null } });
   });
-  await page.goto('/'); await page.getByRole('button', { name: '模型设置', exact: true }).click();
+  await page.goto('/'); await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '模型', exact: true }).click();
   await page.getByRole('tab', { name: '运行记录', exact: true }).click(); await page.locator('.run-list-button').click();
   await expect(page.locator('.run-children .child-card')).toHaveCount(50);
   await page.getByRole('button', { name: '更多子任务', exact: true }).click();
@@ -1025,13 +1026,13 @@ test('reasoning stays inside settings, adapts model capabilities and survives ca
   await expect(level).toHaveValue('high'); await expect(level.locator('option')).toHaveCount(4);
   await expect(page.getByText(/默认偏好“很高”仍保留/)).toBeVisible();
   await level.selectOption('low'); await page.getByRole('button', { name: '取消', exact: true }).click();
-  await page.getByRole('button', { name: '模型设置', exact: true }).click(); await expect(level).toHaveValue('high'); expect(writes).toHaveLength(0);
+  await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '模型', exact: true }).click(); await expect(level).toHaveValue('high'); expect(writes).toHaveLength(0);
   await page.getByRole('combobox', { name: '模型', exact: true }).selectOption('plain'); await expect(level).toHaveValue('off'); await expect(level).toBeDisabled();
   await page.getByRole('combobox', { name: '模型', exact: true }).selectOption('fixture-builtin'); await expect(level).toHaveValue('high');
   await level.selectOption('medium'); await page.getByRole('button', { name: '保存设置', exact: true }).dblclick();
   await expect(page.getByText(/配置已保存/)).toBeVisible(); expect(writes).toHaveLength(1); expect(writes[0]!.configuration.defaultThinkingLevel).toBe('medium');
   await page.goBack(); await expect(page.getByRole('dialog')).toHaveCount(0); await expect(page.getByLabel('默认推理强度')).toHaveCount(0);
-  await page.goForward(); await expect(level).toHaveValue('medium');
+  await page.goForward(); await page.getByRole('tab', { name: '模型', exact: true }).click(); await expect(level).toHaveValue('medium');
   await page.setViewportSize({ width: 390, height: 844 }); await level.scrollIntoViewIfNeeded();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('mira-reasoning-narrow.png'), fullPage: true });
@@ -1045,7 +1046,7 @@ test('reasoning settings retain an unsaved edit on revision conflict and discard
   await mockSettings(page, initial);
   await page.route('**/api/settings', route => route.request().method() === 'PUT' ? route.fulfill({ status: 409, json: { error: 'Settings changed; reload before saving' } }) : route.fulfill({ json: initial }));
   // This fixture selects a custom connection, so the built-in provider selector is absent.
-  await page.goto('/'); await page.getByRole('button', { name: '模型设置', exact: true }).click();
+  await page.goto('/'); await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '模型', exact: true }).click();
   const level = page.getByLabel('默认推理强度', { exact: true });
   await expect(level).toHaveValue('low'); await level.selectOption('high'); await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await expect(page.getByRole('alert')).toBeVisible(); await expect(level).toHaveValue('high');
@@ -1064,7 +1065,7 @@ test('reasoning edit stays retryable when active child work makes settings tempo
     return writes === 1 ? route.fulfill({ status: 409, json: { error: 'Mira is working; retry when it is idle' } }) : route.fulfill({ json: publicSettings(route.request().postDataJSON() as SettingsWrite) });
   });
   // This fixture selects a custom connection, so the built-in provider selector is absent.
-  await page.goto('/'); await page.getByRole('button', { name: '模型设置', exact: true }).click();
+  await page.goto('/'); await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '模型', exact: true }).click();
   const level = page.getByLabel('默认推理强度', { exact: true });
   await level.selectOption('high'); await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await expect(page.getByText('Mira 或子任务仍在运行，暂时不能修改配置。编辑仍保留，等全部结束后可以再次保存。')).toBeVisible();
@@ -1154,7 +1155,7 @@ test('generic extension actions default to primary, collapse secondary controls 
     await route.fulfill({ json: { operation: view.operation } });
   });
   const openSettings = async () => {
-    await page.getByRole('button', { name: '模型设置', exact: true }).click();
+    await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '模型', exact: true }).click();
     await page.getByRole('tab', { name: '扩展', exact: true }).click();
     await page.getByRole('button', { name: '连接设置', exact: true }).click();
   };
@@ -1268,7 +1269,7 @@ test('custom discovery prefills supplied metadata, keeps unknown limits blank an
   expect(saved[0]!.reasoning).toBe(true); expect(saved[0]!.reasoningFormat).toBeUndefined();
   expect(saved[1]).toEqual({ id: 'rich-model', name: 'Rich fixture', contextWindow: 64000, maxTokens: 8192, reasoning: true, reasoningFormat: 'openrouter', input: ['text', 'image'] });
   await page.getByRole('button', { name: '关闭设置', exact: true }).click();
-  await page.getByRole('button', { name: '模型设置', exact: true }).click();
+  await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '模型', exact: true }).click();
   await expect(page.getByLabel('默认推理强度', { exact: true })).toBeEnabled();
 });
 
@@ -1442,8 +1443,8 @@ test('quote navigation asks the server once, has cancellation and preserves unav
   await expect(cancel).toHaveCount(0);
 });
 
-test('touch viewport exposes a usable reply action without hover', async ({ browser }) => {
-  const context = await browser.newContext({ baseURL: 'http://127.0.0.1:3211', viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+test('touch viewport exposes a usable reply action without hover', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ baseURL: baseURL!, viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   const page = await context.newPage();
   await page.goto('/');
   const reply = page.getByRole('button', { name: '回复这条消息' }).first();
@@ -1856,7 +1857,7 @@ for (const closeControl of ['header', 'footer', 'escape', 'access'] as const) te
   await page.evaluate(() => { history.back = () => {}; });
   if (closeControl === 'access') {
     await page.route('**/api/auth/settings', route => route.fulfill({ json: { revision: '00000000-0000-4000-8000-000000000001', enabled: false, authenticated: true } }));
-    await page.getByRole('tab', { name: '访问', exact: true }).click();
+    await page.getByRole('tab', { name: '通用', exact: true }).click();
     await page.getByRole('button', { name: '关闭', exact: true }).click();
   } else if (closeControl === 'escape') await page.keyboard.press('Escape');
   else await page.getByRole('button', { name: closeControl === 'header' ? '关闭设置' : '取消', exact: true }).click();

@@ -59,6 +59,7 @@ test('Feishu generic settings QR and multi-person private messaging reach the sa
       if (requests === 5) { expect(JSON.stringify(context)).toContain('ou_other'); expect(JSON.stringify(context)).toContain('om_other'); expect(JSON.stringify(context)).toContain('另一位用户'); return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'feishu-other-send', name: 'feishu_send_message', arguments: { text: '（合成测试）回复另一位发言者。', replyToMessageId: 'om_other' } }] }); }
       return streamOf(assistant('已通过飞书发送回复。'));
     } });
+    await service.saveGeneralSettings({ ...(await service.generalSettings()), showExternalMessages: true });
     app = createLocalHttp({ backend: service, port, assetsDirectory: path.join(sourceDirectory, 'apps/web/dist') }); await app.listen({ host: '127.0.0.1', port });
     await page.goto(origin); await expect(page.getByText('（合成测试）普通插件消息同样显示小号来源标记。', { exact: true })).toBeVisible();
     await page.getByLabel('给 Mira 发消息', { exact: true }).fill('（合成测试）请连接飞书。'); await page.getByRole('button', { name: '发送消息', exact: true }).click();

@@ -30,6 +30,7 @@
     "tests/unit/persona.test.mts",
     "tests/unit/attachments.test.mts",
     "tests/unit/web-settings.test.mts",
+    "tests/unit/general-settings.test.mts",
     "tests/unit/web-service.test.mts",
     "tests/unit/web-extension-startup.test.mts",
     "scripts/tool-usability.mts",

@@ -105,3 +105,5 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 - [0052 子任务的结构化回报、能力与附件、批量唤醒和关闭](0052-subagent-reports-capabilities-close.md)：Accepted，2026-10-31；`task_report {summary, question?}`，扩展能力（mainOnly 不下发、delegated 不能改日程），附件路径由子任务 read（含视频），同组一次唤醒，独立的 `subagent_close` 完全收尾，4 小时空闲释放兜底；提示 v0.5。
 - [0053 记忆写入引导](0053-memory-writing-guidance.md)：Accepted，2026-11-01；`<memory>` 改为想记就记、角色视角记忆与六条示例，“不要记什么”压成一句；提示 v0.6。
 - [0054 飞书插件多接收人发送与精简入站消息](0054-feishu-multi-recipient-plan.md)：Accepted scope，2026-11-14；默认多人私聊，取消配对；姓名查找与用户 ID 发送，入站姓名和消息 ID；已实现并进行本地验证，新增通讯录授权需明确配置，未部署。
+
+- [0056：通用设置与外部渠道消息显示](0056-general-settings-and-channel-display.md)：已批准并实现；跨设备保存，默认隐藏渠道收发记录，保留普通 Mira 回复。
