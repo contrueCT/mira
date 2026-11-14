@@ -27,9 +27,23 @@ authorization URLs and credentials remain in protected settings. Tenant approval
 publication, bot capability and long-connection subscription to `im.message.receive_v1`
 may still be needed. No pairing step or automatic test message is performed.
 
+Connection failures are shown under “需要处理” in these existing settings, including
+the exact missing base permission, missing credentials, token rejection, unavailable
+bot identity, unreadable scope list, network/TLS failure and WebSocket timeout.
+Manual preflight, QR verification, reconnect and automatic startup preserve the same
+diagnostic. Successful retry clears it; cancellation is not reported as a failure.
+Only fixed messages/allowlisted scope names are displayed, never upstream errors or
+credentials. The generic operation status still hides raw exceptions.
+
 The base grants remain `im:message.p2p_msg:readonly` and `im:message:send_as_bot`.
+All-human group reception additionally needs `im:message.group_msg`, bot membership
+and the long-connection event subscription. New QR registrations declare all three
+permissions. Existing-app connections never edit platform grants or subscriptions.
+Missing group grants do not block private messaging; settings distinguish verified
+all-human group permission from limited/unverified reception. Only events actually
+delivered by Feishu are available. See [ADR 0055](../../docs/adr/0055-feishu-connection-diagnostics-and-groups.md).
 Additional Contacts grants/data scope are explicit administrator configuration;
-registration does not silently request more permissions. App Secret uses the generic
+Contacts are not requested by registration. App Secret uses the generic
 installation-scoped private credential API, never config, Memory or tool arguments.
 
 Registration uses `@larksuite/channel@0.7.1` (`registerApp`, `preset:false`);
@@ -44,8 +58,8 @@ or uninstall does not revoke remote apps or tenant grants.
 - `feishu_search_users({query, offset?})`: read-only search of the app-visible
   directory; at most 20 matching `{name, openId, userId?}` rows per page and optional
   `nextOffset`. Each page is a new query; use its `complete` flag and explicit IDs.
-- `feishu_send_message({text, recipientName?, recipientId?, recipientIdType?, replyToMessageId?})`:
-  explicitly send as this application. Name and ID are mutually exclusive;
+- `feishu_send_message({text, recipientName?, recipientId?, recipientIdType?, chatId?, replyToMessageId?})`:
+  explicitly send as this application. Name, user ID and conversation ID are mutually exclusive;
   `recipientIdType` defaults to `open_id` and also supports `user_id`.
   A recipient need not have messaged or paired with the bot first.
 - `feishu_status` and `feishu_connect`: ordinary connection observation/action.
@@ -69,7 +83,7 @@ user. Ambiguous/fuzzy names return candidates without sending; incomplete result
 return `incomplete_search`. Clarification remains the model's natural decision.
 No target and no reply ID returns `not_sent`; there is no implicit last-chat target.
 A reply ID must be a retained inbound reference from the current app connection.
-If an explicit recipient is also supplied, it must match that reference's sender;
+For a private reference, an explicit user recipient must match that reference's sender;
 `user_id` is resolved before comparison. Missing/mismatched references never fall back
 to sending a new message. Old verified references remain readable without rewriting History.
 Ordinary Web final replies are not automatically echoed. After a confirmed send the
@@ -94,14 +108,21 @@ Set the application's Contacts data range explicitly; do not assume whole-compan
 access. A visible person can still be unreachable under app availability/tenant policy.
 `user_id` also depends on the relevant employee-ID field permission.
 
-## Multiple private senders and concise input
+## Multiple private/group senders and concise input
 
-All human private messages received by the app can wake the same continuous Mira.
-Groups and bot senders are ignored. A verified platform sender is not automatically
+All human private and group messages delivered by the app can wake the same continuous Mira.
+Group messages need no @. Receiving a message never automatically sends a reply:
+Mira decides whether to respond and can use the existing `NO_REPLY` behavior.
+Group payload additionally contains `chatType: "group"` and `chatId`; private input
+is unchanged. Bots are ignored and media is not downloaded. Replying to a group
+message stays in that group; combining a group quote with a user recipient or a
+different chatId is rejected. An explicit chatId can also send to a known group.
+Bot senders are ignored. A verified platform sender is not automatically
 an owner or authority to act; external quoted/forwarded content remains external.
 
 New payloads contain `senderName`, `senderOpenId`, `messageId`, `text` and a quote ID
-only when present. The plugin keeps chat/tenant/application routing internally.
+only when present, with group chatType/chatId as described above. Tenant/application
+routing and private chat IDs stay internal.
 The generic Host envelope still supplies provenance, timestamp and History ID;
 there is no Feishu-specific core renderer. Web shows ordinary text with the generic
 small source label. Unsupported media is an explicit text notice, without downloading.

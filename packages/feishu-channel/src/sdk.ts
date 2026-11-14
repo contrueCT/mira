@@ -17,7 +17,7 @@ export interface FeishuRegistrationOptions {
   onQRCode(info: { url: string; expireIn: number }): void;
   onStatus(status: 'polling' | 'slow_down' | 'domain_switched'): void;
 }
-export interface FeishuConnection { close(): Promise<void>; state(): FeishuConnectionState }
+export interface FeishuConnection { close(): Promise<void>; state(): FeishuConnectionState; readonly scopes?: readonly string[] }
 export interface FeishuSdk {
   register(options: FeishuRegistrationOptions): Promise<FeishuCredentials>;
   verify(credentials: FeishuCredentials): Promise<{ botOpenId: string; scopes: string[] }>;
@@ -30,13 +30,22 @@ export interface FeishuSdk {
   send(credentials: FeishuCredentials, message: { chatId?: string; recipientId?: string; recipientIdType?: 'open_id' | 'user_id'; text: string; uuid: string; replyToMessageId?: string }): Promise<{ messageId: string; chatId?: string }>;
 }
 export const FEISHU_REQUIRED_SCOPES = ['im:message.p2p_msg:readonly', 'im:message:send_as_bot'] as const;
+export const FEISHU_GROUP_SCOPE = 'im:message.group_msg';
+export const FEISHU_REGISTRATION_SCOPES = [...FEISHU_REQUIRED_SCOPES, FEISHU_GROUP_SCOPE] as const;
+export type FeishuConnectionFailure = 'storage_unavailable' | 'credentials_missing' | 'token_rejected' | 'bot_unavailable' | 'scope_query_failed' | 'missing_permissions' | 'network' | 'connection_timeout' | 'websocket_failed';
 export class FeishuSdkError extends Error {
   readonly code: 'registration_failed' | 'registration_expired' | 'registration_denied' | 'verification_failed' | 'connection_failed' | 'receive_failed' | 'send_unknown' | 'send_rejected';
-  constructor(code: FeishuSdkError['code']) { super(`Feishu ${code}`); this.name = 'FeishuSdkError'; this.code = code; }
+  readonly reason: FeishuConnectionFailure | undefined;
+  readonly missingScopes: readonly string[];
+  constructor(code: FeishuSdkError['code'], diagnostic?: { reason?: FeishuConnectionFailure; missingScopes?: readonly string[] }) {
+    super(`Feishu ${code}`); this.name = 'FeishuSdkError'; this.code = code; this.reason = diagnostic?.reason;
+    this.missingScopes = Object.freeze(FEISHU_REQUIRED_SCOPES.filter(scope => diagnostic?.missingScopes?.includes(scope)));
+  }
 }
 const quietLogger: Logger = { error() {}, warn() {}, info() {}, debug() {}, trace() {} };
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const string = (value: unknown): string => typeof value === 'string' ? value : '';
+const networkFailure = (error: unknown): boolean => ['ECONNABORTED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ERR_NETWORK', 'CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'ERR_TLS_CERT_ALTNAME_INVALID'].includes(string(record(error).code)) || Number(record(record(error).response).status) >= 500;
 const identity = (value: unknown): string => { const result = string(value); if (!result || result.length > 512 || /[\u0000-\u001f]/u.test(result)) throw new FeishuSdkError('receive_failed'); return result; };
 
 /** Only parse raw platform IDs. No roster lookup, stale cutoff, batching or dedup. */
@@ -105,7 +114,17 @@ export function createFeishuSdk(dependencies: FeishuSdkDependencies = {}): Feish
   const http: HttpInstance = {
     request: options => underlying.request({ ...options, timeout: 15_000 }),
     get: (url, options) => underlying.get(url, { ...options, timeout: 15_000 }),
-    post: (url, data, options) => underlying.post(url, data, { ...options, timeout: 15_000 }),
+    post: async (url, data, options) => {
+      try {
+        const response = await underlying.post(url, data, { ...options, timeout: 15_000 });
+        if (url.endsWith('/auth/v3/tenant_access_token/internal') && !string(record(response).tenant_access_token)) throw new FeishuSdkError('verification_failed', { reason: 'token_rejected' });
+        return response;
+      } catch (error) {
+        if (networkFailure(error)) throw new FeishuSdkError('verification_failed', { reason: 'network' });
+        if (url.endsWith('/auth/v3/tenant_access_token/internal')) throw new FeishuSdkError('verification_failed', { reason: 'token_rejected' });
+        throw error;
+      }
+    },
     put: (url, data, options) => underlying.put(url, data, { ...options, timeout: 15_000 }),
     patch: (url, data, options) => underlying.patch(url, data, { ...options, timeout: 15_000 }),
     delete: (url, options) => underlying.delete(url, { ...options, timeout: 15_000 }),
@@ -132,17 +151,20 @@ export function createFeishuSdk(dependencies: FeishuSdkDependencies = {}): Feish
       httpInstance: cancellable, cache, logger: quietLogger, loggerLevel: LoggerLevel.fatal, source: 'mira' });
   };
   const verify: FeishuSdk['verify'] = async credentials => {
+    let stage: FeishuConnectionFailure = 'bot_unavailable';
     try {
       const api = client(credentials);
       const response: unknown = await api.request({ url: '/open-apis/bot/v3/info', method: 'GET' });
       const bot = record(response);
       if (bot.code !== 0 || !string(record(bot.bot).open_id)) throw new Error();
+      stage = 'scope_query_failed';
       const scopeResponse = await api.application.v6.scope.list();
       if (scopeResponse.code !== 0 || !Array.isArray(scopeResponse.data?.scopes)) throw new Error();
       const scopes = scopeResponse.data.scopes.filter(scope => scope.grant_status === 1 && scope.scope_type === 'tenant').map(scope => scope.scope_name);
-      if (!FEISHU_REQUIRED_SCOPES.every(scope => scopes.includes(scope))) throw new Error();
+      const missingScopes = FEISHU_REQUIRED_SCOPES.filter(scope => !scopes.includes(scope));
+      if (missingScopes.length) throw new FeishuSdkError('verification_failed', { reason: 'missing_permissions', missingScopes });
       return { botOpenId: string(record(bot.bot).open_id), scopes };
-    } catch { throw new FeishuSdkError('verification_failed'); }
+    } catch (error) { if (error instanceof FeishuSdkError) throw error; throw new FeishuSdkError('verification_failed', { reason: networkFailure(error) ? 'network' : stage }); }
   };
   return {
     async register(options) {
@@ -155,7 +177,7 @@ export function createFeishuSdk(dependencies: FeishuSdkDependencies = {}): Feish
           domain: options.domain === 'feishu' ? 'accounts.feishu.cn' : 'accounts.larksuite.com',
           larkDomain: 'accounts.larksuite.com', signal, source: 'mira', createOnly: true,
           appPreset: { name: 'Mira', desc: 'Mira personal assistant text channel' },
-          addons: { preset: false, scopes: { tenant: [...FEISHU_REQUIRED_SCOPES], user: [] }, events: { items: { tenant: ['im.message.receive_v1'], user: [] } } },
+          addons: { preset: false, scopes: { tenant: [...FEISHU_REGISTRATION_SCOPES], user: [] }, events: { items: { tenant: ['im.message.receive_v1'], user: [] } } },
           onQRCodeReady: info => { clearTimeout(timer); if (!signal.aborted) options.onQRCode(info); },
           onStatusChange: info => { if (!signal.aborted) options.onStatus(info.status); },
         }));
@@ -173,7 +195,8 @@ export function createFeishuSdk(dependencies: FeishuSdkDependencies = {}): Feish
       let state: FeishuConnectionState = 'connecting';
       const setState = (next: FeishuConnectionState) => { state = next; handlers.onState(next); };
       setState('connecting');
-      try { await verify(credentials); } catch { setState('failed'); throw new FeishuSdkError('connection_failed'); }
+      let verified: Awaited<ReturnType<FeishuSdk['verify']>>;
+      try { verified = await verify(credentials); } catch (error) { setState('failed'); throw new FeishuSdkError('connection_failed', error instanceof FeishuSdkError ? { ...(error.reason ? { reason: error.reason } : {}), missingScopes: error.missingScopes } : undefined); }
       let socket: FeishuWsTransport | undefined;
       let stopped = false;
       const dispatcher = new EventDispatcher({ logger: quietLogger, loggerLevel: LoggerLevel.fatal, cache: new DefaultCache() });
@@ -194,9 +217,9 @@ export function createFeishuSdk(dependencies: FeishuSdkDependencies = {}): Feish
       } });
       await new Promise<void>((resolve, reject) => {
         let settled = false;
-        const fail = () => { if (settled) return; settled = true; clearTimeout(timer); stopped = true; socket?.close({ force: true }); setState('failed'); reject(new FeishuSdkError('connection_failed')); };
+        const fail = (reason: FeishuConnectionFailure = 'websocket_failed') => { if (settled) return; settled = true; clearTimeout(timer); stopped = true; socket?.close({ force: true }); setState('failed'); reject(new FeishuSdkError('connection_failed', { reason })); };
         const budget = dependencies.connectTimeoutMs ?? 15_000;
-        const timer = setTimeout(fail, Number.isFinite(budget) && budget > 0 ? Math.min(budget, 2_147_483_647) : 15_000);
+        const timer = setTimeout(() => fail('connection_timeout'), Number.isFinite(budget) && budget > 0 ? Math.min(budget, 2_147_483_647) : 15_000);
         try {
           socket = (dependencies.createWebSocket ?? (options => new WSClient(options)))({
             appId: credentials.appId, appSecret: credentials.appSecret,
@@ -209,10 +232,11 @@ export function createFeishuSdk(dependencies: FeishuSdkDependencies = {}): Feish
             onReconnecting: () => { if (!stopped) setState('reconnecting'); },
             onReconnected: () => queueMicrotask(() => { if (!stopped && socket?.getConnectionStatus().state === 'connected') setState('connected'); }),
           });
-          void socket.start({ eventDispatcher: dispatcher }).catch(fail);
+          void socket.start({ eventDispatcher: dispatcher }).catch(() => fail());
         } catch { fail(); }
       });
       return {
+        scopes: Object.freeze([...verified.scopes]),
         async close() { stopped = true; socket?.close({ force: true }); setState('closed'); },
         state() { if (stopped) return state; const actual = socket?.getConnectionStatus().state; return actual === 'connected' ? state : actual === 'reconnecting' ? 'reconnecting' : actual === 'connecting' ? 'connecting' : 'failed'; },
       };

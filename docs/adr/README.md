@@ -4,6 +4,8 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 ## 已确认
 
+- [ADR 0055：飞书连接诊断与群聊](0055-feishu-connection-diagnostics-and-groups.md)：固定安全原因在既有设置中显示；群内全部人类消息唤醒、由 Mira 决定是否回复；显式 chat_id 和原群引用发送。
+
 - 项目名 Mira，私有 GitHub 仓库 `contrueCT/mira`
 - TypeScript monorepo 及 [包边界](../architecture.md)
 - 小步开发，重要选择先确认，每轮实现/修复独立审查

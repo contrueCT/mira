@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createFeishuSdk, FEISHU_REQUIRED_SCOPES, parseFeishuMessage } from '../../packages/feishu-channel/src/sdk.ts';
+import { createFeishuSdk, FEISHU_REQUIRED_SCOPES, FEISHU_REGISTRATION_SCOPES, FeishuSdkError, parseFeishuMessage } from '../../packages/feishu-channel/src/sdk.ts';
 import type { FeishuConnectionState, FeishuCredentials, FeishuHttpInstance, FeishuSdkDependencies, FeishuWsOptions, FeishuWsTransport } from '../../packages/feishu-channel/src/sdk.ts';
 
 const credentials: FeishuCredentials = { appId: 'cli_synthetic', appSecret: 'synthetic-never-real', domain: 'feishu' };
@@ -47,7 +47,7 @@ test('Feishu registration uses official minimal options and never treats QR crea
   const abort = new AbortController(); const statuses: string[] = []; const qr: string[] = [];
   const register: NonNullable<FeishuSdkDependencies['registerApp']> = async options => {
     assert.equal(options.addons?.preset, false); assert.equal(options.createOnly, true);
-    assert.deepEqual(options.addons?.scopes?.tenant, [...FEISHU_REQUIRED_SCOPES]);
+    assert.deepEqual(options.addons?.scopes?.tenant, [...FEISHU_REGISTRATION_SCOPES]);
     assert.deepEqual(options.addons?.events?.items?.tenant, ['im.message.receive_v1']);
     assert.equal(options.domain, 'accounts.larksuite.com'); assert.equal(options.signal?.aborted, false);
     options.onQRCodeReady({ url: 'https://accounts.larksuite.com/synthetic', expireIn: 60 });
@@ -73,6 +73,30 @@ test('real SDK verification checks bot identity and actual granted tenant scopes
   }
   const missingBot = transport(request => request.url?.endsWith('/bot/v3/info') ? { code: 0, bot: {} } : good(request));
   await assert.rejects(createFeishuSdk({ httpInstance: missingBot.http }).verify(credentials), /verification_failed/);
+});
+
+test('connection failures expose only typed reasons and allowlisted missing tenant permissions', async () => {
+  const missing = transport(request => request.url?.endsWith('/application/v6/scopes') ? { code: 0, data: { scopes: [{ scope_name: 'im:message:send_as_bot', grant_status: 1, scope_type: 'tenant' }] }, msg: 'private-upstream-token' } : good(request));
+  const sdk = createFeishuSdk({ httpInstance: missing.http });
+  const check = (error: unknown) => error instanceof FeishuSdkError && error.reason === 'missing_permissions' && JSON.stringify(error.missingScopes) === JSON.stringify(['im:message.p2p_msg:readonly']) && !JSON.stringify(error).includes('private-upstream-token');
+  await assert.rejects(sdk.verify(credentials), check);
+  await assert.rejects(sdk.connect(credentials, { onState() {}, async onMessage() {} }), check);
+  for (const [fixture, reason] of [
+    [transport(request => request.url?.includes('tenant_access_token') ? { code: 10014, msg: credentials.appSecret } : good(request)), 'token_rejected'],
+    [transport(() => { throw Object.assign(new Error(credentials.appSecret), { code: 'ETIMEDOUT' }); }), 'network'],
+    [transport(request => request.url?.endsWith('/bot/v3/info') ? { code: 0, bot: {} } : good(request)), 'bot_unavailable'],
+    [transport(request => request.url?.endsWith('/application/v6/scopes') ? { code: 99991672, msg: credentials.appSecret } : good(request)), 'scope_query_failed'],
+  ] as const) {
+    await assert.rejects(createFeishuSdk({ httpInstance: fixture.http }).verify(credentials), error => error instanceof FeishuSdkError && error.reason === reason && !JSON.stringify(error).includes(credentials.appSecret) && !('cause' in error));
+  }
+  const { http } = transport(good); const socket = socketFixture(false);
+  for (const code of ['SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'ERR_TLS_CERT_ALTNAME_INVALID', 'CERT_NOT_YET_VALID']) {
+    for (const endpoint of ['tenant_access_token', '/bot/v3/info']) {
+      const tls = transport(request => { if (request.url?.includes(endpoint)) throw Object.assign(new Error(credentials.appSecret), { code }); return good(request); });
+      await assert.rejects(createFeishuSdk({ httpInstance: tls.http }).verify(credentials), error => error instanceof FeishuSdkError && error.reason === 'network' && !JSON.stringify(error).includes(credentials.appSecret));
+    }
+  }
+  await assert.rejects(createFeishuSdk({ httpInstance: http, createWebSocket: socket.createWebSocket, connectTimeoutMs: 5 }).connect(credentials, { onState() {}, async onMessage() {} }), error => error instanceof FeishuSdkError && error.reason === 'connection_timeout');
 });
 
 test('real SDK outbound is one text create or reply, preserving uuid and no automatic fallback', async () => {

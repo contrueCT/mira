@@ -11,7 +11,7 @@ import { FeishuPrivateStore } from '../../packages/feishu-channel/src/store.ts';
 import { FeishuSdkError } from '../../packages/feishu-channel/src/sdk.ts';
 import type { FeishuSdk, FeishuIncomingText, FeishuRegistrationOptions, FeishuCredentials } from '../../packages/feishu-channel/src/sdk.ts';
 
-type Settings = { actions: Array<{ id: string; group?: 'primary' | 'secondary'; execute(context: { signal: AbortSignal }): Promise<void> }>; status(): { state: string; visibleActions?: string[]; details?: Array<{ label: string; value: string }>; authorization?: { url: string } } };
+type Settings = { actions: Array<{ id: string; group?: 'primary' | 'secondary'; execute(context: { signal: AbortSignal }): Promise<void> }>; status(): { state: string; code?: string; visibleActions?: string[]; details?: Array<{ label: string; value: string }>; authorization?: { url: string } } };
 const until = async (ready: () => boolean) => { for (let i = 0; i < 100 && !ready(); i++) await new Promise(resolve => setTimeout(resolve, 5)); assert.ok(ready()); };
 const secret = 'synthetic-private-app-secret';
 const credentials: FeishuCredentials = { appId: 'app-test', appSecret: secret, domain: 'feishu' };
@@ -99,8 +99,56 @@ test('Feishu accepts multiple private senders without pairing and keeps their re
   assert.equal((await f.send('reply-b', 'B', 'b')).status, 'sent');
   assert.deepEqual(f.sdk.sends.map(s => s.chatId), ['chat-owner', 'other-chat']);
   await f.sdk.receive(incoming({ messageId: 'group', chatType: 'group' }));
-  await f.sdk.receive(incoming({ messageId: 'bot', senderType: 'app' })); assert.equal(f.wakes.length, 2);
+  await f.sdk.receive(incoming({ messageId: 'bot', senderType: 'app' })); assert.equal(f.wakes.length, 3);
+  assert.deepEqual(f.wakes[2]!.event.payload, { senderName: '张三', senderOpenId: 'user-owner', messageId: 'group', text: 'hello', chatType: 'group', chatId: 'chat-owner' });
 });
+test('manual connection failures remain actionable in settings, redact upstream text and clear after retry', async t => {
+  const f = await fixture(t);
+  f.sdk.sdk.verify = async () => { throw new FeishuSdkError('verification_failed', { reason: 'missing_permissions', missingScopes: ['im:message.p2p_msg:readonly', secret] }); };
+  await assert.rejects(f.action('connect'));
+  assert.equal(f.settings.status().state, 'error'); assert.equal(f.settings.status().code, 'configuration');
+  assert.match(JSON.stringify(f.settings.status().details), /im:message.p2p_msg:readonly/);
+  assert.ok(!JSON.stringify(f.settings.status()).includes(secret));
+  assert.equal((await f.state())?.app ?? null, null);
+  f.sdk.sdk.verify = async () => { throw new Error(secret + ' https://private.invalid/secret'); };
+  await assert.rejects(f.action('connect'));
+  assert.equal(f.settings.status().code, 'unknown'); assert.ok(!JSON.stringify(f.settings.status()).includes(secret));
+  f.sdk.sdk.verify = async () => ({ botOpenId: 'bot', scopes: [] });
+  await f.action('connect'); assert.equal(f.settings.status().state, 'connected');
+  assert.ok(!f.settings.status().details?.some(item => item.label === '需要处理'));
+  const cancelled = new AbortController(); cancelled.abort(); await assert.rejects(f.action('reconnect', cancelled.signal));
+  assert.equal(f.settings.status().state, 'connected');
+  assert.ok(!f.settings.status().details?.some(item => item.label === '需要处理'));
+});
+test('restart preserves a typed connection failure instead of replacing it with a storage error', async t => {
+  const first = await fixture(t); await first.action('connect'); await first.close();
+  const sdk = fakeSdk(); sdk.sdk.connect = async () => { throw new FeishuSdkError('connection_failed', { reason: 'network' }); };
+  const next = await fixture(t, { directory: first.directory, sdk });
+  assert.equal(next.settings.status().code, 'network'); assert.match(JSON.stringify(next.settings.status().details), /DNS/);
+  assert.equal((await next.state()).app.appId, 'app-test');
+});
+test('all human group messages wake without mentions, preserve routes and deduplicate after restart', async t => {
+  const f = await fixture(t); await f.action('connect');
+  const group = incoming({ messageId: 'group-message', chatType: 'group', chatId: 'group-a', text: '普通群消息，没有@任何人' });
+  await f.sdk.receive(group);
+  await f.sdk.receive(incoming({ messageId: 'other-group', chatType: 'group', chatId: 'group-b', senderOpenId: 'user-other' }));
+  await f.sdk.receive(incoming({ messageId: 'bot-group', chatType: 'group', senderType: 'app' }));
+  assert.equal(f.wakes.length, 2); assert.equal(f.sdk.sends.length, 0);
+  assert.equal((f.wakes[0]!.event.payload as Record<string, Json>).chatId, 'group-a');
+  assert.equal((await f.send('group-reply', 'reply', 'group-message')).status, 'sent');
+  assert.equal(f.sdk.sends[0]!.chatId, 'group-a'); assert.equal(f.sdk.sends[0]!.recipientId, undefined);
+  const call = (id: string, args: Json) => f.tools.get('feishu_send_message')!.execute(args, { callId: id, signal: new AbortController().signal });
+  assert.equal(JSON.parse((await call('wrong-group', { text: 'reply', chatId: 'group-b', replyToMessageId: 'group-message' })).text).reason, 'reply_chat_mismatch');
+  assert.equal(JSON.parse((await call('wrong-dm', { text: 'reply', recipientId: 'user-owner', replyToMessageId: 'group-message' })).text).reason, 'reply_recipient_mismatch');
+  assert.equal(JSON.parse((await call('chat-target', { text: 'hello', chatId: 'group-b' })).text).status, 'sent');
+  const count = f.sdk.sends.length;
+  assert.equal(JSON.parse((await call('chat-target', { text: 'hello', chatId: 'group-c' })).text).status, 'not_sent'); assert.equal(f.sdk.sends.length, count);
+  await f.close(); const restored = await fixture(t, { directory: f.directory }); await restored.sdk.receive(group);
+  assert.equal(restored.wakes.length, 0);
+  assert.equal((await restored.send('restored-group-reply', 'reply', 'group-message')).status, 'sent');
+  assert.equal(restored.sdk.sends[0]!.chatId, 'group-a');
+});
+
 test('explicit names and IDs address different people without pairing; replay never resolves a changed name again', async t => {
   const f = await fixture(t); await f.action('connect');
   const send = (callId: string, args: Json) => f.tools.get('feishu_send_message')!.execute(args, { callId, signal: new AbortController().signal });
@@ -323,7 +371,7 @@ test('close waits for only the in-flight request and preserves unknown instead o
 });
 
 test('rejected private state blocks registration and manual connection before effects; explicit reset alone enables recovery', async t => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'mira-feishu-invalid-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-feishu-invalid-'))); t.after(() => rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'feishu-state.json');
   const original = JSON.stringify({ version: 99, owner: 'retained-owner', inbox: ['retained-inbound'], sends: { previous: { parts: [{ status: 'unknown' }] } } });
   await writeFile(file, original, { mode: 0o600 });
@@ -336,7 +384,7 @@ test('rejected private state blocks registration and manual connection before ef
 });
 
 test('startup inbox replay and newly arriving owner messages use the same state queue', async t => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'mira-feishu-startup-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-feishu-startup-'))); t.after(() => rm(root, { recursive: true, force: true }));
   const oldWake: ExtensionWake = { id: 'old-id', reason: 'saved before restart', event: { id: 'old-id', type: 'feishu.owner_message', occurredAt: '2026-01-01T00:00:00Z', payload: { text: 'old' } } };
   await writeFile(path.join(root, 'feishu-state.json'), JSON.stringify({ version: 1, connectionId: 'restart-binding', app: { appId: 'app-test', domain: 'feishu' }, owner: { tenantKey: 'tenant-owner', senderOpenId: 'user-owner', chatId: 'chat-owner' }, inbox: [oldWake], recentMessages: [], sends: {} }), { mode: 0o600 });
   const sdk = fakeSdk(), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
