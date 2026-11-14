@@ -20,8 +20,10 @@ const legacySchema = 'CREATE TABLE ledger (id INTEGER PRIMARY KEY CHECK(id=1), v
 const schema = 'CREATE TABLE ledger (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT, revision TEXT NOT NULL, legacy_revision TEXT NOT NULL, value_digest TEXT NOT NULL) STRICT';
 const receiptsSchema = 'CREATE TABLE receipts (call_id TEXT PRIMARY KEY, value TEXT NOT NULL, revision TEXT NOT NULL, binding_id TEXT NOT NULL, pending INTEGER NOT NULL CHECK(pending IN (0,1))) STRICT';
 const pendingSchema = 'CREATE INDEX pending_receipts ON receipts(binding_id, pending, call_id)';
+const incomingSchema = receiptsSchema.replace('receipts', 'incoming');
+const incomingPendingSchema = 'CREATE INDEX pending_incoming ON incoming(binding_id, pending, call_id)';
 type ReceiptWrite = { value: unknown; pending: boolean; bindingId: string };
-type Update<T> = { value: T; receipts?: Record<string, ReceiptWrite> } | { callId: string; receipt: ReceiptWrite };
+type Update<T> = { value: T; receipts?: Record<string, ReceiptWrite> } | { callId: string; receipt: ReceiptWrite; incoming?: boolean };
 
 const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 const storeError = (error: unknown): FeishuStoreError => error instanceof FeishuStoreError ? error : new FeishuStoreError(
@@ -89,7 +91,7 @@ export class FeishuPrivateStore<T> {
     }
     return exists;
   }
-  #transaction(legacy: { value: T | null; revision: string; serialized: string | null }, operation?: { update?: Update<T>; callId?: string; after?: string; bindingId?: string }): { value: T | null; revision: string; receipt?: unknown; callId?: string } {
+  #transaction(legacy: { value: T | null; revision: string; serialized: string | null }, operation?: { update?: Update<T>; callId?: string; after?: string; bindingId?: string; incoming?: boolean }): { value: T | null; revision: string; receipt?: unknown; callId?: string } {
     const db = new DatabaseSync(`${this.file}.sqlite`, { timeout: 100, allowExtension: false });
     try {
       if (db.prepare('PRAGMA journal_mode').get()!.journal_mode !== 'delete') fail();
@@ -104,7 +106,8 @@ export class FeishuPrivateStore<T> {
         db.prepare('INSERT INTO ledger VALUES (1, ?, ?, ?)').run(legacy.serialized, legacy.revision, legacy.revision); version = 1;
       } else if (app !== applicationId || (version === 1
         ? tables.length !== 1 || tables[0]!.name !== 'ledger' || tables[0]!.sql !== legacySchema
-        : version !== 2 || tables.length !== 3 || tables.some((item, index) => item.sql !== [schema, pendingSchema, receiptsSchema][index]))) fail();
+        : ![2, 3].includes(Number(version)) || tables.length !== (version === 2 ? 3 : 5)
+          || tables.some((item, index) => item.sql !== (version === 2 ? [schema, pendingSchema, receiptsSchema] : [incomingSchema, schema, incomingPendingSchema, pendingSchema, receiptsSchema])[index]))) fail();
       const row = db.prepare('SELECT * FROM ledger WHERE id=1').get();
       if (!row || row.legacy_revision !== legacy.revision || typeof row.revision !== 'string') throw new FeishuStoreError('conflict');
       const current: string | null = row.value === null ? null : typeof row.value === 'string' ? row.value : fail();
@@ -120,12 +123,14 @@ export class FeishuPrivateStore<T> {
           db.prepare('INSERT INTO ledger VALUES (1, ?, ?, ?, ?)').run(current, revision, legacy.revision, expectedDigest);
           db.exec('DROP TABLE previous_ledger; PRAGMA user_version=2'); version = 2;
         }
+        if (version === 2) { db.exec(`${incomingSchema}; ${incomingPendingSchema}; PRAGMA user_version=3`); version = 3; }
         const writes = 'callId' in update ? { [update.callId]: update.receipt } : update.receipts ?? {};
+        const table = 'incoming' in update && update.incoming ? 'incoming' : 'receipts';
         for (const [callId, receipt] of Object.entries(writes)) {
           if (!callId || callId.length > 512 || /[\u0000-\u001f\u007f]/u.test(callId)) fail();
           if (!receipt.bindingId || receipt.bindingId.length > 512) fail();
           const serialized = JSON.stringify(receipt.value); if (Buffer.byteLength(serialized) > maxBytes) fail();
-          db.prepare('INSERT INTO receipts VALUES (?, ?, ?, ?, ?) ON CONFLICT(call_id) DO UPDATE SET value=excluded.value, revision=excluded.revision, pending=excluded.pending')
+          db.prepare(`INSERT INTO ${table} VALUES (?, ?, ?, ?, ?) ON CONFLICT(call_id) DO UPDATE SET value=excluded.value, revision=excluded.revision, pending=excluded.pending`)
             .run(callId, serialized, digest(serialized), receipt.bindingId, receipt.pending ? 1 : 0);
         }
         const serialized = 'value' in update ? JSON.stringify(update.value) : current;
@@ -136,9 +141,11 @@ export class FeishuPrivateStore<T> {
         if (result.changes !== 1) throw new FeishuStoreError('conflict');
       }
       let receipt: unknown, callId: string | undefined;
-      if (version === 2 && operation && !update) {
-        const record = operation.callId !== undefined ? db.prepare('SELECT call_id, value, revision FROM receipts WHERE call_id=?').get(operation.callId)
-          : db.prepare('SELECT call_id, value, revision FROM receipts WHERE binding_id=? AND pending=1 AND call_id>? ORDER BY call_id LIMIT 1').get(operation.bindingId!, operation.after ?? '');
+      if (Number(version) >= 2 && operation && !update && (!operation.incoming || version === 3)) {
+        const table = operation.incoming ? 'incoming' : 'receipts';
+        const record = operation.callId !== undefined ? db.prepare(`SELECT call_id, value, revision FROM ${table} WHERE call_id=?`).get(operation.callId)
+          : operation.incoming ? db.prepare('SELECT call_id, value, revision FROM incoming WHERE binding_id=? AND pending=1 ORDER BY rowid LIMIT 1').get(operation.bindingId!)
+            : db.prepare('SELECT call_id, value, revision FROM receipts WHERE binding_id=? AND pending=1 AND call_id>? ORDER BY call_id LIMIT 1').get(operation.bindingId!, operation.after ?? '');
         if (record) {
           if (typeof record.value !== 'string' || Buffer.byteLength(record.value) > maxBytes || digest(record.value) !== record.revision || typeof record.call_id !== 'string') fail();
           receipt = JSON.parse(record.value as string); callId = record.call_id as string;
@@ -157,11 +164,16 @@ export class FeishuPrivateStore<T> {
     } catch (error) { throw storeError(error); }
   }
   async loadReceipt<R>(callId: string): Promise<R | null> { return (await this.#receipt({ callId })).receipt as R ?? null; }
+  async loadIncoming<R>(callId: string): Promise<R | null> { return (await this.#receipt({ callId, incoming: true })).receipt as R ?? null; }
+  async nextIncoming<R>(bindingId: string): Promise<{ callId: string; receipt: R } | null> {
+    const result = await this.#receipt({ after: '', bindingId, incoming: true });
+    return result.callId === undefined ? null : { callId: result.callId, receipt: result.receipt as R };
+  }
   async nextPendingReceipt<R>(bindingId: string, after = ''): Promise<{ callId: string; receipt: R } | null> {
     const result = await this.#receipt({ after, bindingId });
     return result.callId === undefined ? null : { callId: result.callId, receipt: result.receipt as R };
   }
-  async #receipt(query: { callId: string } | { after: string; bindingId: string }): Promise<{ receipt?: unknown; callId?: string }> {
+  async #receipt(query: ({ callId: string } | { after: string; bindingId: string }) & { incoming?: boolean }): Promise<{ receipt?: unknown; callId?: string }> {
     try {
       if (this.#revision === undefined) fail();
       const legacy = await this.#read();
@@ -170,6 +182,7 @@ export class FeishuPrivateStore<T> {
   }
   async save(value: T, receipts?: Record<string, ReceiptWrite>): Promise<void> { await this.#write({ value, ...(receipts ? { receipts } : {}) }); }
   async saveReceipt(callId: string, value: unknown, pending: boolean, bindingId: string): Promise<void> { await this.#write({ callId, receipt: { value, pending, bindingId } }); }
+  async saveIncoming(callId: string, value: unknown, pending: boolean, bindingId: string): Promise<void> { await this.#write({ callId, receipt: { value, pending, bindingId }, incoming: true }); }
   async #write(update: Update<T>): Promise<void> {
     const previous = pending.get(this.file) ?? Promise.resolve();
     const operation = previous.catch(() => {}).then(async () => {

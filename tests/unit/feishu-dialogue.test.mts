@@ -18,6 +18,8 @@ async function fixture(run: (host: ExtensionHost, state: { registrations: number
     export const state = {registrations:0,connections:0,closes:0,finish:null,sends:0,holdSend:false,finishSend:null,receive:null,reconnecting:null};
     export default createFeishuExtension({
       async register(options) { state.registrations++; options.onQRCode({url:'https://accounts.feishu.cn/synthetic-private-challenge',expireIn:600}); return new Promise((resolve,reject)=>{const abort=()=>reject(Error('synthetic cancelled'));options.signal.addEventListener('abort',abort,{once:true});state.finish=()=>{options.signal.removeEventListener('abort',abort);resolve({appId:'cli_synthetic',appSecret:'synthetic-private-credential',domain:'feishu'});};}); },
+      async getUser(credentials,id){return {name:'合成用户',openId:id};},
+      async searchUsers(){return {users:[],complete:true};},
       async verify(){return {botOpenId:'bot',scopes:[]};},
       async connect(credentials,handlers){state.connections++;state.reconnecting=()=>handlers.onState('reconnecting');state.receive=text=>handlers.onMessage({messageId:'pair',chatId:'owner-chat',chatType:'p2p',senderOpenId:'owner',senderType:'user',tenantKey:'tenant',createdAt:new Date(0).toISOString(),text,messageType:'text'});handlers.onState('connected');return {state:()=> 'connected',async close(){state.closes++;}};},
       async send(){state.sends++;if(state.holdSend)return new Promise((resolve,reject)=>{state.finishSend=unknown=>unknown?reject(Error('synthetic unknown')):resolve({messageId:'sent-'+state.sends});});return {messageId:'sent-'+state.sends};}
@@ -83,12 +85,10 @@ for (const action of ['reconnect', 'unbind']) test(`cancelled ${action} preserve
     await execute(host); await until(async () => state.registrations === 1); state.finish();
     await until(async () => (await host.extensionSettings('owner-channel'))?.operation?.state === 'succeeded');
     const start = async (id: string) => { const view = (await host.extensionSettings('owner-channel'))!; return host.startSettingsAction('owner-channel', id, view.revision); };
-    await start('pair'); await until(async () => (await host.extensionSettings('owner-channel'))?.operation?.state === 'succeeded');
-    const challenge = (await host.extensionSettings('owner-channel'))!.status.details!.find(item => item.value.startsWith('/mira pair '))!.value;
-    await state.receive(challenge);
+
     await until(async () => (await host.extensionSettings('owner-channel'))?.status.state === 'connected');
     const sendTool = (await host.prepare()).find(item => item.tool.name === 'feishu_send_message')!.tool;
-    const send = (id: string, text = 'synthetic owner message') => sendTool.execute({ text }, { callId: id, signal: new AbortController().signal });
+    const send = (id: string, text = 'synthetic owner message') => sendTool.execute({ text, recipientId: 'owner' }, { callId: id, signal: new AbortController().signal });
     const longText = 'x'.repeat(7000);
     state.holdSend = true; const inFlight = send('in-flight', longText);
     await until(async () => !!state.finishSend);
@@ -102,7 +102,7 @@ for (const action of ['reconnect', 'unbind']) test(`cancelled ${action} preserve
     const after = (await host.extensionSettings('owner-channel'))!;
     assert.equal(after.status.state, 'connected'); assert.equal(after.fields.find(field => field.key === 'appSecret')?.configured, true);
     assert.equal(state.closes, 0); assert.equal(state.connections, 1);
-    assert.match(JSON.stringify(after.status.details), /owner-chat/);
+    assert.match(JSON.stringify(after.status.details), /多人私聊/);
     const beforeReplay = state.sends; assert.equal(JSON.parse((await send('in-flight', longText)).text).status, JSON.parse(outcome.text).status); assert.equal(state.sends, beforeReplay);
     assert.equal(JSON.parse((await send('new-send')).text).status, 'sent'); assert.equal(state.sends, beforeReplay + 1);
     await execute(host); assert.equal(state.registrations, 1); assert.equal(state.connections, 1);
@@ -132,11 +132,13 @@ test('background WebSocket reconnect retains usable generic recovery actions wit
 // The receive writer below enforces immutable identity, without a live tenant/model.
 async function durableFixture(t: test.TestContext) {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-feishu-durable-')));
-  t.after(() => rm(root, { recursive: true, force: true }));
+
   const entry = path.join(root, 'plugin.mjs'); const privateDirectory = path.join(root, 'private');
   await writeFile(entry, `import { createFeishuExtension } from ${JSON.stringify(pluginUrl)};
     export const state = {sends:0,unknown:false,receive:null};
     export default createFeishuExtension({
+      async getUser(credentials,id){return {name:'合成用户',openId:id};},
+      async searchUsers(){return {users:[],complete:true};},
       async verify(){return {botOpenId:'synthetic-bot',scopes:[]};},
       async register(){throw Error('unexpected registration');},
       async connect(credentials,handlers){state.receive=(messageId,text)=>handlers.onMessage({messageId,chatId:'owner-chat',chatType:'p2p',senderOpenId:'owner',senderType:'user',tenantKey:'tenant',createdAt:new Date(0).toISOString(),text,messageType:'text'});handlers.onState('connected');return {state:()=> 'connected',async close(){}};},
@@ -159,14 +161,20 @@ async function durableFixture(t: test.TestContext) {
     await until(async () => (await host.extensionSettings('owner-channel'))?.operation?.state !== 'pending');
     assert.equal((await host.extensionSettings('owner-channel'))?.operation?.state, 'succeeded');
   };
-  const pair = async () => { await action('pair'); const view = (await host.extensionSettings('owner-channel'))!; await state.receive('pair-'+randomUUID(), view.status.details!.find(item => item.value.startsWith('/mira pair '))!.value); };
+  const pair = async () => {};
   const saveSecret = async () => { const view = (await host.extensionSettings('owner-channel'))!; await host.saveExtensionSettings('owner-channel', { expectedRevision: view.revision, values: {}, secrets: { appSecret: 'synthetic-secret' } }); };
   const send = async (callId: string, text: string) => {
     const tool = (await host.prepare()).find(item => item.tool.name === 'feishu_send_message')!.tool;
-    return (await tool.execute({ text }, { callId, signal: new AbortController().signal })).details as { status: string };
+    return (await tool.execute({ text, recipientId: 'owner' }, { callId, signal: new AbortController().signal })).details as { status: string };
   };
-  await open(); t.after(() => host.close()); await saveSecret(); await action('connect'); await pair();
+  await open(); t.after(async () => { await host.close(); await rm(root, { recursive: true, force: true }); }); await saveSecret(); await action('connect'); await pair();
   const directories = await readdir(privateDirectory); const file = path.join(privateDirectory, directories[0]!, 'data', 'feishu-state.json');
+  const rawReceive = state.receive;
+  state.receive = async (id, text) => { await rawReceive(id, text); await until(async () => {
+    if ((await host.extensionSettings('owner-channel'))?.status.state === 'error') return true;
+    const db = new DatabaseSync(`${file}.sqlite`); try { return Number(db.prepare('SELECT count(*) AS n FROM incoming WHERE pending=1').get()!.n) === 0; } finally { db.close(); }
+  }); };
+
   return { state, accepted, file, send, action, pair, saveSecret, failPublication(value: boolean) { failPublication = value; }, failWake(value: boolean) { failWake = value; },
     restart: async () => { await host.close(); await open(); }, close: () => host.close() };
 }
@@ -225,12 +233,13 @@ test('oversized, control and Unicode inbound text reaches the real Host with ori
   const db = new DatabaseSync(`${f.file}.sqlite`); try { assert.deepEqual(JSON.parse(db.prepare('SELECT value FROM ledger').get()!.value as string).inbox, []); } finally { db.close(); }
 });
 
-test('an existing pending inbox with an over-limit projection recovers without losing its immutable original text', async t => {
+test('a pending named input survives restart with the exact frozen Unicode-safe projection', async t => {
   const f = await durableFixture(t); f.failWake(true); const original = 'a'.repeat(100_001);
-  await assert.rejects(f.state.receive('pending-oversized', original)); await f.close();
-  const store = new FeishuPrivateStore<Record<string, any>>(f.file, path.resolve('packages/feishu-channel'));
-  const state = (await store.load())!; state.inbox[0].event.message.text = original; const identity = state.inbox[0].id;
-  await store.save(state); f.failWake(false); await f.restart();
+  await f.state.receive('pending-oversized', original); await f.close();
+  const db = new DatabaseSync(`${f.file}.sqlite`); let identity: string;
+  try { const row = db.prepare('SELECT call_id,value FROM incoming WHERE pending=1').get()!; identity = row.call_id as string; assert.ok(JSON.parse(row.value as string).wake); } finally { db.close(); }
+  f.failWake(false); await f.restart();
+  await until(async () => f.accepted.has(identity));
   const accepted = f.accepted.get(identity)!; assert.equal((accepted.payload as Record<string, unknown>).text, original); assert.match(accepted.message!.text, /Preview truncated/);
   await f.state.receive('pending-oversized', original); await f.state.receive('short-after-repair', 'hello');
 });
@@ -244,14 +253,14 @@ test('current v1 channel receipts migrate together and retain unknown identity p
   const data = JSON.parse(db.prepare('SELECT value FROM ledger').get()!.value as string);
   data.sends = Object.fromEntries(db.prepare('SELECT call_id, value FROM receipts').all().map(row => [row.call_id, JSON.parse(row.value as string)]));
   const original = JSON.stringify(data); const revision = createHash('sha256').update(original).digest('hex');
-  db.exec('DROP INDEX pending_receipts; DROP TABLE receipts; DROP TABLE ledger; CREATE TABLE ledger (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT, revision TEXT NOT NULL, legacy_revision TEXT NOT NULL) STRICT; PRAGMA user_version=1');
+  db.exec('DROP INDEX pending_incoming; DROP TABLE incoming; DROP INDEX pending_receipts; DROP TABLE receipts; DROP TABLE ledger; CREATE TABLE ledger (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT, revision TEXT NOT NULL, legacy_revision TEXT NOT NULL) STRICT; PRAGMA user_version=1');
   db.prepare('INSERT INTO ledger VALUES (1,?,?,?)').run(original, revision, revision); db.close();
   await writeFile(f.file, original, { mode: 0o600 }); f.failPublication(false); await f.restart();
   assert.equal(await readFile(f.file, 'utf8'), original);
   assert.equal((await f.send('old-unknown', 'uncertain old body')).status, 'unknown'); assert.equal(f.state.sends, before);
   assert.equal([...f.accepted.values()].filter(event => event.message?.text === 'original pending body').length, 1);
   const current = new DatabaseSync(`${f.file}.sqlite`);
-  try { assert.equal(current.prepare('PRAGMA user_version').get()!.user_version, 2); assert.deepEqual(JSON.parse(current.prepare('SELECT value FROM ledger').get()!.value as string).sends, {}); } finally { current.close(); }
+  try { assert.equal(current.prepare('PRAGMA user_version').get()!.user_version, 3); assert.deepEqual(JSON.parse(current.prepare('SELECT value FROM ledger').get()!.value as string).sends, {}); } finally { current.close(); }
 });
 
 test('a confirmed HTTP send with failed local outcome save remains unknown and is never repeated', async t => {

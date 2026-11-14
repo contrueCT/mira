@@ -15,21 +15,22 @@ const port = 3219, origin = `http://127.0.0.1:${port}`;
 const fakeSecret = 'synthetic-feishu-secret-never-real';
 // Production browser/HTTP/settings/Host/PG/Wake/runtime/outbound tool; only model
 // responses and official SDK HTTP/WS transport are synthetic, with no real account.
-test('Feishu generic settings QR and explicit pairing reach the same durable Mira and explicit outbound tool', async ({ page }, testInfo) => {
+test('Feishu generic settings QR and multi-person private messaging reach the same durable Mira and explicit outbound tool', async ({ page }, testInfo) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mira-feishu-real-'));
   let db: Awaited<ReturnType<typeof createTestDatabase>> | undefined;
   let service: LocalWebService | undefined, app: ReturnType<typeof createLocalHttp> | undefined;
   let wsOptions!: FeishuWsOptions;
   let dispatcher: Parameters<FeishuWsTransport['start']>[0]['eventDispatcher'];
   let closed = false, requests = 0;
-  const effectful: Array<{ text: string; uuid: string }> = [];
+  const effectful: Array<{ text: string; uuid: string; path?: string }> = [];
   let completeRegistration!: (value: { client_id: string; client_secret: string; user_info: { tenant_brand: 'feishu' } }) => void;
   type Request = { url?: string; data?: unknown };
   const response = async (request: Request) => {
     if (request.url?.includes('tenant_access_token')) return { code: 0, tenant_access_token: 'synthetic-token', expire: 7200 };
     if (request.url?.endsWith('/bot/v3/info')) return { code: 0, bot: { open_id: 'ou_bot' } };
     if (request.url?.endsWith('/application/v6/scopes')) return { code: 0, data: { scopes: FEISHU_REQUIRED_SCOPES.map(scope_name => ({ scope_name, grant_status: 1, scope_type: 'tenant' })) } };
-    if (request.url?.includes('/im/v1/messages')) { const data = request.data as { content: string; uuid: string }; effectful.push({ text: JSON.parse(data.content).text, uuid: data.uuid }); return { code: 0, data: { message_id: `om_sent_${effectful.length}` } }; }
+    if (request.url?.includes('/contact/v3/users/')) { const id = request.url.split('/').at(-1)!; return {code:0,data:{user:{name:id === 'ou_owner' ? '合成用户' : '另一位用户',open_id:id}}}; }
+    if (request.url?.includes('/im/v1/messages')) { const data = request.data as { content: string; uuid: string }; effectful.push({ text: JSON.parse(data.content).text, uuid: data.uuid, path: request.url }); return { code: 0, data: { message_id: `om_sent_${effectful.length}` } }; }
     throw Error('Unexpected synthetic SDK request');
   };
   const http = { request: response, post: (url: string, data: unknown) => response({ url, data }), get: (url: string) => response({ url }), put: () => { throw Error(); }, patch: () => { throw Error(); }, delete: () => { throw Error(); }, head: () => { throw Error(); }, options: () => { throw Error(); } } as FeishuHttpInstance;
@@ -38,9 +39,9 @@ test('Feishu generic settings QR and explicit pairing reach the same durable Mir
     createWebSocket: options => { wsOptions = options; closed = false; return { async start(input) { dispatcher = input.eventDispatcher; queueMicrotask(() => wsOptions.onReady?.()); }, close() { closed = true; }, getConnectionStatus() { return { state: closed ? 'idle' : 'connected', reconnectAttempts: 0 }; } }; },
   };
   const registry = globalThis as typeof globalThis & { miraFeishuSynthetic?: FeishuSdkDependencies }; registry.miraFeishuSynthetic = dependencies;
-  const deliver = async (id: string, text: string) => {
+  const deliver = async (id: string, text: string, sender = 'ou_owner') => {
     expect(dispatcher).toBeTruthy();
-    await dispatcher!.invoke({ schema: '2.0', header: { event_type: 'im.message.receive_v1' }, event: { sender: { sender_type: 'user', sender_id: { open_id: 'ou_owner' }, tenant_key: 'tenant_fixture' }, message: { message_id: id, chat_id: 'oc_owner', chat_type: 'p2p', create_time: '1792065600000', message_type: 'text', content: JSON.stringify({ text }) } } }, { needCheck: false });
+    await dispatcher!.invoke({ schema: '2.0', header: { event_type: 'im.message.receive_v1' }, event: { sender: { sender_type: 'user', sender_id: { open_id: sender }, tenant_key: 'tenant_fixture' }, message: { message_id: id, chat_id: sender === 'ou_owner' ? 'oc_owner' : 'oc_other', chat_type: 'p2p', create_time: '1792065600000', message_type: 'text', content: JSON.stringify({ text }) } } }, { needCheck: false });
   };
   try {
     db = await createTestDatabase();
@@ -55,6 +56,7 @@ test('Feishu generic settings QR and explicit pairing reach the same durable Mir
       if (requests === 1) { expect(JSON.stringify(context)).toContain('（合成测试）请连接飞书。'); return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'feishu-connect', name: 'feishu_connect', arguments: {} }] }); }
       if (requests === 2) return streamOf(assistant('已发起飞书连接，请打开设置 → 扩展查看授权二维码。此处为合成测试。'));
       if (requests === 3) { expect(JSON.stringify(context)).toContain('（合成测试）请告诉我今天的任务进度。'); return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'feishu-explicit-send', name: 'feishu_send_message', arguments: { text: '（合成测试）已收到你的飞书消息，任务进度会在这里同步。', replyToMessageId: 'om_user' } }] }); }
+      if (requests === 5) { expect(JSON.stringify(context)).toContain('ou_other'); expect(JSON.stringify(context)).toContain('om_other'); expect(JSON.stringify(context)).toContain('另一位用户'); return streamOf({ ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'feishu-other-send', name: 'feishu_send_message', arguments: { text: '（合成测试）回复另一位发言者。', replyToMessageId: 'om_other' } }] }); }
       return streamOf(assistant('已通过飞书发送回复。'));
     } });
     app = createLocalHttp({ backend: service, port, assetsDirectory: path.join(sourceDirectory, 'apps/web/dist') }); await app.listen({ host: '127.0.0.1', port });
@@ -74,23 +76,14 @@ test('Feishu generic settings QR and explicit pairing reach the same durable Mir
     completeRegistration({ client_id: 'cli_fixture', client_secret: fakeSecret, user_info: { tenant_brand: 'feishu' } });
     await expect(panel).toContainText('操作已完成'); await expect(panel).toContainText('cli_fixture');
     expect(await page.content()).not.toContain(fakeSecret); expect(await readFile(configuration, 'utf8')).not.toContain(fakeSecret);
-    await panel.getByRole('button', { name: '生成本人配对码', exact: true }).click();
-    await expect(panel).toContainText('/mira pair ');
-    const challenge = (await panel.innerText()).match(/\/mira pair [A-Za-z0-9_-]+/)?.[0]; expect(challenge).toBeTruthy();
-    const pairingSecret = panel.locator('p').filter({ hasText: challenge! }); await expect(pairingSecret).toHaveCount(1);
-    await pairingSecret.scrollIntoViewIfNeeded();
-    await page.screenshot({ path: testInfo.outputPath('feishu-pairing-desktop.png'), fullPage: true, mask: [pairingSecret] });
-    await page.setViewportSize({ width: 390, height: 844 }); await pairingSecret.scrollIntoViewIfNeeded(); await expect(pairingSecret).toBeInViewport({ ratio: 1 }); await page.screenshot({ path: testInfo.outputPath('feishu-pairing-narrow.png'), fullPage: true, mask: [pairingSecret] });
-    await page.setViewportSize({ width: 1440, height: 1000 });
-    await expect(panel.getByRole('button', { name: /确认这是本人|测试消息/ })).toHaveCount(0);
-    await deliver('om_pair', challenge!); await expect(panel).toContainText('已连接'); await expect(panel).toContainText('ou_owner'); expect(requests).toBe(2);
+    await expect(panel).toContainText('已连接'); await expect(panel.getByRole('button', {name:'生成本人配对码'})).toHaveCount(0); expect(requests).toBe(2);
     await expect(panel.getByRole('button', { name: '重新连接', exact: true })).not.toBeVisible();
     await expect(panel.getByRole('button', { name: '扫码连接', exact: true })).toHaveCount(0);
     expect(effectful).toHaveLength(0); await deliver('om_user', '（合成测试）请告诉我今天的任务进度。');
     await expect.poll(() => effectful.some(item => item.text === '（合成测试）已收到你的飞书消息，任务进度会在这里同步。')).toBe(true);
     await expect.poll(async () => (await service!.status()).state).toBe('idle'); expect(requests).toBe(4);
     await deliver('om_user', '（合成测试）请告诉我今天的任务进度。'); await new Promise(resolve => setTimeout(resolve, 50)); expect(effectful).toHaveLength(1);
-    expect((await db.admin.query("SELECT count(*)::integer AS count FROM life_events WHERE event->>'type'='feishu.owner_message'")).rows[0].count).toBe(1);
+    expect((await db.admin.query("SELECT count(*)::integer AS count FROM life_events WHERE event->>'type'='feishu.message'")).rows[0].count).toBe(1);
     await expect(panel).not.toContainText('/mira pair ');
     await panel.getByRole('heading', { name: '连接与设置' }).evaluate(element => element.scrollIntoView({ block: 'start' }));
     await page.screenshot({ path: testInfo.outputPath('feishu-settings-connected-desktop.png'), fullPage: true });
@@ -148,13 +141,16 @@ test('Feishu generic settings QR and explicit pairing reach the same durable Mir
     const outbound = page.getByText('（合成测试）已收到你的飞书消息，任务进度会在这里同步。', { exact: true });
     await outbound.scrollIntoViewIfNeeded(); await expect(outbound).toBeInViewport({ ratio: 1 });
     await page.screenshot({ path: testInfo.outputPath('feishu-connected-narrow.png'), fullPage: true });
+    await deliver('om_other', '（合成测试）另一位用户的私聊。', 'ou_other');
+    await expect.poll(() => effectful.length).toBe(2);
+    expect(effectful[1]!.path).toContain('/messages/om_other/reply');
+    await expect.poll(async () => (await service!.status()).state).toBe('idle');
     const durableCounts = (await db.admin.query('SELECT (SELECT count(*) FROM wake_requests)::integer AS wakes, (SELECT count(*) FROM wake_runs)::integer AS runs')).rows[0];
     await app.close(); app = undefined; await service.close(); service = undefined; expect(closed).toBe(true);
     service = await LocalWebService.open({ ...common, extensions: await readExtensionConfiguration(configuration) });
-    await deliver('om_pair', challenge!);
-    await deliver('om_pair_replay', challenge!);
-    await deliver('om_user', '（合成测试）请告诉我今天的任务进度。'); expect(effectful).toHaveLength(1);
+    await deliver('om_user', '（合成测试）请告诉我今天的任务进度。');
+    await deliver('om_other', '（合成测试）另一位用户的私聊。', 'ou_other'); expect(effectful).toHaveLength(2);
     expect((await db.admin.query('SELECT (SELECT count(*) FROM wake_requests)::integer AS wakes, (SELECT count(*) FROM wake_runs)::integer AS runs')).rows[0]).toEqual(durableCounts);
-    expect((await db.admin.query("SELECT count(*)::integer AS count FROM life_events WHERE event->>'type'='feishu.owner_message'")).rows[0].count).toBe(1);
+    expect((await db.admin.query("SELECT count(*)::integer AS count FROM life_events WHERE event->>'type'='feishu.message'")).rows[0].count).toBe(2);
   } finally { delete registry.miraFeishuSynthetic; await app?.close(); await service?.close(); await db?.close(); await rm(root, { recursive: true, force: true }); }
 });

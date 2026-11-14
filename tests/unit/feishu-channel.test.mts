@@ -4,6 +4,7 @@ import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
 import type { ExtensionContext, ExtensionTool, ExtensionEvent, ExtensionWake, ContextProvider, Json } from '@mira/extension-sdk';
 import { createFeishuExtension } from '../../packages/feishu-channel/src/index.ts';
 import { FeishuPrivateStore } from '../../packages/feishu-channel/src/store.ts';
@@ -20,14 +21,17 @@ function fakeSdk() {
   const sends: Array<Parameters<FeishuSdk['send']>[1]> = [];
   let register: FeishuSdk['register'] = async () => credentials;
   let send: FeishuSdk['send'] = async () => ({ messageId: `sent-${sends.length}` });
+  let settled = async () => {};
   const calls = { verify: 0, register: 0, connect: 0 };
   const sdk: FeishuSdk = {
+    async getUser(_credentials, userId) { return { name: userId === 'user-owner' ? '张三' : '李四', openId: userId }; },
+    async searchUsers() { return { users: [{ name: '李四', openId: 'user-other' }], complete: true }; },
     async register(options) { calls.register++; return register(options); },
     async verify() { calls.verify++; return { botOpenId: 'bot-test', scopes: [] }; },
     async connect(_credentials, handlers) { calls.connect++; const record = { ...handlers, closed: false }; connections.push(record); handlers.onState('connected'); return { state: () => record.closed ? 'closed' : 'connected', async close() { record.closed = true; handlers.onState('closed'); } }; },
     async send(creds, message) { assert.equal(creds.appSecret, secret); sends.push(structuredClone(message)); return send(creds, message); },
   };
-  return { sdk, connections, sends, calls, setRegister(fn: FeishuSdk['register']) { register = fn; }, setSend(fn: FeishuSdk['send']) { send = fn; }, receive(message = incoming()) { return connections.at(-1)!.onMessage(message); } };
+  return { sdk, connections, sends, calls, setRegister(fn: FeishuSdk['register']) { register = fn; }, setSend(fn: FeishuSdk['send']) { send = fn; }, setSettled(fn: () => Promise<void>) { settled = fn; }, async receive(message = incoming()) { await connections.at(-1)!.onMessage(message); await settled(); } };
 }
 async function fixture(t: test.TestContext, options: { directory?: string; secrets?: Map<string, string>; sdk?: ReturnType<typeof fakeSdk>; config?: Json } = {}) {
   const directory = options.directory ?? await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-feishu-channel-')));
@@ -47,9 +51,15 @@ async function fixture(t: test.TestContext, options: { directory?: string; secre
   await createFeishuExtension(sdk.sdk).apply({ mira: context as unknown as ExtensionContext }, options.config ?? { appId: 'app-test' });
   const close = async () => { for (const cleanup of cleanups) await cleanup(); }; t.after(close);
   const action = (id: string, signal = new AbortController().signal) => settings.actions.find(item => item.id === id)!.execute({ signal });
-  const send = async (callId: string, text: string, replyToMessageId?: string, signal = new AbortController().signal) => (await tools.get('feishu_send_message')!.execute({ text, ...(replyToMessageId ? { replyToMessageId } : {}) }, { callId, signal })).details as { status: string; sentParts: number; totalParts: number };
-  const pair = async () => { await action('pair'); const challenge = settings.status().details!.find(item => item.value.startsWith('/mira pair '))!.value; await sdk.receive(incoming({ text: challenge, messageId: 'pair-message' })); };
-  return { directory, secrets, sdk, settings, tools, providers, reads, wakes, events, failEvent(value: boolean) { failEvent = value; }, close, action, send, pair, failWake(value: boolean) { failWake = value; }, state: async () => {
+  const send = async (callId: string, text: string, replyToMessageId?: string, signal = new AbortController().signal) => (await tools.get('feishu_send_message')!.execute({ text, ...(replyToMessageId ? {} : { recipientId: 'user-owner' }), ...(replyToMessageId ? { replyToMessageId } : {}) }, { callId, signal })).details as { status: string; sentParts: number; totalParts: number };
+  const settle = async () => { for (let i = 0; i < 200; i++) {
+    if (settings.status().state === 'error') return;
+    let count = 0; try { const db = new DatabaseSync(path.join(directory, 'feishu-state.json.sqlite'), { readOnly: true }); try { if (db.prepare("SELECT name FROM sqlite_schema WHERE name='incoming'").get()) count = Number(db.prepare('SELECT count(*) AS n FROM incoming WHERE pending=1').get()!.n); } finally { db.close(); } } catch {}
+    if (!count) return; await new Promise(resolve => setTimeout(resolve, 5));
+  } assert.fail('inbox did not settle'); };
+  sdk.setSettled(settle);
+  const pair = async () => {}; // Shared older send fixtures now address an explicit user; there is no pairing flow.
+  return { directory, secrets, sdk, settings, tools, providers, reads, wakes, events, settle, failEvent(value: boolean) { failEvent = value; }, close, action, send, pair, failWake(value: boolean) { failWake = value; }, state: async () => {
     const value = JSON.parse(JSON.stringify(await new FeishuPrivateStore(path.join(directory, 'feishu-state.json'), path.resolve('packages/feishu-channel')).load()));
     if (!value) return value;
     const db = new DatabaseSync(path.join(directory, 'feishu-state.json.sqlite'));
@@ -61,7 +71,7 @@ async function fixture(t: test.TestContext, options: { directory?: string; secre
 test('Feishu activation is lazy; manual configuration explicitly verifies and connects', async t => {
   const f = await fixture(t); assert.deepEqual(f.sdk.calls, { register: 0, verify: 0, connect: 0 }); assert.deepEqual(f.reads, []);
   assert.equal(f.settings.status().state, 'unconfigured'); assert.equal((await f.send('before', 'hello')).status, 'not_sent');
-  await f.action('connect'); assert.equal(f.sdk.calls.verify, 1); assert.equal(f.sdk.calls.connect, 1); assert.equal(f.settings.status().state, 'pending');
+  await f.action('connect'); assert.equal(f.sdk.calls.verify, 1); assert.equal(f.sdk.calls.connect, 1); assert.equal(f.settings.status().state, 'connected');
   assert.equal((await f.state()).app.appId, 'app-test'); assert.ok(!JSON.stringify(await f.state()).includes(secret));
 });
 test('Feishu QR credentials stay private and authorization never enters model observations', async t => {
@@ -75,37 +85,83 @@ test('Feishu QR credentials stay private and authorization never enters model ob
   finish(credentials); await registration; assert.equal(f.secrets.get('appSecret'), secret); assert.equal(f.settings.status().authorization, undefined);
   assert.ok(!JSON.stringify(f.settings.status()).includes(secret)); assert.ok(!JSON.stringify(await f.state()).includes(secret));
 });
-test('Feishu pairing binds only a valid one-time private challenge, without confirmation or test sends', async t => {
-  const f = await fixture(t); await f.action('connect'); await f.sdk.receive(); assert.equal((await f.state()).owner, null);
-  assert.ok(!f.settings.actions.some(action => action.id === 'confirm' || action.id === 'test'));
-  await f.action('pair'); await f.sdk.receive(); assert.equal((await f.state()).owner, null);
-  const challenge = f.settings.status().details!.find(item => item.value.startsWith('/mira pair '))!.value;
-  for (const overrides of [{ chatType: 'group' as const }, { senderType: 'app' }, { text: challenge + 'wrong' }]) {
-    await f.sdk.receive(incoming({ text: challenge, ...overrides })); assert.equal((await f.state()).owner, null);
+test('Feishu accepts multiple private senders without pairing and keeps their reply routes distinct', async t => {
+  const f = await fixture(t); await f.action('connect');
+  assert.ok(!f.settings.actions.some(action => action.id === 'pair'));
+  await f.sdk.receive(incoming({ messageId: 'a' }));
+  await f.sdk.receive(incoming({ messageId: 'b', senderOpenId: 'user-other', chatId: 'other-chat' }));
+  assert.equal(f.wakes.length, 2);
+  assert.deepEqual(f.wakes.map(w => w.event.payload), [
+    { senderName: '张三', senderOpenId: 'user-owner', messageId: 'a', text: 'hello' },
+    { senderName: '李四', senderOpenId: 'user-other', messageId: 'b', text: 'hello' },
+  ]);
+  assert.equal((await f.send('reply-a', 'A', 'a')).status, 'sent');
+  assert.equal((await f.send('reply-b', 'B', 'b')).status, 'sent');
+  assert.deepEqual(f.sdk.sends.map(s => s.chatId), ['chat-owner', 'other-chat']);
+  await f.sdk.receive(incoming({ messageId: 'group', chatType: 'group' }));
+  await f.sdk.receive(incoming({ messageId: 'bot', senderType: 'app' })); assert.equal(f.wakes.length, 2);
+});
+test('explicit names and IDs address different people without pairing; replay never resolves a changed name again', async t => {
+  const f = await fixture(t); await f.action('connect');
+  const send = (callId: string, args: Json) => f.tools.get('feishu_send_message')!.execute(args, { callId, signal: new AbortController().signal });
+  assert.equal(JSON.parse((await send('by-name', { text: 'hello', recipientName: '李四' })).text).status, 'sent');
+  assert.equal(f.sdk.sends[0]!.recipientId, 'user-other');
+  f.sdk.sdk.searchUsers = async () => { throw Error('must not re-resolve a completed call'); };
+  assert.equal(JSON.parse((await send('by-name', { text: 'hello', recipientName: '李四' })).text).status, 'sent');
+  assert.equal(f.sdk.sends.length, 1);
+  assert.equal(JSON.parse((await send('by-id', { text: 'hello', recipientId: 'another', recipientIdType: 'user_id' })).text).status, 'sent');
+  assert.equal(f.sdk.sends.at(-1)!.recipientIdType, 'user_id');
+  assert.equal(JSON.parse((await send('by-id', { text: 'hello', recipientId: 'changed', recipientIdType: 'user_id' })).text).status, 'not_sent');
+  assert.equal(JSON.parse((await send('implicit', { text: 'hello' })).text).status, 'not_sent');
+});
+test('ambiguous, partial and failed name queries never send; explicit IDs do not query the directory', async t => {
+  const f = await fixture(t); await f.action('connect');
+  for (const result of [
+    { users: [{ name: '李四', openId: 'a' }, { name: '李四', openId: 'b' }], complete: true },
+    { users: [{ name: '李四', openId: 'a' }], complete: false, reason: 'budget_exceeded' },
+    { users: [], complete: false, reason: 'missing_permissions' },
+  ]) {
+    f.sdk.sdk.searchUsers = async () => result;
+    const response = await f.tools.get('feishu_send_message')!.execute({ text: 'hello', recipientName: '李四' }, { callId: randomUUID(), signal: new AbortController().signal });
+    assert.equal(JSON.parse(response.text).status, 'not_sent');
   }
-  await f.sdk.receive(incoming({ text: challenge, messageId: 'pair-once' }));
-  assert.equal(f.settings.status().state, 'connected'); assert.equal(f.sdk.sends.length, 0); assert.equal(f.wakes.length, 0);
-  assert.equal((await f.state()).pairingMessageId, 'pair-once'); assert.ok(!JSON.stringify(await f.state()).includes(challenge));
-  await f.sdk.receive(incoming({ text: challenge, messageId: 'pair-once' }));
-  await f.sdk.receive(incoming({ text: challenge, messageId: 'replayed-new-id' }));
-  for (const overrides of [{ chatType: 'group' as const }, { senderType: 'app' }, { tenantKey: 'other' }, { senderOpenId: 'other' }, { chatId: 'other' }]) await f.sdk.receive(incoming(overrides));
+  assert.equal(f.sdk.sends.length, 0);
+  f.sdk.sdk.searchUsers = async () => { throw Error('must not search for explicit IDs'); };
+  assert.equal((await f.send('id-without-directory', 'hello')).status, 'sent');
+});
+test('reply targeting verifies the sender and never silently falls back to a new recipient', async t => {
+  const f = await fixture(t); await f.action('connect'); await f.sdk.receive();
+  const call = (args: Json) => f.tools.get('feishu_send_message')!.execute(args, { callId: randomUUID(), signal: new AbortController().signal });
+  assert.equal(JSON.parse((await call({ text: 'hello', recipientId: 'other', replyToMessageId: 'message-1' })).text).reason, 'reply_recipient_mismatch');
+  f.sdk.sdk.getUser = async () => ({ name: '张三', openId: 'user-owner', userId: 'employee' });
+  assert.equal(JSON.parse((await call({ text: 'hello', recipientId: 'employee', recipientIdType: 'user_id', replyToMessageId: 'message-1' })).text).status, 'sent');
+  assert.equal(f.sdk.sends[0]!.chatId, 'chat-owner');
+});
+test('slow name lookup cannot block durable ACKs or a second private sender; frozen names survive redelivery', async t => {
+  const f = await fixture(t); await f.action('connect');
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<{ name: string; openId: string }>();
+  f.sdk.sdk.getUser = async () => { entered.resolve(); return release.promise; };
+  await f.sdk.connections.at(-1)!.onMessage(incoming()); await entered.promise;
+  await f.sdk.connections.at(-1)!.onMessage(incoming({ messageId: 'second', senderOpenId: 'other', chatId: 'other-chat' }));
+  for (let i = 0; i < 10; i++) await f.sdk.connections.at(-1)!.onMessage(incoming({ messageId: `backlog-${i}`, text: `followup-${i}` }));
   assert.equal(f.wakes.length, 0);
-  await f.sdk.receive(incoming({ messageId: 'accepted', replyToMessageId: 'external-quote', rootMessageId: 'root' }));
-  assert.equal(f.wakes.length, 1); assert.equal((f.wakes[0]!.event.payload as Record<string, Json>).ownerVerified, true);
-  await f.close(); const restored = await fixture(t, { directory: f.directory, secrets: f.secrets });
-  await restored.sdk.receive(incoming({ text: challenge, messageId: 'pair-once' })); assert.equal(restored.wakes.length, 0); assert.equal(restored.sdk.sends.length, 0);
+  release.resolve({ name: '张三', openId: 'user-owner' }); await f.settle(); assert.equal(f.wakes.length, 12);
+  assert.deepEqual(f.wakes.map(w => (w.event.payload as Record<string, Json>).messageId), ['message-1', 'second', ...Array.from({ length: 10 }, (_, i) => `backlog-${i}`)]);
+  f.sdk.sdk.getUser = async () => ({ name: '改名', openId: 'user-owner' });
+  await f.sdk.receive(); assert.equal(f.wakes.length, 12); assert.equal((f.wakes[0]!.event.payload as Record<string, Json>).senderName, '张三');
 });
 test('Feishu duplicate delivery uses exactly the same durable event and Wake identity', async t => {
   const f = await fixture(t); await f.action('connect'); await f.pair(); await f.sdk.receive(); await f.sdk.receive();
   assert.ok(f.wakes.length >= 1); for (const wake of f.wakes) assert.deepEqual(wake, f.wakes[0]);
   assert.equal(f.wakes[0]!.id, f.wakes[0]!.event.id);
 });
-test('Feishu retains failed inbox and replays exact identity after reconnect and restart', async t => {
-  const f = await fixture(t); await f.action('connect'); await f.pair(); f.failWake(true);
-  await assert.rejects(f.sdk.receive()); const pending = (await f.state()).inbox[0]; assert.deepEqual(pending, f.wakes[0]);
-  await assert.rejects(f.action('reconnect')); assert.deepEqual(f.wakes[1], pending); assert.equal((await f.state()).inbox.length, 1);
-  await f.close(); const reopened = await fixture(t, { directory: f.directory, secrets: f.secrets });
-  assert.deepEqual(reopened.wakes, [pending]); assert.deepEqual((await reopened.state()).inbox, []);
+test('Feishu ACKs durable inbox before Host publication and restores the exact frozen input after restart', async t => {
+  const f = await fixture(t); await f.action('connect'); f.failWake(true);
+  await f.sdk.receive(); assert.equal(f.wakes.length, 1); const pending = f.wakes[0]!;
+  assert.equal(f.settings.status().state, 'error');
+  await f.close(); const reopened = await fixture(t, { directory: f.directory, secrets: f.secrets }); await reopened.settle();
+  assert.deepEqual(reopened.wakes, [pending]);
+  await reopened.sdk.receive(); assert.equal(reopened.wakes.length, 1);
 });
 test('Feishu unknown send is never replayed with same call, conflicting content, reconnect or restart', async t => {
   const f = await fixture(t); await f.action('connect'); await f.pair();
@@ -133,7 +189,7 @@ test('Feishu retired callbacks cannot deliver or alter current connection state'
   const f = await fixture(t); await f.action('connect'); await f.pair(); const old = f.sdk.connections[0]!;
   await f.action('reconnect'); old.onState('failed'); assert.equal(f.settings.status().state, 'connected');
   await assert.rejects(old.onMessage(incoming({ messageId: 'retired' })), /Retired/); assert.equal(f.wakes.length, 0);
-  await f.close(); await assert.rejects(f.action('pair')); assert.equal(f.sdk.connections.at(-1)!.closed, true);
+  await f.close(); await assert.rejects(f.action('connect')); assert.equal(f.sdk.connections.at(-1)!.closed, true);
 });
 test('Feishu registration cancellation retires late QR and credentials', async t => {
   const sdk = fakeSdk(); let options!: FeishuRegistrationOptions; let finish!: (credentials: FeishuCredentials) => void;
@@ -177,13 +233,11 @@ test('Feishu close cancels in-flight registration and ignores late QR callbacks'
   options.onQRCode({ url: 'https://accounts.feishu.cn/late', expireIn: 60 }); finish(credentials);
   await assert.rejects(registration, /cancelled/); assert.equal(f.secrets.size, 0); assert.equal(sdk.calls.connect, 0); assert.equal(f.settings.status().state, 'disconnected');
 });
-test('Feishu immutable host identity conflict remains durable rather than accepting altered duplicate', async t => {
-  const f = await fixture(t); await f.action('connect'); await f.pair(); await f.sdk.receive();
-  await assert.rejects(f.sdk.receive(incoming({ text: 'altered duplicate' })), /durable reception failed/);
-  assert.equal((await f.state()).inbox.length, 1); assert.equal(f.wakes[0]!.id, f.wakes[1]!.id);
-  assert.notDeepEqual(f.wakes[0]!.event.payload, f.wakes[1]!.event.payload);
+test('altered duplicate IDs are rejected before publishing a conflicting immutable input', async t => {
+  const f = await fixture(t); await f.action('connect'); await f.sdk.receive();
+  await assert.rejects(f.sdk.receive(incoming({ text: 'altered duplicate' })), /Conflicting Feishu/);
+  assert.equal(f.wakes.length, 1);
 });
-
 test('QR-created credentials survive verification failure for reconnect without creating another app', async t => {
   const sdk = fakeSdk(); const connect = sdk.sdk.connect; sdk.sdk.connect = async () => { throw new Error('tenant approval pending'); };
   const f = await fixture(t, { sdk, secrets: new Map() });
@@ -239,7 +293,7 @@ test('inbound persistence is not blocked by an outstanding outbound HTTP request
     assert.equal((await f.state()).inbox.length, 0);
   } finally { release.resolve({ messageId: 'slow-confirmed' }); }
   assert.equal((await sending).status, 'sent');
-  assert.ok((await f.state()).recentMessages.includes('while-sending'));
+  assert.equal(f.wakes.at(-1)!.event.type, 'feishu.message');
 });
 
 test('unbind drains the outstanding part, stops the tail and never assigns late success to a new binding', async t => {
@@ -297,10 +351,18 @@ test('startup inbox replay and newly arriving owner messages use the same state 
     await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(acknowledged, false, 'new receive must wait behind startup state mutation, never ACK a lost message');
     assert.equal(received.length, 1, 'startup must not have a concurrent inbox flusher');
-  } finally { release.resolve(); await initializing; await delivery; await closed?.(); }
+  } finally { release.resolve(); await initializing; await delivery; await until(() => received.length === 2); await closed?.(); }
   assert.deepEqual(received.map(wake => (wake.event.payload as { text: string }).text), ['old', 'new after restart']);
   const saved = JSON.parse(JSON.stringify(await new FeishuPrivateStore(path.join(root, 'feishu-state.json'), path.resolve('packages/feishu-channel')).load()));
-  assert.equal(saved.inbox.length, 0); assert.ok(saved.recentMessages.includes('arrived-during-startup'));
+  assert.equal(saved.inbox.length, 0); assert.equal(received.length, 2);
+});
+test('upgrade retains prior message hashes, recent dedup and frozen pending inbox without another Wake', async t => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-feishu-upgrade-'))); t.after(() => rm(root, { recursive: true, force: true }));
+  const state = { version: 1, connectionId: 'old-binding', app: { appId: 'app-test', domain: 'feishu' }, owner: { tenantKey: 'tenant-owner', senderOpenId: 'user-owner', chatId: 'chat-owner' }, inbox: [], recentMessages: ['message-1'], sends: {} };
+  await writeFile(path.join(root, 'feishu-state.json'), JSON.stringify(state), { mode: 0o600 });
+  const f = await fixture(t, { directory: root }); await f.sdk.receive(); assert.equal(f.wakes.length, 0);
+  await f.sdk.receive(incoming({ messageId: 'new-after-upgrade' })); assert.equal(f.wakes.length, 1);
+  assert.equal(f.wakes[0]!.id, createHash('sha256').update(JSON.stringify(['old-binding', 'feishu', 'app-test', 'new-after-upgrade'])).digest('hex'));
 });
 
 
@@ -327,10 +389,7 @@ test('unknown registration blocks refresh across restart; saved manual credentia
 test('plugin alone projects the next connection step and collapsible maintenance actions', async t => {
   const fresh = await fixture(t, { config: {} }); assert.deepEqual(fresh.settings.status().visibleActions, ['register']);
   const f = await fixture(t); assert.deepEqual(f.settings.status().visibleActions, ['connect']);
-  await f.action('connect'); assert.deepEqual(f.settings.status().visibleActions, ['pair', 'unbind']);
-  await f.action('pair'); assert.deepEqual(f.settings.status().visibleActions, ['cancel_pair', 'unbind']);
-  const challenge = f.settings.status().details!.find(item => item.value.startsWith('/mira pair '))!.value;
-  await f.sdk.receive(incoming({ text: challenge, messageId: 'visibility-pair' }));
+  await f.action('connect');
   assert.deepEqual(f.settings.status().visibleActions, ['reconnect', 'unbind']);
   assert.equal(f.sdk.sends.length, 0);
   for (const id of f.settings.status().visibleActions!) assert.equal(f.settings.actions.find(action => action.id === id)!.group, 'secondary');
@@ -338,26 +397,6 @@ test('plugin alone projects the next connection step and collapsible maintenance
   f.sdk.connections.at(-1)!.onState('failed'); assert.deepEqual(f.settings.status().visibleActions, ['connect', 'unbind']);
   await f.action('connect'); assert.equal(f.sdk.calls.connect, 2); assert.equal(f.sdk.calls.register, 0); assert.equal(f.settings.status().state, 'connected');
   await f.action('unbind'); assert.deepEqual(f.settings.status().visibleActions, ['connect']);
-});
-
-
-test('expired, cancelled and replaced pairing challenges cannot bind or enter the model', async t => {
-  const f = await fixture(t); await f.action('connect');
-  const challenge = () => f.settings.status().details!.find(item => item.value.startsWith('/mira pair '))!.value;
-  await f.action('pair'); const expired = challenge();
-  assert.match(expired, /^\/mira pair [A-Za-z0-9_-]{24}$/u);
-  const now = Date.now(); t.mock.method(Date, 'now', () => now + 600_001);
-  await f.sdk.receive(incoming({ text: expired }));
-  assert.equal((await f.state()).owner, null); assert.deepEqual(f.settings.status().visibleActions, ['pair', 'unbind']);
-  t.mock.restoreAll();
-  await f.action('pair'); const cancelled = challenge(); await f.action('cancel_pair');
-  await f.sdk.receive(incoming({ text: cancelled })); assert.equal((await f.state()).owner, null);
-  await f.action('pair'); const valid = challenge(); assert.notEqual(valid, expired); assert.notEqual(valid, cancelled);
-  await f.sdk.receive(incoming({ text: expired })); await f.sdk.receive(incoming({ text: cancelled }));
-  assert.equal((await f.state()).owner, null);
-  await f.sdk.receive(incoming({ text: valid, messageId: 'consumed' }));
-  assert.equal(f.settings.status().state, 'connected'); assert.equal(f.sdk.sends.length, 0); assert.equal(f.wakes.length, 0);
-  assert.equal((await f.send('cannot-quote-pair', 'hello', 'consumed')).status, 'not_sent');
 });
 
 

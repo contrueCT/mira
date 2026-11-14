@@ -1,23 +1,25 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ExtensionContext, ExtensionEvent, ExtensionWake, ExtensionConnectionStatus, Json } from '@mira/extension-sdk';
 import { FeishuPrivateStore } from './store.ts';
 import { FeishuSdkError } from './sdk.ts';
 import type { FeishuSdk, FeishuCredentials, FeishuIncomingText } from './sdk.ts';
+import { normalizedName, type FeishuUser } from './directory.ts';
 
 type Owner = { tenantKey: string; senderOpenId: string; chatId: string };
-type Part = { uuid: string; status: 'not_started' | 'unknown' | 'sent'; messageId?: string; publication?: ExtensionEvent; published?: boolean };
-type SendResult = { status: 'sent' | 'unknown' | 'partial' | 'not_sent'; messageIds?: string[]; sentParts?: number; totalParts?: number; reason?: string };
-type Receipt = { digest: string; parts: Part[]; connectionId?: string };
+type Part = { uuid: string; status: 'not_started' | 'unknown' | 'sent' | 'rejected'; messageId?: string; publication?: ExtensionEvent; published?: boolean };
+type SendArgs = { text: string; recipientName?: string; recipientId?: string; recipientIdType?: 'open_id' | 'user_id'; replyToMessageId?: string };
+type Target = { recipientId?: string; recipientIdType?: 'open_id' | 'user_id'; chatId?: string; name?: string };
+type SendResult = { status: 'sent' | 'unknown' | 'partial' | 'not_sent'; messageIds?: string[]; sentParts?: number; totalParts?: number; reason?: string; recipient?: Target; candidates?: FeishuUser[] };
+type Receipt = { digest: string; parts: Part[]; connectionId?: string; target?: Target };
+type IncomingReceipt = { digest: string; reference: FeishuIncomingText; wake?: ExtensionWake; delivered: boolean };
 interface Stored {
   version: 1; registrationUnknown?: boolean; connectionId: string; app: { appId: string; domain: 'feishu' | 'lark' } | null;
   owner: Owner | null; pairingMessageId?: string; inbox: ExtensionWake[]; recentMessages: string[]; sends: Record<string, Receipt>;
 }
-interface Pairing { code: string; expiresAt: string }
 const initial = (): Stored => ({ version: 1, connectionId: randomUUID(), app: null, owner: null, inbox: [], recentMessages: [], sends: {} });
 const validId = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 512 && !/[\u0000-\u001f\u007f]/u.test(value);
-const sameOwner = (a: Owner, b: Owner) => a.tenantKey === b.tenantKey && a.senderOpenId === b.senderOpenId && a.chatId === b.chatId;
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 function stored(value: unknown): Stored {
   if (value === null) return initial();
@@ -33,9 +35,18 @@ function storedReceipt(value: unknown): Receipt {
   if (!object(value) || typeof value.digest !== 'string' || !/^[a-f0-9]{64}$/u.test(value.digest)
     || !Array.isArray(value.parts) || !value.parts.length || value.parts.length > 17
     || (value.connectionId !== undefined && !validId(value.connectionId))
-    || value.parts.some(part => !object(part) || !validId(part.uuid) || !['not_started', 'unknown', 'sent'].includes(String(part.status))
+    || value.parts.some(part => !object(part) || !validId(part.uuid) || !['not_started', 'unknown', 'sent', 'rejected'].includes(String(part.status))
       || (part.messageId !== undefined && !validId(part.messageId)) || (part.published !== undefined && typeof part.published !== 'boolean'))) throw new Error('Private Feishu receipt is invalid; it was not replaced');
+  if (value.target !== undefined && (!object(value.target) || (!validId(value.target.recipientId) && !validId(value.target.chatId))
+    || (value.target.recipientIdType !== undefined && !['open_id', 'user_id'].includes(String(value.target.recipientIdType))))) throw new Error('Private Feishu target is invalid');
   return value as unknown as Receipt;
+}
+function incomingReceipt(value: unknown): IncomingReceipt {
+  if (!object(value) || typeof value.digest !== 'string' || !/^[a-f0-9]{64}$/u.test(value.digest) || typeof value.delivered !== 'boolean' || !object(value.reference)
+    || !validId(value.reference.messageId) || !validId(value.reference.senderOpenId) || !validId(value.reference.chatId)
+    || typeof value.reference.text !== 'string' || typeof value.reference.createdAt !== 'string') throw new Error('Private Feishu inbox is invalid');
+  if (value.wake !== undefined && (!object(value.wake) || !validId(value.wake.id) || !object(value.wake.event) || value.wake.event.id !== value.wake.id)) throw new Error('Private Feishu frozen input is invalid');
+  return value as unknown as IncomingReceipt;
 }
 const hasPending = (receipt: Receipt) => receipt.parts.some(part => part.status === 'sent' && !!part.publication && !part.published);
 function compactReceipt(receipt: Receipt): Receipt {
@@ -67,7 +78,7 @@ function projectedWake(wake: ExtensionWake): ExtensionWake {
   const { textEncoding: _encoding, ...fields } = payload;
   return { ...wake, event: { ...wake.event, payload: { ...fields, ...preserved }, message: { ...wake.event.message, text: display } } };
 }
-/** Per-activation state. All protocol, pairing and delivery decisions live in this extension. */
+/** Per-activation state. Identity, target resolution and delivery stay in this extension. */
 export class FeishuChannel {
   readonly #context: ExtensionContext;
   readonly #sdk: FeishuSdk;
@@ -87,7 +98,11 @@ export class FeishuChannel {
   #state: ExtensionConnectionStatus['state'] = 'unconfigured';
   #error: string | null = null;
   #authorization: { url: string; expiresAt: string } | null = null;
-  #pairing: Pairing | null = null;
+  #drain: Promise<void> | undefined;
+  #drainRequested = false;
+  #receiveAbort = new AbortController();
+  #receiveFailed = false;
+  #directoryIssue: string | null = null;
   readonly #abort = new AbortController();
   constructor(context: ExtensionContext, config: Json, sdk: FeishuSdk) {
     this.#context = context; this.#sdk = sdk;
@@ -103,44 +118,52 @@ export class FeishuChannel {
         { id: 'register', label: '扫码连接', execute: ({ signal }) => this.#register(signal) },
         { id: 'refresh_authorization', label: '重新申请授权', execute: ({ signal }) => this.#register(signal) },
         { id: 'connect', label: '连接已有应用', execute: ({ signal }) => this.#data.app ? this.#changeConnection(signal, async () => { await this.#disconnect(); await this.#connect(signal); }) : this.#queue(() => this.#manual(signal)) },
-        { id: 'pair', label: '生成本人配对码', execute: async () => this.#queue(async () => {
-          if (!this.#ready || this.#data.owner) throw new Error('先连接未绑定的机器人');
-          this.#pairing = { code: randomBytes(18).toString('base64url'), expiresAt: new Date(Date.now() + 600_000).toISOString() }; this.#state = 'pending';
-        }) },
-        { id: 'cancel_pair', group: 'secondary', label: '取消配对', execute: async () => this.#queue(async () => { this.#pairing = null; this.#settle(); }) },
         { id: 'reconnect', group: 'secondary', label: '重新连接', execute: ({ signal }) => this.#changeConnection(signal, async () => { await this.#disconnect(); await this.#connect(signal); }) },
         { id: 'unbind', group: 'secondary', label: '解绑并清除本地凭据', execute: ({ signal }) => this.#changeConnection(signal, async () => {
-          await this.#disconnect(); await this.#context.credentials.delete('appSecret'); await this.#save(initial()); this.#storageReady = true; this.#authorizationRetry = false; this.#credentials = undefined; this.#pairing = null; this.#error = null; this.#state = 'unconfigured';
+          await this.#disconnect(); await this.#context.credentials.delete('appSecret'); await this.#save(initial()); this.#storageReady = true; this.#authorizationRetry = false; this.#credentials = undefined; this.#error = null; this.#state = 'unconfigured';
         }) },
       ], status: () => this.status(),
     });
-    this.#context.registerTool({ name: 'feishu_connect', mainOnly: true, description: 'Start this plugin’s connection action after the user asks to connect Feishu/Lark. Returns immediately while official authorization remains in this extension’s protected settings. Reuses the same settings operation and cancellation; never returns credentials, pairing challenges or provider URLs. An unknown registration must be reconciled in settings, not retried. Optional cancelOperationId cancels exactly that operation locally, without revoking remote effects.',
+    this.#context.registerTool({ name: 'feishu_connect', mainOnly: true, description: 'Start this plugin’s connection action after the user asks to connect Feishu/Lark. Returns immediately while official authorization remains in this extension’s protected settings. Reuses the same settings operation and cancellation; never returns credentials or provider URLs. An unknown registration must be reconciled in settings, not retried. Optional cancelOperationId cancels exactly that operation locally, without revoking remote effects.',
       parameters: { type: 'object', properties: { cancelOperationId: { type: 'string' } }, additionalProperties: false },
       execute: async (args, { signal }) => {
         signal.throwIfAborted();
         if (!object(args) || (args.cancelOperationId !== undefined && !validId(args.cancelOperationId))) return { text: 'Invalid connection arguments' };
         if (typeof args.cancelOperationId === 'string') { await actions.cancel(args.cancelOperationId); return { text: '已请求取消本次本地连接操作。请在扩展设置核对结果；取消不撤销远端已创建的应用。' }; }
         const current = await actions.current(); signal.throwIfAborted();
-        const guidance = '请打开设置 → 扩展 → 本扩展的连接设置，查看官方授权二维码或链接，授权后生成本人配对码，发送配对码即可完成绑定。';
+        const guidance = '请打开设置 → 扩展 → 本扩展的连接设置，查看官方授权二维码或链接，完成授权或连接已有应用。';
         if (current?.state === 'pending') return { text: JSON.stringify({ operation: current, instruction: guidance }) };
         if (this.#data.registrationUnknown && !this.#data.app) return { text: '上次注册结果未知，未重新申请。请在扩展设置核对官方后台并恢复已有应用，避免重复创建。' };
-        if (this.#ready) return { text: JSON.stringify({ state: this.#state, instruction: this.#data.owner ? '已有连接，无需重复授权。' : guidance }) };
+        if (this.#ready) return { text: JSON.stringify({ state: this.#state, instruction: '已有连接，无需重复授权。' }) };
         const operation = await actions.start(this.#data.app || this.#config.appId ? 'connect' : this.#authorizationRetry ? 'refresh_authorization' : 'register');
         return { text: JSON.stringify({ operation, instruction: guidance }) };
       } });
-    this.#context.registerTool({ name: 'feishu_status', description: 'Read whether this ordinary Feishu/Lark extension is connected and paired. Use feishu_connect to start this plugin’s settings operation when the user requests connection. Credentials and pairing challenges are only displayed there.', parameters: { type: 'object', additionalProperties: false }, execute: async () => ({ text: JSON.stringify(this.#observation()) }) });
-    this.#context.registerTool({ name: 'feishu_send_message', mainOnly: true, description: 'Explicitly send text or proactive results as the bot to the one owner paired in this extension. It does not mirror Web replies. After a confirmed send, avoid repeating the same message body in the ordinary final reply; Web displays the sourced delivery separately. Optional replyToMessageId must identify a recent verified owner message. Long text is sent as ordered pieces; partial/unknown delivery is reported and never automatically replayed. Check the recipient’s intent and do not repeat an unknown delivery without checking.',
-      parameters: { type: 'object', properties: { text: { type: 'string', minLength: 1 }, replyToMessageId: { type: 'string' } }, required: ['text'], additionalProperties: false },
+    this.#context.registerTool({ name: 'feishu_status', description: 'Read whether this ordinary Feishu/Lark extension is connected. Use feishu_connect to start this plugin’s settings operation when the user requests connection. Credentials are only displayed there.', parameters: { type: 'object', additionalProperties: false }, execute: async () => ({ text: JSON.stringify(this.#observation()) }) });
+    this.#context.registerTool({ name: 'feishu_search_users', description: 'Find people by name in this app’s visible directory. Returns a bounded page of name/openId pairs. complete=false means uniqueness is unproven; never guess a recipient from partial results. No user impersonation.',
+      parameters: { type: 'object', properties: { query: { type: 'string', minLength: 1, maxLength: 100 }, offset: { type: 'integer', minimum: 0, maximum: 5000 } }, required: ['query'], additionalProperties: false },
+      execute: async (args, { signal }) => {
+        if (!object(args) || typeof args.query !== 'string' || !args.query.trim() || args.query.length > 100 || (args.offset !== undefined && (!Number.isSafeInteger(args.offset) || Number(args.offset) < 0 || Number(args.offset) > 5000))) return { text: 'Invalid user search arguments', isError: true };
+        if (!this.#credentials) return { text: 'Connect the Feishu app first.', isError: true };
+        const epoch = this.#epoch; const result = await this.#sdk.searchUsers(this.#credentials, args.query, AbortSignal.any([signal, this.#abort.signal, this.#sendAbort.signal]));
+        if (this.#closed || epoch !== this.#epoch) return { text: 'Connection changed; search result discarded.', isError: true };
+        this.#directoryIssue = result.complete ? null : result.reason ?? 'directory_failed';
+        const offset = Number(args.offset ?? 0); const page = { ...result, users: result.users.slice(offset, offset + 20), ...(result.users.length > offset + 20 ? { nextOffset: offset + 20 } : {}) };
+        return { text: JSON.stringify(page), details: page };
+      } });
+    this.#context.registerTool({ name: 'feishu_send_message', mainOnly: true, description: 'Send text as this Feishu/Lark app. Choose recipientName (one exact match in a complete directory), recipientId (recipientIdType defaults to open_id; also user_id), or replyToMessageId from an inbound message. Use feishu_search_users or clarify for ambiguous names. Explicit recipients need not message the bot first. Reply IDs select their original private chat; an additional recipient must match its sender. No implicit last-chat target. Ordinary Web replies are not echoed; after a confirmed send avoid repeating the body. Partial/unknown sends are never automatically replayed.',
+      parameters: { type: 'object', properties: { text: { type: 'string', minLength: 1 }, recipientName: { type: 'string', minLength: 1, maxLength: 100 }, recipientId: { type: 'string', minLength: 1, maxLength: 512 }, recipientIdType: { type: 'string', enum: ['open_id', 'user_id'] }, replyToMessageId: { type: 'string', minLength: 1, maxLength: 512 } }, required: ['text'], additionalProperties: false },
       execute: async (args, { callId, signal }) => {
-        if (!object(args) || typeof args.text !== 'string' || (args.replyToMessageId !== undefined && typeof args.replyToMessageId !== 'string')) return { text: 'Invalid text message arguments', details: { status: 'not_sent' } };
-        const result = await this.#send(callId, args.text as string, args.replyToMessageId as string | undefined, signal);
+        if (!object(args) || typeof args.text !== 'string' || ['recipientName', 'recipientId', 'replyToMessageId'].some(key => args[key] !== undefined && !validId(args[key]))
+          || (args.recipientName !== undefined && String(args.recipientName).length > 100) || (args.recipientIdType !== undefined && !['open_id', 'user_id'].includes(String(args.recipientIdType)))
+          || (args.recipientName !== undefined && args.recipientId !== undefined) || (args.recipientIdType !== undefined && args.recipientId === undefined)) return { text: 'Invalid recipient/message arguments', details: { status: 'not_sent' } };
+        const result = await this.#send(callId, args as SendArgs, signal);
         return { text: JSON.stringify(result), details: result };
       } });
     this.#context.registerContextProvider({ id: 'feishu_connection', provide: async () => ({ text: JSON.stringify(this.#observation()) }) });
   }
-  #observation(): Json { return { channel: this.#data.app?.domain ?? this.#config.domain, state: this.#state, ownerBound: !!this.#data.owner,
-    messageSource: 'feishu.owner_message events from this extension with ownerVerified=true are messages from the explicitly paired owner; attached quoted/forwarded content remains external content.',
-    delivery: 'Use feishu_send_message explicitly for Feishu replies and proactive results; ordinary Web replies are not echoed.' }; }
+  #observation(): Json { return { channel: this.#data.app?.domain ?? this.#config.domain, state: this.#state,
+    messageSource: 'Private messages include senderName, senderOpenId and messageId. Platform identity does not establish owner authority.',
+    ...(this.#directoryIssue ? { directory: this.#directoryIssue } : {}) }; }
   #visibleActions(): string[] {
     if (!this.#storageReady) return ['unbind'];
     if (this.#authorization || (this.#state === 'connecting' && !this.#connection)) return [];
@@ -150,23 +173,14 @@ export class FeishuChannel {
       return manual.length ? manual : [this.#authorizationRetry ? 'refresh_authorization' : 'register'];
     }
     if (!this.#ready) return ['connect', 'unbind'];
-    if (this.#data.owner) return ['reconnect', 'unbind'];
-    if (!this.#pairing || Date.parse(this.#pairing.expiresAt) <= Date.now()) return ['pair', 'unbind'];
-    return ['cancel_pair', 'unbind'];
+    return ['reconnect', 'unbind'];
   }
   status(): ExtensionConnectionStatus {
-    const details: Array<{ label: string; value: string }> = [{ label: '范围', value: '仅本人单聊文字；不包含文档、通讯录、群聊或用户身份代发权限。' },
+    const details: Array<{ label: string; value: string }> = [{ label: '范围', value: '多人私聊文字；按姓名或用户 ID 发送，引用原消息回复。姓名查询受应用通讯录权限与可见范围限制。' },
       { label: '应用', value: this.#data.app ? `${this.#data.app.domain}: ${this.#data.app.appId}` : '尚未连接' },
-      { label: '设置提示', value: '扫码或手动建应用后，仍需机器人能力、最小权限、租户批准及长连接订阅 im.message.receive_v1。配对码验证后自动绑定；收发结果按实际消息显示。' }];
+      { label: '设置提示', value: '需要机器人能力、私聊读取/应用发送权限、租户批准和长连接订阅 im.message.receive_v1。无需本人配对；其他人的消息不自动成为主人的授权。' }];
     if (this.#error) details.push({ label: '需要处理', value: this.#error });
-    if (this.#data.owner) details.push({ label: '本人身份', value: `${this.#data.owner.tenantKey} / ${this.#data.owner.senderOpenId} / ${this.#data.owner.chatId}` });
-    const pairing = this.#pairing;
-    if (pairing) {
-      if (Date.parse(pairing.expiresAt) <= Date.now()) details.push({ label: '配对', value: '配对码已过期，请重新生成。' });
-      else {
-        details.push({ label: '请在机器人单聊中发送', value: `/mira pair ${pairing.code}` }, { label: '过期时间', value: pairing.expiresAt });
-      }
-    }
+    if (this.#directoryIssue) details.push({ label: '姓名查询', value: '姓名或通讯录查询未完成；请检查应用的用户基本信息、部门成员权限及通讯录范围。按 ID 发送不依赖姓名查询。' });
     if (this.#data.registrationUnknown && !this.#data.app && this.#state !== 'connecting' && this.#state !== 'pending') details.push({ label: '注册结果待核对', value: '上次注册可能已创建应用。请先到官方后台核对，已有应用用手动配置恢复；确认未创建后才可解绑清除本地记录并重新申请。' });
     const authorization = this.#authorization && Date.parse(this.#authorization.expiresAt) > Date.now() ? this.#authorization : null;
     if (this.#authorization && !authorization) details.push({ label: '授权', value: '二维码已过期。等待本次操作结束后点击“重新申请授权”；仍在处理时可先取消。' });
@@ -251,34 +265,62 @@ export class FeishuChannel {
       } });
       if (signal.aborted || this.#closed || epoch !== this.#epoch) { await connection.close(); signal.throwIfAborted(); throw new Error('Connection retired'); }
       this.#credentials = credentials; this.#connection = connection; this.#sendAbort = new AbortController(); this.#ready = connection.state() === 'connected';
-      await this.#flush(); await this.#flushPublications(); this.#settle();
+      await this.#flush(); await this.#flushPublications(); this.#receiveFailed = false; this.#receiveAbort = new AbortController(); this.#settle(); this.#startDrain();
     } catch { this.#ready = false; this.#state = 'error'; this.#error = '机器人权限或长连接尚未验证，请检查凭据、最小权限、审批和长连接事件订阅。'; throw new Error('Feishu connection was not verified'); }
   }
   async #disconnect(): Promise<void> { this.#epoch++; this.#ready = false; const connection = this.#connection; this.#connection = undefined; this.#credentials = undefined; this.#settle(); await connection?.close(); }
-  #settle(): void { this.#state = !this.#data.app ? 'unconfigured' : !this.#ready ? 'disconnected' : this.#data.owner ? 'connected' : 'pending'; }
+  #settle(): void { this.#state = !this.#data.app ? 'unconfigured' : !this.#ready ? 'disconnected' : 'connected'; }
+  #incomingKey(messageId: string): string { return createHash('sha256').update(JSON.stringify([this.#data.connectionId, this.#data.app?.domain, this.#data.app?.appId, messageId])).digest('hex'); }
   async #receive(message: FeishuIncomingText): Promise<void> {
     if (!this.#data.app || message.chatType !== 'p2p' || message.senderType !== 'user' || !validId(message.messageId) || !validId(message.chatId) || !validId(message.senderOpenId) || !validId(message.tenantKey) || !Number.isFinite(Date.parse(message.createdAt))) return;
-    const owner = { tenantKey: message.tenantKey, senderOpenId: message.senderOpenId, chatId: message.chatId };
-    if (!this.#data.owner) {
-      const pairing = this.#pairing; if (!pairing || Date.parse(pairing.expiresAt) <= Date.now() || message.messageType !== 'text') return;
-      const supplied = Buffer.from(message.text.trim()); const expected = Buffer.from(`/mira pair ${pairing.code}`);
-      if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return;
-      await this.#save({ ...structuredClone(this.#data), owner, pairingMessageId: message.messageId });
-      this.#pairing = null; this.#error = null; this.#settle(); return;
-    }
-    if (!sameOwner(this.#data.owner, owner)) return;
-    // Pairing commands are control messages, never conversation or model input.
-    if (message.messageId === this.#data.pairingMessageId || /^\/mira pair [A-Za-z0-9_-]+$/u.test(message.text.trim())) return;
-    const id = createHash('sha256').update(JSON.stringify([this.#data.connectionId, this.#data.app.domain, this.#data.app.appId, message.messageId])).digest('hex');
-    const wake: ExtensionWake = { id, reason: 'Message from the explicitly paired Mira owner', event: { id, type: 'feishu.owner_message', occurredAt: message.createdAt,
-      message: { direction: 'inbound', text: preview(message.text), sourceLabel: this.#data.app.domain === 'feishu' ? '飞书' : 'Lark', senderId: message.senderOpenId, senderVerified: true },
-      payload: { channel: this.#data.app.domain, appId: this.#data.app.appId, ownerVerified: true, ...owner, messageId: message.messageId, messageType: message.messageType, ...preservedText(message.text),
-        ...(message.replyToMessageId ? { replyToMessageId: message.replyToMessageId } : {}), ...(message.rootMessageId ? { rootMessageId: message.rootMessageId } : {}) } } };
-    const existing = this.#data.inbox.find(item => item.id === id);
-    if (existing && JSON.stringify(existing) !== JSON.stringify(wake)) throw new Error('Conflicting Feishu message identity');
-    if (!existing) { const next = structuredClone(this.#data); next.inbox.push(wake); next.recentMessages = [...next.recentMessages.filter(item => item !== message.messageId), message.messageId].slice(-512); await this.#save(next); }
-    await this.#flush();
+    if (message.messageId === this.#data.pairingMessageId) return; // Previously consumed control input stays consumed.
+    if (this.#data.recentMessages.includes(message.messageId)) return; // Preserve pre-upgrade durable dedup evidence.
+    const key = this.#incomingKey(message.messageId); const digest = createHash('sha256').update(JSON.stringify(message)).digest('hex');
+    const previous = await this.#store!.loadIncoming<unknown>(key);
+    if (previous !== null) { if (incomingReceipt(previous).digest !== digest) throw new Error('Conflicting Feishu message identity'); return; }
+    await this.#store!.saveIncoming(key, { digest, reference: message, delivered: false } satisfies IncomingReceipt, true, this.#data.connectionId);
+    this.#startDrain(); // ACK only durable reception. Name lookup and Host delivery run separately.
   }
+  #startDrain(): void {
+    this.#drainRequested = true;
+    if (this.#drain || this.#closed || this.#receiveFailed) return;
+    this.#drainRequested = false;
+    const epoch = this.#epoch;
+    // Schedule after the current short state-write queue has released.
+    this.#drain = new Promise<void>(resolve => setImmediate(resolve)).then(() => this.#drainInbox(epoch)).catch(() => {
+      if (this.#closed || epoch !== this.#epoch || this.#receiveAbort.signal.aborted) return;
+      this.#receiveFailed = true; this.#state = 'error'; this.#error = '消息已保存在私有收件箱，姓名解析或 Host 投递失败。修复存储后重连；不会重新执行已接收的消息。';
+    }).finally(() => { this.#drain = undefined; if (this.#drainRequested && !this.#receiveAbort.signal.aborted) this.#startDrain(); });
+  }
+  async #drainInbox(epoch: number): Promise<void> {
+    const signal = AbortSignal.any([this.#abort.signal, this.#receiveAbort.signal]);
+    while (!signal.aborted && epoch === this.#epoch) {
+      const pending = await this.#queue(() => this.#store!.nextIncoming<unknown>(this.#data.connectionId));
+      if (!pending) return;
+      let receipt = incomingReceipt(pending.receipt);
+      if (receipt.delivered) throw new Error('Invalid pending inbox state');
+      if (!receipt.wake) {
+        let user: FeishuUser | null = null;
+        try { user = await this.#sdk.getUser(this.#credentials!, receipt.reference.senderOpenId, 'open_id', AbortSignal.any([signal, AbortSignal.timeout(1500)])); }
+        catch { signal.throwIfAborted(); }
+        signal.throwIfAborted();
+        const source = receipt.reference;
+        const wake: ExtensionWake = { id: pending.callId, reason: 'Private Feishu message', event: { id: pending.callId, type: 'feishu.message', occurredAt: source.createdAt,
+          message: { direction: 'inbound', text: preview(source.text), sourceLabel: this.#data.app!.domain === 'feishu' ? '飞书' : 'Lark', senderId: source.senderOpenId, senderVerified: true },
+          payload: { senderName: user?.name ?? '姓名暂不可用', senderOpenId: source.senderOpenId, messageId: source.messageId, ...preservedText(source.text),
+            ...(source.replyToMessageId ? { replyToMessageId: source.replyToMessageId } : {}) } } };
+        receipt = { ...receipt, wake };
+        await this.#queue(async () => { signal.throwIfAborted(); if (epoch !== this.#epoch) throw new Error('Retired inbox');
+          this.#directoryIssue = user ? null : 'name_unavailable'; await this.#store!.saveIncoming(pending.callId, receipt, true, this.#data.connectionId); });
+      }
+      signal.throwIfAborted(); if (epoch !== this.#epoch) return;
+      await this.#context.requestWake(receipt.wake!);
+      await this.#queue(async () => { signal.throwIfAborted(); if (epoch !== this.#epoch) throw new Error('Retired inbox');
+        // Published body is now in Host history. Keep identity/digest and routing for duplicates and replies.
+        await this.#store!.saveIncoming(pending.callId, { digest: receipt.digest, reference: { ...receipt.reference, text: '' }, delivered: true } satisfies IncomingReceipt, false, this.#data.connectionId); });
+    }
+  }
+  async #stopDrain(): Promise<void> { this.#receiveAbort.abort(); await this.#drain; }
   async #flush(): Promise<void> {
     while (this.#data.inbox.length) {
       const wake = projectedWake(this.#data.inbox[0]!);
@@ -290,62 +332,103 @@ export class FeishuChannel {
   async #changeConnection(signal: AbortSignal, change: () => Promise<void>): Promise<void> {
     signal.throwIfAborted();
     await this.#retireSend();
+    await this.#stopDrain();
     await this.#queue(async () => {
       if (signal.aborted) {
         // The previous generation has drained. New calls can use the unchanged
         // binding, but queued old calls retain their aborted signal and never replay.
-        this.#sendAbort = new AbortController(); signal.throwIfAborted();
+        this.#sendAbort = new AbortController(); this.#receiveAbort = new AbortController(); this.#startDrain(); signal.throwIfAborted();
       }
       await change();
     });
   }
   async #retireSend(): Promise<void> { this.#sendAbort.abort(); await this.#sending.catch(() => {}); }
-  #send(callId: string, text: string, replyToMessageId: string | undefined, signal: AbortSignal): Promise<SendResult> {
+  #send(callId: string, args: SendArgs, signal: AbortSignal): Promise<SendResult> {
     const combined = AbortSignal.any([signal, this.#abort.signal, this.#sendAbort.signal]);
-    const operation = this.#sending.catch(() => {}).then(() => this.#sendParts(callId, text, replyToMessageId, combined));
+    const operation = this.#sending.catch(() => {}).then(() => this.#sendParts(callId, args, combined));
     this.#sending = operation; return operation;
   }
-  async #sendParts(callId: string, text: string, replyToMessageId: string | undefined, signal: AbortSignal): Promise<SendResult> {
+  async #resolveTarget(args: SendArgs, credentials: FeishuCredentials, signal: AbortSignal): Promise<{ target: Target } | { result: SendResult }> {
+    let target: Target | undefined;
+    if (args.recipientName) {
+      const result = await this.#sdk.searchUsers(credentials, args.recipientName, signal);
+      this.#directoryIssue = result.complete ? null : result.reason ?? 'directory_failed';
+      if (!result.complete) return { result: { status: 'not_sent', reason: 'incomplete_search', candidates: result.users.slice(0, 20) } };
+      const exact = result.users.filter(user => normalizedName(user.name) === normalizedName(args.recipientName!));
+      if (exact.length !== 1) return { result: { status: 'not_sent', reason: result.users.length ? 'ambiguous_recipient' : 'recipient_not_found', candidates: result.users.slice(0, 20) } };
+      target = { recipientId: exact[0]!.openId, recipientIdType: 'open_id', name: exact[0]!.name };
+    } else if (args.recipientId) target = { recipientId: args.recipientId, recipientIdType: args.recipientIdType ?? 'open_id' };
+    if (args.replyToMessageId) {
+      const reference = await this.#queue(async () => {
+        const saved = await this.#store!.loadIncoming<unknown>(this.#incomingKey(args.replyToMessageId!));
+        if (saved !== null) return incomingReceipt(saved).reference;
+        // Existing verified references survive this upgrade without changing their History.
+        return this.#data.owner && this.#data.recentMessages.includes(args.replyToMessageId!) ? { senderOpenId: this.#data.owner.senderOpenId, chatId: this.#data.owner.chatId } : null;
+      });
+      if (!reference) return { result: { status: 'not_sent', reason: 'unknown_reply_target' } };
+      if (target) {
+        let openId = target.recipientId;
+        if (target.recipientIdType === 'user_id') openId = (await this.#sdk.getUser(credentials, target.recipientId!, 'user_id', signal))?.openId;
+        if (!openId || openId !== reference.senderOpenId) return { result: { status: 'not_sent', reason: 'reply_recipient_mismatch' } };
+      }
+      target = { recipientId: reference.senderOpenId, recipientIdType: 'open_id', chatId: reference.chatId, ...(target?.name ? { name: target.name } : {}) };
+    }
+    return target ? { target } : { result: { status: 'not_sent', reason: 'Specify recipientName, recipientId or replyToMessageId.' } };
+  }
+  async #sendParts(callId: string, args: SendArgs, signal: AbortSignal): Promise<SendResult> {
+    const { text, replyToMessageId } = args;
     const summary = (receipt: Receipt): SendResult => ({ status: receipt.parts.every(part => part.status === 'sent') ? 'sent' : receipt.parts.some(part => part.status === 'unknown') ? 'unknown' : receipt.parts.some(part => part.status === 'sent') ? 'partial' : 'not_sent',
-      messageIds: receipt.parts.flatMap(part => part.messageId ? [part.messageId] : []), sentParts: receipt.parts.filter(part => part.status === 'sent').length, totalParts: receipt.parts.length });
+      ...(receipt.target ? { recipient: receipt.target } : {}), messageIds: receipt.parts.flatMap(part => part.messageId ? [part.messageId] : []), sentParts: receipt.parts.filter(part => part.status === 'sent').length, totalParts: receipt.parts.length });
     const chunks: string[] = []; let chunk = ''; let length = 0;
     if (!text.trim() || Buffer.byteLength(text) > 100_000 || !validId(callId)) return { status: 'not_sent', reason: 'Text must contain 1–100000 UTF-8 bytes with a valid call identity.' };
     for (const character of text) { const size = Buffer.byteLength(character); if (length + size > 6000) { chunks.push(chunk); chunk = ''; length = 0; } chunk += character; length += size; }
     if (chunk) chunks.push(chunk);
+    const connectionId = this.#data.connectionId;
+    const digest = createHash('sha256').update(JSON.stringify([connectionId, text, replyToMessageId ?? null, args.recipientName ?? null, args.recipientId ?? null, args.recipientIdType ?? 'open_id'])).digest('hex');
+    const oldDigest = !args.recipientName && !args.recipientId ? createHash('sha256').update(JSON.stringify([connectionId, text, replyToMessageId ?? null])).digest('hex') : null;
     let receipt!: Receipt;
-    const prepared = await this.#queue(async (): Promise<{ result: SendResult } | { credentials: FeishuCredentials; chatId: string; connectionId: string }> => {
-      const digest = createHash('sha256').update(JSON.stringify([this.#data.connectionId, text, replyToMessageId ?? null])).digest('hex');
-      if (!this.#storageReady || !this.#store) return { result: { status: 'not_sent', reason: 'Private Feishu state is unavailable; reconcile before sending.' } };
+    const prior = await this.#queue(async () => {
+      if (!this.#storageReady || !this.#store) return { result: { status: 'not_sent' as const, reason: 'Private Feishu state is unavailable; reconcile before sending.' } };
       const previous = await this.#store.loadReceipt<unknown>(callId); const existing = previous === null ? null : storedReceipt(previous);
-      if (existing) { if (existing.digest === digest) await this.#flushPublications().catch(() => {}); return { result: existing.digest === digest ? summary(existing) : { status: 'not_sent', reason: 'Call identity conflicts with previously recorded content.' } }; }
-      if (!this.#ready || !this.#credentials || !this.#data.owner) return { result: { status: 'not_sent', reason: 'Connect and explicitly pair the owner first.' } };
-      if (replyToMessageId && !this.#data.recentMessages.includes(replyToMessageId)) return { result: { status: 'not_sent', reason: 'Quote target is not a recent verified owner message in this binding.' } };
-      signal.throwIfAborted();
-      receipt = await this.#saveReceipt(callId, { digest, connectionId: this.#data.connectionId, parts: chunks.map(() => ({ uuid: randomUUID(), status: 'not_started' })) });
-      return { credentials: this.#credentials, chatId: this.#data.owner.chatId, connectionId: this.#data.connectionId };
+      if (existing) {
+        const same = existing.digest === digest || existing.digest === oldDigest;
+        if (same) await this.#flushPublications().catch(() => {});
+        return { result: same ? summary(existing) : { status: 'not_sent' as const, reason: 'Call identity conflicts with previously recorded content or recipient.' } };
+      }
+      if (!this.#ready || !this.#credentials) return { result: { status: 'not_sent' as const, reason: 'Connect the Feishu app first.' } };
+      signal.throwIfAborted(); return { credentials: this.#credentials };
     });
-    if ('result' in prepared) return prepared.result;
+    if ('result' in prior) return prior.result;
+    const resolved = await this.#resolveTarget(args, prior.credentials, signal);
+    if ('result' in resolved) return resolved.result;
+    const target = resolved.target;
+    await this.#queue(async () => {
+      signal.throwIfAborted(); if (this.#data.connectionId !== connectionId) throw new Error('Retired Feishu binding');
+      receipt = await this.#saveReceipt(callId, { digest, connectionId, target, parts: chunks.map(() => ({ uuid: randomUUID(), status: 'not_started' })) });
+    });
     const flush = () => this.#queue(() => this.#flushPublications()).catch(() => {});
     for (let index = 0; index < chunks.length; index++) {
       if (signal.aborted) { await flush(); return summary(receipt); }
       const uuid = await this.#queue(async () => {
         signal.throwIfAborted();
-        if (this.#data.connectionId !== prepared.connectionId) throw new Error('Retired Feishu binding');
+        if (this.#data.connectionId !== connectionId) throw new Error('Retired Feishu binding');
         const intent = structuredClone(receipt); intent.parts[index]!.status = 'unknown'; receipt = await this.#saveReceipt(callId, intent); return receipt.parts[index]!.uuid;
       });
       try {
         signal.throwIfAborted();
-        // No state lock across network I/O: inbound messages persist immediately.
-        const sent = await this.#sdk.send(prepared.credentials, { chatId: prepared.chatId, text: chunks[index]!, uuid, ...(replyToMessageId ? { replyToMessageId } : {}) });
+        const sent = await this.#sdk.send(prior.credentials, { ...target, text: chunks[index]!, uuid, ...(replyToMessageId ? { replyToMessageId } : {}) });
         await this.#queue(async () => {
-          if (this.#data.connectionId !== prepared.connectionId) throw new Error('Retired Feishu binding');
+          if (this.#data.connectionId !== connectionId) throw new Error('Retired Feishu binding');
           const outcome = structuredClone(receipt);
-          const publication: ExtensionEvent = { id: `sent:${this.#data.connectionId}:${uuid}`, type: 'feishu.sent_message', occurredAt: new Date().toISOString(),
-            payload: { channel: this.#data.app!.domain, appId: this.#data.app!.appId, callId, messageId: sent.messageId, chatId: prepared.chatId, part: index + 1, totalParts: chunks.length },
+          const publication: ExtensionEvent = { id: `sent:${connectionId}:${uuid}`, type: 'feishu.sent_message', occurredAt: new Date().toISOString(),
+            payload: { messageId: sent.messageId, ...(sent.chatId ?? target.chatId ? { chatId: sent.chatId ?? target.chatId! } : {}), ...target, part: index + 1, totalParts: chunks.length },
             message: { direction: 'outbound', text: chunks[index]!, sourceLabel: this.#data.app!.domain === 'feishu' ? '飞书' : 'Lark' } };
           outcome.parts[index] = { ...outcome.parts[index]!, status: 'sent', messageId: sent.messageId, publication }; receipt = await this.#saveReceipt(callId, outcome);
         });
-      } catch { await flush(); return { ...summary(receipt), reason: 'Delivery may have occurred. Check Feishu before another send; this call is never automatically replayed.' }; }
+      } catch (error) {
+        if (error instanceof FeishuSdkError && error.code === 'send_rejected') await this.#queue(async () => { const outcome = structuredClone(receipt); outcome.parts[index]!.status = 'rejected'; receipt = await this.#saveReceipt(callId, outcome); });
+        await flush(); return { ...summary(receipt), reason: error instanceof FeishuSdkError && error.code === 'send_rejected' ? 'Feishu rejected this send; check app permissions and recipient availability.' : 'Delivery may have occurred. Check Feishu before another send; this call is never automatically replayed.' };
+      }
     }
     await flush(); return summary(receipt);
   }
@@ -367,7 +450,7 @@ export class FeishuChannel {
     }
   }
   async close(): Promise<void> {
-    if (this.#closed) return; this.#closed = true; this.#abort.abort(); this.#epoch++; this.#authorization = null; this.#pairing = null;
-    await this.#retireSend(); await this.#serial.catch(() => {}); await this.#disconnect(); this.#state = 'disconnected';
+    if (this.#closed) return; this.#closed = true; this.#abort.abort(); this.#epoch++; this.#authorization = null;
+    await this.#retireSend(); await this.#stopDrain(); await this.#serial.catch(() => {}); await this.#disconnect(); this.#state = 'disconnected';
   }
 }
