@@ -20,7 +20,7 @@ const until = async (ready: () => Promise<boolean>) => { for (let i = 0; i < 200
 const record = (parentId: string | null): RuntimeRecord => ({ formatVersion: 1, runtime: 'synthetic', runtimeVersion: '1', id: randomUUID(), parentId, kind: 'message', occurredAt: new Date(0).toISOString(), payload: { text: 'Synthetic completed Wake; no model request' } });
 const originalText = (value: Json): string => { const payload = value as { text: string; textEncoding?: string }; return payload.textEncoding === 'json-string' ? JSON.parse(payload.text) as string : payload.text; };
 
-test('Feishu NUL and lone-surrogate text preserves original content through real Host, PG History, Wake and current pending recovery', { timeout: 30_000 }, async () => {
+for (const chatType of ['p2p', 'group'] as const) test(`Feishu ${chatType} NUL and lone-surrogate text preserves original content through real Host, PG History, Wake and current pending recovery`, { timeout: 30_000 }, async () => {
   const db = await createTestDatabase();
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-feishu-pg-')));
   const entry = path.join(root, 'plugin.mjs'), privateDirectory = path.join(root, 'private');
@@ -32,7 +32,7 @@ test('Feishu NUL and lone-surrogate text preserves original content through real
       async verify(){return {botOpenId:'synthetic-bot',scopes:[]};},
       async register(){throw Error('unexpected registration');},
       async send(){throw Error('no network sends in this fixture');},
-      async connect(credentials,handlers){state.receive=(messageId,text)=>handlers.onMessage({messageId,chatId:'owner-chat',chatType:'p2p',senderOpenId:'owner',senderType:'user',tenantKey:'tenant',createdAt:new Date(0).toISOString(),text,messageType:'text'});handlers.onState('connected');return {state:()=> 'connected',async close(){}};}
+      async connect(credentials,handlers){state.receive=(messageId,text)=>handlers.onMessage({messageId,chatId:'${chatType}-chat',chatType:'${chatType}',senderOpenId:'owner',senderType:'user',tenantKey:'tenant',createdAt:new Date(0).toISOString(),text,messageType:'text'});handlers.onState('connected');return {state:()=> 'connected',async close(){}};}
     });`);
   const { state } = await import(pathToFileURL(entry).href) as { state: { receive(id: string, text: string): Promise<void> } };
   const entries = [{ id: extensionId, path: entry, installationId: randomUUID(), config: { appId: 'synthetic-app' } }];
@@ -43,6 +43,7 @@ test('Feishu NUL and lone-surrogate text preserves original content through real
     const run = await writer.claimWakeBatch(); assert.ok(run); assert.equal(run.requests.length, 1);
     const event = run.requests[0]!.event; const envelope = event.payload as { data: Json; message: { text: string } };
     assert.equal(originalText(envelope.data), expected); assert.equal(envelope.message.text.isWellFormed(), true); assert.ok(!envelope.message.text.includes('\u0000'));
+    if (chatType === 'group') { assert.equal((envelope.data as { chatType: string }).chatType, 'group'); assert.equal((envelope.data as { chatId: string }).chatId, 'group-chat'); }
     const snapshot = await writer.load(); const input = record(snapshot.records.at(-1)?.id ?? null);
     const version = await writer.appendWakeInput(run.id, snapshot.version, input); await writer.appendWakeFinal(run.id, version, record(input.id)); await writer.completeWakeRun(run.id);
     const history = db.store.history(writer.miraId); const requests = await history.readRunRequests({ id: run.id });

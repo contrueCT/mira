@@ -3,13 +3,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ExtensionContext, ExtensionEvent, ExtensionWake, ExtensionConnectionStatus, Json } from '@mira/extension-sdk';
 import { FeishuPrivateStore } from './store.ts';
-import { FeishuSdkError } from './sdk.ts';
+import { FEISHU_GROUP_SCOPE, FEISHU_REQUIRED_SCOPES, FeishuSdkError } from './sdk.ts';
 import type { FeishuSdk, FeishuCredentials, FeishuIncomingText } from './sdk.ts';
 import { normalizedName, type FeishuUser } from './directory.ts';
 
 type Owner = { tenantKey: string; senderOpenId: string; chatId: string };
 type Part = { uuid: string; status: 'not_started' | 'unknown' | 'sent' | 'rejected'; messageId?: string; publication?: ExtensionEvent; published?: boolean };
-type SendArgs = { text: string; recipientName?: string; recipientId?: string; recipientIdType?: 'open_id' | 'user_id'; replyToMessageId?: string };
+type SendArgs = { text: string; recipientName?: string; recipientId?: string; recipientIdType?: 'open_id' | 'user_id'; chatId?: string; replyToMessageId?: string };
 type Target = { recipientId?: string; recipientIdType?: 'open_id' | 'user_id'; chatId?: string; name?: string };
 type SendResult = { status: 'sent' | 'unknown' | 'partial' | 'not_sent'; messageIds?: string[]; sentParts?: number; totalParts?: number; reason?: string; recipient?: Target; candidates?: FeishuUser[] };
 type Receipt = { digest: string; parts: Part[]; connectionId?: string; target?: Target };
@@ -97,6 +97,8 @@ export class FeishuChannel {
   #ready = false;
   #state: ExtensionConnectionStatus['state'] = 'unconfigured';
   #error: string | null = null;
+  #errorCode: NonNullable<ExtensionConnectionStatus['code']> = 'unknown';
+  #groupReception = false;
   #authorization: { url: string; expiresAt: string } | null = null;
   #drain: Promise<void> | undefined;
   #drainRequested = false;
@@ -117,8 +119,8 @@ export class FeishuChannel {
       actions: [
         { id: 'register', label: '扫码连接', execute: ({ signal }) => this.#register(signal) },
         { id: 'refresh_authorization', label: '重新申请授权', execute: ({ signal }) => this.#register(signal) },
-        { id: 'connect', label: '连接已有应用', execute: ({ signal }) => this.#data.app ? this.#changeConnection(signal, async () => { await this.#disconnect(); await this.#connect(signal); }) : this.#queue(() => this.#manual(signal)) },
-        { id: 'reconnect', group: 'secondary', label: '重新连接', execute: ({ signal }) => this.#changeConnection(signal, async () => { await this.#disconnect(); await this.#connect(signal); }) },
+        { id: 'connect', label: '连接已有应用', execute: ({ signal }) => this.#attemptConnection(signal, () => this.#data.app ? this.#changeConnection(signal, async () => { await this.#disconnect(); await this.#connect(signal); }) : this.#queue(() => this.#manual(signal))) },
+        { id: 'reconnect', group: 'secondary', label: '重新连接', execute: ({ signal }) => this.#attemptConnection(signal, () => this.#changeConnection(signal, async () => { await this.#disconnect(); await this.#connect(signal); })) },
         { id: 'unbind', group: 'secondary', label: '解绑并清除本地凭据', execute: ({ signal }) => this.#changeConnection(signal, async () => {
           await this.#disconnect(); await this.#context.credentials.delete('appSecret'); await this.#save(initial()); this.#storageReady = true; this.#authorizationRetry = false; this.#credentials = undefined; this.#error = null; this.#state = 'unconfigured';
         }) },
@@ -150,19 +152,20 @@ export class FeishuChannel {
         const offset = Number(args.offset ?? 0); const page = { ...result, users: result.users.slice(offset, offset + 20), ...(result.users.length > offset + 20 ? { nextOffset: offset + 20 } : {}) };
         return { text: JSON.stringify(page), details: page };
       } });
-    this.#context.registerTool({ name: 'feishu_send_message', mainOnly: true, description: 'Send text as this Feishu/Lark app. Choose recipientName (one exact match in a complete directory), recipientId (recipientIdType defaults to open_id; also user_id), or replyToMessageId from an inbound message. Use feishu_search_users or clarify for ambiguous names. Explicit recipients need not message the bot first. Reply IDs select their original private chat; an additional recipient must match its sender. No implicit last-chat target. Ordinary Web replies are not echoed; after a confirmed send avoid repeating the body. Partial/unknown sends are never automatically replayed.',
-      parameters: { type: 'object', properties: { text: { type: 'string', minLength: 1 }, recipientName: { type: 'string', minLength: 1, maxLength: 100 }, recipientId: { type: 'string', minLength: 1, maxLength: 512 }, recipientIdType: { type: 'string', enum: ['open_id', 'user_id'] }, replyToMessageId: { type: 'string', minLength: 1, maxLength: 512 } }, required: ['text'], additionalProperties: false },
+    this.#context.registerTool({ name: 'feishu_send_message', mainOnly: true, description: 'Send text as this Feishu/Lark app. Choose recipientName (one exact match in a complete directory), recipientId (open_id or user_id), chatId (explicit conversation, including groups), or replyToMessageId from an inbound message. Reply IDs select the original conversation; an additional chatId must match it. A user recipient cannot be combined with a group reply. Clarify ambiguous names. No implicit last-chat target. Receiving any private/group message does not require replying: decide whether a reply is useful. Ordinary Web replies are not echoed; after a confirmed send avoid repeating the body. Partial/unknown sends are never automatically replayed.',
+      parameters: { type: 'object', properties: { text: { type: 'string', minLength: 1 }, recipientName: { type: 'string', minLength: 1, maxLength: 100 }, recipientId: { type: 'string', minLength: 1, maxLength: 512 }, recipientIdType: { type: 'string', enum: ['open_id', 'user_id'] }, chatId: { type: 'string', minLength: 1, maxLength: 512 }, replyToMessageId: { type: 'string', minLength: 1, maxLength: 512 } }, required: ['text'], additionalProperties: false },
       execute: async (args, { callId, signal }) => {
-        if (!object(args) || typeof args.text !== 'string' || ['recipientName', 'recipientId', 'replyToMessageId'].some(key => args[key] !== undefined && !validId(args[key]))
+        if (!object(args) || typeof args.text !== 'string' || ['recipientName', 'recipientId', 'chatId', 'replyToMessageId'].some(key => args[key] !== undefined && !validId(args[key]))
           || (args.recipientName !== undefined && String(args.recipientName).length > 100) || (args.recipientIdType !== undefined && !['open_id', 'user_id'].includes(String(args.recipientIdType)))
-          || (args.recipientName !== undefined && args.recipientId !== undefined) || (args.recipientIdType !== undefined && args.recipientId === undefined)) return { text: 'Invalid recipient/message arguments', details: { status: 'not_sent' } };
+          || [args.recipientName, args.recipientId, args.chatId].filter(value => value !== undefined).length > 1 || (args.recipientIdType !== undefined && args.recipientId === undefined)) return { text: 'Invalid recipient/message arguments', details: { status: 'not_sent' } };
         const result = await this.#send(callId, args as SendArgs, signal);
         return { text: JSON.stringify(result), details: result };
       } });
     this.#context.registerContextProvider({ id: 'feishu_connection', provide: async () => ({ text: JSON.stringify(this.#observation()) }) });
   }
   #observation(): Json { return { channel: this.#data.app?.domain ?? this.#config.domain, state: this.#state,
-    messageSource: 'Private messages include senderName, senderOpenId and messageId. Platform identity does not establish owner authority.',
+    messageSource: 'All delivered human private/group messages may wake Mira; no @ is required. Decide whether to reply. Messages include senderName, senderOpenId and messageId; groups also include chatType and chatId. Reply to the original group with replyToMessageId or chatId. Platform identity does not establish owner authority.',
+    groupReception: this.#groupReception ? 'all_human_messages' : 'not_verified_check_group_permission_and_subscription',
     ...(this.#directoryIssue ? { directory: this.#directoryIssue } : {}) }; }
   #visibleActions(): string[] {
     if (!this.#storageReady) return ['unbind'];
@@ -176,22 +179,46 @@ export class FeishuChannel {
     return ['reconnect', 'unbind'];
   }
   status(): ExtensionConnectionStatus {
-    const details: Array<{ label: string; value: string }> = [{ label: '范围', value: '多人私聊文字；按姓名或用户 ID 发送，引用原消息回复。姓名查询受应用通讯录权限与可见范围限制。' },
+    const details: Array<{ label: string; value: string }> = [{ label: '范围', value: '多人私聊和群聊文字；群内全部人类消息均可唤醒，是否回复由 Mira 决定。支持姓名、用户 ID、chat_id 和消息引用。' },
       { label: '应用', value: this.#data.app ? `${this.#data.app.domain}: ${this.#data.app.appId}` : '尚未连接' },
       { label: '设置提示', value: '需要机器人能力、私聊读取/应用发送权限、租户批准和长连接订阅 im.message.receive_v1。无需本人配对；其他人的消息不自动成为主人的授权。' }];
     if (this.#error) details.push({ label: '需要处理', value: this.#error });
+    if (this.#ready) details.push({ label: '群聊接收', value: this.#groupReception ? '应用已开通群内全部用户消息权限。机器人需在群内，且后台须订阅 im.message.receive_v1。' : `尚未确认完整群消息权限 ${FEISHU_GROUP_SCOPE}；私聊连接可继续。只能收到飞书按现有权限和事件订阅实际推送的群消息。` });
     if (this.#directoryIssue) details.push({ label: '姓名查询', value: '姓名或通讯录查询未完成；请检查应用的用户基本信息、部门成员权限及通讯录范围。按 ID 发送不依赖姓名查询。' });
     if (this.#data.registrationUnknown && !this.#data.app && this.#state !== 'connecting' && this.#state !== 'pending') details.push({ label: '注册结果待核对', value: '上次注册可能已创建应用。请先到官方后台核对，已有应用用手动配置恢复；确认未创建后才可解绑清除本地记录并重新申请。' });
     const authorization = this.#authorization && Date.parse(this.#authorization.expiresAt) > Date.now() ? this.#authorization : null;
     if (this.#authorization && !authorization) details.push({ label: '授权', value: '二维码已过期。等待本次操作结束后点击“重新申请授权”；仍在处理时可先取消。' });
     if (this.#authorization) details.push({ label: '授权链接有效期', value: this.#authorization.expiresAt });
-    return { state: this.#state, visibleActions: this.#visibleActions(), ...(this.#error ? { code: 'unknown' as const } : {}), details,
+    return { state: this.#state, visibleActions: this.#visibleActions(), ...(this.#error ? { code: this.#errorCode } : {}), details,
       ...(authorization ? { authorization: { url: authorization.url, label: `在${this.#config.domain === 'feishu' ? '飞书' : 'Lark'}官方页面扫码确认应用与最小权限`, qr: true } } : {}) };
   }
   async initialize(): Promise<void> {
     if (!this.#store) { this.#state = 'error'; this.#error = '需要持久扩展安装身份和私有目录，尚未连接或读取凭据。'; return; }
     try { await this.#queue(async () => { const loaded = await this.#store!.load(); this.#data = stored(loaded); if (Object.keys(this.#data.sends).length) await this.#save(this.#data); this.#storageReady = true; if (this.#data.registrationUnknown && !this.#data.app) this.#state = 'error'; if (this.#data.app) await this.#connect(this.#abort.signal); }); }
-    catch { this.#state = 'error'; this.#error = '私有状态或连接不可用，原状态未被清空。请检查本地存储及应用设置。'; }
+    catch (error) { if (this.#storageReady) this.#connectionFailed(error); else { this.#state = 'error'; this.#error = '私有状态不可用，原状态未被清空。请检查本地存储。'; } }
+  }
+  #connectionFailed(error: unknown): void {
+    this.#state = 'error'; this.#errorCode = 'configuration';
+    const reason = error instanceof FeishuSdkError ? error.reason : undefined;
+    const scopes = error instanceof FeishuSdkError ? FEISHU_REQUIRED_SCOPES.filter(scope => error.missingScopes.includes(scope)) : [];
+    if (reason === 'missing_permissions' && scopes.length) this.#error = `缺少已生效的应用身份权限：${scopes.join('、')}。请在飞书/Lark 后台开通，并完成所需发布与租户审批后重新连接。`;
+    else if (reason === 'storage_unavailable') this.#error = '私有状态尚未安全读取，连接不能覆盖原记录。请检查本地存储，或在核对后显式解绑重置。';
+    else if (reason === 'credentials_missing') this.#error = '请先保存 App ID 和 App Secret，再连接已有应用。';
+    else if (reason === 'token_rejected') { this.#errorCode = 'authentication'; this.#error = '飞书/Lark 拒绝签发应用令牌。请核对 App ID、App Secret、服务区域和应用状态。'; }
+    else if (reason === 'bot_unavailable') this.#error = '无法验证机器人身份。请检查应用已启用机器人能力、已发布，且应用状态正常。';
+    else if (reason === 'scope_query_failed') this.#error = '无法读取应用已生效的权限列表，尚未继续连接。请检查应用状态、权限管理和租户审批后重试。';
+    else if (reason === 'network') { this.#errorCode = 'network'; this.#error = '连接飞书/Lark API 失败或超时。请检查服务器出站网络、DNS、代理及 TLS 证书。'; }
+    else if (reason === 'connection_timeout' || reason === 'websocket_failed') { this.#errorCode = 'network'; this.#error = `${reason === 'connection_timeout' ? 'WebSocket 长连接在 15 秒内未就绪' : 'WebSocket 长连接失败'}。请检查服务器网络，并确认飞书/Lark 后台已选择长连接、订阅 im.message.receive_v1，配置已生效。`; }
+    else { this.#errorCode = 'unknown'; this.#error = '飞书/Lark 连接未完成。请检查私有存储、应用凭证、机器人权限和后台事件订阅后重试。'; }
+  }
+  async #attemptConnection(signal: AbortSignal, run: () => Promise<void>): Promise<void> {
+    this.#error = null; this.#errorCode = 'unknown';
+    try { await run(); }
+    catch (error) {
+      if (!this.#closed && !signal.aborted) this.#connectionFailed(error);
+      else if (!this.#closed) { this.#settle(); this.#error = null; }
+      throw new Error(signal.aborted ? 'Feishu connection cancelled' : `Feishu connection was not verified: ${this.#error ?? ''}`);
+    }
   }
   #queue<T>(action: () => Promise<T>): Promise<T> {
     const operation = this.#serial.catch(() => {}).then(async () => { if (this.#closed) throw new Error('Feishu extension is stopped'); return action(); }); this.#serial = operation; return operation;
@@ -208,15 +235,15 @@ export class FeishuChannel {
   async #readCredentials(): Promise<FeishuCredentials> {
     if (!this.#data.app) throw new Error('No Feishu app is configured');
     const appSecret = await this.#context.credentials.get('appSecret');
-    if (!appSecret) throw new Error('Feishu app credentials are missing');
+    if (!appSecret) throw new FeishuSdkError('verification_failed', { reason: 'credentials_missing' });
     return { ...this.#data.app, appSecret };
   }
   async #manual(signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
-    if (!this.#storageReady) throw new Error('私有状态尚未安全读取，手动连接不能覆盖原记录；请先修复存储或明确解绑重置');
+    if (!this.#storageReady) throw new FeishuSdkError('verification_failed', { reason: 'storage_unavailable' });
     if (this.#data.app) throw new Error('请先解绑现有应用，再切换应用或手动配置');
     const appSecret = await this.#context.credentials.get('appSecret');
-    if (!validId(this.#config.appId) || !appSecret) throw new Error('请先保存 App ID、服务类型和 App Secret');
+    if (!validId(this.#config.appId) || !appSecret) throw new FeishuSdkError('verification_failed', { reason: 'credentials_missing' });
     const credentials = { appId: this.#config.appId, appSecret, domain: this.#config.domain };
     await this.#sdk.verify(credentials); signal.throwIfAborted();
     await this.#save({ ...initial(), app: { appId: credentials.appId, domain: credentials.domain } }); await this.#connect(signal);
@@ -243,14 +270,18 @@ export class FeishuChannel {
       });
     } catch (error) {
       if (!this.#closed && error instanceof FeishuSdkError && (error.code === 'registration_expired' || error.code === 'registration_denied') && !combined.aborted) await this.#queue(async () => { await this.#save({ ...structuredClone(this.#data), registrationUnknown: false }); this.#authorizationRetry = true; });
-      if (!this.#closed) { this.#state = this.#data.registrationUnknown && !this.#data.app ? 'error' : combined.aborted ? (this.#data.app ? 'disconnected' : 'unconfigured') : 'error'; this.#error = error instanceof FeishuSdkError && error.code === 'registration_expired' ? '授权已过期，旧二维码不可再用。点击“重新申请授权”获取新的授权请求；如已创建应用，请先用手动配置恢复。' : error instanceof FeishuSdkError && error.code === 'registration_denied' ? '授权被拒绝。本次操作已结束，可确认权限后重新申请。' : this.#data.registrationUnknown && !this.#data.app ? '注册结果未知或已取消。请先核对官方后台，避免重复创建应用；取消本地操作不撤销已创建的远端应用。' : combined.aborted ? null : '扫码注册、应用权限或连接验证未完成。请检查租户审批，也可使用手动配置。'; }
+      if (!this.#closed) {
+        if (this.#data.app && !combined.aborted) this.#connectionFailed(error);
+        else { this.#state = this.#data.registrationUnknown && !this.#data.app ? 'error' : combined.aborted ? (this.#data.app ? 'disconnected' : 'unconfigured') : 'error'; this.#error = error instanceof FeishuSdkError && error.code === 'registration_expired' ? '授权已过期，旧二维码不可再用。点击“重新申请授权”获取新的授权请求；如已创建应用，请先用手动配置恢复。' : error instanceof FeishuSdkError && error.code === 'registration_denied' ? '授权被拒绝。本次操作已结束，可确认权限后重新申请。' : this.#data.registrationUnknown && !this.#data.app ? '注册结果未知或已取消。请先核对官方后台，避免重复创建应用；取消本地操作不撤销已创建的远端应用。' : combined.aborted ? null : '扫码注册、应用权限或连接验证未完成。请检查租户审批，也可使用手动配置。'; }
+      }
       throw new Error(combined.aborted ? 'Feishu registration cancelled' : 'Feishu registration was not verified');
     } finally { this.#authorization = null; }
   }
   async #connect(signal: AbortSignal): Promise<void> {
     signal.throwIfAborted(); if (!this.#data.app) throw new Error('先连接应用');
-    const credentials = await this.#readCredentials(); const epoch = ++this.#epoch; this.#state = 'connecting'; this.#error = null;
+    const epoch = ++this.#epoch; this.#state = 'connecting'; this.#error = null;
     try {
+      const credentials = await this.#readCredentials();
       const connection = await this.#sdk.connect(credentials, { onMessage: message => this.#queue(async () => {
         if (epoch !== this.#epoch || this.#closed) throw new Error('Retired Feishu connection');
         await this.#receive(message);
@@ -260,19 +291,20 @@ export class FeishuChannel {
         this.#ready = state === 'connected';
         if (this.#ready) this.#settle();
         else if (state === 'receive_failed') { this.#state = 'error'; this.#error = '消息接收持久化失败，连接已停止；请修复存储后重连并核对缺失消息。'; }
-        else if (state === 'failed') { this.#state = 'error'; this.#error = '长连接失败，请检查网络、权限和事件订阅后重连。'; }
+        else if (state === 'failed') this.#connectionFailed(new FeishuSdkError('connection_failed', { reason: 'websocket_failed' }));
         else this.#state = state === 'closed' ? 'disconnected' : 'connecting';
       } });
       if (signal.aborted || this.#closed || epoch !== this.#epoch) { await connection.close(); signal.throwIfAborted(); throw new Error('Connection retired'); }
       this.#credentials = credentials; this.#connection = connection; this.#sendAbort = new AbortController(); this.#ready = connection.state() === 'connected';
+      this.#groupReception = connection.scopes?.includes(FEISHU_GROUP_SCOPE) === true;
       await this.#flush(); await this.#flushPublications(); this.#receiveFailed = false; this.#receiveAbort = new AbortController(); this.#settle(); this.#startDrain();
-    } catch { this.#ready = false; this.#state = 'error'; this.#error = '机器人权限或长连接尚未验证，请检查凭据、最小权限、审批和长连接事件订阅。'; throw new Error('Feishu connection was not verified'); }
+    } catch (error) { this.#ready = false; this.#connectionFailed(error); throw error; }
   }
-  async #disconnect(): Promise<void> { this.#epoch++; this.#ready = false; const connection = this.#connection; this.#connection = undefined; this.#credentials = undefined; this.#settle(); await connection?.close(); }
+  async #disconnect(): Promise<void> { this.#epoch++; this.#ready = false; this.#groupReception = false; const connection = this.#connection; this.#connection = undefined; this.#credentials = undefined; this.#settle(); await connection?.close(); }
   #settle(): void { this.#state = !this.#data.app ? 'unconfigured' : !this.#ready ? 'disconnected' : 'connected'; }
   #incomingKey(messageId: string): string { return createHash('sha256').update(JSON.stringify([this.#data.connectionId, this.#data.app?.domain, this.#data.app?.appId, messageId])).digest('hex'); }
   async #receive(message: FeishuIncomingText): Promise<void> {
-    if (!this.#data.app || message.chatType !== 'p2p' || message.senderType !== 'user' || !validId(message.messageId) || !validId(message.chatId) || !validId(message.senderOpenId) || !validId(message.tenantKey) || !Number.isFinite(Date.parse(message.createdAt))) return;
+    if (!this.#data.app || !['p2p', 'group'].includes(message.chatType) || message.senderType !== 'user' || !validId(message.messageId) || !validId(message.chatId) || !validId(message.senderOpenId) || !validId(message.tenantKey) || !Number.isFinite(Date.parse(message.createdAt))) return;
     if (message.messageId === this.#data.pairingMessageId) return; // Previously consumed control input stays consumed.
     if (this.#data.recentMessages.includes(message.messageId)) return; // Preserve pre-upgrade durable dedup evidence.
     const key = this.#incomingKey(message.messageId); const digest = createHash('sha256').update(JSON.stringify(message)).digest('hex');
@@ -305,9 +337,10 @@ export class FeishuChannel {
         catch { signal.throwIfAborted(); }
         signal.throwIfAborted();
         const source = receipt.reference;
-        const wake: ExtensionWake = { id: pending.callId, reason: 'Private Feishu message', event: { id: pending.callId, type: 'feishu.message', occurredAt: source.createdAt,
-          message: { direction: 'inbound', text: preview(source.text), sourceLabel: this.#data.app!.domain === 'feishu' ? '飞书' : 'Lark', senderId: source.senderOpenId, senderVerified: true },
+        const wake: ExtensionWake = { id: pending.callId, reason: source.chatType === 'group' ? 'Group Feishu message' : 'Private Feishu message', event: { id: pending.callId, type: 'feishu.message', occurredAt: source.createdAt,
+          message: { direction: 'inbound', text: preview(source.text), sourceLabel: (this.#data.app!.domain === 'feishu' ? '飞书' : 'Lark') + (source.chatType === 'group' ? '群聊' : ''), senderId: source.senderOpenId, senderVerified: true },
           payload: { senderName: user?.name ?? '姓名暂不可用', senderOpenId: source.senderOpenId, messageId: source.messageId, ...preservedText(source.text),
+            ...(source.chatType === 'group' ? { chatType: 'group', chatId: source.chatId } : {}),
             ...(source.replyToMessageId ? { replyToMessageId: source.replyToMessageId } : {}) } } };
         receipt = { ...receipt, wake };
         await this.#queue(async () => { signal.throwIfAborted(); if (epoch !== this.#epoch) throw new Error('Retired inbox');
@@ -358,6 +391,7 @@ export class FeishuChannel {
       if (exact.length !== 1) return { result: { status: 'not_sent', reason: result.users.length ? 'ambiguous_recipient' : 'recipient_not_found', candidates: result.users.slice(0, 20) } };
       target = { recipientId: exact[0]!.openId, recipientIdType: 'open_id', name: exact[0]!.name };
     } else if (args.recipientId) target = { recipientId: args.recipientId, recipientIdType: args.recipientIdType ?? 'open_id' };
+    else if (args.chatId) target = { chatId: args.chatId };
     if (args.replyToMessageId) {
       const reference = await this.#queue(async () => {
         const saved = await this.#store!.loadIncoming<unknown>(this.#incomingKey(args.replyToMessageId!));
@@ -366,14 +400,17 @@ export class FeishuChannel {
         return this.#data.owner && this.#data.recentMessages.includes(args.replyToMessageId!) ? { senderOpenId: this.#data.owner.senderOpenId, chatId: this.#data.owner.chatId } : null;
       });
       if (!reference) return { result: { status: 'not_sent', reason: 'unknown_reply_target' } };
-      if (target) {
-        let openId = target.recipientId;
+      const group = 'chatType' in reference && reference.chatType === 'group';
+      if (target?.chatId && target.chatId !== reference.chatId) return { result: { status: 'not_sent', reason: 'reply_chat_mismatch' } };
+      if (target?.recipientId) {
+        if (group) return { result: { status: 'not_sent', reason: 'reply_recipient_mismatch' } };
+        let openId: string | undefined = target.recipientId;
         if (target.recipientIdType === 'user_id') openId = (await this.#sdk.getUser(credentials, target.recipientId!, 'user_id', signal))?.openId;
         if (!openId || openId !== reference.senderOpenId) return { result: { status: 'not_sent', reason: 'reply_recipient_mismatch' } };
       }
-      target = { recipientId: reference.senderOpenId, recipientIdType: 'open_id', chatId: reference.chatId, ...(target?.name ? { name: target.name } : {}) };
+      target = { ...(!group ? { recipientId: reference.senderOpenId, recipientIdType: 'open_id' as const } : {}), chatId: reference.chatId, ...(target?.name ? { name: target.name } : {}) };
     }
-    return target ? { target } : { result: { status: 'not_sent', reason: 'Specify recipientName, recipientId or replyToMessageId.' } };
+    return target ? { target } : { result: { status: 'not_sent', reason: 'Specify recipientName, recipientId, chatId or replyToMessageId.' } };
   }
   async #sendParts(callId: string, args: SendArgs, signal: AbortSignal): Promise<SendResult> {
     const { text, replyToMessageId } = args;
@@ -384,8 +421,10 @@ export class FeishuChannel {
     for (const character of text) { const size = Buffer.byteLength(character); if (length + size > 6000) { chunks.push(chunk); chunk = ''; length = 0; } chunk += character; length += size; }
     if (chunk) chunks.push(chunk);
     const connectionId = this.#data.connectionId;
-    const digest = createHash('sha256').update(JSON.stringify([connectionId, text, replyToMessageId ?? null, args.recipientName ?? null, args.recipientId ?? null, args.recipientIdType ?? 'open_id'])).digest('hex');
-    const oldDigest = !args.recipientName && !args.recipientId ? createHash('sha256').update(JSON.stringify([connectionId, text, replyToMessageId ?? null])).digest('hex') : null;
+    const identity = [connectionId, text, replyToMessageId ?? null, args.recipientName ?? null, args.recipientId ?? null, args.recipientIdType ?? 'open_id'];
+    if (args.chatId !== undefined) identity.push(args.chatId); // Preserve every existing private-send identity.
+    const digest = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
+    const oldDigest = !args.recipientName && !args.recipientId && !args.chatId ? createHash('sha256').update(JSON.stringify([connectionId, text, replyToMessageId ?? null])).digest('hex') : null;
     let receipt!: Receipt;
     const prior = await this.#queue(async () => {
       if (!this.#storageReady || !this.#store) return { result: { status: 'not_sent' as const, reason: 'Private Feishu state is unavailable; reconcile before sending.' } };

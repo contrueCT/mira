@@ -10,7 +10,7 @@ or runtime internals.
   private inbox JSON and per-call delivery rows in one SQLite database within the generic installation directory.
 - Credentials only use `context.credentials`; protected settings only use
   `registerSettings`. No vendor routes, global registries or reserved core IDs.
-- Default multi-person human private messages; no owner pairing or implicit last-chat recipient. No groups/Docs/user impersonation/media downloads/voice.
+- Default multi-person human private/group messages; every delivered human group message may wake Mira without @, while reply decisions remain with Mira. No owner pairing or implicit last-chat recipient. No Docs/user impersonation/media downloads/voice/bot-message loops.
 - Do not restore Channel auto batching/stale/dedup/retry paths without durable proof.
 - No real accounts, grants, credentials or paid services during synthetic tests.
 - Keep source-level and real tenant verification clearly separate in reports.
@@ -22,3 +22,4 @@ or runtime internals.
 
 - ADR 0054: directory lookup uses app identity and complete bounded traversal; root fallback is separately server-checked when scope introspection is denied. Never auto-select from incomplete/ambiguous results.
 - Incoming rows and outgoing receipts share the private SQLite CAS. ACK after durable ingress, enrich/freeze names before Host publication, retain per-message identity after body compaction. Stop old processes before schema-3 upgrades.
+- ADR 0055: connection failures expose only fixed reasons and allowlisted missing permissions in existing protected settings. Group payload adds chatType/chatId; explicit chatId and reply references must agree, user targets cannot be combined with group replies. Keep all old send digests unchanged.
