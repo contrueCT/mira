@@ -347,6 +347,7 @@ test('reasoning saved in the real browser reaches credential-bound SDK payloads 
   const send = async (text: string) => { await page.getByLabel('给 Mira 发消息', { exact: true }).fill(text); await page.getByRole('button', { name: '发送消息', exact: true }).click(); };
   const saveLevel = async (level: string) => {
     await page.getByRole('button', { name: '模型设置', exact: true }).click();
+    await page.getByRole('tab', { name: '模型', exact: true }).click();
     await page.getByLabel('默认推理强度', { exact: true }).selectOption(level);
     await page.getByRole('button', { name: '保存设置', exact: true }).click();
     await expect(page.getByText(/配置已保存/)).toBeVisible();
@@ -376,6 +377,7 @@ test('reasoning saved in the real browser reaches credential-bound SDK payloads 
     await app!.close(); app = undefined; await service!.close(); service = undefined; await start(); await page.reload();
     await expect.poll(async () => (await service!.status()).state).toBe('idle');
     await page.getByRole('button', { name: '模型设置', exact: true }).click();
+    await page.getByRole('tab', { name: '模型', exact: true }).click();
     await expect(page.getByLabel('默认推理强度', { exact: true })).toHaveValue('high');
     await page.setViewportSize({ width: 390, height: 844 });
     await page.getByLabel('默认推理强度', { exact: true }).scrollIntoViewIfNeeded();
