@@ -7,7 +7,8 @@ import { BrowserProcesses } from '../../apps/server/src/browser-processes.ts';
 import { mkdir, mkdtemp, writeFile, chmod, rm, readFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { BrowserManager, BrowserControlError } from '../../apps/server/src/browser-manager.ts';
+import { BrowserFailure } from '../../apps/server/src/browser-failures.ts';
+import { BrowserManager, BrowserControlError, BrowserOperationError } from '../../apps/server/src/browser-manager.ts';
 import { AgentBrowserDriver, browserProtocolCommand, browserHumanInput, type BrowserDriver } from '../../apps/server/src/browser-driver.ts';
 
 class FakeDriver implements BrowserDriver {
@@ -105,7 +106,7 @@ test('real spawn checks pinned version without shell interpretation or launching
     const previous = process.env['MIRA_BROWSER_SECRET_SENTINEL']; process.env['MIRA_BROWSER_SECRET_SENTINEL'] = 'must-not-inherit';
     const driver = new AgentBrowserDriver({ executable, cwd: base });
     if (previous === undefined) delete process.env['MIRA_BROWSER_SECRET_SENTINEL']; else process.env['MIRA_BROWSER_SECRET_SENTINEL'] = previous;
-    await assert.rejects(driver.open('00000000-0000-0000-0000-000000000000', 'https://example.com/?q=$(touch%20no)'), /pinned/);
+    await assert.rejects(driver.open('00000000-0000-0000-0000-000000000000', 'https://example.com/?q=$(touch%20no)'), error => BrowserFailure.from(error)?.reason === 'version_mismatch');
     assert.deepEqual(JSON.parse(await readFile(log, 'utf8')), ['--version']);
     assert.equal(JSON.parse(await readFile(environment, 'utf8'))['MIRA_BROWSER_SECRET_SENTINEL'], undefined);
   } finally { await rm(base, { recursive: true, force: true }); }
@@ -134,8 +135,8 @@ server.listen(path.join(dir, session + '.sock'));
     assert.deepEqual(lines.map(line => line.action), ['launch', 'navigate', 'snapshot']);
     assert.equal(lines[0].requestedEngine, 'chrome');
     await writeFile(relaunch, '1');
-    await assert.rejects(driver.command(session, ['snapshot']), /instance changed/);
-    await assert.rejects(driver.command(session, ['snapshot']), /invalidated/);
+    await assert.rejects(driver.command(session, ['snapshot']), error => BrowserFailure.from(error)?.reason === 'generation_changed');
+    await assert.rejects(driver.command(session, ['snapshot']), error => BrowserFailure.from(error)?.reason === 'generation_changed');
     assert.equal((await readFile(log, 'utf8')).trim().split('\n').length, 4);
     process.kill(lines[0].pid, 'SIGKILL');
     const childPids = (await readFile(descendant, 'utf8')).trim().split('\n').map(Number);
@@ -144,13 +145,26 @@ server.listen(path.join(dir, session + '.sock'));
       const deadline = Date.now() + 3000;
       while (true) { const stat = await readFile(`/proc/${childPid}/stat`, 'utf8').catch(() => ''); if (!stat || stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] === 'Z') break; assert.ok(Date.now() < deadline, 'Detached browser survived daemon crash'); await new Promise(resolve => setTimeout(resolve, 25)); }
     }
-    await assert.rejects(driver.command(session, ['snapshot']), /ended|transport|generation|ENOENT|invalidated/);
+    await assert.rejects(driver.command(session, ['snapshot']), error => BrowserFailure.from(error)?.reason === 'generation_changed');
     assert.equal((await readFile(log, 'utf8')).trim().split('\n').length, 4);
     await writeFile(rejectLaunch, '1');
     await assert.rejects(driver.open('22222222-2222-2222-2222-222222222222', 'https://example.com'), error => {
-      assert.match(String(error), /native launch failed.*cleanup confirmed/);
+      assert.equal(BrowserFailure.from(error)?.phase, 'browser_launch'); assert.equal(BrowserFailure.from(error)?.cleanup, 'confirmed');
       assert.equal(String(error).includes('synthetic-startup-private-detail'), false); return true;
     });
+    const capture = BrowserProcesses.prototype.capture; let captures = 0;
+    BrowserProcesses.prototype.capture = async function(requireBrowser) {
+      if (++captures === 2) throw Error('synthetic-private-ownership-detail');
+      return capture.call(this, requireBrowser);
+    };
+    try {
+      await assert.rejects(driver.open('33333333-3333-3333-3333-333333333333', 'https://example.com'), error => {
+        const diagnostic = BrowserFailure.from(error);
+        assert.equal(diagnostic?.phase, 'browser_launch'); assert.equal(diagnostic?.reason, 'launch_failed');
+        assert.ok(!JSON.stringify(diagnostic).includes('synthetic-private-ownership-detail')); return true;
+      });
+    } finally { BrowserProcesses.prototype.capture = capture; }
+
   } finally { await driver.dispose(); const childPids = (await readFile(descendant, 'utf8').catch(() => '')).trim().split('\n').map(Number); for (const childPid of childPids) if (childPid > 1) { try { process.kill(-childPid, 'SIGKILL'); } catch {} } await rm(base, { recursive: true, force: true }); }
 });
 
@@ -194,7 +208,7 @@ test('owned descendant identities clean a detached browser group after daemon SI
 
 test('cleanup failure remains unknown with both control paths gated until explicit close succeeds', async () => {
   const { driver, manager, owner, browser } = await setup(); driver.fail = true;
-  await assert.rejects(owner.close(browser.id), /Cleanup/);
+  await assert.rejects(owner.close(browser.id), error => error instanceof BrowserOperationError && error.diagnostic.cleanup === 'unknown');
   assert.equal(manager.list()[0]!.state, 'unknown');
   assert.match(manager.list()[0]!.message!, /cleanup could not be verified/);
   await assert.rejects(owner.command(browser.id, ['snapshot']), BrowserControlError);
@@ -354,7 +368,7 @@ test('unknown outcome lock is viewable and still rejects input; cleanup lock is 
   await assert.rejects(manager.stream(locked.id), /stream unavailable/);
   assert.equal(manager.list()[0]!.state, 'unknown'); assert.equal(manager.list()[0]!.lock, 'outcome'); assert.equal(manager.list()[0]!.epoch, epoch);
   driver.failStream = false; driver.fail = true;
-  await assert.rejects(owner.close(locked.id), /Cleanup/);
+  await assert.rejects(owner.close(locked.id), error => error instanceof BrowserOperationError && error.diagnostic.cleanup === 'unknown');
   assert.equal(manager.list()[0]!.lock, 'cleanup');
   await assert.rejects(manager.takeover(locked.id), (error: unknown) => {
     assert.ok(error instanceof BrowserControlError);
@@ -512,16 +526,16 @@ test('managed browser discovers a later skill-prefix install and keeps explicit 
     await writeFile(oldNative, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(log)}, 'old-path'); console.log('agent-browser 0.1.0');`); await chmod(oldNative, 0o700);
     // Temporarily remove the standard launcher to reproduce first resolution via PATH.
     await rm(launcher);
-    await assert.rejects(driver.open('22222222-2222-2222-2222-222222222222', 'https://example.test'), /pinned/);
+    await assert.rejects(driver.open('22222222-2222-2222-2222-222222222222', 'https://example.test'), error => BrowserFailure.from(error)?.reason === 'version_mismatch');
     assert.equal(await readFile(log, 'utf8'), 'old-path');
     await writeFile(launcher, '// official-layout fixture'); await chmod(launcher, 0o700);
     await writeFile(native, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(log)}, 'skill-prefix'); console.log('agent-browser 9.9.9');`); await chmod(native, 0o700);
-    await assert.rejects(driver.open('33333333-3333-3333-3333-333333333333', 'https://example.test'), /pinned/);
+    await assert.rejects(driver.open('33333333-3333-3333-3333-333333333333', 'https://example.test'), error => BrowserFailure.from(error)?.reason === 'version_mismatch');
     assert.equal(await readFile(log, 'utf8'), 'skill-prefix');
     const override = path.join(home, 'override');
     await writeFile(override, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(log)}, 'explicit'); console.log('agent-browser 9.9.9');`); await chmod(override, 0o700);
     const explicit = new AgentBrowserDriver({ miraHome: home, executable: override });
-    await assert.rejects(explicit.open('44444444-4444-4444-4444-444444444444', 'https://example.test'), /pinned/);
+    await assert.rejects(explicit.open('44444444-4444-4444-4444-444444444444', 'https://example.test'), error => BrowserFailure.from(error)?.reason === 'version_mismatch');
     assert.equal(await readFile(log, 'utf8'), 'explicit');
   } finally { if (previousPath === undefined) delete process.env['PATH']; else process.env['PATH'] = previousPath; if (previous === undefined) delete process.env['MIRA_AGENT_BROWSER_EXECUTABLE']; else process.env['MIRA_AGENT_BROWSER_EXECUTABLE'] = previous; await rm(home, { recursive: true, force: true }); }
 });

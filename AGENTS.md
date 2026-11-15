@@ -105,6 +105,7 @@ pnpm check
 - [ADR 0033](docs/adr/0033-web-password-access.md)：可选网页密码在现有设置，统一 API/附件鉴权；明确 public origin 支持 0.0.0.0 绑定，仍保留 Host/Origin/CSRF 防护和 External SDK 回环限制。
 
 - [ADR 0034](docs/adr/0034-managed-browser-handoff.md)：受管 agent-browser 0.39.1、owner 队列与人工 epoch；设置内 stream 视口；交还取消未发送输入、等待官方 daemon 在途响应再新 snapshot，不重放，不承诺 OS shell 隔离。
+- [ADR 0058](docs/adr/0058-managed-browser-failure-reasons.md)：浏览器失败诊断经工具结果和会话状态交给 Mira；启动前失败为 not_executed，已发出操作的 unknown、清理状态和锁定保留；只传固定安全原因，不增加重试或自动安装。
 - [ADR 0035](docs/adr/0035-extension-private-settings.md)：通用扩展私有凭据/安装数据目录与声明式设置，现有扩展管理内使用；运行时凭据不入config/模型，动作按代取消/排空，同OS可信边界不变。
 - ADR 0036：`packages/feishu-channel` 是普通 Cordis 消费者，使用通用设置/凭据/私有目录与既有 Event/Wake/工具/cleanup；无供应商 server 路由、保留内置 ID 或默认连接。[ADR 0054](docs/adr/0054-feishu-multi-recipient-plan.md) 支持多人私聊、姓名查找和用户 ID；[ADR 0055](docs/adr/0055-feishu-connection-diagnostics-and-groups.md) 增加安全连接诊断、全部人类群消息唤醒、chat_id/原群引用发送；来源不授予主人权限，真实收发需单独验收。
 - [ADR 0057](docs/adr/0057-feishu-failure-observations.md)：飞书失败使用固定安全诊断进入工具结果、冻结入站 payload 和普通 ContextProvider/设置；发送分片回执保留失败原因，网页同步失败独立于确认发送；不增加 Wake、隐式重试或权限。

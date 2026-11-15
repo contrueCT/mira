@@ -40,6 +40,8 @@ python3 -m venv "$TOOLS_HOME/documents-venv"
 
 CLI 版本检查、Chrome 下载或版本输出成功均不证明浏览器能够启动。Linux 上先核对服务实际选择的 Chrome ELF 文件，再用 `ldd` 检查缺失库；`error while loading shared libraries` / 退出 127 属于启动依赖问题，单独的 `DevToolsActivePort` 缺失或 unknown outcome 尚不能确定原因。具体步骤见内置 skill 的[启动故障排查](../../skills/agent-browser/SKILL.md#browser-downloaded-but-cannot-start-linux)。更换启动环境中的浏览器路径后需授权重启；已有安装授权沿用，需要交互 sudo 密码时由用户在终端输入。修复后必须实际 `browser_open` 并取得 snapshot，交互与人工交还分别验收。
 
+[ADR 0058](../adr/0058-managed-browser-failure-reasons.md)：受管浏览器的预期失败通过工具 `isError` 结果提供固定的 `diagnostic.phase/reason/message/execution/cleanup`，在同一轮交给 Mira。`not_executed` 表示启动前已确定失败；`unknown` 表示操作结果未确认，需通过 `browser_list` 查对应 `browserId` 和会话 `failure`，保持既有锁定、不重放。缺 CLI、版本不符、Chrome 路径不可用、动态库、sandbox、DNS/连接/TLS、协议与清理问题各有明确分类；不输出原生错误、页面 URL、输入或 stderr 原文。原始诊断来自可信实例，错误文字或同名普通对象不能宣称“未执行”。
+
 ## bash 超时（2026-10-20）
 
 `bash` 未给 `timeout` 时默认 120 秒，最大 600 秒（更大值会被降到上限）；超时错误会提示改用 `exec_command`（受管终端）并用 `write_stdin` 轮询长时间运行、交互或持续输出的命令。bash 的工具声明（描述与参数 schema）保持不变：已记录的原生模型证据（`docs/acceptance/reply-native-behavior.md`）绑定完整工具声明摘要，修改声明需要重新做原生采集；模型从超时错误中得知限制和替代方式。

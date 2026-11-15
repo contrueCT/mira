@@ -1,6 +1,6 @@
 import type { AgentTool } from '@earendil-works/pi-agent-core';
 import { Type } from '@earendil-works/pi-ai';
-import { BrowserManager, BrowserControlError } from './browser-manager.ts';
+import { BrowserManager, BrowserControlError, BrowserOperationError } from './browser-manager.ts';
 
 export function createBrowserTools(manager: BrowserManager, owner: string): AgentTool[] {
   const browser = manager.bind(owner);
@@ -8,7 +8,7 @@ export function createBrowserTools(manager: BrowserManager, owner: string): Agen
   const result = (value: unknown, isError = false) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value) }], details: {}, ...(isError ? { isError } : {}) });
   const call = async (work: () => Promise<unknown>) => {
     try { return result(await work()); }
-    catch (error) { if (error instanceof BrowserControlError) return result({ status: 'not_executed', message: error.message }, true); throw error; }
+    catch (error) { if (error instanceof BrowserOperationError) return result({ status: error.diagnostic.execution === 'not_started' ? 'not_executed' : 'unknown', browserId: error.browserId, diagnostic: error.diagnostic, message: error.message }, true); if (error instanceof BrowserControlError) return result({ status: 'not_executed', message: error.message }, true); throw error; }
   };
   return [
     { name: 'browser_list', label: 'List managed browsers', description: 'List this stream’s managed browsers and control state without taking screenshots or replaying anything. Human/held means wait for explicit return in Mira Settings → Browser. Main and child handles are separate; browser control is not an action approval system.', parameters: Type.Object({}), execute: async () => result(browser.list()) },

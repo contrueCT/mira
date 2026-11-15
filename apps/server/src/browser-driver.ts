@@ -1,8 +1,9 @@
+import { BrowserFailure, nativeBrowserReason, type BrowserFailurePhase, type BrowserFailureReason } from './browser-failures.ts';
 import { BrowserProcesses } from './browser-processes.ts';
 import { browserLaunchEnvironment, managedBrowserExecutable } from './browser-launch.ts';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, lstat, readFile, rm, realpath, access } from 'node:fs/promises';
+import { mkdtemp, lstat, readFile, rm, realpath, access, stat } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { connect } from 'node:net';
 import { get } from 'node:http';
@@ -84,13 +85,14 @@ export class AgentBrowserDriver implements BrowserDriver {
   }
   #run(args: string[], env: NodeJS.ProcessEnv): Promise<string> {
     return new Promise((resolve, reject) => {
-      const child = spawn(this.#resolved ?? this.#executable, args, { cwd: this.#cwd, env, shell: false, stdio: ['ignore', 'pipe', 'ignore'] });
-      let output = ''; let bytes = 0; let failed = false;
-      const fail = () => { if (failed) return; failed = true; child.kill('SIGKILL'); reject(Error('Pinned browser CLI failed; command outcome may be unknown')); };
-      const timer = setTimeout(fail, 45_000);
+      const child = spawn(this.#resolved ?? this.#executable, args, { cwd: this.#cwd, env, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+      let output = ''; let bytes = 0; let failed = false; let stderr = '';
+      const fail = (reason: BrowserFailureReason = 'version_probe_failed') => { if (failed) return; failed = true; child.kill('SIGKILL'); reject(new BrowserFailure('version', reason, 'not_started', 'not_needed')); };
+      const timer = setTimeout(() => fail('version_timeout'), 45_000);
+      child.stderr.on('data', (chunk: Buffer) => { if (stderr.length < 16_384) stderr = (stderr + chunk.toString('utf8')).slice(0, 16_384); });
       child.stdout.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > 1024 * 1024) fail(); else output += chunk.toString('utf8'); });
-      child.on('error', () => { clearTimeout(timer); fail(); });
-      child.on('close', code => { clearTimeout(timer); if (failed) return; if (code !== 0) fail(); else resolve(output); });
+      child.on('error', () => { clearTimeout(timer); fail('executable_unavailable'); });
+      child.on('close', code => { clearTimeout(timer); if (failed) return; if (code !== 0) fail(nativeBrowserReason(stderr, 'version_probe_failed')); else resolve(output); });
     });
   }
   async #resolveExecutable(): Promise<void> {
@@ -111,49 +113,59 @@ export class AgentBrowserDriver implements BrowserDriver {
         this.#resolved = resolved; return;
       } catch { /* Try the next PATH entry; never install software. */ }
     }
-    throw Error('Install agent-browser 0.39.1 and set MIRA_AGENT_BROWSER_EXECUTABLE to its official native binary');
+    throw new BrowserFailure('dependency', this.#explicitExecutable ? 'executable_unavailable' : 'cli_missing', 'not_started', 'not_needed');
   }
   async open(session: string, url: string): Promise<unknown> {
     validateBrowserCommand(['open', url]);
-    if (process.platform === 'win32') throw Error('Managed browser requires a Unix domain socket host');
+    if (process.platform === 'win32') throw new BrowserFailure('dependency', 'unsupported_host', 'not_started', 'not_needed');
     if (!/^[\da-f-]{36}$/.test(session) || this.#handles.has(session)) throw Error('Invalid browser generation');
     await this.#resolveExecutable();
     const version = (await this.#run(['--version'], this.#env)).trim();
-    if (version !== 'agent-browser 0.39.1') throw Error('Install the pinned agent-browser 0.39.1 explicitly');
+    if (version !== 'agent-browser 0.39.1') throw new BrowserFailure('version', 'version_mismatch', 'not_started', 'not_needed');
     const browserExecutable = await managedBrowserExecutable(this.#browserExecutable);
-    const directory = await mkdtemp(path.join(tmpdir(), 'mira-ab-'));
-    const child = spawn(this.#resolved!, [], { cwd: this.#cwd, env: { ...this.#env, AGENT_BROWSER_DAEMON: '1', AGENT_BROWSER_SESSION: session, AGENT_BROWSER_SOCKET_DIR: directory, AGENT_BROWSER_PIN_TAB: '1' }, shell: false, detached: true, stdio: 'ignore' });
+    if (this.#browserExecutable) {
+      try { await access(this.#browserExecutable, 1); if (!(await stat(this.#browserExecutable)).isFile()) throw Error(); }
+      catch { throw new BrowserFailure('dependency', 'browser_missing', 'not_started', 'not_needed'); }
+    }
+    let directory: string;
+    try { directory = await mkdtemp(path.join(tmpdir(), 'mira-ab-')); }
+    catch { throw new BrowserFailure('preparation', 'storage_unavailable', 'not_started', 'not_needed'); }
+    const child = spawn(this.#resolved!, [], { cwd: this.#cwd, env: { ...this.#env, AGENT_BROWSER_DAEMON: '1', AGENT_BROWSER_SESSION: session, AGENT_BROWSER_SOCKET_DIR: directory, AGENT_BROWSER_PIN_TAB: '1' }, shell: false, detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
     const owned = child.pid ? new BrowserProcesses(child.pid) : undefined;
-    let ended = false;
-    const exited = new Promise<void>(resolve => { child.once('exit', () => { ended = true; owned?.retireRoot(); this.#notifyExit(session); void owned?.cleanup().catch(() => {}); resolve(); }); child.once('error', () => { ended = true; owned?.retireRoot(); this.#notifyExit(session); void owned?.cleanup().catch(() => {}); resolve(); }); });
-    let stage = 'daemon startup';
+    let ended = false; let startupReason: BrowserFailureReason = 'daemon_start_failed'; let stderr = '';
+    child.stderr?.on('data', (chunk: Buffer) => { if (stderr.length < 16_384) { stderr = (stderr + chunk.toString('utf8')).slice(0, 16_384); startupReason = nativeBrowserReason(stderr, startupReason); } });
+    const exited = new Promise<void>(resolve => { child.once('exit', () => { ended = true; owned?.retireRoot(); this.#notifyExit(session); void owned?.cleanup().catch(() => {}); resolve(); }); child.once('error', () => { ended = true; startupReason = 'executable_unavailable'; owned?.retireRoot(); this.#notifyExit(session); void owned?.cleanup().catch(() => {}); resolve(); }); });
+    let stage: BrowserFailurePhase = 'daemon_start';
     try {
       const socket = path.join(directory, `${session}.sock`);
       const deadline = Date.now() + 10_000;
       while (true) {
-        if (ended || Date.now() > deadline) throw Error('Browser daemon did not start');
+        if (ended || Date.now() > deadline) throw new BrowserFailure('daemon_start', startupReason);
         try {
           const stat = await lstat(socket); const pid = Number(await readFile(path.join(directory, `${session}.pid`), 'utf8'));
           if (!stat.isSocket() || pid !== child.pid) throw Error('Invalid browser daemon identity');
           this.#handles.set(session, { directory, socket, dev: stat.dev, ino: stat.ino, pid, process: child, exited, owned: owned!, invalid: false }); break;
         } catch { await delay(25); }
       }
-      stage = 'initial process ownership';
+      stage = 'ownership';
       await owned!.capture();
-      stage = 'native launch';
+      stage = 'browser_launch';
       await this.#request(session, { action: 'launch', headless: true, engine: 'chrome', pinTab: true, plugins: [], ...(browserExecutable ? { executablePath: browserExecutable } : {}) });
       await owned!.capture(true);
-      stage = 'initial navigation';
+      stage = 'navigation';
       const output = await this.#request(session, browserProtocolCommand(['open', url]));
       await owned!.capture();
       return output;
-    } catch {
-      let cleanup = 'confirmed';
+    } catch (error) {
+      const diagnostic = BrowserFailure.from(error) ?? BrowserFailure.from(new BrowserFailure(stage, stage === 'ownership' ? 'ownership_unverified' : stage === 'browser_launch' ? 'launch_failed' : 'command_failed'))!;
+      let cleanup: 'confirmed' | 'unknown' = 'confirmed';
       try { await this.#stop(child, exited, owned); } catch { cleanup = 'unknown'; }
-      // Preserve the failure phase separately from cleanup, without exposing native
-      // errors (which can include paths or page data) through a model tool result.
-      if (cleanup === 'confirmed') { this.#handles.delete(session); await rm(directory, { recursive: true, force: true }); }
-      throw Error(`Browser ${stage} failed or outcome unknown; owned-process cleanup ${cleanup}`);
+      if (cleanup === 'confirmed') {
+        try { await rm(directory, { recursive: true, force: true }); this.#handles.delete(session); }
+        catch { cleanup = 'unknown'; }
+      }
+      // Preserve the primary failure even when owned-process cleanup also fails.
+      throw new BrowserFailure(diagnostic.phase, diagnostic.reason, 'unknown', cleanup);
     }
   }
   async #stop(child: ChildProcess, exited: Promise<void>, owned?: BrowserProcesses): Promise<void> {
@@ -166,47 +178,50 @@ export class AgentBrowserDriver implements BrowserDriver {
     }
     await exited;
     try { await owned?.cleanup(); } catch { cleanupFailed = true; }
-    if (cleanupFailed) throw Error('Browser cleanup outcome unknown; some descendants could not be identified');
+    if (cleanupFailed) throw new BrowserFailure('cleanup', 'cleanup_failed', 'unknown', 'unknown');
   }
   async #request(session: string, command: Record<string, unknown>): Promise<unknown> {
-    const h = this.#handles.get(session); if (!h) throw Error('No live browser generation');
-    if (h.invalid && command.action !== 'close') throw Error('Browser generation invalidated; outcome unknown');
-    if (h.process.exitCode !== null || h.process.signalCode !== null) throw Error('Browser daemon ended');
-    const stat = await lstat(h.socket); const pid = Number(await readFile(path.join(h.directory, `${session}.pid`), 'utf8'));
-    if (!stat.isSocket() || stat.dev !== h.dev || stat.ino !== h.ino || pid !== h.pid) throw Error('Browser generation changed');
-    process.kill(h.pid, 0);
-    type Response = { id?: string; success?: boolean; data?: { lifecycle?: { launched?: boolean; relaunchedBrowser?: boolean; restartedBackground?: boolean } } };
-    let response: Response | undefined;
+    const phase = command.action === 'launch' ? 'browser_launch' : command.action === 'navigate' ? 'navigation' : 'command';
+    const h = this.#handles.get(session); if (!h) throw new BrowserFailure(phase, 'generation_changed');
+    if (h.invalid && command.action !== 'close') throw new BrowserFailure(phase, 'generation_changed');
+    if (h.process.exitCode !== null || h.process.signalCode !== null) throw new BrowserFailure(phase, 'generation_changed');
+    try {
+      const info = await lstat(h.socket); const pid = Number(await readFile(path.join(h.directory, `${session}.pid`), 'utf8'));
+      if (!info.isSocket() || info.dev !== h.dev || info.ino !== h.ino || pid !== h.pid) throw Error();
+      process.kill(h.pid, 0);
+    } catch { throw new BrowserFailure(phase, 'generation_changed'); }
+    type Response = { id?: string; success?: boolean; error?: unknown; data?: { lifecycle?: { launched?: boolean; relaunchedBrowser?: boolean; restartedBackground?: boolean } } };
+    let response: Response | undefined; let requestFailure: unknown;
     try { response = await new Promise<Response>((resolve, reject) => {
       const requestId = randomUUID();
       const socket = connect(h.socket); let bytes = 0; const chunks: Buffer[] = []; let settled = false;
       const finish = (error?: Error, value?: Response) => { if (settled) return; settled = true; socket.destroy(); if (error) reject(error); else resolve(value!); };
-      socket.setTimeout(35_000, () => finish(Error('Browser command timed out; outcome unknown')));
-      socket.on('error', () => finish(Error('Browser transport failed; outcome unknown')));
-      socket.on('end', () => finish(Error('Browser response ended; outcome unknown')));
+      socket.setTimeout(35_000, () => finish(new BrowserFailure(phase, 'timeout')));
+      socket.on('error', () => finish(new BrowserFailure(phase, 'transport_failed')));
+      socket.on('end', () => finish(new BrowserFailure(phase, 'invalid_response')));
       socket.on('connect', () => { socket.write(`${JSON.stringify({ ...command, id: requestId })}\n`); });
       socket.on('data', (chunk: Buffer) => {
-        bytes += chunk.length; if (bytes > 1024 * 1024) { finish(Error('Browser output limit; outcome unknown')); return; }
+        bytes += chunk.length; if (bytes > 1024 * 1024) { finish(new BrowserFailure(phase, 'response_limit')); return; }
         chunks.push(chunk); const buffer = Buffer.concat(chunks); const end = buffer.indexOf(10); if (end < 0) return;
         try {
           if (buffer.subarray(end + 1).toString('utf8').trim()) throw Error('Trailing browser response');
           const parsed = JSON.parse(buffer.subarray(0, end).toString('utf8')) as Response;
-          if (parsed.id !== requestId) throw Error('Mismatched browser response');
+          if (parsed.id !== requestId || typeof parsed.success !== 'boolean') throw Error('Invalid browser response identity or status');
           finish(undefined, parsed);
-        } catch { finish(Error('Invalid browser response; outcome unknown')); }
+        } catch { finish(new BrowserFailure(phase, 'invalid_response')); }
       });
     }); } catch (error) {
       // A lost response may leave a still-running native action that spawns after our last capture.
-      h.owned.markUnobservableCommand(); throw error;
+      requestFailure = error; h.owned.markUnobservableCommand(); throw error;
     } finally {
       // Capture replacement process groups before interpreting lifecycle changes or invalidating.
       try { await h.owned.capture(command.action !== 'close' && !(command.action === 'launch' && response?.success === false)); }
-      catch { this.#notifyExit(session); throw Error('Browser ownership capture failed; command and cleanup outcome unknown'); }
+      catch { this.#notifyExit(session); const primary = BrowserFailure.from(requestFailure) ?? (response?.success === false ? BrowserFailure.from(new BrowserFailure(phase, nativeBrowserReason(response.error, phase === 'browser_launch' ? 'launch_failed' : 'command_failed'))) : undefined); throw new BrowserFailure(primary?.phase ?? 'ownership', primary?.reason ?? 'ownership_unverified', 'unknown', 'unknown'); }
     }
-    if (response?.success !== true) throw Error('Browser command failed or outcome unknown');
+    if (response?.success !== true) throw new BrowserFailure(phase, nativeBrowserReason(response?.error, phase === 'browser_launch' ? 'launch_failed' : 'command_failed'));
     const lifecycle = response.data?.lifecycle;
     if (!lifecycle || (command.action !== 'launch' && (lifecycle.launched !== false || lifecycle.relaunchedBrowser !== false || lifecycle.restartedBackground !== false))) {
-      this.#notifyExit(session); throw Error('Browser instance changed during the command; outcome unknown');
+      this.#notifyExit(session); throw new BrowserFailure(phase, 'generation_changed');
     }
     return response.data;
   }

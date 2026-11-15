@@ -63,6 +63,7 @@
     "tests/unit/web-auth.test.mts",
     "tests/unit/terminals.test.mts",
     "tests/unit/custom-model-setup.test.mts",
+    "tests/unit/browser-failures.test.mts",
     "tests/unit/browser-manager.test.mts",
     "tests/unit/browser-http.test.mts",
     "tests/unit/browser-navigation.test.mts",
