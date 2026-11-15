@@ -4,6 +4,7 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 ## 已确认
 
+- [ADR 0057：飞书失败原因进入 Mira 上下文](0057-feishu-failure-observations.md)：查询、收发、连接和持久化失败提供安全诊断；冻结入站与发送回执保留原因，unknown 不重发。
 - [ADR 0055：飞书连接诊断与群聊](0055-feishu-connection-diagnostics-and-groups.md)：固定安全原因在既有设置中显示；群内全部人类消息唤醒、由 Mira 决定是否回复；显式 chat_id 和原群引用发送。
 
 - 项目名 Mira，私有 GitHub 仓库 `contrueCT/mira`

@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { diagnose, readFailure, FeishuFailureError, type FeishuFailure } from '../../packages/feishu-channel/src/diagnostics.ts';
 import { test } from 'node:test';
+import { createRequire } from 'node:module';
+import { EventEmitter } from 'node:events';
 import { createFeishuSdk, FEISHU_REQUIRED_SCOPES, FEISHU_REGISTRATION_SCOPES, FeishuSdkError, parseFeishuMessage } from '../../packages/feishu-channel/src/sdk.ts';
 import type { FeishuConnectionState, FeishuCredentials, FeishuHttpInstance, FeishuSdkDependencies, FeishuWsOptions, FeishuWsTransport } from '../../packages/feishu-channel/src/sdk.ts';
 
@@ -263,4 +266,112 @@ test('registration begin timeout is bounded and suppresses late authorization an
   assert.equal(options.signal?.aborted, true);
   options.onQRCodeReady({ url: 'https://accounts.feishu.cn/synthetic-late', expireIn: 60 });
   finish({ client_id: 'late', client_secret: 'synthetic-late' }); await Promise.resolve();
+});
+
+
+test('real SDK preserves user lookup HTTP/API/network/response failures without upstream private data', async () => {
+  const fixtures = [
+    [{ code: 99991672, msg: credentials.appSecret }, 'missing_permissions', 99991672],
+    [{ code: 99991663, msg: credentials.appSecret }, 'token_rejected', 99991663],
+    [{ code: 0, data: { user: { open_id: 'ou_person' } } }, 'name_unavailable', undefined],
+    [{ code: 0, data: { user: { open_id: 'wrong-id', name: '张三' } } }, 'invalid_response', undefined],
+    [{ data: {} }, 'invalid_response', undefined],
+  ] as const;
+  for (const [response, reason, apiCode] of fixtures) {
+    const fixture = transport(request => request.url?.includes('/contact/v3/users/') ? response : good(request));
+    await assert.rejects(createFeishuSdk({ httpInstance: fixture.http }).getUser(credentials, 'ou_person', 'open_id', new AbortController().signal), error => {
+      assert.ok(error instanceof FeishuFailureError); assert.equal(error.diagnostic.reason, reason); assert.equal(error.diagnostic.apiCode, apiCode);
+      assert.ok(!JSON.stringify(error).includes(credentials.appSecret)); return true;
+    });
+  }
+  for (const [error, reason] of [
+    [{ response: { status: 429, data: { code: 99991400, msg: credentials.appSecret } } }, 'rate_limited'],
+    [Object.assign(new Error(credentials.appSecret), { code: 'ETIMEDOUT' }), 'timeout'],
+    [Object.assign(new Error(credentials.appSecret), { code: 'CERT_HAS_EXPIRED' }), 'network'],
+  ] as const) {
+    const fixture = transport(request => { if (request.url?.includes('/contact/v3/users/')) throw error; return good(request); });
+    await assert.rejects(createFeishuSdk({ httpInstance: fixture.http }).getUser(credentials, 'ou_person', 'open_id', new AbortController().signal), error => error instanceof FeishuFailureError && error.diagnostic.reason === reason && !JSON.stringify(error).includes(credentials.appSecret));
+  }
+});
+
+test('directory transport failures and send uncertainty retain safe codes rather than a generic exception', async () => {
+  for (const [error, reason] of [
+    [{ response: { status: 429, data: { code: 99991400, msg: credentials.appSecret } } }, 'rate_limited'],
+    [Object.assign(new Error(credentials.appSecret), { code: 'ENOTFOUND' }), 'network'],
+  ] as const) {
+    const fixture = transport(request => { if (request.url?.includes('/contact/') || request.url?.includes('/im/v1/messages')) throw error; return good(request); });
+    const sdk = createFeishuSdk({ httpInstance: fixture.http });
+    const result = await sdk.searchUsers(credentials, '张三', new AbortController().signal);
+    assert.equal(result.complete, false); assert.equal(result.diagnostic?.reason, reason);
+    await assert.rejects(sdk.send(credentials, { chatId: 'oc_chat', text: 'hello', uuid: 'one' }), error => error instanceof FeishuSdkError && error.code === 'send_unknown' && error.diagnostic.reason === reason);
+    assert.equal(fixture.calls.filter(call => call.url?.includes('/im/v1/messages')).length, 1);
+    assert.ok(!JSON.stringify(result).includes(credentials.appSecret));
+  }
+  const invalid = transport(request => request.url?.includes('/im/v1/messages') ? { code: 0, data: {} } : good(request));
+  await assert.rejects(createFeishuSdk({ httpInstance: invalid.http }).send(credentials, { chatId: 'oc_chat', text: 'hello', uuid: 'one' }), error => error instanceof FeishuSdkError && error.diagnostic.reason === 'invalid_response');
+});
+
+test('malformed events and durable-ingress failure have distinct diagnostics through official dispatcher', async () => {
+  for (const parseFailure of [true, false]) {
+    const { http } = transport(good); const socket = socketFixture(); const failures: FeishuFailure[] = [];
+    const connection = await createFeishuSdk({ httpInstance: http, createWebSocket: socket.createWebSocket }).connect(credentials, {
+      onState(_state, diagnostic) { if (diagnostic) failures.push(diagnostic); },
+      async onMessage() { throw new Error(credentials.appSecret); },
+    });
+    await assert.rejects(socket.deliver(parseFailure ? raw({ content: 'broken-json' }) : raw()), /receive_failed/);
+    assert.equal(failures.at(-1)?.reason, parseFailure ? 'invalid_message' : 'storage_unavailable');
+    assert.ok(!JSON.stringify(failures).includes(credentials.appSecret)); await connection.close();
+  }
+});
+
+test('WebSocket startup rejection after ready and background errors still notify failure with safe causes', async () => {
+  for (const lateReject of [false, true]) {
+    const { http } = transport(good); const failures: FeishuFailure[] = []; let options!: FeishuWsOptions;
+    const done = Promise.withResolvers<void>(); let closed = false;
+    const connection = await createFeishuSdk({ httpInstance: http, createWebSocket(value) {
+      options = value;
+      return { async start() { options.onReady?.(); await done.promise; }, close() { closed = true; }, getConnectionStatus() { return { state: closed ? 'failed' : 'connected', reconnectAttempts: 0 }; } };
+    } }).connect(credentials, { onState(_state, diagnostic) { if (diagnostic) failures.push(diagnostic); }, async onMessage() {} });
+    const error = Object.assign(new Error(credentials.appSecret), { code: 'ECONNRESET' });
+    if (lateReject) done.reject(error); else { options.onError?.(error); done.resolve(); }
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(connection.state(), 'failed'); assert.equal(failures.at(-1)?.reason, 'network');
+    assert.ok(!JSON.stringify(failures).includes(credentials.appSecret)); await connection.close();
+  }
+});
+
+test('safe diagnostics reject arbitrary error text, spoofed reasons and invalid persisted metadata', () => {
+  const privateData = { reason: 'missing_permissions', message: credentials.appSecret, stack: credentials.appSecret, diagnostic: { reason: 'missing_permissions', message: credentials.appSecret }, response: { status: 99999, data: { code: credentials.appSecret } } };
+  const diagnostic = diagnose('send', privateData);
+  assert.equal(diagnostic.reason, 'unknown'); assert.equal(diagnostic.httpStatus, undefined); assert.equal(diagnostic.apiCode, undefined);
+  assert.ok(!JSON.stringify(diagnostic).includes(credentials.appSecret));
+  assert.equal(readFailure({ operation: 'send', reason: '__proto__' }), undefined);
+  assert.equal(readFailure({ operation: 'send', reason: 'injected' }), undefined);
+  assert.equal(readFailure({ operation: 'send', reason: 'unknown', message: credentials.appSecret, apiCode: -10, httpStatus: 999 })?.message, diagnostic.message);
+});
+
+
+test('actual official WSClient logger-only frame, fragment, pong and send failures produce safe diagnostics', async () => {
+  type Frame = { headers: Array<{ key: string; value: string }>; payload: Uint8Array; SeqID: number; LogID: number; service: number; method: number };
+  type ActualClient = { handleEventData(frame: Frame): Promise<void>; handleControlData(frame: Frame): Promise<void>; communicate(): void; sendMessage(frame: Frame): void; wsConfig: { setWSInstance(socket: unknown): void } };
+  const require = createRequire(new URL('../../packages/feishu-channel/package.json', import.meta.url));
+  const { WSClient } = require('@larksuiteoapi/node-sdk') as { WSClient: new(options: FeishuWsOptions) => ActualClient };
+  const { http } = transport(good); let actual!: ActualClient; const diagnostics: FeishuFailure[] = [];
+  const connection = await createFeishuSdk({ httpInstance: http, createWebSocket(options) {
+    actual = new WSClient(options);
+    return { async start() { options.onReady?.(); }, close() {}, getConnectionStatus() { return { state: 'connected', reconnectAttempts: 0 }; } };
+  } }).connect(credentials, { onState() {}, onDiagnostic(diagnostic) { diagnostics.push(diagnostic); }, async onMessage() {} });
+  const frame: Frame = { SeqID: 0, LogID: 0, service: 0, method: 1, headers: [
+    { key: 'message_id', value: credentials.appSecret }, { key: 'sum', value: 'not-a-number' },
+    { key: 'seq', value: '0' }, { key: 'type', value: 'event' },
+  ], payload: Buffer.from(credentials.appSecret) };
+  await actual.handleEventData(frame); assert.equal(diagnostics.at(-1)?.reason, 'invalid_fragments');
+  await actual.handleControlData({ ...frame, headers: [{ key: 'type', value: 'pong' }] }); assert.equal(diagnostics.at(-1)?.reason, 'invalid_pong');
+  const socket = Object.assign(new EventEmitter(), { readyState: 1, send(_frame: unknown, callback: (error: Error) => void) { callback(new Error(credentials.appSecret)); } });
+  actual.wsConfig.setWSInstance(socket); actual.communicate(); socket.emit('message', Buffer.from([255]));
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(diagnostics.at(-1)?.reason, 'invalid_frame');
+  actual.sendMessage({ ...frame, headers: [] }); assert.equal(diagnostics.at(-1)?.reason, 'websocket_send_failed');
+  assert.ok(!JSON.stringify(diagnostics).includes(credentials.appSecret)); assert.equal(connection.state(), 'connected');
+  await connection.close(); const count = diagnostics.length;
+  actual.sendMessage({ ...frame, headers: [] }); assert.equal(diagnostics.length, count, 'retired log callbacks cannot change observations');
 });
