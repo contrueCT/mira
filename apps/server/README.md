@@ -256,3 +256,5 @@ Web passes its explicit `miraHome` as the spool writer’s private managed data 
 ## 受管浏览器启动发现
 
 `MIRA_BROWSER_EXECUTABLE_PATH` 显式覆盖优先。Linux 上每次新建浏览器先发现系统安装的官方 Chrome，再沿用上游默认发现；安装到标准位置后无需重启 Mira。受管 daemon 不读取 agent-browser CLI config.json，不在失败后改用另一个浏览器重试。依赖准备与具体路径见[运行工具](../../docs/development/runtime-tools.md)和 [ADR 0034](../../docs/adr/0034-managed-browser-handoff.md)。
+
+通用设置：`MIRA_HOME/general.json` 保存带 revision 的 `showExternalMessages`（默认 false）。`GET/PUT /api/settings/general` 复用网页鉴权；写入冲突返回 409。Timeline 在分页计数前筛选外部渠道消息，并返回 `displayRevision` 供跨设备同步。见 [ADR 0056](../../docs/adr/0056-general-settings-and-channel-display.md)。

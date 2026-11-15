@@ -117,3 +117,5 @@ pnpm check
 
 - [ADR 0043](docs/adr/0043-message-replies-timeline.md)：主 Timeline 紧凑时间分组及双向 History-ID 回复；引用是服务端验证的有界数据快照，不升级权限，子任务不发布主聊天回复。真实浏览器门禁 `test:replies:e2e` 与合成 UI/离线测试分开。
 - [ADR 0044](docs/adr/0044-task-communication-prompt.md)：执行前简短回应，长任务在自然请求机会提供有用反馈；主 assistant 完整文字随原 Timeline 投递，非 token 流。保持委派优先、冻结 Memory 与已发布模板身份，无新增 timer/UI。
+
+- ADR 0056：设置第一项「通用」合并原访问设置；general.json 保存跨设备外部渠道消息显示偏好（默认关闭），仅影响 Timeline 投影，Mira 普通回复和通知保留；分页响应 displayRevision 变化时重建网页列表。

@@ -581,7 +581,7 @@ test('custom model discovery and format survive real browser save, PostgreSQL ru
     const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'model-settings-real', sourceDirectory, workingDirectory: root, miraHome: root, spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), dreaming: { enabled: false }, autoCompaction: { enabled: false } };
     service = await LocalWebService.open(options);
     app = createLocalHttp({ backend: service, port, assetsDirectory: path.join(sourceDirectory, 'apps/web/dist') }); await app.listen({ host: '127.0.0.1', port });
-    await page.goto(origin); await page.getByRole('button', { name: '模型设置', exact: true }).click();
+    await page.goto(origin); await page.getByRole('button', { name: '模型设置', exact: true }).click(); await page.getByRole('tab', { name: '模型', exact: true }).click();
     await page.getByRole('button', { name: '自定义连接', exact: true }).click();
     await page.getByRole('button', { name: '添加连接', exact: true }).click();
     await page.getByLabel('服务地址', { exact: true }).fill(`http://127.0.0.1:${address.port}/v1`);

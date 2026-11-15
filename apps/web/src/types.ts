@@ -18,7 +18,7 @@ export interface TimelineItem {
   /** 「已读」: set only on the newest user message once Mira received it. */
   read?: true;
 }
-export interface TimelinePage { items: TimelineItem[]; nextCursor: string | null; updates?: TimelineItem[] | undefined }
+export interface TimelinePage { displayRevision?: number; items: TimelineItem[]; nextCursor: string | null; updates?: TimelineItem[] | undefined }
 /** A quoted message's page: contiguous from the requested frontier, or the window ending at it. */
 export interface LocatedPage extends TimelinePage { mode: 'contiguous' | 'window' }
 export interface ModelRetryStatus { phase: 'waiting' | 'requesting'; attempt: number; maxAttempts: number; delayMs: number; reason: 'rate-limit' | 'server' | 'timeout' | 'connection' }

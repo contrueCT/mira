@@ -12,13 +12,13 @@ import type { MemoryPanelProps } from './MemoryPanel.tsx';
 import { ExtensionsPanel } from './ExtensionsPanel.tsx';
 import { RunsPanel } from './RunsPanel.tsx';
 import { UsagePanel } from './UsagePanel.tsx';
-import { AccessPanel } from './AccessPanel.tsx';
+import { GeneralPanel } from './GeneralPanel.tsx';
 import { BrowserPanel } from './BrowserPanel.tsx';
 import type { BuiltinCatalog, CustomConnection, CustomConnectionWrite, CustomModel, CustomProtocol, Discovery, Settings, SettingsWrite, ThinkingLevel } from './types.ts';
 
 interface Props { name?: string; synthetic: boolean; onClose: () => void; onSaved: () => void; returnFocus: RefObject<HTMLButtonElement | null>; memoryRequest: MemoryPanelProps['request']; memoryPending: MemoryPanelProps['pending']; sending: boolean; storageError: string | null; onMemorySubmit: MemoryPanelProps['onSubmit']; onMemoryRetry: MemoryPanelProps['onRetry'] }
-type SettingsTab = 'model' | 'persona' | 'memory' | 'extensions' | 'runs' | 'usage' | 'access' | 'browser';
-const tabs: { id: SettingsTab; label: string }[] = [{ id: 'model', label: '模型' }, { id: 'persona', label: '人设' }, { id: 'memory', label: 'Memory' }, { id: 'extensions', label: '扩展' }, { id: 'runs', label: '运行记录' }, { id: 'usage', label: '用量' }, { id: 'access', label: '访问' }, { id: 'browser', label: '浏览器' }];
+type SettingsTab = 'model' | 'persona' | 'memory' | 'extensions' | 'runs' | 'usage' | 'general' | 'browser';
+const tabs: { id: SettingsTab; label: string }[] = [{ id: 'general', label: '通用' }, { id: 'model', label: '模型' }, { id: 'persona', label: '人设' }, { id: 'memory', label: 'Memory' }, { id: 'extensions', label: '扩展' }, { id: 'runs', label: '运行记录' }, { id: 'usage', label: '用量' }, { id: 'browser', label: '浏览器' }];
 interface ModelDraft { originalId: string | null; id: string; name: string; contextWindow: string; maxTokens: string; reasoning: '' | 'true' | 'false'; reasoningFormat: '' | 'openai' | 'openrouter' | 'litellm'; input: '' | 'text' | 'image' | 'text-image' }
 const blankModel = (id = '', name = ''): ModelDraft => ({ originalId: null, id, name, contextWindow: '', maxTokens: '', reasoning: 'false', reasoningFormat: '', input: 'text' });
 function modelDraftFrom(model: CustomModel): ModelDraft {
@@ -48,7 +48,7 @@ function modelSummary(model: CustomModel): string {
 }
 
 export function SettingsDialog({ name, synthetic, onClose, onSaved, returnFocus, memoryRequest, memoryPending, sending, storageError, onMemorySubmit, onMemoryRetry }: Props) {
-  const [tab, setTab] = useState<SettingsTab>('model');
+  const [tab, setTab] = useState<SettingsTab>('general');
   const dialogRef = useRef<HTMLDialogElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const [draft, setDraft] = useState<SettingsWrite | null>(null);
@@ -374,7 +374,7 @@ export function SettingsDialog({ name, synthetic, onClose, onSaved, returnFocus,
     <section id="settings-panel-extensions" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-extensions" hidden={tab !== 'extensions'}><ExtensionsPanel active={tab === 'extensions'} /></section>
     <section id="settings-panel-runs" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-runs" hidden={tab !== 'runs'}><RunsPanel active={tab === 'runs'} /></section>
     <section id="settings-panel-usage" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-usage" hidden={tab !== 'usage'}><UsagePanel active={tab === 'usage'} /></section>
-    <section id="settings-panel-access" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-access" hidden={tab !== 'access'}><AccessPanel active={tab === 'access'} onClose={requestClose} /></section>
+    <section id="settings-panel-general" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-general" hidden={tab !== 'general'}><GeneralPanel active={tab === 'general'} onClose={requestClose} onSaved={onSaved} /></section>
     <section id="settings-panel-browser" className="settings-panel" role="tabpanel" aria-labelledby="settings-tab-browser" hidden={tab !== 'browser'}><BrowserPanel active={tab === 'browser'} /></section>
   </dialog>;
 }
