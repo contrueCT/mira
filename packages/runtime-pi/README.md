@@ -129,6 +129,9 @@ the offline fixtures alone do not establish database or live-model behavior.
 
 ## Failure and recovery semantics
 
+Before an effect starts, the pinned tool registry and the public SDK validator identify unknown tools or invalid arguments. These produce a persisted `not-started` recovery observation with `prepare/tool-not-found` or `prepare/invalid-arguments`, then cognition continues in the same Wake/task. Bounded schema constraints (for example `/max_output_bytes`, `maximum`, `8192`) let Mira correct a new call. No execution intent or tool result is fabricated, and unstarted siblings are not replayed. Live input takes priority. See [ADR 0059](../../docs/adr/0059-tool-preparation-rejections.md).
+
+
 Tools execute sequentially. Awaited agent-core subscribers persist assistant
 messages before execution and tool results before the next tool/model request.
 The before-hook records immutable intent after technical validation; the after-hook
@@ -184,7 +187,7 @@ An outcome-unknown operation may additionally contain a strict optional
 raw exceptions, causes, headers, arguments and rejected result snippets are never
 diagnostic fields. The diagnostic has exactly two keys, allowlisted values and
 a 96-byte JSON limit. Recovery validates its link to a real unknown intent;
-not-started and known outcomes cannot carry it. Existing original arguments and
+execute/result diagnostics cannot attach to not-started or known outcomes. ADR 0059 separately permits bounded prepare diagnostics only for not-started operations. Existing original arguments and
 known result evidence remain unchanged. A result-serialization rejection stops
 the attempt without `finishTool`, leaves outcome null, and records the diagnostic
 before continuing with a fresh Agent. A crash before observation commit leaves no

@@ -309,6 +309,7 @@ test('restart validates diagnostic keys, sizes, allowlist, phase and exact unkno
   await runtime(writer, scripted([toolCalls('a', 'b'), assistant()]), { tools: [effectTool(async () => { throw Error(secret); })] }).run(input());
   const saved = structuredClone(writer.state);
   const changes: Array<(operations: RecoveryOperation[], state: typeof saved) => void> = [
+    operations => { operations[0]!.diagnostic = { phase: 'prepare', category: 'tool-not-found' }; },
     operations => { (operations[0] as unknown as { diagnostic: unknown }).diagnostic = { phase: 'execute', category: 'execution-rejected', message: secret }; },
     operations => { (operations[0] as unknown as { diagnostic: unknown }).diagnostic = { phase: 'execute', category: secret.repeat(1000) }; },
     operations => { (operations[0] as unknown as { diagnostic: unknown }).diagnostic = { phase: 'execute', category: 'non-finite-result' }; },

@@ -117,3 +117,5 @@ pnpm check
 
 - [ADR 0043](docs/adr/0043-message-replies-timeline.md)：主 Timeline 紧凑时间分组及双向 History-ID 回复；引用是服务端验证的有界数据快照，不升级权限，子任务不发布主聊天回复。真实浏览器门禁 `test:replies:e2e` 与合成 UI/离线测试分开。
 - [ADR 0044](docs/adr/0044-task-communication-prompt.md)：执行前简短回应，长任务在自然请求机会提供有用反馈；主 assistant 完整文字随原 Timeline 投递，非 token 流。保持委派优先、冻结 Memory 与已发布模板身份，无新增 timer/UI。
+
+- ADR 0059：工具缺失/参数校验拒绝通过 not-started + prepare 诊断继续同一 Wake/task；固定本轮定义、保留 SDK 转换，有界 schema 约束给模型；未启动调用无 intent，不伪造结果，写入/fencing 故障仍致命。

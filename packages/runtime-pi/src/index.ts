@@ -11,6 +11,7 @@ import { DurableOperationError, prepareWakeTurn } from '@mira/life';
 import { validateAttachmentReferences, validateWakeInputArtifact, validateReplyReferences, validateMessageReplies, type WriteOverflowInput, type CognitionRuntime, type CognitionTurn } from '@mira/cognition';
 import { hydrateAttachments, messageAttachments, type ResolveAttachment } from './attachments.ts';
 import { observationEntry, sanitizeEntries, validateObservation, withRecoveryAdvisory, type RecoveryOperation, type ToolDiagnostic } from './observations.ts';
+import { toolPreflight } from './tool-preflight.ts';
 import { compactSnapshot, type CompactionOptions } from './compactor.ts';
 import { MIRA_PROMPT_SECTION, MIRA_PROMPT_SHA256, MIRA_DEFAULT_PERSONA, renderMiraPrompt, renderMiraPromptSnapshot, currentMemory, currentPrompt, memoryConfigured, refreshMiraMemory, projectMiraPrompt, type MiraPromptOptions, type MiraPromptSnapshot } from './system-prompt.ts';
 export { MIRA_PROMPT_SECTION, MIRA_PROMPT_SHA256, MIRA_SYSTEM_TEMPLATE, MIRA_PLACEHOLDERS, MIRA_LEGACY_PLACEHOLDERS, MIRA_DEFAULT_PERSONA, renderMiraPrompt, renderMiraPromptSnapshot } from './system-prompt.ts';
@@ -156,7 +157,7 @@ class ToolInterruptionError extends Error {
   readonly callId: string;
   readonly diagnostic: ToolDiagnostic;
   constructor(callId: string, diagnostic: ToolDiagnostic) {
-    super('Tool execution interrupted; external outcome is unknown');
+    super(diagnostic.phase === 'prepare' ? 'Tool call rejected before execution' : 'Tool execution interrupted; external outcome is unknown');
     this.callId = callId; this.diagnostic = diagnostic;
   }
 }
@@ -330,7 +331,10 @@ export class PiDurableRuntime implements CognitionRuntime {
       if (gap && execution) throw new RecoveryBlockedError('Nonsequential execution evidence after incomplete operation');
       if (!execution?.outcome) gap = true;
     }
-    if (interruption && (!unresolved.includes(interruption.callId) || !executions.get(interruption.callId) || executions.get(interruption.callId)!.outcome)) throw new RecoveryBlockedError('Tool diagnostic does not reference an unknown durable intent');
+    if (interruption) {
+      const execution = executions.get(interruption.callId);
+      if (!unresolved.includes(interruption.callId) || (interruption.diagnostic.phase === 'prepare' ? !!execution : !execution || !!execution.outcome)) throw new RecoveryBlockedError('Tool diagnostic does not match durable execution evidence');
+    }
     const append = async (entry: SessionEntry): Promise<void> => {
       const record = encodeEntry(entry);
       snapshot.version = await this.publish(() => this.options.writer.append(snapshot.version, record));
@@ -600,6 +604,7 @@ export class PiDurableRuntime implements CognitionRuntime {
         for (const block of entry.message.content) if (block.type === 'toolCall') issued.set(block.id, { call: block, recordId: entry.id });
       }
       const outcomes = new Map<string, ToolResultMessage>();
+      let requestTools: readonly AgentTool[] = [];
       let awaitingModelCompletion = false;
       let requestActive = false;
       let activity: Pick<PiRuntimeActivity, 'kind' | 'name' | 'callId'> | null = null;
@@ -782,6 +787,7 @@ export class PiDurableRuntime implements CognitionRuntime {
         prepareRequest: async ({ context }) => {
           try {
             attemptGate();
+            requestTools = context.tools ?? [];
             // Declaration events have already been durably appended. Refresh
             // their messages, but keep exactly the registry Pi just declared.
             const config = this.options.miraPrompt;
@@ -931,7 +937,17 @@ export class PiDurableRuntime implements CognitionRuntime {
           attemptGate();
           // Pi validates names/schemas before beforeToolCall; even malformed
           // old siblings must yield to pending user input at the public start event.
-          if (event.type === 'tool_execution_start') await checkLiveInput();
+          if (event.type === 'tool_execution_start') {
+            await checkLiveInput();
+            const request = issued.get(event.toolCallId);
+            if (!request || request.call.name !== event.toolName || !isDeepStrictEqual(jsonValue(event.args), jsonValue(request.call.arguments)) || executions.has(event.toolCallId)) throw new Error('Tool start differs from a fresh durably recorded assistant request');
+            const diagnostic = toolPreflight(requestTools, request.call);
+            if (diagnostic) {
+              await checkLiveInput();
+              interruption = new ToolInterruptionError(event.toolCallId, diagnostic);
+              agent.abort(); throw interruption;
+            }
+          }
           if (event.type === 'tool_execution_end' && !outcomes.has(event.toolCallId)) {
             // Invalid names/schemas bypass the intent hook. A receipt arriving
             // after their start snapshot must still precede this stale error.
