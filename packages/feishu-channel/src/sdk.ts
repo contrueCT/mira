@@ -1,3 +1,4 @@
+import { diagnose, failure, FeishuFailureError, type FeishuFailure } from './diagnostics.ts';
 import { registerApp } from '@larksuite/channel';
 import { Client, DefaultCache, Domain, EventDispatcher, LoggerLevel, WSClient, defaultHttpInstance } from '@larksuiteoapi/node-sdk';
 import type { HttpInstance, Logger } from '@larksuiteoapi/node-sdk';
@@ -23,7 +24,8 @@ export interface FeishuSdk {
   verify(credentials: FeishuCredentials): Promise<{ botOpenId: string; scopes: string[] }>;
   connect(credentials: FeishuCredentials, handlers: {
     onMessage(message: FeishuIncomingText): Promise<void>;
-    onState(state: FeishuConnectionState): void;
+    onState(state: FeishuConnectionState, diagnostic?: FeishuFailure): void;
+    onDiagnostic?(diagnostic: FeishuFailure): void;
   }): Promise<FeishuConnection>;
   getUser(credentials: FeishuCredentials, userId: string, idType: 'open_id' | 'user_id', signal: AbortSignal): Promise<FeishuUser | null>;
   searchUsers(credentials: FeishuCredentials, query: string, signal: AbortSignal): Promise<FeishuUserSearch>;
@@ -33,12 +35,16 @@ export const FEISHU_REQUIRED_SCOPES = ['im:message.p2p_msg:readonly', 'im:messag
 export const FEISHU_GROUP_SCOPE = 'im:message.group_msg';
 export const FEISHU_REGISTRATION_SCOPES = [...FEISHU_REQUIRED_SCOPES, FEISHU_GROUP_SCOPE] as const;
 export type FeishuConnectionFailure = 'storage_unavailable' | 'credentials_missing' | 'token_rejected' | 'bot_unavailable' | 'scope_query_failed' | 'missing_permissions' | 'network' | 'connection_timeout' | 'websocket_failed';
-export class FeishuSdkError extends Error {
+export class FeishuSdkError extends FeishuFailureError {
   readonly code: 'registration_failed' | 'registration_expired' | 'registration_denied' | 'verification_failed' | 'connection_failed' | 'receive_failed' | 'send_unknown' | 'send_rejected';
   readonly reason: FeishuConnectionFailure | undefined;
   readonly missingScopes: readonly string[];
-  constructor(code: FeishuSdkError['code'], diagnostic?: { reason?: FeishuConnectionFailure; missingScopes?: readonly string[] }) {
-    super(`Feishu ${code}`); this.name = 'FeishuSdkError'; this.code = code; this.reason = diagnostic?.reason;
+  constructor(code: FeishuSdkError['code'], diagnostic?: { reason?: FeishuConnectionFailure; missingScopes?: readonly string[]; failure?: FeishuFailure }) {
+    const operation = code.startsWith('registration') ? 'registration' : code.startsWith('send') ? 'send' : code === 'receive_failed' ? 'receive' : 'connection';
+    const reason = diagnostic?.reason ?? (code === 'receive_failed' ? 'invalid_message' : code === 'registration_expired' ? 'registration_expired'
+      : code === 'registration_denied' ? 'registration_denied' : code === 'registration_failed' ? 'registration_unknown' : 'unknown');
+    super(diagnostic?.failure ?? failure(operation, reason));
+    this.message = `Feishu ${code}`; this.name = 'FeishuSdkError'; this.code = code; this.reason = diagnostic?.reason;
     this.missingScopes = Object.freeze(FEISHU_REQUIRED_SCOPES.filter(scope => diagnostic?.missingScopes?.includes(scope)));
   }
 }
@@ -117,11 +123,11 @@ export function createFeishuSdk(dependencies: FeishuSdkDependencies = {}): Feish
     post: async (url, data, options) => {
       try {
         const response = await underlying.post(url, data, { ...options, timeout: 15_000 });
-        if (url.endsWith('/auth/v3/tenant_access_token/internal') && !string(record(response).tenant_access_token)) throw new FeishuSdkError('verification_failed', { reason: 'token_rejected' });
+        if (url.endsWith('/auth/v3/tenant_access_token/internal') && !string(record(response).tenant_access_token)) throw new FeishuSdkError('verification_failed', { reason: 'token_rejected', failure: diagnose('connection', response, 'token_rejected') });
         return response;
       } catch (error) {
-        if (networkFailure(error)) throw new FeishuSdkError('verification_failed', { reason: 'network' });
-        if (url.endsWith('/auth/v3/tenant_access_token/internal')) throw new FeishuSdkError('verification_failed', { reason: 'token_rejected' });
+        if (networkFailure(error)) throw new FeishuSdkError('verification_failed', { reason: 'network', failure: diagnose('connection', error, 'network') });
+        if (url.endsWith('/auth/v3/tenant_access_token/internal')) throw new FeishuSdkError('verification_failed', { reason: 'token_rejected', failure: diagnose('connection', error, 'token_rejected') });
         throw error;
       }
     },
@@ -156,15 +162,15 @@ export function createFeishuSdk(dependencies: FeishuSdkDependencies = {}): Feish
       const api = client(credentials);
       const response: unknown = await api.request({ url: '/open-apis/bot/v3/info', method: 'GET' });
       const bot = record(response);
-      if (bot.code !== 0 || !string(record(bot.bot).open_id)) throw new Error();
+      if (bot.code !== 0 || !string(record(bot.bot).open_id)) throw new FeishuSdkError('verification_failed', { reason: 'bot_unavailable', failure: diagnose('connection', bot, 'bot_unavailable') });
       stage = 'scope_query_failed';
       const scopeResponse = await api.application.v6.scope.list();
-      if (scopeResponse.code !== 0 || !Array.isArray(scopeResponse.data?.scopes)) throw new Error();
+      if (scopeResponse.code !== 0 || !Array.isArray(scopeResponse.data?.scopes)) throw new FeishuSdkError('verification_failed', { reason: 'scope_query_failed', failure: diagnose('connection', scopeResponse, 'scope_query_failed') });
       const scopes = scopeResponse.data.scopes.filter(scope => scope.grant_status === 1 && scope.scope_type === 'tenant').map(scope => scope.scope_name);
       const missingScopes = FEISHU_REQUIRED_SCOPES.filter(scope => !scopes.includes(scope));
       if (missingScopes.length) throw new FeishuSdkError('verification_failed', { reason: 'missing_permissions', missingScopes });
       return { botOpenId: string(record(bot.bot).open_id), scopes };
-    } catch (error) { if (error instanceof FeishuSdkError) throw error; throw new FeishuSdkError('verification_failed', { reason: networkFailure(error) ? 'network' : stage }); }
+    } catch (error) { if (error instanceof FeishuSdkError) throw error; throw new FeishuSdkError('verification_failed', { reason: networkFailure(error) ? 'network' : stage, failure: diagnose('connection', error, stage) }); }
   };
   return {
     async register(options) {
@@ -187,53 +193,68 @@ export function createFeishuSdk(dependencies: FeishuSdkDependencies = {}): Feish
           ...(result.user_info?.open_id ? { ownerOpenId: result.user_info.open_id } : {}) };
       } catch (error) {
         const code = record(error).code;
-        throw new FeishuSdkError(code === 'expired_token' && record(error).description !== 'Polling timed out' ? 'registration_expired' : code === 'access_denied' ? 'registration_denied' : 'registration_failed');
+        const reason = options.signal.aborted ? 'cancelled' : beginTimeout.signal.aborted || record(error).description === 'Polling timed out' ? 'timeout' : code === 'expired_token' ? 'registration_expired' : code === 'access_denied' ? 'registration_denied' : 'registration_unknown';
+        throw new FeishuSdkError(reason === 'registration_expired' ? 'registration_expired' : reason === 'registration_denied' ? 'registration_denied' : 'registration_failed', { failure: reason === 'registration_unknown' ? diagnose('registration', error, reason) : failure('registration', reason) });
       } finally { clearTimeout(timer); }
     },
     verify,
     async connect(credentials, handlers) {
       let state: FeishuConnectionState = 'connecting';
-      const setState = (next: FeishuConnectionState) => { state = next; handlers.onState(next); };
+      const setState = (next: FeishuConnectionState, diagnostic?: FeishuFailure) => { state = next; handlers.onState(next, diagnostic); };
       setState('connecting');
       let verified: Awaited<ReturnType<FeishuSdk['verify']>>;
-      try { verified = await verify(credentials); } catch (error) { setState('failed'); throw new FeishuSdkError('connection_failed', error instanceof FeishuSdkError ? { ...(error.reason ? { reason: error.reason } : {}), missingScopes: error.missingScopes } : undefined); }
+      try { verified = await verify(credentials); } catch (error) { setState('failed', diagnose('connection', error)); throw new FeishuSdkError('connection_failed', error instanceof FeishuSdkError ? { ...(error.reason ? { reason: error.reason } : {}), missingScopes: error.missingScopes, failure: error.diagnostic } : undefined); }
       let socket: FeishuWsTransport | undefined;
       let stopped = false;
+      // SDK 1.75.0 reports frame/fragment/ACK failures only via LoggerProxy.error,
+      // which supplies one array argument. Match fixed prefixes; discard every
+      // upstream argument and never change transport state from a log callback.
+      const wsLogger: Logger = { ...quietLogger, error(...args: unknown[]) {
+        if (stopped) return;
+        const fields: unknown[] = Array.isArray(args[0]) ? args[0] : args;
+        const message = fields[0] === '[ws]' && typeof fields[1] === 'string' ? fields[1] : '';
+        const reason = message.startsWith('failed to handle inbound frame:') ? 'invalid_frame'
+          : message.startsWith('failed to merge event fragments,') ? 'invalid_fragments'
+          : message.startsWith('invalid pong payload:') ? 'invalid_pong'
+          : message === 'send data failed' ? 'websocket_send_failed' : 'websocket_failed';
+        handlers.onDiagnostic?.(failure(reason === 'websocket_failed' ? 'connection' : 'receive', reason));
+      } };
       const dispatcher = new EventDispatcher({ logger: quietLogger, loggerLevel: LoggerLevel.fatal, cache: new DefaultCache() });
       dispatcher.register({ 'im.message.receive_v1': async payload => {
         try {
-          if (stopped) throw new Error();
-          const message = parseFeishuMessage(payload);
-          await handlers.onMessage(message); // Await only durable ingestion, never the model run.
-          if (!stopped && message.messageType !== 'text') setState('unsupported_message');
-        } catch {
           if (stopped) throw new FeishuSdkError('receive_failed');
-          stopped = true; setState('receive_failed');
+          const message = parseFeishuMessage(payload);
+          try { await handlers.onMessage(message); } catch (error) { throw new FeishuFailureError(diagnose('receive', error, 'storage_unavailable')); } // Await only durable ingestion, never the model run.
+          if (!stopped && message.messageType !== 'text') setState('unsupported_message', failure('receive', 'unsupported_message'));
+        } catch (error) {
+          const diagnostic = diagnose('receive', error, 'invalid_message');
+          if (stopped) throw new FeishuSdkError('receive_failed', { failure: diagnostic });
+          stopped = true; setState('receive_failed', diagnostic);
           // Official WSClient maps this rejection to a 500 ACK. Stop intake as well;
           // platform redelivery is not guaranteed and must never be advertised as such.
           setImmediate(() => socket?.close({ force: true }));
-          throw new FeishuSdkError('receive_failed');
+          throw new FeishuSdkError('receive_failed', { failure: diagnostic });
         }
       } });
       await new Promise<void>((resolve, reject) => {
         let settled = false;
-        const fail = (reason: FeishuConnectionFailure = 'websocket_failed') => { if (settled) return; settled = true; clearTimeout(timer); stopped = true; socket?.close({ force: true }); setState('failed'); reject(new FeishuSdkError('connection_failed', { reason })); };
+        const fail = (reason: FeishuConnectionFailure = 'websocket_failed', error?: unknown) => { if (stopped) return; clearTimeout(timer); stopped = true; socket?.close({ force: true }); const diagnostic = diagnose('connection', error, reason); setState('failed', diagnostic); if (!settled) { settled = true; reject(new FeishuSdkError('connection_failed', { reason, failure: diagnostic })); } };
         const budget = dependencies.connectTimeoutMs ?? 15_000;
         const timer = setTimeout(() => fail('connection_timeout'), Number.isFinite(budget) && budget > 0 ? Math.min(budget, 2_147_483_647) : 15_000);
         try {
           socket = (dependencies.createWebSocket ?? (options => new WSClient(options)))({
             appId: credentials.appId, appSecret: credentials.appSecret,
             domain: credentials.domain === 'feishu' ? Domain.Feishu : Domain.Lark,
-            httpInstance: http, logger: quietLogger, loggerLevel: LoggerLevel.fatal,
+            httpInstance: http, logger: wsLogger, loggerLevel: LoggerLevel.error,
             source: 'mira', autoReconnect: true, handshakeTimeoutMs: 10_000, wsConfig: { pingTimeout: 30 },
             // SDK retry callbacks run immediately before isConnecting is cleared.
             onReady: () => queueMicrotask(() => { if (settled || stopped) return; if (socket?.getConnectionStatus().state !== 'connected') { fail(); return; } settled = true; clearTimeout(timer); setState('connected'); resolve(); }),
-            onError: () => { if (!settled) fail(); else if (!stopped) { stopped = true; socket?.close({ force: true }); setState('failed'); } },
-            onReconnecting: () => { if (!stopped) setState('reconnecting'); },
+            onError: error => fail('websocket_failed', error),
+            onReconnecting: () => { if (!stopped) setState('reconnecting', failure('connection', 'websocket_failed')); },
             onReconnected: () => queueMicrotask(() => { if (!stopped && socket?.getConnectionStatus().state === 'connected') setState('connected'); }),
           });
-          void socket.start({ eventDispatcher: dispatcher }).catch(() => fail());
-        } catch { fail(); }
+          void socket.start({ eventDispatcher: dispatcher }).catch(error => fail('websocket_failed', error));
+        } catch (error) { fail('websocket_failed', error); }
       });
       return {
         scopes: Object.freeze([...verified.scopes]),
@@ -246,20 +267,22 @@ export function createFeishuSdk(dependencies: FeishuSdkDependencies = {}): Feish
       try {
         const response: unknown = await boundedRead(signal, () => client(credentials, signal).request({ url: `/open-apis/contact/v3/users/${encodeURIComponent(userId)}`, method: 'GET', params: { user_id_type: idType }, signal }));
         signal.throwIfAborted();
-        const result = record(response); const user = result.code === 0 ? directoryUser(record(result.data).user) : null;
-        return user && (idType === 'open_id' ? user.openId === userId : user.userId === userId) ? user : null;
-      } catch { signal.throwIfAborted(); return null; }
+        const result = record(response);
+        if (result.code !== 0) throw new FeishuFailureError(diagnose('sender_lookup', result, 'invalid_response'));
+        const rawUser = record(result.data).user;
+        if (!rawUser || typeof rawUser !== 'object' || Array.isArray(rawUser)) throw new FeishuFailureError(failure('sender_lookup', 'invalid_response'));
+        if (typeof record(rawUser).name !== 'string' || !String(record(rawUser).name).trim()) throw new FeishuFailureError(failure('sender_lookup', 'name_unavailable'));
+        const user = directoryUser(rawUser);
+        if (!user || (idType === 'open_id' ? user.openId !== userId : user.userId !== userId)) throw new FeishuFailureError(failure('sender_lookup', 'invalid_response'));
+        return user;
+      } catch (error) { signal.throwIfAborted(); throw new FeishuFailureError(diagnose('sender_lookup', error)); }
     },
     async searchUsers(credentials, query, signal) {
       return searchDirectory(async (url, params, requestSignal) => {
         try { return await boundedRead(requestSignal, () => client(credentials, requestSignal).request({ url, method: 'GET', params, signal: requestSignal })); }
         catch (error) {
           requestSignal.throwIfAborted();
-          // Axios rejects HTTP 400 permission responses before returning their API code.
-          // Only the fixed code crosses this adapter; headers and provider diagnostics stay private.
-          const code = record(record(record(error).response).data).code;
-          if (typeof code === 'number' && code !== 0) return { code };
-          throw new Error('Feishu directory request failed');
+          throw new FeishuFailureError(diagnose('directory_search', error, 'directory_failed'));
         }
       }, query, signal);
     },
@@ -272,15 +295,15 @@ export function createFeishuSdk(dependencies: FeishuSdkDependencies = {}): Feish
         const response = message.replyToMessageId
           ? await api.im.v1.message.reply({ path: { message_id: message.replyToMessageId }, data })
           : await api.im.v1.message.create({ params: { receive_id_type: message.recipientId ? message.recipientIdType ?? 'open_id' : 'chat_id' }, data: { ...data, receive_id: message.recipientId ?? message.chatId! } });
-        if (response.code === 99991672) throw new FeishuSdkError('send_rejected');
-        if (response.code !== 0) throw new FeishuSdkError('send_unknown');
-        if (!response.data?.message_id) throw new Error();
+        if (response.code === 99991672) throw new FeishuSdkError('send_rejected', { failure: diagnose('send', response) });
+        if (response.code !== 0) throw new FeishuSdkError('send_unknown', { failure: diagnose('send', response, 'invalid_response') });
+        if (!response.data?.message_id) throw new FeishuSdkError('send_unknown', { failure: failure('send', 'invalid_response') });
         return { messageId: response.data.message_id, ...(response.data.chat_id ? { chatId: response.data.chat_id } : {}) };
       } catch (error) {
         if (error instanceof FeishuSdkError) throw error;
         const response = record(record(error).response);
-        if ([400, 403].includes(Number(response.status)) && record(response.data).code === 99991672) throw new FeishuSdkError('send_rejected');
-        throw new FeishuSdkError('send_unknown');
+        if ([400, 403].includes(Number(response.status)) && record(response.data).code === 99991672) throw new FeishuSdkError('send_rejected', { failure: diagnose('send', error) });
+        throw new FeishuSdkError('send_unknown', { failure: diagnose('send', error) });
       }
     },
   };

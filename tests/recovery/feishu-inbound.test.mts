@@ -25,24 +25,25 @@ for (const chatType of ['p2p', 'group'] as const) test(`Feishu ${chatType} NUL a
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-feishu-pg-')));
   const entry = path.join(root, 'plugin.mjs'), privateDirectory = path.join(root, 'private');
   await writeFile(entry, `import { createFeishuExtension } from ${JSON.stringify(pluginUrl)};
-    export const state = {receive:null};
+    export const state = {receive:null, failName:false};
     export default createFeishuExtension({
-      async getUser(credentials,id){return {name:'合成用户',openId:id};},
+      async getUser(credentials,id){if(state.failName)throw {code:99991672,msg:'synthetic-private-error'};return {name:'合成用户',openId:id};},
       async searchUsers(){return {users:[],complete:true};},
       async verify(){return {botOpenId:'synthetic-bot',scopes:[]};},
       async register(){throw Error('unexpected registration');},
       async send(){throw Error('no network sends in this fixture');},
       async connect(credentials,handlers){state.receive=(messageId,text)=>handlers.onMessage({messageId,chatId:'${chatType}-chat',chatType:'${chatType}',senderOpenId:'owner',senderType:'user',tenantKey:'tenant',createdAt:new Date(0).toISOString(),text,messageType:'text'});handlers.onState('connected');return {state:()=> 'connected',async close(){}};}
     });`);
-  const { state } = await import(pathToFileURL(entry).href) as { state: { receive(id: string, text: string): Promise<void> } };
+  const { state } = await import(pathToFileURL(entry).href) as { state: { failName: boolean; receive(id: string, text: string): Promise<void> } };
   const entries = [{ id: extensionId, path: entry, installationId: randomUUID(), config: { appId: 'synthetic-app' } }];
   let writer = await db.acquire('synthetic-feishu-mira'); let host: ExtensionHost | undefined, failWake = false;
   const open = async () => { const receive = extensionReceiver(writer); host = new ExtensionHost({ entries, privateDirectory, receive: async (...args) => { if (failWake) throw Error('synthetic writer unavailable'); return receive(...args); } }); await host.start(); };
   const action = async (id: string) => { const view = (await host!.extensionSettings(extensionId))!; await host!.startSettingsAction(extensionId, id, view.revision); await until(async () => (await host!.extensionSettings(extensionId))?.operation?.state !== 'pending'); assert.equal((await host!.extensionSettings(extensionId))?.operation?.state, 'succeeded'); };
-  const finishAndRead = async (expected: string) => {
+  const finishAndRead = async (expected: string, expectedFailure?: string) => {
     const run = await writer.claimWakeBatch(); assert.ok(run); assert.equal(run.requests.length, 1);
     const event = run.requests[0]!.event; const envelope = event.payload as { data: Json; message: { text: string } };
-    assert.equal(originalText(envelope.data), expected); assert.equal(envelope.message.text.isWellFormed(), true); assert.ok(!envelope.message.text.includes('\u0000'));
+    assert.equal(originalText(envelope.data), expected);
+    if (expectedFailure) { const diagnostic = (envelope.data as { senderNameFailure: { reason: string; apiCode: number } }).senderNameFailure; assert.equal(diagnostic.reason, expectedFailure); assert.equal(diagnostic.apiCode, 99991672); assert.ok(!JSON.stringify(envelope).includes('synthetic-private-error')); } assert.equal(envelope.message.text.isWellFormed(), true); assert.ok(!envelope.message.text.includes('\u0000'));
     if (chatType === 'group') { assert.equal((envelope.data as { chatType: string }).chatType, 'group'); assert.equal((envelope.data as { chatId: string }).chatId, 'group-chat'); }
     const snapshot = await writer.load(); const input = record(snapshot.records.at(-1)?.id ?? null);
     const version = await writer.appendWakeInput(run.id, snapshot.version, input); await writer.appendWakeFinal(run.id, version, record(input.id)); await writer.completeWakeRun(run.id);
@@ -69,6 +70,7 @@ for (const chatType of ['p2p', 'group'] as const) test(`Feishu ${chatType} NUL a
 
     const originals = ['a\u0000b', 'a\ud800b', 'a\udc00b', 'a\u0008b\u000bc\u000cd', '正常 🦊 text', 'x'.repeat(100_001)];
     for (const [index, text] of originals.entries()) { await receive(`incoming-${index}`, text); await finishAndRead(text); }
+    state.failName = true; await receive('name-diagnostic', 'diagnostic reaches real Host'); await finishAndRead('diagnostic reaches real Host', 'missing_permissions'); state.failName = false;
     await host!.close(); host = undefined; await writer.close(); writer = await db.acquire('synthetic-feishu-mira'); await open();
     for (const [index, text] of originals.entries()) await receive(`incoming-${index}`, text);
     assert.equal(await writer.claimWakeBatch(), null, 'restart duplicates do not create another Wake');
@@ -90,7 +92,7 @@ for (const chatType of ['p2p', 'group'] as const) test(`Feishu ${chatType} NUL a
     assert.deepEqual((await store.load())!.inbox, []);
     await receive('ordinary-after-repair', 'healthy ordinary message'); await finishAndRead('healthy ordinary message');
     await writer.requestDreaming({ idleMs: 30 * 60_000, intervalMs: 24 * 60 * 60_000, minCompactions: 3, instruction: 'Synthetic health check; no model call' });
-    await writer.verifyActive(); assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM life_events')).rows[0]!.n, originals.length + 2);
+    await writer.verifyActive(); assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM life_events')).rows[0]!.n, originals.length + 3);
     const history = db.store.history(writer.miraId); assert.ok((await history.search({ query: 'healthy', mode: 'substring' })).hits.length); assert.ok((await history.page({ limit: 100 })).hits.length);
     const current = await new FeishuPrivateStore(file, path.resolve('packages/feishu-channel')).load(); assert.ok(!JSON.stringify(current).includes('old\\u0000pending'));
     assert.equal((await host!.extensionSettings(extensionId))?.status.state, 'connected');

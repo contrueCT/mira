@@ -8,6 +8,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { ExtensionContext, ExtensionTool, ExtensionEvent, ExtensionWake, ContextProvider, Json } from '@mira/extension-sdk';
 import { createFeishuExtension } from '../../packages/feishu-channel/src/index.ts';
 import { FeishuPrivateStore } from '../../packages/feishu-channel/src/store.ts';
+import { diagnose, failure, FeishuFailureError } from '../../packages/feishu-channel/src/diagnostics.ts';
 import { FeishuSdkError } from '../../packages/feishu-channel/src/sdk.ts';
 import type { FeishuSdk, FeishuIncomingText, FeishuRegistrationOptions, FeishuCredentials } from '../../packages/feishu-channel/src/sdk.ts';
 
@@ -283,7 +284,7 @@ test('Feishu close cancels in-flight registration and ignores late QR callbacks'
 });
 test('altered duplicate IDs are rejected before publishing a conflicting immutable input', async t => {
   const f = await fixture(t); await f.action('connect'); await f.sdk.receive();
-  await assert.rejects(f.sdk.receive(incoming({ text: 'altered duplicate' })), /Conflicting Feishu/);
+  await assert.rejects(f.sdk.receive(incoming({ text: 'altered duplicate' })), error => error instanceof FeishuFailureError && error.diagnostic.reason === 'message_conflict');
   assert.equal(f.wakes.length, 1);
 });
 test('QR-created credentials survive verification failure for reconnect without creating another app', async t => {
@@ -453,11 +454,123 @@ test('competing channel ledgers reject stale sends before HTTP and preserve the 
   const second = await fixture(t, { directory: first.directory, secrets: first.secrets });
   first.sdk.setSend(async () => { throw new Error('synthetic unknown effect'); });
   assert.equal((await first.send('winning-unknown', 'must keep evidence')).status, 'unknown');
-  await assert.rejects(second.send('stale-send', 'must never reach HTTP'));
+  const conflict = await second.tools.get('feishu_send_message')!.execute({ text: 'must never reach HTTP', recipientId: 'user-owner' }, { callId: 'stale-send', signal: new AbortController().signal });
+  assert.equal(conflict.isError, true); assert.equal(JSON.parse(conflict.text).diagnostic.reason, 'storage_conflict');
   assert.equal(second.sdk.sends.length, 0);
   const state = await first.state(); assert.equal(state.sends['winning-unknown'].parts[0].status, 'unknown');
   assert.equal(state.sends['stale-send'], undefined);
   await second.close(); const recovered = await fixture(t, { directory: first.directory, secrets: first.secrets });
   assert.equal((await recovered.send('winning-unknown', 'must keep evidence')).status, 'unknown');
   assert.equal(recovered.sdk.sends.length, 0);
+});
+
+
+test('sender lookup failures accompany the actual group input, preserve safe codes and clear after success', async t => {
+  const f = await fixture(t); await f.action('connect');
+  const cases = [
+    [{ response: { status: 403, data: { code: 99991672, msg: secret } }, config: { headers: { Authorization: secret } } }, 'missing_permissions'],
+    [Object.assign(new Error(secret), { name: 'TimeoutError' }), 'timeout'],
+    [Object.assign(new Error(secret), { code: 'ENOTFOUND' }), 'network'],
+    [new Error(secret), 'unknown'],
+    [null, 'name_unavailable'],
+  ] as const;
+  for (let i = 0; i < cases.length; i++) {
+    const [error, reason] = cases[i]!;
+    f.sdk.sdk.getUser = async () => { if (error) throw error; return null; };
+    await f.sdk.receive(incoming({ messageId: `name-${i}`, chatType: 'group', chatId: 'group-a' }));
+    const payload = f.wakes.at(-1)!.event.payload as Record<string, Json>;
+    assert.equal(payload.senderName, '姓名暂不可用'); assert.equal(payload.senderOpenId, 'user-owner');
+    assert.equal((payload.senderNameFailure as Record<string, Json>).reason, reason);
+    const status = await f.tools.get('feishu_status')!.execute({}, { callId: 's', signal: new AbortController().signal });
+    assert.equal(JSON.parse(status.text).failures.find((item: { operation: string }) => item.operation === 'sender_lookup').reason, reason);
+    assert.ok(!JSON.stringify([payload, status, f.settings.status()]).includes(secret));
+  }
+  f.sdk.sdk.getUser = async () => ({ name: '张三', openId: 'user-owner' });
+  await f.sdk.receive(incoming({ messageId: 'name-recovered', chatType: 'group' }));
+  assert.equal((f.wakes.at(-1)!.event.payload as Record<string, Json>).senderNameFailure, undefined);
+  assert.ok(!(await f.providers[0]!.provide({ signal: new AbortController().signal }))!.text.includes('sender_lookup'));
+});
+
+test('frozen lookup diagnostics survive failed Host publication and restart without a new name lookup', async t => {
+  const f = await fixture(t); await f.action('connect'); f.failWake(true);
+  f.sdk.sdk.getUser = async () => { throw new FeishuFailureError(diagnose('sender_lookup', { code: 99991672, msg: secret })); };
+  await f.sdk.receive(incoming({ messageId: 'frozen-error', chatType: 'group' }));
+  const wake = f.wakes[0]!;
+  const observation = JSON.parse((await f.tools.get('feishu_status')!.execute({}, { callId: 's', signal: new AbortController().signal })).text);
+  assert.equal(observation.failures.find((item: { operation: string }) => item.operation === 'inbox_delivery').reason, 'host_delivery_failed');
+  await f.close(); const sdk = fakeSdk(); sdk.sdk.getUser = async () => assert.fail('must reuse frozen diagnostics');
+  const reopened = await fixture(t, { directory: f.directory, sdk }); await reopened.settle();
+  assert.deepEqual(reopened.wakes, [wake]);
+});
+
+test('incomplete name sends and failed user-ID quote validation return their real diagnostic without sending', async t => {
+  const f = await fixture(t); await f.action('connect'); await f.sdk.receive();
+  const diagnostic = diagnose('directory_search', { response: { status: 429, data: { code: 99991400, msg: secret } } });
+  f.sdk.sdk.searchUsers = async () => ({ users: [], complete: false, reason: diagnostic.reason, diagnostic });
+  const execute = (callId: string, args: Json) => f.tools.get('feishu_send_message')!.execute(args, { callId, signal: new AbortController().signal });
+  const search = await execute('failed-name', { text: 'hello', recipientName: '张三' });
+  assert.equal(search.isError, true); assert.deepEqual(JSON.parse(search.text).diagnostic, diagnostic);
+  f.sdk.sdk.getUser = async () => { throw new FeishuFailureError(diagnose('sender_lookup', { code: 99991672, msg: secret })); };
+  const lookup = await execute('failed-id', { text: 'hello', recipientId: 'employee', recipientIdType: 'user_id', replyToMessageId: 'message-1' });
+  assert.equal(JSON.parse(lookup.text).reason, 'recipient_lookup_failed');
+  assert.equal(JSON.parse(lookup.text).diagnostic.reason, 'missing_permissions'); assert.equal(f.sdk.sends.length, 0);
+  assert.ok(!JSON.stringify([search, lookup]).includes(secret));
+});
+
+test('send diagnostics remain durable on replay and restart without repeating an effectful request', async t => {
+  const f = await fixture(t); await f.action('connect');
+  const diagnostic = diagnose('send', { response: { status: 403, data: { code: 99991672, msg: secret } } });
+  f.sdk.setSend(async () => { throw new FeishuSdkError('send_rejected', { failure: diagnostic }); });
+  const call = () => f.tools.get('feishu_send_message')!.execute({ text: 'hello', recipientId: 'user-owner' }, { callId: 'durable-failure', signal: new AbortController().signal });
+  const first = await call(); assert.equal(first.isError, true); assert.equal(JSON.parse(first.text).status, 'not_sent');
+  assert.deepEqual(JSON.parse(first.text).diagnostics, [diagnostic]);
+  assert.deepEqual(JSON.parse((await call()).text).diagnostics, [diagnostic]); assert.equal(f.sdk.sends.length, 1);
+  await f.close(); const reopened = await fixture(t, { directory: f.directory });
+  const restored = await reopened.tools.get('feishu_send_message')!.execute({ text: 'hello', recipientId: 'user-owner' }, { callId: 'durable-failure', signal: new AbortController().signal });
+  assert.deepEqual(JSON.parse(restored.text).diagnostics, [diagnostic]); assert.equal(reopened.sdk.sends.length, 0);
+  assert.ok(!JSON.stringify(await reopened.state()).includes(secret));
+});
+
+test('confirmed sends report separate publication failure to Mira and clear it after repair without resending', async t => {
+  const f = await fixture(t); await f.action('connect'); f.failEvent(true);
+  const call = () => f.tools.get('feishu_send_message')!.execute({ text: 'hello', recipientId: 'user-owner' }, { callId: 'publication-detail', signal: new AbortController().signal });
+  const first = await call(); assert.equal(JSON.parse(first.text).status, 'sent'); assert.equal(first.isError, true);
+  assert.equal(JSON.parse(first.text).publicationFailure.reason, 'publication_failed');
+  f.failEvent(false); const recovered = await call();
+  assert.equal(JSON.parse(recovered.text).status, 'sent'); assert.equal(JSON.parse(recovered.text).publicationFailure, undefined);
+  assert.equal(f.sdk.sends.length, 1); assert.equal(f.events.length, 1);
+  assert.ok(!(await f.providers[0]!.provide({ signal: new AbortController().signal }))!.text.includes('publication_failed'));
+});
+
+test('connection and receive failures reach the model context while independent issues survive connection recovery', async t => {
+  const f = await fixture(t); await f.action('connect');
+  const handlers = f.sdk.connections.at(-1)!;
+  handlers.onState('failed', diagnose('connection', Object.assign(new Error(secret), { code: 'ECONNRESET' })));
+  let projection = JSON.parse((await f.providers[0]!.provide({ signal: new AbortController().signal }))!.text);
+  assert.equal(projection.failures.find((item: { operation: string }) => item.operation === 'connection').reason, 'network');
+  handlers.onState('receive_failed', failure('receive', 'invalid_message'));
+  handlers.onState('connected');
+  projection = JSON.parse((await f.providers[0]!.provide({ signal: new AbortController().signal }))!.text);
+  assert.ok(!projection.failures.some((item: { operation: string }) => item.operation === 'connection'));
+  assert.equal(projection.failures.find((item: { operation: string }) => item.operation === 'receive').reason, 'invalid_message');
+  assert.ok(!JSON.stringify(projection).includes(secret));
+});
+
+
+test('SDK log diagnostics reach the next model observation without changing connection state or creating a Wake', async t => {
+  const f = await fixture(t); await f.action('connect');
+  f.sdk.connections.at(-1)!.onDiagnostic?.(failure('receive', 'invalid_fragments'));
+  const observation = JSON.parse((await f.providers[0]!.provide({ signal: new AbortController().signal }))!.text);
+  assert.equal(observation.state, 'connected'); assert.equal(observation.failures[0].reason, 'invalid_fragments');
+  assert.match(JSON.stringify(f.settings.status()), /分片/); assert.equal(f.wakes.length, 0);
+});
+
+test('credential deletion failure during unbind is visible to Mira and preserves the app binding', async t => {
+  const f = await fixture(t); await f.action('connect'); const app = (await f.state()).app;
+  f.secrets.delete = () => { throw new Error(secret); };
+  await assert.rejects(f.action('unbind'), error => error instanceof FeishuFailureError && error.diagnostic.reason === 'storage_unavailable');
+  assert.deepEqual((await f.state()).app, app); assert.equal(f.secrets.has('appSecret'), true);
+  const observation = (await f.providers[0]!.provide({ signal: new AbortController().signal }))!.text;
+  assert.equal(JSON.parse(observation).failures.find((item: { operation: string }) => item.operation === 'storage').reason, 'storage_unavailable');
+  assert.ok(!observation.includes(secret));
 });
