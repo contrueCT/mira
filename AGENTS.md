@@ -120,3 +120,5 @@ pnpm check
 - [ADR 0044](docs/adr/0044-task-communication-prompt.md)：执行前简短回应，长任务在自然请求机会提供有用反馈；主 assistant 完整文字随原 Timeline 投递，非 token 流。保持委派优先、冻结 Memory 与已发布模板身份，无新增 timer/UI。
 
 - ADR 0056：设置第一项「通用」合并原访问设置；general.json 保存跨设备外部渠道消息显示偏好（默认关闭），仅影响 Timeline 投影，Mira 普通回复和通知保留；分页响应 displayRevision 变化时重建网页列表。
+
+- ADR 0059：工具缺失/参数校验拒绝通过 not-started + prepare 诊断继续同一 Wake/task；固定本轮定义、保留 SDK 转换，有界 schema 约束给模型；未启动调用无 intent，不伪造结果，写入/fencing 故障仍致命。

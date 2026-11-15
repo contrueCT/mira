@@ -2,6 +2,8 @@
 
 状态：Accepted，2026-10-07。用户批准补齐工具失败诊断及扩展作者契约测试；范围限定为现有恢复 observation 的可选诊断、必要的运行状态提示和普通技能说明，不增加第二套工具日志或恢复服务。
 
+> 后续增量：[ADR 0059](0059-tool-preparation-rejections.md) 允许无 intent 的 not-started 调用携带严格有界的 prepare 诊断，用于参数校验或工具缺失后继续认知；本文 execute/result 的 unknown、写入和 fencing 边界继续适用。
+
 ## 已确认的边界
 
 工具 execute 抛出异常，可能发生在外部副作用之后；返回结果不能序列化也不能证明外部操作失败。原始 intent 的 outcome 继续保持 `null`，当前 Pi attempt 停止，同批后面的调用不执行。沿用原有恢复 observation，在下一模型请求之前保存已观察到的事实，再由主模型结合用户意图决定查询、澄清或发出新 call ID。没有自动重放、同参重试硬门禁、工具批准 UI 或额外判断模型。

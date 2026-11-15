@@ -9,6 +9,7 @@
 - `foundation/toolchain.test.mts` 通过当前 pnpm 验证配置和不支持的 Node 版本被拒绝；用 `pnpm test` 运行以传入准确包管理器入口
 - `unit/model-connections.test.mts` 与 `unit/model-discovery.test.mts` 使用真实 Pi adapter + 注入 fetch／合成 SSE 验证协议与发现，绝不执行 live 模型调用
 - `unit/` 为核心/离线运行时测试；`integration/` 与 `recovery/` 为真实数据库/进程测试；`e2e/` 为 Playwright 合成 HTTP UI fixture；真实 Web service 恢复在 recovery/web-service.test.mts
+- `unit/tool-preflight.test.mts` / `recovery/tool-preflight.test.mts` cover pre-intent schema/tool rejection, bounded preparation reasons, corrected calls, restart/compaction, and publication failures; the recovery suite uses isolated PG/service/real terminal with only the model substituted.
 - `unit/tool-diagnostics.test.mts` 覆盖安全类别、秘密/伪造字段、未知结果与写入失败；`recovery/tool-diagnostics.test.mts` 验证真实 PG 和 observation 落库前后进程死亡。无 PostgreSQL 不能算该门禁通过
 - `scripts/run-tests.mts` 显式发现对应目录的 `*.test.mts`，剥离凭据并设置临时 HOME；新增目录要同步测试发现
 - 事件契约：`shared/extension-event-contract-cases.mts` 是纯案例表，不由测试发现直接执行。`unit/extension-fake-host.test.mts` 与 `recovery/extension-event-contract.test.mts` 都运行它；后者才是 PostgreSQL 持久化与重启的权威

@@ -179,12 +179,15 @@ test('dynamic unknown effects retain recovery evidence after registry removal wi
 test('a removed tool cannot dispatch through a stale dynamic registry and recovery records not-started', async () => {
   const writer = new MemoryWriter(); let removed = false, requests = 0, effects = 0;
   const existing = tool('removed', async () => { effects++; removed = true; return result; });
-  await assert.rejects(runtime(writer, (_model, context) => {
+  const completed = await runtime(writer, (_model, context) => {
     declarations(writer, context, removed ? [] : [existing]);
-    return streamOf(calls([`call-${++requests}`, existing.name]));
-  }, { prepareTools: async () => removed ? [] : [existing] }).run(input()), /did not produce a durable outcome/);
-  assert.equal(requests, 2); assert.equal(effects, 1);
+    if (++requests <= 2) return streamOf(calls([`call-${requests}`, existing.name]));
+    assert.match(JSON.stringify(context.messages), /tool-not-found/);
+    return streamOf(assistant('The removed tool is unavailable; continue with the current capabilities'));
+  }, { prepareTools: async () => removed ? [] : [existing] }).run(input());
+  assert.equal(requests, 3); assert.equal(effects, 1);
   const recovered = await runtime(writer).recover();
+  assert.deepEqual(recovered.recovery, completed.recovery);
   assert.deepEqual(recovered.recovery.operations.map(operation => [operation.callId, operation.status]), [['call-2', 'not-started']]);
 });
 

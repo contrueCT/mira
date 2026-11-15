@@ -110,3 +110,5 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 - [0054 飞书插件多接收人发送与精简入站消息](0054-feishu-multi-recipient-plan.md)：Accepted scope，2026-11-14；默认多人私聊，取消配对；姓名查找与用户 ID 发送，入站姓名和消息 ID；已实现并进行本地验证，新增通讯录授权需明确配置，未部署。
 
 - [0056：通用设置与外部渠道消息显示](0056-general-settings-and-channel-display.md)：已批准并实现；跨设备保存，默认隐藏渠道收发记录，保留普通 Mira 回复。
+
+- [0059 工具执行前拒绝后继续认知](0059-tool-preparation-rejections.md)：已批准范围；参数校验/工具缺失向 Mira 提供 not-started 与有界约束，沿用同一 Wake/task 继续，真实执行未知与持久化致命边界保留。

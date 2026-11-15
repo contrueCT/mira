@@ -29,7 +29,8 @@ Shared rules: [root AGENTS.md](../../AGENTS.md). Read `README.md` before changes
   Matching arguments are advisory evidence, not an unconditional retry veto
 - Preserve exact known outcomes across the outcome/transcript crash window,
   including timestamps. Duplicate call IDs are errors
-- Optional recovery diagnostics use fixed allowlisted phase/category only, exact
+- ADR 0059: unknown tools/schema rejection before intent persist not-started + bounded prepare diagnostics and continue the same Wake/task; pin declarations, preserve public SDK coercion and live-input priority. No fabricated intent/outcome or automatic sibling replay.
+- Optional execute/result recovery diagnostics use fixed allowlisted phase/category only, exact
   unknown-intent linkage and bounds; never copy raw errors or rejected values.
   Result validation may recover unknown; finishTool/writer faults stay fatal
 - Automatic compaction defaults on at safe `prepareRequest` after settled tools; budget includes Pi estimates, protocol overhead, current system and tool schemas. Reserve caps actual output; automatic candidates must reduce and fit. At most one overflow recovery retry per run (ADR 0016)
