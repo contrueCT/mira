@@ -118,7 +118,7 @@ test('real managed browser preserves page/cookie across handoff; rendered input,
     expect(JSON.stringify((await db.admin.query("SELECT outcome FROM tool_executions WHERE call_id='real-browser-first-snapshot'")).rows)).toContain('Test password');
     await page.goto(origin);
     await page.getByRole('button', { name: '模型设置', exact: true }).click();
-    await page.getByRole('tab', { name: '访问', exact: true }).click();
+    await page.getByRole('tab', { name: '通用', exact: true }).click();
     await page.getByRole('switch', { name: '使用访问密码' }).check();
     await page.getByLabel('设置访问密码', { exact: true }).fill(password);
     await page.getByLabel('再次输入新密码', { exact: true }).fill(password);

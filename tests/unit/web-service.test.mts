@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { test } from 'node:test';
+import { test, after } from 'node:test';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+const displayHome = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mira-timeline-display-')));
+after(() => rm(displayHome, { recursive: true, force: true }));
 import { LocalWebService } from '@mira/server';
 import { TIMELINE_READ_CONCURRENCY } from '../../apps/server/src/web-service.ts';
 import { decodeRecords, encodeEntry, messageEntry } from '../../packages/runtime-pi/src/records.ts';
@@ -29,7 +34,7 @@ test('completed assistant commentary is persisted before execution and readable 
   };
   // Real Pi runtime and Timeline projection; persistence and History reads are
   // explicitly in-memory fixtures, not a PostgreSQL or browser verification.
-  const service = Reflect.construct(LocalWebService, [{ dreaming: { enabled: false } }, { signal: new AbortController().signal, onLiveInput: () => () => {} }, history]) as LocalWebService;
+  const service = Reflect.construct(LocalWebService, [{ miraHome: displayHome, dreaming: { enabled: false } }, { signal: new AbortController().signal, onLiveInput: () => () => {} }, history]) as LocalWebService;
   const instance = runtime(writer, () => {
     requests++;
     if (requests === 3) return streamOf(assistant('Evidence checked.'));
@@ -94,7 +99,7 @@ test('chat omits delegation-only rows and reads while preserving text and attach
   };
   let childReads = 0;
   const reader = { readSubagentCalls: async () => { childReads++; return [{ callId: 'spawn', runId: randomUUID(), childId: randomUUID() }]; } };
-  const service = Reflect.construct(LocalWebService, [{ dreaming: { enabled: false } }, { signal: new AbortController().signal, onLiveInput: () => () => {} }, history, {}, {}, {}, {}, {}, reader]) as LocalWebService;
+  const service = Reflect.construct(LocalWebService, [{ miraHome: displayHome, dreaming: { enabled: false } }, { signal: new AbortController().signal, onLiveInput: () => () => {} }, history, {}, {}, {}, {}, {}, reader]) as LocalWebService;
   const first = await service.timeline();
   assert.equal(first.nextCursor, null);
   assert.deepEqual(first.items.map(item => item.id), [user.id, reply.id]);
@@ -120,7 +125,7 @@ test('automatic ownership close retains a safe persistence notice but suppresses
     const writer = { signal: owner.signal, onLiveInput: () => () => {}, receiveLiveInput: async () => 'inserted', close: async () => {} };
     const loop = { drain: async (signal: AbortSignal) => { await Promise.resolve(); owner.abort(failure); throw signal.reason; } };
     const history = { findEventRun: async () => null };
-    const service = Reflect.construct(LocalWebService, [{ synthetic: true, dreaming: { enabled: false } }, writer, history, {}, { selection: null }, loop,
+    const service = Reflect.construct(LocalWebService, [{ miraHome: displayHome, synthetic: true, dreaming: { enabled: false } }, writer, history, {}, { selection: null }, loop,
       { resolve: async () => [] }, resource, {}, resource, resource]) as LocalWebService;
     await service.submit({ id: 'diagnostic', text: 'Test shutdown', occurredAt: '2026-10-15T00:00:00.000Z' });
     await service.close();
@@ -164,7 +169,7 @@ function pagedHistory(count: number, isVisible: (index: number) => boolean, text
       return position === undefined ? null : { before: position + 1 < count ? `raw-${position + 1}` : null };
     },
   };
-  const service = Reflect.construct(LocalWebService, [{ dreaming: { enabled: false } }, { signal: new AbortController().signal, onLiveInput: () => () => {} }, history, {}, {}, {}, {}, {}, {}]) as LocalWebService;
+  const service = Reflect.construct(LocalWebService, [{ miraHome: displayHome, dreaming: { enabled: false } }, { signal: new AbortController().signal, onLiveInput: () => () => {} }, history, {}, {}, {}, {}, {}, {}]) as LocalWebService;
   return { history, service, ids };
 }
 
@@ -187,7 +192,7 @@ test('timeline passes raw cursors through, bounds latest polls and fills older r
   // 1,000 records: the newest 400 hidden, then one visible message every tenth record.
   const { history, service, ids } = pagedHistory(1_000, index => index < 600 && index % 10 === 0);
   const latest = await service.timeline();
-  assert.deepEqual(latest, { items: [], nextCursor: 'raw-700' }, 'a latest poll scans three raw pages, then returns its exact continuation');
+  assert.deepEqual(latest, { items: [], nextCursor: 'raw-700', displayRevision: 0 }, 'a latest poll scans three raw pages, then returns its exact continuation');
   assert.deepEqual(history.calls.pages, [{ before: undefined, limit: 100 }, { before: 'raw-900', limit: 100 }, { before: 'raw-800', limit: 100 }]);
   assert.equal(history.calls.snapshots, 1);
   history.calls.pages.length = 0;

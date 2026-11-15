@@ -1,6 +1,7 @@
+import { diagnose, failure, FeishuFailureError, type FeishuFailure, type FeishuFailureReason } from './diagnostics.ts';
 /** App-identity directory traversal. No user OAuth, full-roster model output or persistent cache. */
 export type FeishuUser = { name: string; openId: string; userId?: string };
-export type FeishuUserSearch = { users: FeishuUser[]; complete: boolean; reason?: string };
+export type FeishuUserSearch = { users: FeishuUser[]; complete: boolean; reason?: string; diagnostic?: FeishuFailure };
 export type DirectoryRequest = (url: string, params: Record<string, string | number>, signal: AbortSignal) => Promise<unknown>;
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const id = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 512 && !/[\u0000-\u001f\u007f]/u.test(value);
@@ -10,7 +11,7 @@ export function directoryUser(value: unknown): FeishuUser | null {
   if (!id(user.open_id) || typeof user.name !== 'string' || !normalizedName(user.name) || user.name.length > 256 || !user.name.isWellFormed() || /[\u0000-\u001f\u007f]/u.test(user.name)) return null;
   return { name: normalizedName(user.name), openId: user.open_id, ...(id(user.user_id) ? { userId: user.user_id } : {}) };
 }
-class DirectoryFailure extends Error { readonly reason: string; constructor(reason: string) { super(reason); this.reason = reason; } }
+class DirectoryFailure extends FeishuFailureError { readonly reason: FeishuFailureReason; constructor(reason: FeishuFailureReason) { super(failure('directory_search', reason)); this.reason = reason; } }
 export async function searchDirectory(request: DirectoryRequest, query: string, signal: AbortSignal): Promise<FeishuUserSearch> {
   const users = new Map<string, FeishuUser>();
   const departments = new Set<string>();
@@ -21,7 +22,7 @@ export async function searchDirectory(request: DirectoryRequest, query: string, 
     combined.throwIfAborted();
     if (++requests > 100) throw new DirectoryFailure('budget_exceeded');
     const response = record(await request(url, params, combined));
-    if (response.code !== 0) throw new DirectoryFailure(response.code === 99991672 || response.code === 99991679 ? 'missing_permissions' : 'directory_failed');
+    if (response.code !== 0) throw new FeishuFailureError(diagnose('directory_search', response, 'invalid_response'));
     return record(response.data);
   };
   const pages = async (url: string, params: Record<string, string | number>, visit: (data: Record<string, unknown>) => void) => {
@@ -63,7 +64,7 @@ export async function searchDirectory(request: DirectoryRequest, query: string, 
         hasGroups ||= ((data.group_ids ?? []) as unknown[]).length > 0;
       });
     } catch (error) {
-      if (!(error instanceof DirectoryFailure) || error.reason !== 'missing_permissions') throw error;
+      if (!(error instanceof FeishuFailureError) || error.diagnostic.reason !== 'missing_permissions') throw error;
       scopesAvailable = false; departments.clear(); directlyAuthorized.clear(); departments.add('0');
     }
     for (const userId of directlyAuthorized) add((await run(`/open-apis/contact/v3/users/${encodeURIComponent(userId)}`, { user_id_type: 'open_id' })).user);
@@ -77,6 +78,7 @@ export async function searchDirectory(request: DirectoryRequest, query: string, 
   } catch (error) {
     signal.throwIfAborted();
     return { users: [...users.values()].filter(user => normalizedName(user.name).toLowerCase().includes(normalizedName(query).toLowerCase())), complete: false,
-      reason: error instanceof DirectoryFailure ? error.reason : deadline.aborted ? 'budget_exceeded' : 'directory_failed' };
+      reason: deadline.aborted ? 'budget_exceeded' : diagnose('directory_search', error, 'directory_failed').reason,
+      diagnostic: deadline.aborted ? failure('directory_search', 'budget_exceeded') : diagnose('directory_search', error, 'directory_failed') };
   }
 }

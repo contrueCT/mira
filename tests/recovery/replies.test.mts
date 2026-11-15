@@ -96,6 +96,7 @@ test('real child transcript IDs stay private and generic extension sources retai
       return streamOf(assistant(''));
     };
     service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'source-main', sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true, syntheticStream: stream }); await settled(service);
+    await service.saveGeneralSettings({ ...(await service.generalSettings()), showExternalMessages: true });
     const sources = (await service.timeline()).items.filter(item => item.source);
     assert.equal(sources.length, 2);
     await service.submit({ id: 'spawn', text: 'Delegate a task', occurredAt: '2026-10-16T11:00:00.000Z' });

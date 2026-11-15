@@ -11,7 +11,7 @@
 
 ## 本地约束
 
-- 不增加 New Chat、会话列表、账户/动作授权 UI 或每次 Wake 创建新人物的概念；可选网页共用密码只位于入口及既有设置→访问
+- 不增加 New Chat、会话列表、账户/动作授权 UI 或每次 Wake 创建新人物的概念；可选网页共用密码只位于入口及既有设置→通用
 - 普通 Timeline 仅展示对话文本、双向消息附件和必要通知，不显示子任务卡片或新入口（ADR 0031）。子任务的真实活动、显式公开进度与只读详情保留在既有设置→运行记录内，按 child/run 独立读取。主 Mira 的工具活动仍不展示。禁止渲染 system/thinking、原始工具参数或结果；后端工具执行、持久记录和协议配对仍完整保留
 - 浏览器可在密码式输入框接收用户输入的 API Key，仅发送本地后端；读取接口不回填 Key，仅给 hasApiKey 状态。禁止写入浏览器持久存储、URL、日志或消息历史，关闭/取消清除未保存输入
 - Timeline `id` 使用全局 History UUID；用户条目的 `externalEventId` 单独关联待确认请求，不从 History ID 推导外部去重键
@@ -48,3 +48,5 @@
 - 记忆重置（ADR 0047）：`MemoryResetDialog` 是叠在设置之上的第二层 alertdialog，只轮询状态、不重发；`/api/status.lifeId` 变化时 `observeLife` 清理本标签页属于旧生命的 sessionStorage 并重新加载。新增按生命保存的浏览器状态时，加入 `clearLifeStorage`。
 - 用量与余额暂停（ADR 0048）：`UsagePanel` 只读，时区用浏览器 `Intl`；图表颜色变量 `--usage-input`/`--usage-cache` 在 `:root`。余额提示卡片与对话列左右对齐，时间放在卡片内；头部只显示“余额不足，已暂停”。聊天界面不显示后台任务、子任务、耗时或工具超时等内部状态。
 - 「已读」（ADR 0050）：只在最新用户消息下显示 `message-receipt read`，有待发送消息时隐藏；不得新增后台任务、耗时或超时的界面。
+
+- ADR 0056：设置第一项「通用」合并原访问设置；general.json 保存跨设备外部渠道消息显示偏好（默认关闭），仅影响 Timeline 投影，Mira 普通回复和通知保留；分页响应 displayRevision 变化时重建网页列表。

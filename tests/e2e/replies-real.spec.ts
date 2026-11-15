@@ -248,6 +248,7 @@ test('compact generic extension messages and time gaps preserve quoted source th
       extensions: await readExtensionConfiguration(config),
       syntheticStream: (_model, context) => { contexts.push(structuredClone(context)); return streamOf({ ...assistant('好，出门前再看一下天气。'), timestamp: Date.now() }); },
     });
+    await service.saveGeneralSettings({ ...(await service.generalSettings()), showExternalMessages: true });
     app = createLocalHttp({ backend: service, port, assetsDirectory: path.join(sourceDirectory, 'apps/web/dist') });
     await app.listen({ port, host: '127.0.0.1' }); await page.goto(origin);
     const target = (await service!.timeline()).items.find(item => item.text === sourceText)!;
