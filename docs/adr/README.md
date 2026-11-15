@@ -4,6 +4,7 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 ## 已确认
 
+- [ADR 0058：受管浏览器失败原因传递](0058-managed-browser-failure-reasons.md)：预检、启动、导航和清理原因进入工具结果；区分未执行与结果未知，保留人工租约、会话锁定和不重放。
 - [ADR 0055：飞书连接诊断与群聊](0055-feishu-connection-diagnostics-and-groups.md)：固定安全原因在既有设置中显示；群内全部人类消息唤醒、由 Mira 决定是否回复；显式 chat_id 和原群引用发送。
 
 - 项目名 Mira，私有 GitHub 仓库 `contrueCT/mira`
