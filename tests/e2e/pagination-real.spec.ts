@@ -2,7 +2,7 @@ import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { Client } from 'pg';
-import { createLocalHttp, LocalWebService } from '@mira/server';
+import { createLocalHttp, LocalWebService, WebAccessAuth } from '@mira/server';
 import { createTestDatabase, testHistoryId } from '../integration/database.mts';
 
 const port = 3221, origin = `http://127.0.0.1:${port}`;
@@ -132,4 +132,51 @@ test('real PG: a far quoted message is found in one lookup, focused, and the ski
   } finally {
     await fixture?.app.close(); await fixture?.service.close(); await db.close(); await rm(root, { recursive: true, force: true });
   }
+});
+
+test('General settings persist across browsers and hide channel records while retaining ordinary replies', async ({ page, browser }, testInfo) => {
+  const db = await createTestDatabase(), root = await realpath(await mkdtemp('/tmp/mira-general-browser-'));
+  let service: LocalWebService | undefined, app: ReturnType<typeof createLocalHttp> | undefined;
+  const other = await browser.newContext(); const second = await other.newPage();
+  try {
+    const writer = await db.acquire('general-browser');
+    for (const direction of ['inbound', 'outbound']) {
+      await writer.receive({ id: JSON.stringify(['extension', 'fixture', direction]), source: 'extension', type: 'message', occurredAt: new Date().toISOString(), payload: {
+        extensionId: 'fixture', eventId: direction, message: { direction, text: direction === 'inbound' ? '外部收到的测试消息' : '已发出的测试消息', sourceLabel: '测试渠道' },
+      } });
+    }
+    await writer.close();
+    service = await LocalWebService.open({ connectionString: db.connectionString, schema: db.schema, miraId: 'general-browser', sourceDirectory: process.cwd(), workingDirectory: root, miraHome: root, spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true, dreaming: { enabled: false } });
+    const auth = await WebAccessAuth.open({ miraHome: root, sourceDirectory: process.cwd() });
+    app = createLocalHttp({ backend: service, auth, port: 3228, assetsDirectory: path.join(process.cwd(), 'apps/web/dist') }); await app.listen({ port: 3228, host: '127.0.0.1' });
+    await page.goto('http://127.0.0.1:3228'); await second.goto('http://127.0.0.1:3228');
+    await expect(page.getByText('已发出的测试消息', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('外部收到的测试消息', { exact: true })).toHaveCount(0);
+    await page.getByRole('button', { name: '模型设置', exact: true }).click();
+    await expect(page.getByRole('tab').first()).toHaveText('通用');
+    await expect(page.getByRole('tab', { name: '通用', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('switch', { name: '使用访问密码' })).toBeVisible();
+    const toggle = page.getByRole('switch', { name: '显示其他渠道的消息' });
+    await toggle.check();
+    await page.getByRole('tab', { name: '模型', exact: true }).click();
+    await page.getByRole('tab', { name: '通用', exact: true }).click();
+    await expect(toggle).toBeChecked();
+    await page.getByRole('button', { name: '保存消息显示设置', exact: true }).click();
+    await expect(page.getByText('消息显示设置已保存', { exact: true })).toBeVisible();
+    await expect(second.getByText('外部收到的测试消息', { exact: true })).toBeVisible({ timeout: 15_000 });
+    await second.getByLabel('给 Mira 发消息', { exact: true }).fill('网页消息应一直显示');
+    await second.getByLabel('给 Mira 发消息', { exact: true }).press('Enter');
+    await expect(second.getByRole('article', { name: 'Mira 的消息', exact: true })).toBeVisible();
+    await toggle.uncheck(); await page.getByRole('button', { name: '保存消息显示设置', exact: true }).click();
+    await expect(second.getByText('外部收到的测试消息', { exact: true })).toHaveCount(0, { timeout: 15_000 });
+    await expect(second.getByText('已发出的测试消息', { exact: true })).toHaveCount(0);
+    await expect(second.getByText('网页消息应一直显示', { exact: true })).toBeVisible();
+    await expect(second.getByRole('article', { name: 'Mira 的消息', exact: true })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('general-desktop.png') });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: testInfo.outputPath('general-narrow.png') });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await second.reload(); await second.getByRole('button', { name: '模型设置', exact: true }).click();
+    await expect(second.getByRole('switch', { name: '显示其他渠道的消息' })).not.toBeChecked();
+  } finally { await other.close(); await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });

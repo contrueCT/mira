@@ -1,3 +1,4 @@
+import { parseGeneralSettings, type GeneralSettings } from './general-settings.ts';
 import type { ModelProbeResult } from './model-probe.ts';
 import { replyDescriptor, type ReplyReference } from './replies.ts';
 import { registerBrowserHttp, type BrowserWebBackend } from './browser-http.ts';
@@ -33,11 +34,14 @@ export interface WebIdentity { name: string; ring: string; avatar: string | null
 export interface BalancePause { reason: 'balance'; since: string; status: number | null; requestId: string | null; provider: string | null; model: string | null }
 export interface BalanceNotice { status: number | null; requestId: string | null; provider: string | null }
 export interface WebBackend extends Partial<ManagementBackend>, Partial<PersonaBackend>, Partial<UsageBackend>, Partial<ResetHttpBackend> {
+  generalSettings?(): Promise<GeneralSettings>;
+  saveGeneralSettings?(value: unknown): Promise<GeneralSettings>;
   browser?: BrowserWebBackend;
   status(): Promise<{ state: 'idle' | 'working' | 'paused' | 'error' | 'stopped'; pause?: BalancePause | null; mode: 'synthetic' | 'live'; model: string | null; error: string | ModelRequestFailure | PersistenceFailureNotice | null; errorId?: string | null; modelRetry?: ModelRetryStatus | null; identity?: WebIdentity; lifeId?: string; reset?: { id: string; state: string } }>;
   timeline(before?: string): Promise<{
     items: Array<{ id: string; externalEventId?: string; source?: ExtensionMessageSource; reply?: ReplyReference; role: 'user' | 'assistant' | 'notice'; notice?: 'persona' | 'memory-reset' | 'balance'; balance?: BalanceNotice; text: string; occurredAt: string; attachments?: AttachmentDescriptor[]; /** 「已读」, only on the newest user message (ADR 0050). */ read?: true }>;
     nextCursor: string | null;
+    displayRevision?: number;
     /** Latest reads only: earlier items whose public outcome has just completed, outside `items`. */
     updates?: Array<{ id: string; externalEventId?: string; source?: ExtensionMessageSource; reply?: ReplyReference; role: 'user' | 'assistant' | 'notice'; notice?: 'persona' | 'memory-reset' | 'balance'; balance?: BalanceNotice; text: string; occurredAt: string; attachments?: AttachmentDescriptor[]; /** 「已读」, only on the newest user message (ADR 0050). */ read?: true }>;
   }>;
@@ -109,7 +113,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   const methods = new Map<string, readonly string[]>([
     ['/api/browser', ['GET']], ['/api/browser/:id/takeover', ['POST']], ['/api/browser/:id/return', ['POST']], ['/api/browser/:id/reopen', ['POST']], ['/api/browser/:id/ticket', ['POST']],
     ['/api/auth/status', ['GET']], ['/api/auth/login', ['POST']], ['/api/auth/logout', ['POST']], ['/api/auth/settings', ['GET', 'PUT']],
-    ['/api/attachments', ['POST']], ['/api/attachments/:id', ['GET']], ['/api/status', ['GET']], ['/api/timeline', ['GET', 'POST']], ['/api/timeline/locate', ['POST']], ['/api/messages', ['POST']], ['/api/settings', ['GET', 'PUT']],
+    ['/api/attachments', ['POST']], ['/api/attachments/:id', ['GET']], ['/api/status', ['GET']], ['/api/timeline', ['GET', 'POST']], ['/api/timeline/locate', ['POST']], ['/api/messages', ['POST']], ['/api/settings', ['GET', 'PUT']], ['/api/settings/general', ['GET', 'PUT']],
     ['/api/memory', ['GET']], ['/api/messages/:id/status', ['GET']], ['/api/extensions', ['GET']], ['/api/extensions/:id', ['POST']], ['/api/extensions/:id/settings', ['GET', 'POST']], ['/api/extensions/:id/settings/actions', ['POST']], ['/api/extensions/:id/settings/cancel', ['POST']], ['/api/runs', ['GET']], ['/api/runs/:id', ['GET']], ['/api/runs/:id/requests', ['GET']],
     ['/api/memory/reset/preview', ['POST']], ['/api/memory/reset', ['POST']], ['/api/memory/reset/:id', ['GET']],
     ['/api/persona', ['GET', 'PUT']], ['/api/persona/presets', ['GET']], ['/api/persona/preview', ['POST']], ['/api/persona/history', ['GET']], ['/api/persona/restore', ['POST']], ['/api/persona/avatar', ['POST']], ['/api/persona/avatar/:id', ['GET']],
@@ -244,6 +248,14 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   registerResetHttp(app, backend);
   registerBrowserHttp(app, backend.browser, origins, options.auth);
   app.setNotFoundHandler((_request, reply) => reply.code(404).send({ error: 'Not found' }));
+  app.get('/api/settings/general', { schema: { querystring: noQuery } }, async () => {
+    if (!backend.generalSettings) throw new WebHttpError('unavailable');
+    return parseGeneralSettings(await backend.generalSettings());
+  });
+  app.put('/api/settings/general', { bodyLimit: 4096, schema: { querystring: noQuery, body: objectSchema({ revision: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER }, showExternalMessages: { type: 'boolean' } }, ['revision', 'showExternalMessages']) } }, async request => {
+    if (!backend.saveGeneralSettings) throw new WebHttpError('unavailable');
+    return parseGeneralSettings(await backend.saveGeneralSettings(parseGeneralSettings(request.body)));
+  });
   app.get('/api/status', { schema: { querystring: noQuery } }, async () => {
     const result = await backend.status();
     return { state: result.state, mode: result.mode, model: result.model, ...(result.pause ? { pause: { reason: result.pause.reason, since: result.pause.since, status: result.pause.status, requestId: result.pause.requestId, provider: result.pause.provider, model: result.pause.model } } : {}), ...(result.error !== null && result.errorId ? { errorId: result.errorId } : {}), ...(result.modelRetry ? { modelRetry: { phase: result.modelRetry.phase, attempt: result.modelRetry.attempt, maxAttempts: result.modelRetry.maxAttempts, delayMs: result.modelRetry.delayMs, reason: result.modelRetry.reason } } : {}), ...(result.identity ? { identity: { name: result.identity.name, ring: result.identity.ring, avatar: result.identity.avatar } } : {}), ...(result.lifeId ? { lifeId: result.lifeId } : {}), ...(result.reset ? { reset: { id: result.reset.id, state: result.reset.state } } : {}), error: result.error === null ? null : result.error instanceof ModelRequestFailure ? result.error.message : PersistenceFailureNotice.text(result.error) ?? protectedError };
@@ -254,7 +266,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     const result = await backend.timeline(request.query.before);
     return {
       items: result.items.map(timelineItem),
-      nextCursor: result.nextCursor,
+      ...(result.displayRevision !== undefined ? { displayRevision: result.displayRevision } : {}), nextCursor: result.nextCursor,
       ...(request.query.before === undefined && result.updates?.length ? { updates: result.updates.map(timelineItem) } : {}),
     };
   });
@@ -264,7 +276,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
     schema: { querystring: noQuery, body: objectSchema({ before: { type: 'string', minLength: 1, maxLength: 524_288, pattern: '^[A-Za-z0-9_=-]+$' } }, ['before']) },
   }, async request => {
     const result = await backend.timeline(request.body.before);
-    return { items: result.items.map(timelineItem), nextCursor: result.nextCursor };
+    return { items: result.items.map(timelineItem), ...(result.displayRevision !== undefined ? { displayRevision: result.displayRevision } : {}), nextCursor: result.nextCursor };
   });
   app.post<{ Body: { id: string; before?: string } }>('/api/timeline/locate', {
     bodyLimit: 600_000,
@@ -272,7 +284,7 @@ export function createLocalHttp(options: { backend: WebBackend; port: number; as
   }, async (request, reply) => {
     const result = backend.locateTimeline ? await backend.locateTimeline(request.body.id, request.body.before) : null;
     if (!result) return reply.code(404).send({ error: 'Message not found' });
-    return { items: result.items.map(timelineItem), nextCursor: result.nextCursor, mode: result.mode };
+    return { items: result.items.map(timelineItem), ...(result.displayRevision !== undefined ? { displayRevision: result.displayRevision } : {}), nextCursor: result.nextCursor, mode: result.mode };
   });
   app.post<{ Body: { id: string; text: string; occurredAt: string; attachmentIds?: string[]; replyToMessageId?: string } }>('/api/messages', {
     schema: { querystring: noQuery, body: objectSchema({ id: identifier, text: { type: 'string', maxLength: 65_536 }, replyToMessageId: { type: 'string', format: 'uuid' }, attachmentIds: { type: 'array', maxItems: 10, uniqueItems: true, items: { type: 'string', format: 'uuid' } }, occurredAt: { type: 'string', format: 'date-time', maxLength: 40 } }, ['id', 'text', 'occurredAt']) },

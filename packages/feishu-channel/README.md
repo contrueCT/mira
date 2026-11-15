@@ -140,6 +140,38 @@ names or publish another Wake. Frozen pending names/content survive restart unch
 Storage failure rejects the SDK handler (500 ACK) and stops intake; platform redelivery
 is not guaranteed. Repair storage and reconcile missing messages.
 
+## Failure observations
+
+Failures reach Mira through the existing tool result, inbound payload or connection
+ContextProvider; see [ADR 0057](../../docs/adr/0057-feishu-failure-observations.md).
+An unavailable sender name includes `senderNameFailure` with a fixed reason and
+guidance, rather than silently falling back to the open ID. Unsupported message
+types include `messageFailure`. Successful text inputs keep their concise shape.
+Directory failures retain safe API/HTTP codes; incomplete name sends return the
+diagnostic, and failed `user_id` validation is distinct from a recipient mismatch.
+
+Tool failures set `isError`. Send outcomes remain `sent`, `partial`, `unknown` or
+`not_sent`; a confirmed send can have a separate `publicationFailure` when its
+web display is pending. This does not authorize resending. Per-part failures are
+stored with the immutable receipt and returned as `diagnostics` after replay or
+restart, without another lookup or send. Older receipts remain readable.
+
+`feishu_status` and the ContextProvider expose a bounded current `failures` list
+(one per operation), with corresponding settings details. Background connection,
+ingress, storage and Host failures become visible at the next natural model request;
+they do not create another Wake. Successful related operations clear current issues;
+frozen input and send evidence remain unchanged. These current observations are
+activation-local; startup rechecks connection/storage, while durable pending input
+and sends retain their own diagnostics. No polling, retries, extra permissions or
+automatic platform configuration changes are added.
+
+Only fixed operation/reason/message fields and bounded numeric API/HTTP codes leave
+the adapter. Raw errors, URL/query strings, headers, stacks, credentials and platform
+response bodies never enter these diagnostics. An unknown error is explicitly
+`unknown`. Local/lifecycle cancellation stays cancellation; a send already attempted
+can remain unknown. An unavailable Host/database cannot guarantee immediate model
+notification. Inspect protected settings and reconcile pending evidence after repair.
+
 ## Delivery, storage and lifecycle
 
 Text is bounded to 100000 UTF-8 bytes, split at code-point boundaries into ordered

@@ -60,6 +60,7 @@ test('Feishu generic settings QR and multi-person private messaging reach the sa
       if (requests === 7) { expect(JSON.stringify(context)).toContain('oc_group'); expect(JSON.stringify(context)).toContain('om_group'); expect(JSON.stringify(context)).toContain('普通群消息'); return streamOf(assistant('NO_REPLY')); }
       return streamOf(assistant('已通过飞书发送回复。'));
     } });
+    await service.saveGeneralSettings({ ...(await service.generalSettings()), showExternalMessages: true });
     app = createLocalHttp({ backend: service, port, assetsDirectory: path.join(sourceDirectory, 'apps/web/dist') }); await app.listen({ host: '127.0.0.1', port });
     await page.goto(origin); await expect(page.getByText('（合成测试）普通插件消息同样显示小号来源标记。', { exact: true })).toBeVisible();
     await page.getByLabel('给 Mira 发消息', { exact: true }).fill('（合成测试）请连接飞书。'); await page.getByRole('button', { name: '发送消息', exact: true }).click();

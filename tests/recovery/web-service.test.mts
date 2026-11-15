@@ -381,7 +381,7 @@ test('tool activity stays out of both timeline routes while durable execution an
     assert.match(JSON.stringify(originalRecords), /PRIVATE_TOOL_CALL_SENTINEL/);
     assert.match(JSON.stringify(originalRecords), /PRIVATE_TOOL_RESULT_SENTINEL/);
     const timeline = await service.timeline();
-    assert.deepEqual(Object.keys(timeline).sort(), ['items', 'nextCursor']);
+    assert.deepEqual(Object.keys(timeline).sort(), ['displayRevision', 'items', 'nextCursor']);
     assert.doesNotMatch(JSON.stringify(timeline), /PRIVATE_TOOL_|PRIVATE_THINKING/);
     assert.match(JSON.stringify(timeline), /Visible reply 2/);
     // The ordinary opaque cursor can request an empty older page; both HTTP
@@ -394,7 +394,7 @@ test('tool activity stays out of both timeline routes while durable execution an
       { method: 'POST' as const, url: '/api/timeline', headers: writeHeaders, payload: { before: cursor } },
     ]) {
       const response = await http.inject(request); assert.equal(response.statusCode, 200, response.body);
-      assert.deepEqual(Object.keys(response.json()).sort(), ['items', 'nextCursor']);
+      assert.deepEqual(Object.keys(response.json()).sort(), ['displayRevision', 'items', 'nextCursor']);
       assert.doesNotMatch(response.body, /PRIVATE_TOOL_|PRIVATE_THINKING/);
     }
     await app.close(); app = undefined; await service.close(); service = undefined;
@@ -800,4 +800,40 @@ test('a PostgreSQL failure saving a provider error shows only a fixed temporary 
   } finally {
     await app?.close(); await service?.close(); globalThis.fetch = originalFetch; await db.close(); await rm(root, { recursive: true, force: true });
   }
+});
+
+test('general display preference filters channel messages, persists, and applies to HTTP pages and quote navigation', { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase(); const root = await realpath(await mkdtemp('/tmp/mira-general-recovery-'));
+  let service: LocalWebService | undefined; let app: ReturnType<typeof createLocalHttp> | undefined;
+  try {
+    const writer = await db.acquire('general-display');
+    try {
+      for (let i = 0; i < 220; i++) {
+        const inbound = i > 0; const eventId = `channel-${i}`;
+        await writer.receive({ id: JSON.stringify(['extension', 'test-channel', eventId]), source: 'extension', type: 'channel.message', occurredAt: new Date(Date.UTC(2026, 10, 1) + i).toISOString(),
+          payload: { extensionId: 'test-channel', eventId, message: { direction: inbound ? 'inbound' : 'outbound', text: inbound ? 'external incoming' : 'outbound stays', sourceLabel: 'Test channel' } } });
+      }
+      await writer.receive({ id: 'web-stays', source: 'user', type: 'web.message', occurredAt: '2026-11-02T00:00:00.000Z', payload: { text: 'web stays' } });
+    } finally { await writer.close(); }
+    const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'general-display', sourceDirectory: process.cwd(), spoolDirectory: path.join(root, 'spool'), settingsFile: path.join(root, 'models.json'), synthetic: true };
+    service = await LocalWebService.open(options);
+    app = createLocalHttp({ backend: service, port: httpPort });
+    const hidden = (await app.inject({ url: '/api/timeline', headers: readHeaders })).json<TimelinePage>();
+    assert.deepEqual(hidden.items.map(i => i.text), ['web stays']);
+    assert.equal(hidden.nextCursor, null);
+    const initial = await service.generalSettings();
+    const requests = await Promise.all([service.saveGeneralSettings({ ...initial, showExternalMessages: true }), service.saveGeneralSettings({ ...initial, showExternalMessages: false }).catch(e => e)]);
+    assert.equal(requests[1].code, 'conflict');
+    const shown = await service.timeline(); const inbound = shown.items.find(i => i.source?.direction === 'inbound')!; assert.ok(inbound);
+    assert.ok(await service.locateTimeline(inbound.id));
+    const current = await service.generalSettings();
+    const saved = await app.inject({ method: 'PUT', url: '/api/settings/general', headers: writeHeaders, payload: { ...current, showExternalMessages: false } }); assert.equal(saved.statusCode, 200, saved.body);
+    assert.equal(await service.locateTimeline(inbound.id), null);
+    assert.equal((await service.timeline()).items.some(i => i.source?.direction === 'inbound'), false);
+    await app.close(); app = undefined; await service.close();
+    service = await LocalWebService.open(options);
+    assert.equal((await service.generalSettings()).showExternalMessages, false);
+    assert.equal((await service.timeline()).items.length, 1);
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM life_events')).rows[0].n, 221);
+  } finally { await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });

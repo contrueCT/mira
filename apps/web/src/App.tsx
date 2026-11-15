@@ -133,7 +133,23 @@ export function App() {
     return true;
   }, [recovered.error]);
 
+  const displayRevisionRef = useRef<number | undefined>(undefined);
+  const displayGenerationRef = useRef(0);
   const acceptPage = useCallback((page: TimelinePage, request: HistoryRequest | null = null, located: string | null = null) => {
+    if (page.displayRevision !== undefined) {
+      const current = displayRevisionRef.current;
+      if (current !== undefined && page.displayRevision < current) return;
+      if ((request || located) && page.displayRevision !== current) throw new Error('消息显示设置已更新，请等待列表刷新后重试。');
+      if (current !== undefined && page.displayRevision !== current) {
+        displayGenerationRef.current++;
+        cancelQuoteNavigation();
+        itemsRef.current = []; initializedRef.current = false;
+        paginationRef.current = { latestCursor: null, oldestCursor: null, gaps: [] };
+        prependAnchorRef.current = null; autoFillRef.current = false;
+        setOlderError(null);
+      }
+      displayRevisionRef.current = page.displayRevision;
+    }
     if ((request || located) && scrollRef.current) {
       const container = scrollRef.current;
       const top = container.getBoundingClientRect().top;
@@ -153,7 +169,7 @@ export function App() {
     setHasHistoryGap(paginationRef.current.gaps.length > 0);
     initializedRef.current = true;
     setLoading(false);
-  }, [updatePending]);
+  }, [updatePending, cancelQuoteNavigation]);
 
   const refresh = useCallback((): Promise<void> => {
     if (inFlightRef.current) return inFlightRef.current;
@@ -246,6 +262,7 @@ export function App() {
     // The automatic first fill is not a user intent and must not cancel one.
     if (!automatic) cancelQuoteNavigation();
     olderBusyRef.current = true; setLoadingOlder(true); setOlderError(null);
+    const displayGeneration = displayGenerationRef.current;
     try {
       const result = await loadOlderHistory({
         next: () => nextHistoryRequest(paginationRef.current),
@@ -260,12 +277,15 @@ export function App() {
           return added;
         },
         owner: pollAbortRef.current!.signal,
-        stopped: () => !activeRef.current,
+        stopped: () => !activeRef.current || displayGeneration !== displayGenerationRef.current,
       });
       if (!activeRef.current) return;
       if (result.kind === 'budget') setOlderError({ summary: '这段历史较长，已保留读取进度，请继续加载。', detail: null });
       else if (result.kind === 'timeout') setOlderError({ summary: '读取较久，已保留进度，请再试一次。', detail: null });
       else if (result.kind === 'error') { const info = errorInfo(result.error); setOlderError({ summary: `更早的消息暂时没有读取成功，进度已保留，可以重试。${info.detail ? '' : info.summary}`, detail: info.detail }); }
+    } catch {
+      if (activeRef.current) setOlderError({ summary: '消息显示设置已更新，请等待列表刷新后重试。', detail: null });
+      void refresh();
     } finally {
       olderBusyRef.current = false;
       if (activeRef.current) setLoadingOlder(false);
@@ -275,7 +295,7 @@ export function App() {
   useEffect(() => {
     // A latest window holding only private records is not an empty chat: read
     // older history once, with the same bounded loader as an explicit click.
-    if (loading || autoFillRef.current || items.length || !nextCursor || connectionError) return;
+    if (loading || olderBusyRef.current || autoFillRef.current || items.length || !nextCursor || connectionError) return;
     autoFillRef.current = true; setAutoFilling(true);
     void loadOlder(true).finally(() => { if (activeRef.current) setAutoFilling(false); });
   });
@@ -443,6 +463,9 @@ export function App() {
       // The server answers 404 for anything that is not a visible chat message.
       const outcome = result.kind === 'error' && result.error instanceof ApiError && result.error.status === 404 ? { kind: 'complete' as const } : result;
       if (activeRef.current && quoteAbortRef.current === controller) setQuoteNotice(quoteLookupNotice(outcome, errorInfo));
+    } catch {
+      if (activeRef.current && quoteAbortRef.current === controller) setQuoteNotice({ summary: '消息显示设置已更新，请等待列表刷新后重试。', detail: null });
+      void refresh();
     } finally {
       view?.removeEventListener('abort', stopWithView);
       if (quoteAbortRef.current === controller) {

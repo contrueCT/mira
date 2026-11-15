@@ -4,6 +4,7 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 
 ## 已确认
 
+- [ADR 0057：飞书失败原因进入 Mira 上下文](0057-feishu-failure-observations.md)：查询、收发、连接和持久化失败提供安全诊断；冻结入站与发送回执保留原因，unknown 不重发。
 - [ADR 0055：飞书连接诊断与群聊](0055-feishu-connection-diagnostics-and-groups.md)：固定安全原因在既有设置中显示；群内全部人类消息唤醒、由 Mira 决定是否回复；显式 chat_id 和原群引用发送。
 
 - 项目名 Mira，私有 GitHub 仓库 `contrueCT/mira`
@@ -107,5 +108,7 @@ ADR 状态使用 `Proposed`、`Accepted`、`Superseded`。用户确认前不把�
 - [0052 子任务的结构化回报、能力与附件、批量唤醒和关闭](0052-subagent-reports-capabilities-close.md)：Accepted，2026-10-31；`task_report {summary, question?}`，扩展能力（mainOnly 不下发、delegated 不能改日程），附件路径由子任务 read（含视频），同组一次唤醒，独立的 `subagent_close` 完全收尾，4 小时空闲释放兜底；提示 v0.5。
 - [0053 记忆写入引导](0053-memory-writing-guidance.md)：Accepted，2026-11-01；`<memory>` 改为想记就记、角色视角记忆与六条示例，“不要记什么”压成一句；提示 v0.6。
 - [0054 飞书插件多接收人发送与精简入站消息](0054-feishu-multi-recipient-plan.md)：Accepted scope，2026-11-14；默认多人私聊，取消配对；姓名查找与用户 ID 发送，入站姓名和消息 ID；已实现并进行本地验证，新增通讯录授权需明确配置，未部署。
+
+- [0056：通用设置与外部渠道消息显示](0056-general-settings-and-channel-display.md)：已批准并实现；跨设备保存，默认隐藏渠道收发记录，保留普通 Mira 回复。
 
 - [0059 工具执行前拒绝后继续认知](0059-tool-preparation-rejections.md)：已批准范围；参数校验/工具缺失向 Mira 提供 not-started 与有界约束，沿用同一 Wake/task 继续，真实执行未知与持久化致命边界保留。

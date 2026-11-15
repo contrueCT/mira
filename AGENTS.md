@@ -107,6 +107,7 @@ pnpm check
 - [ADR 0034](docs/adr/0034-managed-browser-handoff.md)：受管 agent-browser 0.39.1、owner 队列与人工 epoch；设置内 stream 视口；交还取消未发送输入、等待官方 daemon 在途响应再新 snapshot，不重放，不承诺 OS shell 隔离。
 - [ADR 0035](docs/adr/0035-extension-private-settings.md)：通用扩展私有凭据/安装数据目录与声明式设置，现有扩展管理内使用；运行时凭据不入config/模型，动作按代取消/排空，同OS可信边界不变。
 - ADR 0036：`packages/feishu-channel` 是普通 Cordis 消费者，使用通用设置/凭据/私有目录与既有 Event/Wake/工具/cleanup；无供应商 server 路由、保留内置 ID 或默认连接。[ADR 0054](docs/adr/0054-feishu-multi-recipient-plan.md) 支持多人私聊、姓名查找和用户 ID；[ADR 0055](docs/adr/0055-feishu-connection-diagnostics-and-groups.md) 增加安全连接诊断、全部人类群消息唤醒、chat_id/原群引用发送；来源不授予主人权限，真实收发需单独验收。
+- [ADR 0057](docs/adr/0057-feishu-failure-observations.md)：飞书失败使用固定安全诊断进入工具结果、冻结入站 payload 和普通 ContextProvider/设置；发送分片回执保留失败原因，网页同步失败独立于确认发送；不增加 Wake、隐式重试或权限。
 
 
 - ADR 0035 的动作 group/visibleActions 仅为通用展示与可用性契约，业务状态映射归插件；HTTP/handle 同 runner 校验，系统层不含 provider 分支。
@@ -117,5 +118,7 @@ pnpm check
 
 - [ADR 0043](docs/adr/0043-message-replies-timeline.md)：主 Timeline 紧凑时间分组及双向 History-ID 回复；引用是服务端验证的有界数据快照，不升级权限，子任务不发布主聊天回复。真实浏览器门禁 `test:replies:e2e` 与合成 UI/离线测试分开。
 - [ADR 0044](docs/adr/0044-task-communication-prompt.md)：执行前简短回应，长任务在自然请求机会提供有用反馈；主 assistant 完整文字随原 Timeline 投递，非 token 流。保持委派优先、冻结 Memory 与已发布模板身份，无新增 timer/UI。
+
+- ADR 0056：设置第一项「通用」合并原访问设置；general.json 保存跨设备外部渠道消息显示偏好（默认关闭），仅影响 Timeline 投影，Mira 普通回复和通知保留；分页响应 displayRevision 变化时重建网页列表。
 
 - ADR 0059：工具缺失/参数校验拒绝通过 not-started + prepare 诊断继续同一 Wake/task；固定本轮定义、保留 SDK 转换，有界 schema 约束给模型；未启动调用无 intent，不伪造结果，写入/fencing 故障仍致命。
