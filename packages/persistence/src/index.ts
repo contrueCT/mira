@@ -857,17 +857,18 @@ class PostgresWriter implements BackgroundJobReader, DreamingWriter, SchedulingW
     if (!result.rows[0]) fail('corrupt', 'Scheduled terminal status was not persisted');
     return scheduledDelivery(result.rows[0]);
   }
-  dispatchScheduledDeliveries(owners: readonly string[]): Promise<{ enqueued: number; nextDueAt: string | null }> {
+  dispatchScheduledDeliveries(owners: readonly string[]): Promise<{ enqueued: number; lastEnqueuedWakeId: string | null; nextDueAt: string | null }> {
     const activeOwners = [...new Set(owners)];
     for (const owner of activeOwners) text(owner, 'schedule owner');
     return this.#transaction(async () => {
-      if (!activeOwners.length) return { enqueued: 0, nextDueAt: null };
+      if (!activeOwners.length) return { enqueued: 0, lastEnqueuedWakeId: null, nextDueAt: null };
       const now = (await this.#client.query<{ now: Date }>("SELECT date_trunc('milliseconds', clock_timestamp()) AS now")).rows[0]?.now;
       if (!now || !Number.isFinite(now.getTime())) fail('corrupt', 'Invalid database clock');
       const due = await this.#client.query<ScheduledDeliveryRow>(
         `SELECT * FROM scheduled_deliveries WHERE mira_id = $1 AND owner_id = ANY($2::text[]) AND status = 'pending' AND due_at <= $3
          ORDER BY due_at, owner_id COLLATE "C", schedule_key COLLATE "C"`, [this.miraId, activeOwners, now]);
       let enqueued = 0;
+      let lastEnqueuedWakeId: string | null = null;
       for (const row of due.rows) {
         const delivery = scheduledDelivery(row);
         if (row.expires_at !== null && row.expires_at.getTime() <= now.getTime()) {
@@ -875,7 +876,8 @@ class PostgresWriter implements BackgroundJobReader, DreamingWriter, SchedulingW
         } else {
           // The same fenced transaction owns both ordinary ingress and its
           // terminal marker. A lost receipt is resolved by reading this row.
-          await this.#receive(delivery.event, delivery.wake ?? null);
+          const receipt = await this.#receive(delivery.event, delivery.wake ?? null);
+          if (delivery.wake && receipt === 'inserted') lastEnqueuedWakeId = delivery.wake.id;
           await this.#settleScheduled(delivery, 'enqueued');
           enqueued++;
         }
@@ -883,7 +885,7 @@ class PostgresWriter implements BackgroundJobReader, DreamingWriter, SchedulingW
       const next = (await this.#client.query<{ due_at: Date | null }>(
         "SELECT min(due_at) AS due_at FROM scheduled_deliveries WHERE mira_id = $1 AND owner_id = ANY($2::text[]) AND status = 'pending'",
         [this.miraId, activeOwners])).rows[0]?.due_at;
-      return { enqueued, nextDueAt: next?.toISOString() ?? null };
+      return { enqueued, lastEnqueuedWakeId, nextDueAt: next?.toISOString() ?? null };
     });
   }
   async #touchDreamingIdle(): Promise<void> {

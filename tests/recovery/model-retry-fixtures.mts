@@ -18,6 +18,11 @@ export function retryResponse(text = 'Recovered request', callId?: string, toolN
 export function retryFailure(status: number, message = 'synthetic temporary failure', requestId = 'request-1'): Response {
   return new Response(JSON.stringify({ error: { message } }), { status, headers: { 'content-type': 'application/json', 'x-request-id': requestId } });
 }
+export function gatewayNotFound(requestId: string): Response {
+  return new Response('<!doctype html><title>Gateway route unavailable</title>', {
+    status: 404, headers: { 'content-type': 'text/html; charset=utf-8', 'x-request-id': requestId },
+  });
+}
 export function brokenPartialResponse(): Response {
   let reads = 0;
   return new Response(new ReadableStream<Uint8Array>({ pull(controller) {

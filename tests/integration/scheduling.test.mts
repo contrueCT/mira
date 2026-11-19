@@ -13,7 +13,7 @@ testDatabaseUrl();
 const owner = 'extension:synthetic.reminders';
 const past = '2000-01-01T00:00:00.000Z';
 const future = '2999-01-01T00:00:00.000Z';
-const emptyDispatch = { enqueued: 0, nextDueAt: null };
+const emptyDispatch = { enqueued: 0, lastEnqueuedWakeId: null, nextDueAt: null };
 function input(patch: Partial<ScheduledDeliveryInput> = {}): ScheduledDeliveryInput {
   const key = patch.key ?? randomUUID();
   return { key, dueAt: past,
@@ -59,7 +59,7 @@ test('single-shot creation is exact-input idempotent, cloned, scoped by owner an
     assert.deepEqual(await counts(db), { events: 0, wakes: 0 }, 'registration never emits');
     await writer.close(); writer = await db.acquire();
     assert.equal((await writer.createScheduledDelivery(owner, frozen)).status, 'duplicate');
-    assert.deepEqual(await writer.dispatchScheduledDeliveries([owner]), { enqueued: 0, nextDueAt: future });
+    assert.deepEqual(await writer.dispatchScheduledDeliveries([owner]), { enqueued: 0, lastEnqueuedWakeId: null, nextDueAt: future });
     assert.deepEqual(await writer.dispatchScheduledDeliveries([]), emptyDispatch);
   } finally { await db.close(); }
 });
@@ -74,7 +74,7 @@ test('replace and cancel use pending-only CAS, preserving stable keys and preven
     assert.equal(changed.status, 'updated'); assert.equal(changed.delivery!.key, old.key); assert.equal(changed.delivery!.version, 2);
     assert.equal((await writer.replaceScheduledDelivery(owner, 1, old)).status, 'conflict');
     assert.equal((await writer.cancelScheduledDelivery(owner, old.key, 1)).status, 'conflict');
-    assert.deepEqual(await writer.dispatchScheduledDeliveries([owner]), { enqueued: 0, nextDueAt: future });
+    assert.deepEqual(await writer.dispatchScheduledDeliveries([owner]), { enqueued: 0, lastEnqueuedWakeId: null, nextDueAt: future });
     assert.deepEqual(await counts(db), { events: 0, wakes: 0 }, 'superseded due version cannot emit');
     assert.deepEqual(await writer.replaceScheduledDelivery(owner, 1, input()), { status: 'missing', delivery: null });
     assert.deepEqual(await writer.cancelScheduledDelivery(owner, 'missing', 1), { status: 'missing', delivery: null });
@@ -106,6 +106,7 @@ test('due dispatch publishes exact ordinary Event/Wake once, marks expiry honest
     await writer.createScheduledDelivery('disabled-extension', inactive);
     const results = await Promise.all(Array.from({ length: 5 }, () => writer.dispatchScheduledDeliveries([owner, owner])));
     assert.equal(results.reduce((sum, result) => sum + result.enqueued, 0), 2);
+    assert.deepEqual(results.flatMap(result => result.lastEnqueuedWakeId ?? []), [due.wake!.id]);
     assert(results.every(result => result.nextDueAt === future));
     assert.deepEqual(await counts(db), { events: 2, wakes: 1 });
     for (const value of [due, noWake]) {
@@ -121,7 +122,7 @@ test('due dispatch publishes exact ordinary Event/Wake once, marks expiry honest
     assert.deepEqual(run.requests[0]!.event, due.event); assert.deepEqual(run.requests[0]!.wake, due.wake);
     assert.equal((await writer.load()).version, 0, 'scheduler does not append runtime context');
     await writer.close(); writer = await db.acquire();
-    assert.deepEqual(await writer.dispatchScheduledDeliveries([owner]), { enqueued: 0, nextDueAt: future });
+    assert.deepEqual(await writer.dispatchScheduledDeliveries([owner]), { enqueued: 0, lastEnqueuedWakeId: null, nextDueAt: future });
     assert.equal((await writer.claimWakeBatch())!.id, run.id);
     assert.equal((await writer.dispatchScheduledDeliveries(['disabled-extension'])).enqueued, 1);
     assert.equal((await writer.claimWakeBatch())!.requests.length, 1, 'new arrivals do not rewrite active batch');
@@ -167,7 +168,7 @@ test('canonical UTC validation, safe versions, and database clock hold before an
     assert.deepEqual(await writer.listScheduledDeliveries(owner), []);
     await writer.createScheduledDelivery(owner, value);
     const originalNow = Date.now; Date.now = () => Date.parse('9999-01-01T00:00:00.000Z');
-    try { assert.deepEqual(await writer.dispatchScheduledDeliveries([owner]), { enqueued: 0, nextDueAt: future }); }
+    try { assert.deepEqual(await writer.dispatchScheduledDeliveries([owner]), { enqueued: 0, lastEnqueuedWakeId: null, nextDueAt: future }); }
     finally { Date.now = originalNow; }
     await db.admin.query('UPDATE scheduled_deliveries SET version = $1', [Number.MAX_SAFE_INTEGER]);
     await assert.rejects(writer.replaceScheduledDelivery(owner, Number.MAX_SAFE_INTEGER, value), /exhausted/);
@@ -227,7 +228,7 @@ test('ownership loss during enqueue rolls back Event, Wake and marker; old write
     const next = await db.acquire();
     assert.equal((await next.getScheduledDelivery(owner, value.key))!.status, 'pending');
     await assert.rejects(writer.cancelScheduledDelivery(owner, value.key, 1), /Writer is stopped/);
-    assert.deepEqual(await next.dispatchScheduledDeliveries([owner]), { enqueued: 1, nextDueAt: null });
+    assert.deepEqual(await next.dispatchScheduledDeliveries([owner]), { enqueued: 1, lastEnqueuedWakeId: value.wake!.id, nextDueAt: null });
     assert.deepEqual(await counts(db), { events: 1, wakes: 1 });
   } finally { await db.close(); }
 });

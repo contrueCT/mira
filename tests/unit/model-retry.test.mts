@@ -8,7 +8,7 @@ import { createModelTransport, listBuiltinCatalog } from '@mira/server';
 import type { ModelRequestFailure } from '../../apps/server/src/model-errors.ts';
 import { boundedRetryAfter, defaultModelRetryPolicy, retryDelayMs, retryableTransportError, type ModelRetryStatus } from '../../apps/server/src/model-retry.ts';
 import { MemoryWriter, effectTool, input, result, seed, assistant } from '../recovery/fixtures.mts';
-import { fastRetryPolicy, retryTransport, retryResponse, retryFailure, brokenPartialResponse, syntheticRetryKey, retryConfiguration, retrySelection } from '../recovery/model-retry-fixtures.mts';
+import { fastRetryPolicy, retryTransport, retryResponse, retryFailure, gatewayNotFound, brokenPartialResponse, syntheticRetryKey, retryConfiguration, retrySelection } from '../recovery/model-retry-fixtures.mts';
 const context = normalizeContext({ messages: [{ role: 'user', content: 'Synthetic retry test', timestamp: 1 }] });
 
 test('actual SDK retries only the buffered request and reports transient status without publishing failed attempts', async () => {
@@ -35,6 +35,17 @@ test('transient HTTP exhaustion is bounded, preserves first and last sanitized r
   assert.equal(failures.at(-1)!.terminalMessage, message.errorMessage);
   assert.doesNotMatch(message.errorMessage!, /synthetic-retry-key/); assert.ok(message.errorMessage!.length < 2_100);
   assert.equal(statuses.at(-1), null); assert.deepEqual(statuses.filter(status => status?.phase === 'waiting').map(status => status!.delayMs), [250, 500, 1_000, 2_000]);
+});
+
+test('an HTML 404 gets the same bounded retry as a gateway failure', async () => {
+  const bodies: string[] = [];
+  const transport = retryTransport(async (_url, init) => {
+    bodies.push(String(init?.body));
+    return bodies.length === 1 ? gatewayNotFound('gateway-1') : retryResponse();
+  }, { retryPolicy: { initialDelayMs: 0 } });
+  assert.equal((await (await transport.streamFn(transport.model, context)).result()).stopReason, 'stop');
+  assert.equal(bodies.length, 2);
+  assert.equal(bodies[0], bodies[1]);
 });
 
 test('authentication, validation, redirects, TLS, DNS and unknown errors are not guessed retryable', async () => {

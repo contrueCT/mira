@@ -73,7 +73,7 @@ function scopedModelFetch(baseUrl: string, fetch: typeof globalThis.fetch, heade
       const response = await fetch(input, { ...init, headers: headers(), redirect: 'error', credentials: 'omit', referrerPolicy: 'no-referrer' });
       if (!response.ok) {
         failure.status = response.status;
-        const retryReason = retryableHttpStatus(response.status);
+        const retryReason = retryableHttpStatus(response.status, response.headers.get('content-type') ?? '');
         if (retryReason) failure.retryReason = retryReason;
         const retryAfterMs = boundedRetryAfter(response.headers.get('retry-after'));
         if (retryAfterMs !== undefined) failure.retryAfterMs = retryAfterMs;

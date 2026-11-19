@@ -76,16 +76,27 @@ export class ModelRequestFailure {
   readonly balance: boolean;
   /** Sanitized, bounded provider request ID, when one was returned. */
   readonly requestId: string | undefined;
-  private constructor(message: string, terminalMessage = message, httpStatus?: number, providerMessage?: string, balance = false, requestId?: string) { this.providerMessage = providerMessage; this.httpStatus = httpStatus; this.message = message; this.terminalMessage = terminalMessage; this.balance = balance; this.requestId = requestId; Object.freeze(this); }
+  /** A fresh scheduled Wake may recover after this request exhausts its retry budget. */
+  readonly transient: boolean;
+  private constructor(message: string, terminalMessage = message, httpStatus?: number, providerMessage?: string, balance = false, requestId?: string, transient = false) {
+    this.message = message;
+    this.terminalMessage = terminalMessage;
+    this.httpStatus = httpStatus;
+    this.providerMessage = providerMessage;
+    this.balance = balance;
+    this.requestId = requestId;
+    this.transient = transient;
+    Object.freeze(this);
+  }
   static afterAttempts(first: ModelRequestFailure, last: ModelRequestFailure, attempts: number): ModelRequestFailure {
     if (attempts === 1) return last;
-    return new ModelRequestFailure(bounded(`Model request failed after ${attempts} attempts · First: ${clip(first.message, 850)} · Last: ${clip(last.message, 850)}`), last.terminalMessage, last.httpStatus, last.providerMessage, last.balance, last.requestId);
+    return new ModelRequestFailure(bounded(`Model request failed after ${attempts} attempts · First: ${clip(first.message, 850)} · Last: ${clip(last.message, 850)}`), last.terminalMessage, last.httpStatus, last.providerMessage, last.balance, last.requestId, last.transient);
   }
   static from(value: unknown, context: ModelFailureContext, secret?: string): ModelRequestFailure {
     const details = [context.status === undefined ? '' : `HTTP ${context.status}`,
       context.requestId ? `request ID: ${clip(redact(context.requestId, secret), 128)}` : '', context.transportReason ?? context.providerReason ?? reason(value, secret)].filter(Boolean);
     return new ModelRequestFailure(bounded(`Model request failed${details.length ? ` · ${details.join(' · ')}` : '; the provider supplied no diagnostic details'}`, secret), undefined, context.status, context.providerMessage === undefined ? undefined : bounded(context.providerMessage, secret),
-      context.balance === true, context.requestId ? clip(redact(context.requestId, secret), 128) : undefined);
+      context.balance === true, context.requestId ? clip(redact(context.requestId, secret), 128) : undefined, context.retryReason !== undefined);
   }
 }
 /** Select cause messages/codes only, never stack, request, response or headers. */
