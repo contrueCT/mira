@@ -59,3 +59,9 @@ Transient provider outages (rate limits, 5xx bursts) regularly outlast ~1.3 s of
 
 Streams created through Mira's scoped fetch (OpenAI-compatible and Anthropic protocols) also abort when no body bytes arrive for 5 minutes; that failure (`MIRA_STREAM_IDLE_TIMEOUT`) is retryable under the same rules only when nothing was emitted. The Google adapter does not use the scoped fetch and therefore has no idle timer.
 
+
+## Gateway 404 and recovery at the next scheduled Wake
+
+An HTTP 404 with an HTML media type uses the same bounded server-error retry policy. Structured API 404s still stop after one attempt. The terminal diagnostic keeps the status, sanitized request ID when available, and the fact that the response was an HTML error page.
+
+When a regular model request in the main Wake exhausts its retries with a transient failure, a newly enqueued scheduled Wake can resume the unfinished Wake. A deadline that arrives during the failing run can trigger recovery once after the run settles. The resumed model receives a bounded note derived from the saved terminal error. The same recovery path preserves settled tool outcomes and then drains the pending scheduled work. A timer rescan or a delivery without a Wake does not trigger recovery. Configuration, balance, persistence, and unknown execution failures retain their existing handling.

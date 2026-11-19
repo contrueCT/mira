@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, rm, realpath } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { LocalWebService, WebSettingsStore, createLocalHttp } from '@mira/server';
+import { deferred } from './fixtures.mts';
+import { readExtensionConfiguration } from '@mira/extension-host';
 import { createTestDatabase } from '../integration/database.mts';
-import { fastRetryPolicy, retryConfiguration, retrySelection, retryResponse, retryFailure, syntheticRetryKey } from './model-retry-fixtures.mts';
+import { fastRetryPolicy, retryConfiguration, retrySelection, retryResponse, retryFailure, gatewayNotFound, syntheticRetryKey } from './model-retry-fixtures.mts';
 
 async function until(check: () => Promise<boolean>, message: string): Promise<void> {
   const deadline = Date.now() + 10_000;
@@ -98,6 +100,71 @@ test('real PG service keeps first-last HTTP diagnostics separate from its persis
     const records = JSON.stringify((await db.admin.query('SELECT envelope FROM context_records ORDER BY version')).rows);
     assert.match(records, /PUBLIC_FAILURE_5/); assert.doesNotMatch(records, /PUBLIC_FAILURE_[1-4]/);
   } finally { await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+for (const scenario of ['gateway', 'gateway-overlap', 'configuration'] as const) test(`scheduled Wake with ${scenario} HTTP 404 exhaustion`, { timeout: 30_000 }, async () => {
+  const db = await createTestDatabase();
+  const root = await realpath(await mkdtemp('/tmp/mira-scheduled-recovery-'));
+  let service: LocalWebService | undefined;
+  const effect = path.join(root, 'effect');
+  const bodies: string[] = [];
+  const gateway = scenario !== 'configuration';
+  const exhaustedAt = gateway ? 7 : 3;
+  const releaseFailure = deferred();
+  const options = { connectionString: db.connectionString, schema: db.schema, miraId: 'scheduled-recovery',
+    sourceDirectory: process.cwd(), workingDirectory: root, miraHome: root, spoolDirectory: path.join(root, 'spool'),
+    settingsFile: path.join(root, 'models.json'), autoCompaction: { enabled: false }, dreaming: { enabled: false },
+    modelRetryPolicy: { initialDelayMs: 5, jitterRatio: 0 },
+    modelFetch: (async (_url, init) => {
+      bodies.push(String(init?.body));
+      const attempt = bodies.length;
+      if (attempt === 1) {
+        const due = new Date(Math.ceil((Date.now() + 2_000) / 1_000) * 1_000).toISOString();
+        return retryResponse('', 'recovery-reminder-call', 'reminder_create', { key: 'after-error', text: 'NEXT_DEADLINE',
+          localDate: due.slice(0, 10), localTime: due.slice(11, 19), timeZone: 'UTC' });
+      }
+      if (attempt === 2) return retryResponse('', 'recovery-effect-call', 'bash', { command: `printf once >> ${JSON.stringify(effect)}` });
+      if (scenario === 'gateway-overlap' && attempt === exhaustedAt) {
+        await until(async () => (await db.admin.query("SELECT status FROM scheduled_deliveries WHERE schedule_key = 'after-error'")).rows[0]?.status === 'enqueued',
+          'Deadline was not enqueued during the failing request');
+        await releaseFailure.promise;
+      }
+      if (attempt <= exhaustedAt) return gateway ? gatewayNotFound(`gateway-${attempt}`) : retryFailure(404, 'Model not found');
+      return retryResponse(attempt === exhaustedAt + 1 ? 'Resumed original Wake' : 'Processed scheduled Wake');
+    }) as typeof globalThis.fetch };
+  try {
+    const config = path.join(root, 'extensions.json');
+    await writeFile(config, JSON.stringify({ entries: [{ id: 'reminders', path: path.resolve('examples/extensions/reminders.ts') }] }));
+    await settings(options.settingsFile);
+    service = await LocalWebService.open({ ...options, extensions: await readExtensionConfiguration(config) });
+    await service.submit({ id: 'original', text: 'Set a synthetic deadline and record one effect', occurredAt: new Date().toISOString() });
+    if (scenario === 'gateway-overlap') {
+      await until(async () => bodies.length === exhaustedAt, 'Final failing request was not reached');
+    } else {
+      await until(async () => (await service!.status()).state === 'error', 'Terminal failure was not reported');
+      assert.equal(bodies.length, exhaustedAt);
+    }
+    assert.equal(await readFile(effect, 'utf8'), 'once');
+    const original = (await db.admin.query('SELECT run_id, input_record_id, completed FROM wake_runs ORDER BY claimed_at LIMIT 1')).rows[0];
+    assert.equal(original.completed, false);
+    await until(async () => (await db.admin.query("SELECT status FROM scheduled_deliveries WHERE schedule_key = 'after-error'")).rows[0]?.status === 'enqueued', 'Deadline was not enqueued');
+    releaseFailure.resolve();
+    if (gateway) {
+      await until(async () => bodies.length === exhaustedAt + 2 && (await service!.status()).state === 'idle', 'Scheduled Wake did not recover and drain');
+      assert.match(bodies[exhaustedAt]!, /Mira runtime recovery notice.*HTTP 404.*gateway-7.*HTML error page/);
+      assert.doesNotMatch(bodies[exhaustedAt]!, /<!doctype html>|gateway-3/);
+      assert.match(bodies[exhaustedAt + 1]!, /NEXT_DEADLINE/);
+      assert.doesNotMatch(bodies[exhaustedAt + 1]!, /Mira runtime recovery notice/);
+      const completed = (await db.admin.query('SELECT run_id, input_record_id, completed FROM wake_runs WHERE run_id = $1', [original.run_id])).rows[0];
+      assert.deepEqual(completed, { ...original, completed: true });
+      assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_runs WHERE completed')).rows[0].n, 2);
+    } else {
+      assert.equal((await service.status()).state, 'error');
+      assert.equal(bodies.length, exhaustedAt, 'A structured 404 must wait for explicit recovery');
+    }
+    assert.equal(await readFile(effect, 'utf8'), 'once');
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM tool_executions')).rows[0].n, 2);
+  } finally { releaseFailure.resolve(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
 
 test('runtime failure identities remain stable across polls and settings saves and change for a new failure', { timeout: 30_000 }, async () => {

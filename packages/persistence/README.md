@@ -146,6 +146,7 @@ second worker, lease, job queue, runtime history, or calendar/recurrence engine.
   extension's occurrence remains pending until its owner becomes eligible again;
   if its expiry has passed then, it becomes `expired` without emitting. Repeated
   owner IDs are harmless. `nextDueAt` describes only remaining eligible pending rows.
+  `lastEnqueuedWakeId` identifies the last newly inserted Wake in that transaction.
 - Ordinary `receive` and the `enqueued` marker are committed together. Event-only
   delivery adds no Wake. Concurrent cancellation/dispatch is ordered by the existing
   writer; a successful cancel before publication prevents it, whereas `settled` with

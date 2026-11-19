@@ -159,8 +159,10 @@ explicit continuation. See [ADR 0030](../../docs/adr/0030-task-scoped-compaction
 
 The explicit transport buffers partial SSE and retries only verified transient
 HTTP/network failures before publishing a complete assistant message. It uses at
-most three attempts with cancellable bounded backoff; it never replays a Wake,
-tool or unknown effect. The existing status response optionally includes a safe
+most five attempts with cancellable backoff, including HTTP 404 with an HTML
+media type. When a regular main request exhausts its attempts with a transient
+failure, a fresh scheduled Wake can resume the saved run with the terminal diagnostic in model context.
+Completed tools and unknown effects retain their recovery evidence. The existing status response optionally includes a safe
 `modelRetry` observation for the main request. Child requests cannot change it.
 Runtime error classification uses only the last failure; temporary Web diagnostics
 retain bounded first/last attempt information separately. SDK environment checks

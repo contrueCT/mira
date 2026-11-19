@@ -36,7 +36,10 @@ function resolvePolicy(value: Partial<ModelRetryPolicy> | undefined, attemptLimi
   return policy;
 }
 
-export function retryableHttpStatus(status: number): ModelRetryReason | undefined {
+export function retryableHttpStatus(status: number, contentType = ''): ModelRetryReason | undefined {
+  // A gateway HTML page can be temporary. Structured model/route 404s
+  // still indicate an invalid selection and remain single-attempt.
+  if (status === 404 && /^(?:text\/html|application\/xhtml\+xml)(?:\s*;|\s*$)/iu.test(contentType.trim())) return 'server';
   if (status === 429) return 'rate-limit';
   if (status === 408) return 'timeout';
   if ([500, 502, 503, 504, 529].includes(status)) return 'server';

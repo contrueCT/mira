@@ -29,5 +29,5 @@ export interface SchedulingWriter {
   cancelScheduledDelivery(owner: string, key: string, expectedVersion: number): Promise<ScheduledMutation>;
   /** Eligible owner identities are supplied from current host lifecycle state.
    * Due Event/Wake insertion and the enqueued marker commit atomically. */
-  dispatchScheduledDeliveries(owners: readonly string[]): Promise<{ enqueued: number; nextDueAt: string | null }>;
+  dispatchScheduledDeliveries(owners: readonly string[]): Promise<{ enqueued: number; lastEnqueuedWakeId: string | null; nextDueAt: string | null }>;
 }

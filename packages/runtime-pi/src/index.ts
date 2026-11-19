@@ -629,6 +629,19 @@ export class PiDurableRuntime implements CognitionRuntime {
       };
       const continuedMessages = (state: RecoveredContext): AgentMessage[] => {
         const messages = structuredClone(state.messages);
+        if (turn?.inputRecordId && !turn.task) {
+          for (let index = state.entries.length - 1; index >= 0; index--) {
+            const entry = state.entries[index]!;
+            if (entry.id === turn.inputRecordId) break;
+            if (entry.type !== 'message' || entry.message.role !== 'assistant') continue;
+            const previous = entry.message;
+            if (previous.stopReason === 'error' && previous.errorMessage?.startsWith('Model request failed')) {
+              messages.push({ role: 'user', timestamp: previous.timestamp,
+                content: `Mira runtime recovery notice: The previous model request for this Wake failed. ${JSON.stringify(previous.errorMessage.slice(0, 2_100))} Use the quoted diagnostic as runtime evidence. Continue from the saved tool results and context.` });
+            }
+            break;
+          }
+        }
         if (turn && messages.at(-1)?.role === 'assistant') messages.push({ role: 'user',
           content: turn.task ? 'Continue the current delegated task. Its preceding assistant response did not complete this task.' : 'Continue the current persisted Wake. Its preceding assistant response did not complete this Wake.', timestamp: Date.parse(turn.occurredAt) });
         return messages;

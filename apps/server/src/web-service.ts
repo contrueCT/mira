@@ -215,6 +215,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
   #errorId: string | null = null;
   #modelFailure: ModelRequestFailure | null = null;
   #modelRetry: ModelRetryStatus | null = null;
+  #pendingScheduledWakeId: string | null = null;
   /** Insufficient balance pause (ADR 0048): only a new user message resumes. */
   #paused: (BalancePause & { runId: string; sequence: number }) | null = null;
   /** A child's request was refused for balance: no new child work until the
@@ -254,9 +255,10 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     if (host) this.#deliveries = new DeliveryTimer(async () => {
       if (this.#closed || writer.signal.aborted) return null;
       const result = await host.withScheduledOwners(owners => writer.dispatchScheduledDeliveries(owners));
-      // Enqueue even during cognition or a model error. A new timer must not
-      // silently retry an already-failed cognitive run.
-      if (result.enqueued && !this.#error) this.#kick();
+      if (result.lastEnqueuedWakeId && !this.#paused) {
+        this.#pendingScheduledWakeId = result.lastEnqueuedWakeId;
+        if (this.#canDrainRequestedWork()) this.#kick();
+      }
       return result.nextDueAt;
     }, error => { this.#recordFailure(error); });
     const policy = dreamingPolicy(options.dreaming);
@@ -358,6 +360,9 @@ export class LocalWebService implements WebBackend, ManagementBackend {
         ...(roots ? { beforeComplete: memoryCheckpointHook(writer, roots.memoryRoot, roots.repositoryId) } : {}),
         createRuntime: run => {
           service!.#modelFailure = null; service!.#currentRun = run.id;
+          // A deadline can land after claim but before runtime creation. Clear
+          // the hint only once the corresponding scheduled Wake was claimed.
+          if (run.requests.some(request => request.wake.id === service!.#pendingScheduledWakeId)) service!.#pendingScheduledWakeId = null;
           const current = service!.#settingsValue;
           if (!options.synthetic && !hasSelectedWebApiKey(current)) throw Error('Choose a model with a saved API key first');
           const transport = options.synthetic ? { ...(current.configuration.defaultThinkingLevel === undefined ? {} : { thinkingLevel: current.configuration.defaultThinkingLevel }), model: options.syntheticModel ?? demoModel, streamFn: options.syntheticStream ?? syntheticStream } : settings.transport(current, { ...(options.modelFetch ? { fetch: options.modelFetch } : {}), ...(options.modelRetryPolicy ? { retryPolicy: options.modelRetryPolicy } : {}), onFailure: failure => { service!.#modelFailure = failure; }, onRetry: status => { service!.#modelRetry = status; } });
@@ -481,6 +486,10 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       payload: { operation: 'balance-resumed', runId: pause.runId, sequence: pause.sequence } });
     if (this.#paused === pause) this.#paused = null;
   }
+  #canDrainRequestedWork(): boolean {
+    if (!this.#error) return this.#kickRequested || this.#pendingScheduledWakeId !== null;
+    return this.#pendingScheduledWakeId !== null && this.#error instanceof ModelRequestFailure && this.#error.transient && !this.#error.balance;
+  }
   /** Every non-user caller is ignored while paused; their events stay queued
    * durably and run after the user resumes. */
   #kick(source: 'user' | 'system' = 'system'): void {
@@ -489,6 +498,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     if (this.#configurationWrite || (!this.#options.synthetic && !hasSelectedWebApiKey(this.#settingsValue))) { this.#kickRequested = true; return; }
     if (this.#drain) { this.#kickRequested = true; return; }
     this.#kickRequested = false;
+    this.#pendingScheduledWakeId = null;
     this.#error = null; this.#errorId = null; this.#modelFailure = null;
     this.#drain = this.#loop.drain(this.#abort.signal).then(() => {}).catch(async (error: unknown) => {
       const model = error instanceof Error && error.message === this.#modelFailure?.terminalMessage ? this.#modelFailure : null;
@@ -499,11 +509,14 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     }).finally(() => {
       this.#modelRetry = null;
       this.#drain = undefined;
-      const again = this.#kickRequested; this.#kickRequested = false;
-      // A concurrent arrival after the last empty claim needs one more drain.
-      // A failed/unknown run is not automatically retried.
-      if (again && !this.#error && !this.#paused && !this.#closed) this.#kick();
-      else if (!this.#paused) this.#dreaming?.schedule();
+      // A deadline can arrive during backoff. A fresh scheduled Wake can
+      // resume an exhausted transient request once after the drain settles.
+      if (!this.#paused && !this.#closed && this.#canDrainRequestedWork()) this.#kick();
+      else {
+        this.#kickRequested = false;
+        this.#pendingScheduledWakeId = null;
+        if (!this.#paused) this.#dreaming?.schedule();
+      }
     });
   }
   /** The durable life this service owns. */
@@ -569,7 +582,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     // its active configuration, so the UI never advertises an unapplied model.
     if (generation === this.#settingsGeneration && !this.#closed && !this.#drain && !this.#configurationWrite) {
       this.#settingsValue = saved;
-      if (this.#kickRequested && !this.#error) this.#kick();
+      if (this.#canDrainRequestedWork()) this.#kick();
       else this.#dreaming?.schedule();
     }
     return structuredClone(this.#settingsValue);
@@ -580,7 +593,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     try { const saved = await this.#settings.save(value); this.#settingsGeneration++; this.#settingsValue = saved; return structuredClone(saved); }
     finally {
       this.#configurationWrite = false; this.#settingsGeneration++;
-      if (this.#kickRequested && !this.#error) this.#kick();
+      if (this.#canDrainRequestedWork()) this.#kick();
       else this.#dreaming?.schedule();
     }
   }
@@ -590,7 +603,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     try { return await this.#settings.probe(value, { ...(this.#options.modelFetch ? { fetch: this.#options.modelFetch } : {}), signal: signal ? AbortSignal.any([signal, this.#abort.signal, this.#writer.signal]) : AbortSignal.any([this.#abort.signal, this.#writer.signal]) }); }
     finally {
       this.#configurationWrite = false;
-      if (this.#kickRequested && !this.#error) this.#kick();
+      if (this.#canDrainRequestedWork()) this.#kick();
       else this.#dreaming?.schedule();
     }
   }
@@ -832,7 +845,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
     catch (error) {
       if (error instanceof ExtensionSettingsError) throw new WebHttpError(error.code === 'invalid' ? 'invalid_input' : error.code === 'conflict' ? 'conflict' : 'unavailable');
       throw new WebHttpError('unavailable');
-    } finally { if (mutate) { this.#configurationWrite = false; if (this.#kickRequested && !this.#error) this.#kick(); else this.#dreaming?.schedule(); } }
+    } finally { if (mutate) { this.#configurationWrite = false; if (this.#canDrainRequestedWork()) this.#kick(); else this.#dreaming?.schedule(); } }
   }
   async extensionSettings(id: string) { return this.#extensionSettingsCall(host => host.extensionSettings(id)); }
   async saveExtensionSettings(id: string, input: ExtensionSettingsWrite) { await this.#extensionSettingsCall(host => host.saveExtensionSettings(id, input), true); }
@@ -860,7 +873,7 @@ export class LocalWebService implements WebBackend, ManagementBackend {
       throw error;
     } finally {
       this.#configurationWrite = false;
-      if (this.#kickRequested && !this.#error) this.#kick(); else this.#dreaming?.schedule();
+      if (this.#canDrainRequestedWork()) this.#kick(); else this.#dreaming?.schedule();
     }
   }
   async runs(before?: string) {
