@@ -76,10 +76,14 @@ test('failed rejection-observation publication stays fatal and never executes or
 });
 
 
-test('compaction retains preparation reasons and exact original history without replay', async () => {
+test('compaction retains an unfinished turn’s preparation reasons and exact original history without replay', async () => {
   const writer = new MemoryWriter();
-  const original = await runtime(writer, scripted([{ ...assistant(), stopReason: 'toolUse', content: [{type:'toolCall',id:'missing',name:'absent',arguments:{}}] }, assistant()])).run(input('Older context '.repeat(300)));
-  await seed(writer, [input('Later discussion '.repeat(300)), assistant('Later reply '.repeat(300))]);
+  await assert.rejects(runtime(writer, scripted([
+    { ...assistant(), stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'missing', name: 'absent', arguments: {} }] },
+    { ...assistant(), content: [], stopReason: 'error', errorMessage: 'Synthetic interruption before final' },
+  ])).run(input('Older context '.repeat(300))), /Synthetic interruption before final/);
+  const original = await runtime(writer).recover();
+  await seed(writer, [input('Supplemental details '.repeat(300))]);
   const records = structuredClone(writer.state.records);
   const compacted = await runtime(writer, (_model, context) => { assert.match(JSON.stringify(context.messages), /tool-not-found/); return streamOf(assistant('Short summary')); }).compact({keepRecentTokens:1});
   assert.deepEqual(compacted.snapshot.records.slice(0, records.length), records);

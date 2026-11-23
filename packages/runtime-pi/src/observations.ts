@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import type { CustomMessageEntry, SessionEntry } from '@earendil-works/pi-coding-agent';
+import { buildSessionProjection, type CustomMessageEntry, type SessionEntry } from '@earendil-works/pi-coding-agent';
 import type { Json } from '@mira/context';
 
 export const RECOVERY_OBSERVATION_TYPE = 'mira.recovery-observation.v1';
@@ -111,8 +111,25 @@ export function sanitizeEntries(entries: readonly SessionEntry[], operations: re
     return copy;
   });
 }
-/** Rehydrate exact evidence if a generated summary has compacted its notice away.
- * Summary prose can never erase the runtime's still-unresolved facts. */
+export function finishesRecoveryTurn(message: AgentMessage): boolean {
+  return message.role === 'assistant' && message.stopReason === 'stop' && !message.content.some(block => block.type === 'toolCall');
+}
+
+export function retainRecoveryMessage(message: AgentMessage, activeCalls: ReadonlySet<string>): boolean {
+  if (message.role !== 'custom' || message.customType !== RECOVERY_OBSERVATION_TYPE) return true;
+  return (message.details as RecoveryObservation).operations.every(operation => activeCalls.has(operation.callId));
+}
+/** Remove archived notices and assistant shells emptied by recovery while
+ * retaining the source ID of every message in the model projection. */
+export function visibleRecoveryProjection(entries: SessionEntry[], operations: readonly RecoveryOperation[], active: readonly RecoveryOperation[] = []) {
+  const observed = new Set(operations.map(operation => operation.assistantRecordId));
+  const activeCalls = new Set(active.map(operation => operation.callId));
+  return buildSessionProjection(entries).entries.flatMap(({ sourceEntry, messages }) => messages
+    .filter(message => retainRecoveryMessage(message, activeCalls) &&
+      !(message.role === 'assistant' && message.content.length === 0 && observed.has(sourceEntry.id)))
+    .map(message => ({ message, sourceId: sourceEntry.id })));
+}
+/** Rehydrate exact evidence for the active turn if compaction removed its notice. */
 export function withRecoveryAdvisory(messages: AgentMessage[], operations: RecoveryOperation[], timestamp: number): AgentMessage[] {
   const visible = new Set<string>();
   for (const message of messages) if (message.role === 'custom' && message.customType === RECOVERY_OBSERVATION_TYPE) {

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import { DurableOperationError } from '@mira/life';
 import { PersistenceError } from '@mira/persistence';
-import { decodeRecords, type RecoveryOperation } from '@mira/runtime-pi';
+import { decodeRecords, freezeSubagentContext, type RecoveryOperation } from '@mira/runtime-pi';
 import { normalizeToolResult } from '../../packages/runtime-pi/src/records.ts';
 import { observationText } from '../../packages/runtime-pi/src/observations.ts';
 import { PersistenceFailureNotice } from '../../apps/server/src/persistence-errors.ts';
@@ -284,24 +285,98 @@ test('returned known success and error outcomes are unchanged and have no diagno
   assert.deepEqual(writer.state.executions.map(execution => execution.outcome), saved);
 });
 
-test('compaction and fresh recovery retain the exact diagnostic even when summary wording omits it', async () => {
+test('finished turn archives the unknown operation from new requests and compaction without altering evidence', async () => {
   const writer = new MemoryWriter();
-  const recovered = await runtime(writer, scripted([toolCalls('a'), assistant('Inspect the external state')]), {
-    tools: [effectTool(async () => { throw Error(secret); })],
-  }).run(input('Older context '.repeat(300)));
-  await seed(writer, [input('Later discussion '.repeat(300)), assistant('Later reply '.repeat(300))]);
+  let effects = 0;
+  const callId = 'historical-attachment-operation';
+  const tools = [effectTool(async () => { effects++; throw Error(secret); })];
+  const recovered = await runtime(writer, scripted([toolCalls(callId), assistant('Reviewed the unknown outcome')]), { tools })
+    .run(input('Older context '.repeat(300)));
   const original = structuredClone(writer.state.records);
+  assert.doesNotMatch(JSON.stringify(recovered.messages), new RegExp(callId), 'finished turn hides even a raw observation still in the retained context');
+  const fork = freezeSubagentContext(await writer.load());
+  assert.doesNotMatch(fork.text, new RegExp(callId));
+  assert.match(fork.text, /Reviewed the unknown outcome/);
   let summaries = 0;
   const compacted = await runtime(writer, (_model, context) => {
-    summaries++; assert.match(JSON.stringify(context.messages), /execution-rejected/);
-    return streamOf(assistant('A summary that deliberately omits the runtime diagnostic'));
+    summaries++;
+    assert.doesNotMatch(JSON.stringify(context.messages), new RegExp(callId));
+    return streamOf(assistant('Summary of the earlier discussion'));
   }).compact({ keepRecentTokens: 1 });
-  assert.ok(summaries > 0);
-  assert.deepEqual(compacted.snapshot.records.slice(0, original.length), original);
+  assert.equal(summaries, 1);
+  for (const request of ['Unrelated schedule A', 'Unrelated schedule B']) {
+    await runtime(writer, (_model, context) => {
+      assert.doesNotMatch(JSON.stringify(context.messages), new RegExp(callId));
+      return streamOf(assistant('Handled schedule'));
+    }, { tools }).run(input(request));
+  }
+  const reopened = await runtime(writer).recover();
   assert.deepEqual(compacted.recovery, recovered.recovery);
-  assert.match(JSON.stringify(compacted.messages), /execution-rejected/);
-  assert.deepEqual((await runtime(writer).recover()).recovery, recovered.recovery);
-  assert.equal(writer.state.executions[0]?.outcome, null);
+  assert.deepEqual(reopened.recovery, recovered.recovery);
+  assert.deepEqual(reopened.snapshot.records.slice(0, original.length), original);
+  assert.equal(reopened.snapshot.executions[0]?.outcome, null);
+  assert.equal(effects, 1);
+});
+
+test('unfinished turn rehydrates its exact diagnostic after compaction and restart until it produces a final', async () => {
+  const writer = new MemoryWriter();
+  let effects = 0;
+  const tools = [effectTool(async () => { effects++; throw Error(secret); })];
+  const callId = 'unfinished-attachment-operation';
+  await assert.rejects(runtime(writer, scripted([toolCalls(callId), {
+    ...assistant(), content: [], stopReason: 'error', errorMessage: 'Synthetic model unavailable',
+  }]), { tools }).run(input('Older context '.repeat(300))), /Synthetic model unavailable/);
+  // A retained user input forces the observation outside the SDK's kept tail.
+  await seed(writer, [input('Supplemental details '.repeat(300))]);
+  const compacted = await runtime(writer, (_model, context) => {
+    assert.match(JSON.stringify(context.messages), /execution-rejected/);
+    return streamOf(assistant('Summary deliberately omits the diagnostic'));
+  }).compact({ keepRecentTokens: 1 });
+  assert.match(JSON.stringify(compacted.messages), new RegExp(callId));
+  assert.doesNotMatch(JSON.stringify(compacted.messages), new RegExp(secret));
+  let dispatched = 0;
+  const completed = await runtime(writer, (_model, context) => {
+    dispatched++;
+    assert.equal(context.messages.filter(message => JSON.stringify(message).includes(callId)).length, 1);
+    return streamOf(assistant('Handled the interrupted task'));
+  }, { tools }).run();
+  assert.equal(dispatched, 1);
+  assert.equal(effects, 1);
+  assert.doesNotMatch(JSON.stringify(completed.messages), new RegExp(callId));
+  assert.deepEqual(completed.recovery, compacted.recovery);
+  assert.equal(completed.snapshot.executions[0]?.outcome, null);
+});
+
+test('a child gets its prior diagnostic during explicit continuation and archives it after success', async () => {
+  const { TaskMemoryWriter } = await import('../recovery/task-input-fixture.mts');
+  const writer = new TaskMemoryWriter();
+  let effects = 0;
+  const tools = [effectTool(async () => { effects++; throw Error(secret); })];
+  const callId = 'interrupted-child-operation';
+  const interrupted = streamOf({ ...assistant(), content: [], stopReason: 'error', errorMessage: 'Synthetic child failure' });
+  const assignment = { id: writer.task.id, input: 'First task', onInput: writer.onInput };
+  let requests = 0;
+  await assert.rejects(runtime(writer, (_model, context) => {
+    if (++requests === 1) return streamOf(toolCalls(callId));
+    assert.match(JSON.stringify(context.messages), new RegExp(callId));
+    return interrupted;
+  }, { tools, compactionScope: 'task' }).continueTaskTurn(assignment), /Synthetic child failure/);
+  const before = await writer.load();
+  writer.task = { ...writer.task, id: randomUUID(), callId: 'next-child-assignment', inputRecordId: null, finalRecordId: null };
+  const continued = await runtime(writer, (_model, context) => {
+    assert.match(JSON.stringify(context.messages), new RegExp(callId));
+    return streamOf(assistant('Completed the interrupted work'));
+  }, { tools, compactionScope: 'task' }).continueTaskTurn({ ...assignment, id: writer.task.id, input: 'Continue the interrupted task' });
+  assert.doesNotMatch(JSON.stringify(continued.messages), new RegExp(callId));
+  writer.task = { ...writer.task, id: randomUUID(), callId: 'independent-child-assignment', inputRecordId: null, finalRecordId: null };
+  const after = await runtime(writer, (_model, context) => {
+    assert.doesNotMatch(JSON.stringify(context.messages), new RegExp(callId));
+    return streamOf(assistant('Completed the independent assignment'));
+  }, { tools, compactionScope: 'task' }).continueTaskTurn({ ...assignment, id: writer.task.id, input: 'Independent task' });
+  assert.equal(effects, 1);
+  assert.deepEqual(after.snapshot.records.slice(0, before.records.length), before.records);
+  assert.equal(after.recovery.operations[0]?.callId, callId);
+  assert.equal(after.snapshot.executions[0]?.outcome, null);
 });
 
 test('restart validates diagnostic keys, sizes, allowlist, phase and exact unknown-intent linkage before inference', async () => {

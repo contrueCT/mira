@@ -6,7 +6,7 @@ import { buildSessionProjection, type SessionBeforeCompactEvent } from '@earendi
 import { messageAttachments } from './attachments.ts';
 import { messageReplySources, messageReplies, replyPublication } from './replies.ts';
 import { jsonValue } from './records.ts';
-import type { RecoveryOperation } from './observations.ts';
+import { retainRecoveryMessage, type RecoveryOperation } from './observations.ts';
 
 export const MIRA_COMPACTION_PROMPT_SHA256 = '6cb4c13e30d22270df01de8d1e02e597856c70bf8c930e5976b5d2fdec299cdb';
 export const MIRA_COMPACTION_PROMPT = readFileSync(new URL('../prompts/mira-compaction-v0.1.md', import.meta.url), 'utf8');
@@ -52,14 +52,18 @@ export function compactionInput(event: SessionBeforeCompactEvent, references: Co
   const expected = [...event.preparation.messagesToSummarize, ...event.preparation.turnPrefixMessages];
   if (!isDeepStrictEqual(source.map(item => item.message), expected)) throw new Error('Compaction source differs from SDK preparation');
   const tail = contributions(cut, projection.length);
+  // First validate the SDK's exact cut and retain its canonical IDs. Filter
+  // only the model payload so a historical observation can still anchor a cut.
+  const activeCalls = new Set(operations.map(operation => operation.callId));
+  const visible = ({ message }: { message: AgentMessage }) => retainRecoveryMessage(message, activeCalls);
   const mode: keyof typeof MIRA_COMPACTION_MODES = event.preparation.isSplitTurn ? 'split_turn' : event.preparation.previousSummary === undefined ? 'initial' : 'update';
   return {
     mode,
     persona_context: references.personaContext,
     memory_snapshot: references.memorySnapshot,
     previous_summary: event.preparation.previousSummary ?? null,
-    source_messages: source.map(item => sourceMessage(item.message, item.id)),
-    retained_tail: { purpose: 'reference_only_not_summarized', messages: tail.map(item => sourceMessage(item.message, item.id)) },
+    source_messages: source.filter(visible).map(item => sourceMessage(item.message, item.id)),
+    retained_tail: { purpose: 'reference_only_not_summarized', messages: tail.filter(visible).map(item => sourceMessage(item.message, item.id)) },
     boundary: { first_kept_history_id: event.preparation.firstKeptEntryId, source_history_ids: [...new Set(source.map(item => item.id))], retained_history_ids: [...new Set(tail.map(item => item.id))] },
     summary_token_budget: summaryTokenBudget,
     recovery_operations: structuredClone(operations),

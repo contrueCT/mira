@@ -1,16 +1,21 @@
 import type { RecoverySnapshot } from '@mira/life';
 import { SubagentError } from '@mira/life';
 import { getSystemMessageText } from '@earendil-works/pi-ai';
-import { buildSessionProjection } from '@earendil-works/pi-coding-agent';
 import { decodeRecords } from './records.ts';
 import { projectMiraPrompt } from './system-prompt.ts';
+import { finishesRecoveryTurn, sanitizeEntries, visibleRecoveryProjection, type ObservationEntry } from './observations.ts';
 
 /** Explicit textual projection, NOT a cloned provider conversation. Roles and tool
  * provenance remain quoted data; no parent calls become executable child calls.
  * Never truncate inherited constraints: reject an oversized snapshot instead. */
 export function freezeSubagentContext(snapshot: RecoverySnapshot, maxBytes = 131_072): { text: string; bytes: number; parentVersion: number; parentHead: string | null } {
-  const projection = buildSessionProjection(projectMiraPrompt(decodeRecords(snapshot.records)));
-  const messages = projection.messages.map(message => {
+  const entries = decodeRecords(snapshot.records);
+  const recoveryOperations = (entry: typeof entries[number]) => entry.type === 'custom_message' ? (entry as ObservationEntry).details!.operations : [];
+  const operations = entries.flatMap(recoveryOperations);
+  const lastFinal = entries.findLastIndex(entry => entry.type === 'message' && finishesRecoveryTurn(entry.message));
+  const active = entries.slice(lastFinal + 1).flatMap(recoveryOperations);
+  const projection = visibleRecoveryProjection(projectMiraPrompt(sanitizeEntries(entries, operations)), operations, active);
+  const messages = projection.map(({ message }) => {
     const copy = structuredClone(message) as unknown as Record<string, unknown>;
     const content = Array.isArray(copy['content']) ? copy['content'].flatMap<Record<string, unknown>>(block => {
       if (!block || typeof block !== 'object') return [];

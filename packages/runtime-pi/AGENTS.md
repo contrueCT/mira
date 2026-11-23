@@ -33,6 +33,9 @@ Shared rules: [root AGENTS.md](../../AGENTS.md). Read `README.md` before changes
 - Optional execute/result recovery diagnostics use fixed allowlisted phase/category only, exact
   unknown-intent linkage and bounds; never copy raw errors or rejected values.
   Result validation may recover unknown; finishTool/writer faults stay fatal
+- Recovery observations stay in History. Provider and summary inputs include only
+  observations since the last successful final. An explicit continuation of an
+  interrupted child can still see its recovery advisory. Preserve checkpoint IDs, unknown outcomes and original records.
 - Automatic compaction defaults on at safe `prepareRequest` after settled tools; budget includes Pi estimates, protocol overhead, current system and tool schemas. Reserve caps actual output; automatic candidates must reduce and fit. At most one overflow recovery retry per run (ADR 0016)
 - The approved `prompts/mira-compaction-v0.1.md` replaces coding-summary instructions via public `session_before_compact`: one initial/update/split_turn request; hook failure must fail closed without SDK default fallback. Include the full rendered persona reference (Memory placeholder), separate frozen Memory and JSON source/boundary data in the input budget; omit hidden thinking/provider internals, preserve original entry IDs/timestamps
 - Compaction snapshots are disposable. CAS and cancellation fence publication;

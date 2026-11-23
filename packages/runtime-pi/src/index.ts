@@ -10,7 +10,7 @@ import type { DurableWriter, RecoverySnapshot, ToolExecution, WakeWriter, LiveIn
 import { DurableOperationError, prepareWakeTurn } from '@mira/life';
 import { validateAttachmentReferences, validateWakeInputArtifact, validateReplyReferences, validateMessageReplies, type WriteOverflowInput, type CognitionRuntime, type CognitionTurn } from '@mira/cognition';
 import { hydrateAttachments, messageAttachments, type ResolveAttachment } from './attachments.ts';
-import { observationEntry, sanitizeEntries, validateObservation, withRecoveryAdvisory, type RecoveryOperation, type ToolDiagnostic } from './observations.ts';
+import { finishesRecoveryTurn, observationEntry, sanitizeEntries, validateObservation, visibleRecoveryProjection, withRecoveryAdvisory, type RecoveryOperation, type ToolDiagnostic } from './observations.ts';
 import { toolPreflight } from './tool-preflight.ts';
 import { compactSnapshot, type CompactionOptions } from './compactor.ts';
 import { MIRA_PROMPT_SECTION, MIRA_PROMPT_SHA256, MIRA_DEFAULT_PERSONA, renderMiraPrompt, renderMiraPromptSnapshot, currentMemory, currentPrompt, memoryConfigured, refreshMiraMemory, projectMiraPrompt, type MiraPromptOptions, type MiraPromptSnapshot } from './system-prompt.ts';
@@ -107,17 +107,24 @@ export interface RecoveredContext {
   projectionEntries: SessionEntry[];
   recovery: { status: 'complete' | 'observed-incomplete'; operations: RecoveryOperation[] };
 }
+interface RuntimeRecoveredContext extends RecoveredContext {
+  activeRecoveryOperations: RecoveryOperation[];
+  modelMessageSourceIds: string[];
+}
+function projectRecoveryMessages(entries: SessionEntry[], operations: RecoveryOperation[], active: RecoveryOperation[], timestamp: number) {
+  const visible = visibleRecoveryProjection(entries, operations, active);
+  return {
+    messages: withRecoveryAdvisory(visible.map(item => item.message), active, timestamp),
+    modelMessageSourceIds: visible.map(item => item.sourceId),
+  };
+}
 /** The provider view removes obsolete Mira sections. Resolve usage baselines
  * against original source entries, where the previous request system survives.
  * Retained pre-checkpoint assistants cannot anchor the new compacted context. */
-function recoveredPressure(state: RecoveredContext, messages: AgentMessage[], tools: AgentTool[], model: Model<Api>) {
-  const observed = new Set(state.recovery.operations.map(operation => operation.assistantRecordId));
-  const sources = buildSessionProjection(state.projectionEntries).entries.flatMap(projected => projected.messages
-    .filter(message => !(message.role === 'assistant' && message.content.length === 0 && observed.has(projected.sourceEntry.id)))
-    .map(() => projected.sourceEntry.id));
+function recoveredPressure(state: RuntimeRecoveredContext, messages: AgentMessage[], tools: AgentTool[], model: Model<Api>) {
   const checkpoint = state.entries.findLastIndex(entry => entry.type === 'compaction');
   return contextPressure(messages, tools, model, anchorIndex => {
-    const position = state.entries.findIndex(entry => entry.id === sources[anchorIndex]);
+    const position = state.entries.findIndex(entry => entry.id === state.modelMessageSourceIds[anchorIndex]);
     if (position < 0) throw new Error('Context usage anchor has no authoritative source');
     if (position <= checkpoint) return null;
     return { system: getCurrentSystemMessage(buildSessionProjection(state.entries.slice(0, position)).messages) };
@@ -246,7 +253,7 @@ export class PiDurableRuntime implements CognitionRuntime {
    * Corrupt evidence still fails closed before any repair or model request. */
   recover(): Promise<RecoveredContext> { return this.exclusive(() => this.recoverInternal()); }
 
-  private async recoverInternal(interruption?: ToolInterruptionError): Promise<RecoveredContext> {
+  private async recoverInternal(interruption?: ToolInterruptionError): Promise<RuntimeRecoveredContext> {
     await this.verified();
     const snapshot = await this.options.writer.load();
     this.gate();
@@ -262,6 +269,7 @@ export class PiDurableRuntime implements CognitionRuntime {
     const results = new Map<string, ToolResultMessage>();
     const unresolved: string[] = [];
     const operations: RecoveryOperation[] = [];
+    let activeRecoveryStart = 0;
     const operationFor = (id: string): RecoveryOperation => {
       const requested = calls.get(id)!;
       const execution = executions.get(id);
@@ -305,6 +313,7 @@ export class PiDurableRuntime implements CognitionRuntime {
       } else {
         if (unresolved.length) throw new RecoveryBlockedError('Incomplete assistant tool-call batch without recovery observation');
         if (message.role === 'assistant') {
+          if (finishesRecoveryTurn(message)) activeRecoveryStart = operations.length;
           for (const block of message.content) if (block.type === 'toolCall') {
             if (calls.has(block.id)) throw new RecoveryBlockedError(`Duplicate tool-call ID: ${block.id}`);
             calls.set(block.id, { call: block, recordId: entry.id });
@@ -353,20 +362,14 @@ export class PiDurableRuntime implements CognitionRuntime {
     await this.replyIndexes.restore(entries);
     const projectionEntries = await this.toolOutputs.project(projectMiraPrompt(sanitizeEntries(entries, operations)));
     await this.verified();
-    const projection = buildSessionProjection(projectionEntries);
-    const observedAssistantIds = new Set(operations.map(operation => operation.assistantRecordId));
-    // Pi's public converter preserves empty assistants, and injected streams need
-    // not use a provider translator that drops them. Omit only shells emptied by
-    // recovery from provider messages; retain every source entry and provenance ID.
-    const providerMessages = projection.entries.flatMap(projected => projected.messages.filter(message =>
-      !(message.role === 'assistant' && message.content.length === 0 && observedAssistantIds.has(projected.sourceEntry.id))));
-    const messages = withRecoveryAdvisory(providerMessages, operations, Date.parse(entries.at(-1)?.timestamp ?? new Date(0).toISOString()));
-    validateProjection(messages);
-    return { snapshot, entries, projectionEntries, messages,
+    const activeRecoveryOperations = operations.slice(activeRecoveryStart);
+    const projection = projectRecoveryMessages(projectionEntries, operations, activeRecoveryOperations, Date.parse(entries.at(-1)?.timestamp ?? new Date(0).toISOString()));
+    validateProjection(projection.messages);
+    return { snapshot, entries, projectionEntries, activeRecoveryOperations, ...projection,
       recovery: { status: operations.length ? 'observed-incomplete' : 'complete', operations } };
   }
 
-  private async initializeEmpty(current: RecoveredContext): Promise<RecoveredContext> {
+  private async initializeEmpty(current: RuntimeRecoveredContext): Promise<RuntimeRecoveredContext> {
     if (!this.options.miraPrompt || current.snapshot.records.length) return current;
     if (current.snapshot.version !== 0) throw new RecoveryBlockedError('Empty context has a nonzero version');
     const memory = this.options.miraPrompt.loadMemory ? await this.options.miraPrompt.loadMemory(this.controller.signal) : '';
@@ -1060,7 +1063,7 @@ export class PiDurableRuntime implements CognitionRuntime {
     return this.exclusive(() => this.compactInternal(options), options.signal);
   }
 
-  private async compactInternal(options: CompactionOptions, requireReduction = false, tools: AgentTool[] = this.agent?.state.tools ?? this.options.tools ?? []): Promise<RecoveredContext> {
+  private async compactInternal(options: CompactionOptions, requireReduction = false, tools: AgentTool[] = this.agent?.state.tools ?? this.options.tools ?? []): Promise<RuntimeRecoveredContext> {
     const before = await this.recoverInternal();
     const budget = contextBudget(this.options.model, this.options.autoCompaction);
     if (currentMemory(before.entries) !== undefined && (!this.options.miraPrompt || (memoryConfigured(before.entries) && !this.options.miraPrompt.loadMemory)))
@@ -1101,7 +1104,7 @@ export class PiDurableRuntime implements CognitionRuntime {
           summaryStarted = true;
           await this.verified();
           return this.options.streamFn(model, context, streamOptions);
-        }, { keepRecentTokens: budget.keepRecentTokens, reserveTokens: budget.reserveTokens, ...options, signal: this.controller.signal }, before.recovery.operations, { ...(this.options.compactionScope ? { scope: this.options.compactionScope } : {}), personaContext, memorySnapshot: memory }, checkpointId);
+        }, { keepRecentTokens: budget.keepRecentTokens, reserveTokens: budget.reserveTokens, ...options, signal: this.controller.signal }, before.activeRecoveryOperations, { ...(this.options.compactionScope ? { scope: this.options.compactionScope } : {}), personaContext, memorySnapshot: memory }, checkpointId);
       if (attachmentSources.size || priorAttachmentIndex) {
         const sources = [...attachmentSources].map(([historyId, entry]) => {
           const overflowInput = entry.type === 'message' ? messageOverflowInput(entry.message) : undefined;
@@ -1131,8 +1134,8 @@ export class PiDurableRuntime implements CognitionRuntime {
       if (memory !== null) Object.assign(checkpoint, refreshMiraMemory(checkpoint.systemMessage, before.entries, memory, memoryConfigured(before.entries) || config!.loadMemory !== undefined));
       const candidateEntries = [...before.entries, checkpoint];
       const candidateProjection = await this.toolOutputs.project(projectMiraPrompt(sanitizeEntries(candidateEntries, before.recovery.operations)));
-      const messages = withRecoveryAdvisory(buildSessionProjection(candidateProjection).messages,
-        before.recovery.operations, Date.parse(checkpoint.timestamp));
+      const { messages } = projectRecoveryMessages(candidateProjection, before.recovery.operations,
+        before.activeRecoveryOperations, Date.parse(checkpoint.timestamp));
       validateProjection(messages);
       const afterTokens = estimateRequestTokens(messages, tools, this.options.model);
       if (afterTokens > budget.inputTokens) throw new Error('Compacted context exceeds input budget');
