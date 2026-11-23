@@ -545,10 +545,11 @@ test('recovery observations are idempotent, strictly validated, and cannot hide 
 
 test('full SDK compaction uses sanitized operations and rehydrates uncertainty after summary omission', async () => {
   const writer = new MemoryWriter();
-  await runtime(writer, scripted([toolCalls('still-unknown'), assistant('Earlier discussion '.repeat(100))]), {
-    tools: [effectTool(async () => { throw Error('lost receipt'); })],
-  }).run(input('Old request '.repeat(100)));
-  await runtime(writer, scripted([assistant('Recent response '.repeat(30))])).run(input('Latest request '.repeat(40)));
+  await assert.rejects(runtime(writer, scripted([toolCalls('still-unknown'), {
+    ...assistant(), content: [], stopReason: 'error', errorMessage: 'Synthetic interruption before final',
+  }]), { tools: [effectTool(async () => { throw Error('lost receipt'); })] })
+    .run(input('Old request '.repeat(100))), /Synthetic interruption before final/);
+  await seed(writer, [input('Latest details '.repeat(100))]);
   const raw = structuredClone(writer.state.records);
   const requests: TranscriptContext[] = [];
   const state = await runtime(writer, (_model, context) => { requests.push(structuredClone(context)); return streamOf(assistant('A summary that accidentally omits the unresolved operation')); }).compact({ keepRecentTokens: 1 });
@@ -556,7 +557,7 @@ test('full SDK compaction uses sanitized operations and rehydrates uncertainty a
   assert.ok(requests.length > 0); assert.ok(requests.every(context => JSON.stringify(context).includes('still-unknown')));
   assert.match(JSON.stringify(state.messages), /may already have executed/);
   assert.equal(state.messages.some(message => message.role === 'assistant' && message.content.some(block => block.type === 'toolCall')), false);
-  await runtime(writer, scripted([assistant('More recent discussion '.repeat(30))])).run(input('More work '.repeat(40)));
+  await seed(writer, [input('More details '.repeat(100))]);
   const again = await runtime(writer, () => streamOf(assistant('Another summary omitting uncertainty'))).compact({ keepRecentTokens: 1 });
   assert.match(JSON.stringify(again.messages), /still-unknown/);
   let sawWarning = false;

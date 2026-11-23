@@ -191,8 +191,12 @@ execute/result diagnostics cannot attach to not-started or known outcomes. ADR 0
 known result evidence remain unchanged. A result-serialization rejection stops
 the attempt without `finishTool`, leaves outcome null, and records the diagnostic
 before continuing with a fresh Agent. A crash before observation commit leaves no
-diagnostic to recover. Compaction preserves the exact optional diagnostic through
-the existing advisory. Persistence/finishTool/fencing failures remain fatal and
+diagnostic to recover. A recovery advisory supplies the exact evidence while its turn is unfinished,
+even when compaction omits the original observation. After a successful final
+response, ordinary requests, compaction inputs and inherited child context omit
+that advisory. Explicit continuation of an interrupted child retains recovery
+evidence until a successful final. Original evidence stays available through
+History, including unknown outcomes. Persistence/finishTool/fencing failures remain fatal and
 cannot promise an observation was saved. See [ADR 0015](../../docs/adr/0015-safe-tool-recovery-diagnostics.md).
 
 Unknown envelope/runtime versions, malformed required message fields, unsupported

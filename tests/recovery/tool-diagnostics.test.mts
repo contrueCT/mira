@@ -22,7 +22,7 @@ async function child(schema: string, miraId: string, mode = 'recover', counter =
   return JSON.parse(run.stdout) as { snapshot: RecoverySnapshot; recovery: RecoveredContext['recovery']; contexts: TranscriptContext[] };
 }
 
-for (const category of ['execution-rejected', 'event-content-conflict', 'non-finite-result'] as const) test(`real PostgreSQL: ${category} diagnostic survives a fresh process without outcome fabrication`, async () => {
+for (const category of ['execution-rejected', 'event-content-conflict', 'non-finite-result'] as const) test(`real PostgreSQL: ${category} diagnostic stays in History after a fresh process without outcome fabrication`, async () => {
   const db = await createTestDatabase();
   try {
     const writer = await db.acquire(); const effects: string[] = []; let requests = 0;
@@ -52,7 +52,7 @@ for (const category of ['execution-rejected', 'event-content-conflict', 'non-fin
     assert.equal(restarted.snapshot.executions.length, 1);
     assert.equal(restarted.snapshot.executions[0]?.outcome, null);
     assert.equal(restarted.contexts.length, 1);
-    assert.match(JSON.stringify(restarted.contexts), new RegExp(category));
+    assert.doesNotMatch(JSON.stringify(restarted.contexts), new RegExp(category));
     assert.ok(!JSON.stringify(restarted).includes(secret));
   } finally { await db.close(); }
 });
@@ -120,7 +120,8 @@ test('real PostgreSQL Web service reports only a temporary persistence notice an
           { type: 'toolCall', id: 'read-a', name: 'read', arguments: { path: file } },
           { type: 'toolCall', id: 'read-b', name: 'read', arguments: { path: file } },
         ] });
-        assert.match(JSON.stringify(context.messages), /success or failure is unknown/);
+        if (requests === 2) assert.match(JSON.stringify(context.messages), /success or failure is unknown/);
+        else assert.doesNotMatch(JSON.stringify(context.messages), /read-a|read-b|Runtime recovery observation/);
         assert.ok(!JSON.stringify(context.messages).includes(secret));
         assert.ok(!JSON.stringify(context.messages).includes('persistence-write-failure'));
         return streamOf(assistant('Recovered the saved request without repeating the interrupted read'));
@@ -157,5 +158,9 @@ test('real PostgreSQL Web service reports only a temporary persistence notice an
     assert.deepEqual(after.slice(0, before.length), before);
     assert.ok(!JSON.stringify(after).includes(secret));
     assert.deepEqual((await service.timeline()).items.map(item => item.role), ['user', 'assistant']);
+    await service.submit({ id: 'diagnostic-independent', text: 'Independent follow-up', occurredAt: '2026-10-07T12:01:00.000Z' });
+    await waitFor(status => requests === 3 && status.state === 'idle');
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM wake_runs WHERE completed')).rows[0].n, 2);
+    assert.equal((await db.admin.query('SELECT count(*)::int AS n FROM tool_executions')).rows[0].n, 1);
   } finally { await app?.close(); await service?.close(); await db.close(); await rm(root, { recursive: true, force: true }); }
 });
